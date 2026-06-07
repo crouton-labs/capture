@@ -2235,7 +2235,7 @@ var require_websocket = __commonJS({
     var http = require("http");
     var net = require("net");
     var tls = require("tls");
-    var { randomBytes, createHash } = require("crypto");
+    var { randomBytes, createHash: createHash2 } = require("crypto");
     var { Duplex, Readable } = require("stream");
     var { URL: URL2 } = require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -2895,7 +2895,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash("sha1").update(key + GUID).digest("base64");
+        const digest = createHash2("sha1").update(key + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -3262,7 +3262,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter = require("events");
     var http = require("http");
     var { Duplex } = require("stream");
-    var { createHash } = require("crypto");
+    var { createHash: createHash2 } = require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -3563,7 +3563,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash("sha1").update(key + GUID).digest("base64");
+        const digest = createHash2("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -3678,13 +3678,13 @@ var init_client = __esm({
       ready;
       constructor(wsUrl, connectTimeout = 5e3) {
         this.ws = new wrapper_default(wsUrl);
-        this.ready = new Promise((resolve3, reject) => {
+        this.ready = new Promise((resolve4, reject) => {
           const timeout = setTimeout(() => {
             reject(new Error(`WebSocket connection timeout (${connectTimeout}ms)`));
           }, connectTimeout);
           this.ws.on("open", () => {
             clearTimeout(timeout);
-            resolve3();
+            resolve4();
           });
           this.ws.on("error", (err) => {
             clearTimeout(timeout);
@@ -3720,8 +3720,8 @@ var init_client = __esm({
       async send(method, params = {}, timeout = 6e4) {
         await this.ready;
         const id = ++this.messageId;
-        return new Promise((resolve3, reject) => {
-          this.pendingRequests.set(id, { resolve: resolve3, reject });
+        return new Promise((resolve4, reject) => {
+          this.pendingRequests.set(id, { resolve: resolve4, reject });
           this.ws.send(JSON.stringify({ id, method, params }));
           const timer = setTimeout(() => {
             if (this.pendingRequests.has(id)) {
@@ -4491,14 +4491,14 @@ async function navigateAndRecord(options) {
   try {
     await Promise.race([
       (async () => {
-        await new Promise((resolve3) => {
+        await new Promise((resolve4) => {
           const timer = setTimeout(() => {
             console.error("Page load timeout (10s), continuing with settle...");
-            resolve3();
+            resolve4();
           }, 1e4);
           client.on("Page.loadEventFired", () => {
             clearTimeout(timer);
-            resolve3();
+            resolve4();
           });
         });
         console.error(`Settling for ${settle}ms...`);
@@ -4539,14 +4539,14 @@ async function navigateAndWait(port, url, options = {}) {
   const client = new CDPClient(tab.webSocketDebuggerUrl);
   await client.waitReady();
   await client.send("Page.enable");
-  await new Promise((resolve3, reject) => {
+  await new Promise((resolve4, reject) => {
     const timer = setTimeout(
       () => reject(new Error(`Page load timeout: ${url}`)),
       timeout
     );
     client.on("Page.loadEventFired", () => {
       clearTimeout(timer);
-      resolve3();
+      resolve4();
     });
   });
   client.close();
@@ -4800,6 +4800,10 @@ Commands:
   har create          Create a HAR recording (returns id)
   har read [id]       Read accumulated HAR entries (id optional in active session)
   har delete <id>     Delete a HAR recording
+  lib list            List available vault libs (dev checkout only)
+  lib search "<q>"     Fuzzy-search lib functions [--limit N]
+  lib show <name>     Lib + function summaries
+  lib read <name> [fn\u2026]  Full input/output schemas (+ .ts source path)
 
 Options:
   --port <port>       Override CDP port
@@ -4842,6 +4846,9 @@ Examples:
   capture har create
   capture exec "document.querySelector('form').submit()" --target <id> --har <id>
   capture har read <id>
+  capture lib search "search emails"
+  capture lib read gmail searchEmails
+  capture exec "import {searchEmails} from 'libs/gmail'; const ctx = await getContext(); return await searchEmails({ ...ctx, query: 'invoice' })"
 `;
   }
 });
@@ -4994,11 +5001,11 @@ async function cmdResetTab(parsed, _args) {
     const client = new CDPClient(tab.webSocketDebuggerUrl);
     await client.waitReady();
     await client.send("Page.enable");
-    await new Promise((resolve3) => {
-      const timer = setTimeout(() => resolve3(), 1e4);
+    await new Promise((resolve4) => {
+      const timer = setTimeout(() => resolve4(), 1e4);
       client.on("Page.loadEventFired", () => {
         clearTimeout(timer);
-        resolve3();
+        resolve4();
       });
     });
     client.close();
@@ -5150,6 +5157,166 @@ var init_connection = __esm({
   }
 });
 
+// src/vault/paths.ts
+function vaultLibsDir() {
+  const candidates = [
+    path4.resolve(__dirname, "..", "vault", "libs"),
+    // built bin: bin/../vault/libs
+    path4.resolve(__dirname, "..", "..", "vault", "libs")
+    // tsx dev: src/vault/../../vault/libs
+  ];
+  const hit = candidates.find(
+    (p) => fs7.existsSync(path4.join(p, "_runtime", "index.ts"))
+  );
+  if (!hit) throw new Error(DEV_ONLY_MSG);
+  return hit;
+}
+function vaultRepoRoot() {
+  return path4.dirname(vaultLibsDir());
+}
+function listLibs() {
+  return fs7.readdirSync(vaultLibsDir(), { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith("_")).map((e) => e.name).sort();
+}
+async function loadEsbuild() {
+  return await import("esbuild").catch(() => {
+    throw new Error(DEV_ONLY_MSG);
+  });
+}
+var fs7, path4, DEV_ONLY_MSG;
+var init_paths = __esm({
+  "src/vault/paths.ts"() {
+    fs7 = __toESM(require("fs"));
+    path4 = __toESM(require("path"));
+    DEV_ONLY_MSG = "This is a dev-only feature of capture \u2014 run it from a capture checkout\n(vault/ source + `npm i`). Not available in the published package.";
+  }
+});
+
+// src/vault/bundle.ts
+function splitLeadingImports(code) {
+  const imports = [];
+  let body = code;
+  for (; ; ) {
+    const m = IMPORT_STMT_RE.exec(body);
+    if (!m) break;
+    imports.push(m[0]);
+    body = body.slice(m[0].length);
+  }
+  return { imports: imports.join(""), body };
+}
+function hasImports(code) {
+  return splitLeadingImports(code).imports.length > 0;
+}
+function unknownLibMsg(name) {
+  return `Unknown lib "${name}". Available: ${listLibs().join(", ")}`;
+}
+function preflightLibs(imports) {
+  const libs = vaultLibsDir();
+  LIB_SPECIFIER_RE.lastIndex = 0;
+  let m;
+  while ((m = LIB_SPECIFIER_RE.exec(imports)) !== null) {
+    const name = m[2];
+    if (!fs8.existsSync(path5.join(libs, name, "index.ts"))) {
+      throw new Error(unknownLibMsg(name));
+    }
+  }
+}
+function buildEntry(code) {
+  const { imports, body } = splitLeadingImports(code);
+  const expr = body.trim().replace(/;+\s*$/, "");
+  return [
+    imports,
+    `const ${SENTINEL} = (async () => { ${expr} })();`,
+    `${SENTINEL}.then();`
+  ].join("\n");
+}
+function vaultResolver() {
+  const libs = vaultLibsDir();
+  const runtime = path5.join(libs, "_runtime", "index.ts");
+  return {
+    name: "vault",
+    setup(build) {
+      build.onResolve({ filter: /^@vallum\/_runtime$/ }, () => ({
+        path: runtime
+      }));
+      build.onResolve({ filter: /^libs\// }, (args) => {
+        const name = args.path.slice("libs/".length);
+        const entry = path5.join(libs, name, "index.ts");
+        return fs8.existsSync(entry) ? { path: entry } : { errors: [{ text: unknownLibMsg(name) }] };
+      });
+    }
+  };
+}
+async function runEsbuild(entry) {
+  const esbuild = await loadEsbuild();
+  const opts = {
+    stdin: {
+      contents: entry,
+      resolveDir: vaultRepoRoot(),
+      loader: "ts",
+      sourcefile: "exec.ts"
+    },
+    plugins: [vaultResolver()],
+    bundle: true,
+    write: false,
+    format: "iife",
+    target: "es2020",
+    platform: "browser",
+    treeShaking: true,
+    minify: false,
+    logLevel: "silent"
+  };
+  try {
+    return await esbuild.build(opts);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("service is no longer running")) {
+      esbuild.stop();
+      return await esbuild.build(opts);
+    }
+    throw error;
+  }
+}
+function applyReturnInsert(bundled) {
+  const anchor = `${SENTINEL}.then(`;
+  const i = bundled.lastIndexOf(anchor);
+  return i === -1 ? bundled : bundled.slice(0, i) + "return " + bundled.slice(i);
+}
+function formatBuildErrors(errors) {
+  return errors.map((e) => {
+    const l = e.location;
+    const loc = l ? ` (${l.file}:${l.line}:${l.column})` : "";
+    return `${e.text}${loc}`;
+  }).join("\n");
+}
+async function bundleExec(code) {
+  preflightLibs(splitLeadingImports(code).imports);
+  const entry = buildEntry(code);
+  let result;
+  try {
+    result = await runEsbuild(entry);
+  } catch (error) {
+    const errs = error?.errors;
+    if (Array.isArray(errs) && errs.length > 0) {
+      throw new Error(formatBuildErrors(errs));
+    }
+    throw error;
+  }
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error("esbuild produced no output");
+  }
+  return applyReturnInsert(result.outputFiles[0].text);
+}
+var fs8, path5, SENTINEL, IMPORT_STMT_RE, LIB_SPECIFIER_RE;
+var init_bundle = __esm({
+  "src/vault/bundle.ts"() {
+    fs8 = __toESM(require("fs"));
+    path5 = __toESM(require("path"));
+    init_paths();
+    SENTINEL = "__CAPTURE_RESULT";
+    IMPORT_STMT_RE = /^\s*(?:(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)*import\b[^'"`]*?(['"])(?:[^'"`\\]|\\.)*\1[^\n;]*;?/;
+    LIB_SPECIFIER_RE = /(['"])libs\/((?:[^'"\\]|\\.)*)\1/g;
+  }
+});
+
 // src/cdp/commands/exec.ts
 async function cmdExec(parsed, _args) {
   if (parsed.help) {
@@ -5162,13 +5329,16 @@ Examples:
   capture exec "document.title" --target <id>
   capture exec "await fetch('/api/data').then(r=>r.json())" --target <id>
   capture exec "document.querySelector('.btn').click()" --target <id>
-  capture exec --file /tmp/scrape.js --target <id> --record`
+  capture exec --file /tmp/scrape.js --target <id> --record
+
+Import vault libs (dev checkout only): static imports first, then your code.
+  capture exec "import {searchEmails} from 'libs/gmail'; const ctx = await getContext(); return await searchEmails({ ...ctx, query: 'invoice' })"`
     );
     process.exit(0);
   }
   let code;
   if (parsed.file) {
-    code = fs7.readFileSync(parsed.file, "utf-8");
+    code = fs9.readFileSync(parsed.file, "utf-8");
   } else {
     code = parsed.positional[0];
     if (!code) {
@@ -5185,6 +5355,15 @@ Examples:
       process.exit(1);
     }
   }
+  let prebuilt;
+  if (hasImports(code)) {
+    try {
+      prebuilt = await bundleExec(code);
+    } catch (e) {
+      console.error(`ERROR: ${e.message}`);
+      process.exit(1);
+    }
+  }
   await withConnection(
     parsed,
     async (client) => {
@@ -5194,8 +5373,7 @@ Examples:
         standaloneRecorder = new HARRecorder(client);
         await standaloneRecorder.start();
       }
-      const needsAsyncWrap = /\bawait\b/.test(code);
-      const expression = needsAsyncWrap ? `(async () => { ${code} })()` : code;
+      const expression = prebuilt ? prebuilt : /\bawait\b/.test(code) ? `(async () => { ${code} })()` : code;
       const evalResult = await client.send("Runtime.evaluate", {
         expression,
         awaitPromise: true,
@@ -5217,13 +5395,14 @@ Examples:
   );
   return;
 }
-var fs7;
+var fs9;
 var init_exec = __esm({
   "src/cdp/commands/exec.ts"() {
-    fs7 = __toESM(require("fs"));
+    fs9 = __toESM(require("fs"));
     init_connection();
     init_har_recorder();
     init_har_output();
+    init_bundle();
   }
 });
 
@@ -5330,7 +5509,7 @@ async function cmdScreenshot(parsed, _args) {
     async (client) => {
       const png = await captureScreenshot(client, viewport, { fullPage: parsed.fullPage });
       const outPath = parsed.out ? parsed.out : nextStepPath("screenshot", "manual") ?? `/tmp/capture-screenshot-${Date.now()}.png`;
-      fs8.writeFileSync(outPath, png);
+      fs10.writeFileSync(outPath, png);
       return { path: outPath, bytes: png.length };
     },
     { settle: 0 }
@@ -5436,10 +5615,10 @@ Consider adding role and aria-label attributes to interactive elements in your f
   }
   return;
 }
-var fs8;
+var fs10;
 var init_ui = __esm({
   "src/cdp/commands/ui.ts"() {
-    fs8 = __toESM(require("fs"));
+    fs10 = __toESM(require("fs"));
     init_connection();
     init_screenshot();
     init_a11y();
@@ -5668,6 +5847,388 @@ var init_har = __esm({
   }
 });
 
+// src/vault/docs.ts
+function cacheDir() {
+  return path6.join(vaultRepoRoot(), ".cache", "docs");
+}
+function schemasPathFor(svc) {
+  return path6.join(vaultLibsDir(), svc, "schemas.ts");
+}
+function srcSha(svc) {
+  return (0, import_crypto.createHash)("sha256").update(fs11.readFileSync(schemasPathFor(svc), "utf8")).digest("hex");
+}
+function toJsonSchema(zodSchema) {
+  const s = zodSchema;
+  if (s?._zod?.def?.type === "void") {
+    const desc = s.description;
+    return desc ? { type: "null", description: desc } : { type: "null" };
+  }
+  if (!s?.toJSONSchema) {
+    throw new Error(
+      "Schema missing toJSONSchema method - ensure Zod 4+ is installed"
+    );
+  }
+  return s.toJSONSchema();
+}
+async function buildDoc(svc) {
+  const esbuild = await loadEsbuild();
+  const result = await esbuild.build({
+    entryPoints: [schemasPathFor(svc)],
+    bundle: true,
+    write: false,
+    format: "cjs",
+    platform: "node",
+    target: "es2020",
+    logLevel: "silent"
+  });
+  const text = result.outputFiles?.[0]?.text;
+  if (!text) throw new Error(`esbuild produced no output for ${svc}/schemas.ts`);
+  const mod = { exports: {} };
+  new Function("module", "exports", "require", text)(
+    mod,
+    mod.exports,
+    cjsRequire
+  );
+  const x = mod.exports;
+  const allSchemas = x.allSchemas ?? [];
+  const doc = {
+    library: `@vallum/${svc}`,
+    description: x.libraryDescription ?? `${svc} service library`,
+    visibility: x.libraryVisibility ?? "public",
+    functions: allSchemas.map((schema) => ({
+      name: schema.name,
+      description: schema.description,
+      ...schema.notes ? { notes: schema.notes } : {},
+      input: toJsonSchema(schema.input),
+      output: toJsonSchema(schema.output)
+    }))
+  };
+  if (x.libraryNotes) doc.notes = x.libraryNotes;
+  if (x.loginUrl) doc.loginUrl = x.loginUrl;
+  return doc;
+}
+async function getDoc(name) {
+  if (!fs11.existsSync(schemasPathFor(name))) {
+    throw new Error(
+      `Unknown lib "${name}". Available: ${listLibs().join(", ")}`
+    );
+  }
+  const sha = srcSha(name);
+  const cacheFile = path6.join(cacheDir(), `${name}.json`);
+  if (fs11.existsSync(cacheFile)) {
+    try {
+      const cached = JSON.parse(fs11.readFileSync(cacheFile, "utf8"));
+      if (cached._srcSha === sha) {
+        delete cached._srcSha;
+        return cached;
+      }
+    } catch {
+    }
+  }
+  const doc = await buildDoc(name);
+  fs11.mkdirSync(cacheDir(), { recursive: true });
+  fs11.writeFileSync(
+    cacheFile,
+    JSON.stringify({ ...doc, _srcSha: sha }, null, 2)
+  );
+  return doc;
+}
+async function listDocs() {
+  const out = [];
+  for (const name of listLibs()) {
+    let doc;
+    try {
+      doc = await getDoc(name);
+    } catch (e) {
+      console.error(
+        `WARN: skipping lib "${name}" \u2014 ${e.message}`
+      );
+      continue;
+    }
+    if (AGENT_VISIBLE_VISIBILITIES.has(doc.visibility)) out.push(doc);
+  }
+  return out;
+}
+var fs11, path6, import_crypto, AGENT_VISIBLE_VISIBILITIES, cjsRequire;
+var init_docs = __esm({
+  "src/vault/docs.ts"() {
+    fs11 = __toESM(require("fs"));
+    path6 = __toESM(require("path"));
+    import_crypto = require("crypto");
+    init_paths();
+    AGENT_VISIBLE_VISIBILITIES = /* @__PURE__ */ new Set(["public", "chat"]);
+    cjsRequire = (id) => {
+      if (typeof require === "function") return require(id);
+      throw new Error(`cannot require('${id}') \u2014 unavailable in this runtime`);
+    };
+  }
+});
+
+// src/cdp/commands/lib.ts
+function scoreToken(token, service, fnName, fnDesc, serviceDesc) {
+  const q = token.toLowerCase();
+  const fn = fnName.toLowerCase();
+  const svc = service.toLowerCase();
+  const fnD = fnDesc.toLowerCase();
+  const svcD = serviceDesc.toLowerCase();
+  let score = 0;
+  let match = "";
+  if (fn === q) {
+    score += FUNCTION_NAME_EXACT;
+    match = "function-name (exact)";
+  } else if (fn.startsWith(q)) {
+    score += FUNCTION_NAME_PREFIX;
+    match = "function-name (prefix)";
+  } else if (fn.includes(q)) {
+    score += FUNCTION_NAME_SUBSTRING;
+    match = "function-name";
+  }
+  if (svc.includes(q)) {
+    score += SERVICE_NAME_MATCH;
+    if (!match) match = "service-name";
+  }
+  if (fnD.includes(q)) {
+    score += FUNCTION_DESC_SUBSTRING;
+    if (!match) match = "function-desc";
+  }
+  if (svcD.includes(q)) {
+    score += SERVICE_DESC_SUBSTRING;
+    if (!match) match = "service-desc";
+  }
+  return { score, match };
+}
+function scoreHit(query, service, fnName, fnDesc, serviceDesc) {
+  const tokens = query.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return { score: 0, match: "" };
+  if (tokens.length === 1) {
+    return scoreToken(tokens[0], service, fnName, fnDesc, serviceDesc);
+  }
+  let total = 0;
+  let bestScore = -1;
+  let bestMatch = "";
+  for (const token of tokens) {
+    const r = scoreToken(token, service, fnName, fnDesc, serviceDesc);
+    if (r.score === 0) return { score: 0, match: "" };
+    total += r.score;
+    if (r.score > bestScore) {
+      bestScore = r.score;
+      bestMatch = r.match;
+    }
+  }
+  return { score: total, match: bestMatch };
+}
+function resolveName(query, names) {
+  if (names.includes(query)) return { name: query };
+  const lower = query.toLowerCase();
+  const prefix = names.filter((n) => n.toLowerCase().startsWith(lower));
+  if (prefix.length === 1) return { name: prefix[0] };
+  if (prefix.length > 1) {
+    return { error: `Ambiguous lib "${query}" \u2014 matches: ${prefix.join(", ")}` };
+  }
+  return { error: `Unknown lib "${query}". Available: ${names.join(", ")}` };
+}
+async function cmdLib(parsed, _args) {
+  if (parsed.help) {
+    console.log(USAGE);
+    process.exit(0);
+  }
+  const sub = parsed.positional[0];
+  if (sub === "list") {
+    const docs = await listDocs();
+    const rows = docs.map((d) => {
+      const name = svcName(d);
+      return {
+        name,
+        functionCount: d.functions.length,
+        description: d.description,
+        srcPath: srcPathFor(name)
+      };
+    });
+    console.log(JSON.stringify(rows, null, 2));
+    console.error(
+      `
+${rows.length} libs. Next: capture lib show <name>  \xB7  capture lib read <name> <fn>`
+    );
+    return;
+  }
+  if (sub === "search") {
+    const query = parsed.positional[1];
+    if (!query) {
+      console.error('Usage: capture lib search "<query>" [--limit N]');
+      process.exit(1);
+    }
+    const limit = Math.min(
+      typeof parsed.limit === "number" && parsed.limit > 0 ? parsed.limit : 20,
+      500
+    );
+    const docs = await listDocs();
+    const hits = [];
+    for (const d of docs) {
+      const service = svcName(d);
+      for (const fn of d.functions) {
+        const { score, match } = scoreHit(
+          query,
+          service,
+          fn.name,
+          fn.description ?? "",
+          d.description ?? ""
+        );
+        if (score > 0) {
+          hits.push({
+            service,
+            function: fn.name,
+            match,
+            score,
+            description: fn.description,
+            srcPath: srcPathFor(service)
+          });
+        }
+      }
+    }
+    hits.sort((a, b) => b.score - a.score);
+    const top = hits.slice(0, limit);
+    console.log(JSON.stringify(top, null, 2));
+    console.error(
+      `
+${hits.length} hit(s)${hits.length > limit ? ` (showing ${limit})` : ""}. Next: capture lib read <service> <function>`
+    );
+    return;
+  }
+  if (sub === "show") {
+    const name = parsed.positional[1];
+    if (!name) {
+      console.error("Usage: capture lib show <name>");
+      process.exit(1);
+    }
+    const docs = await listDocs();
+    const r = resolveName(name, docs.map(svcName));
+    if ("error" in r) {
+      console.error(r.error);
+      process.exit(1);
+    }
+    const doc = docs.find((d) => svcName(d) === r.name);
+    const service = r.name;
+    const out = {
+      service,
+      description: doc.description,
+      ...doc.loginUrl ? { loginUrl: doc.loginUrl } : {},
+      ...doc.notes ? { notes: doc.notes } : {},
+      srcPath: srcPathFor(service),
+      functions: doc.functions.map((f) => ({
+        name: f.name,
+        description: f.description
+      }))
+    };
+    console.log(JSON.stringify(out, null, 2));
+    console.error(
+      `
+Schemas required before exec \u2014 capture lib read ${service} <fn>`
+    );
+    return;
+  }
+  if (sub === "read") {
+    const name = parsed.positional[1];
+    if (!name) {
+      console.error("Usage: capture lib read <name> [fn\u2026]");
+      process.exit(1);
+    }
+    const r = resolveName(name, listLibs());
+    if ("error" in r) {
+      console.error(r.error);
+      process.exit(1);
+    }
+    let doc;
+    try {
+      doc = await getDoc(r.name);
+    } catch (e) {
+      console.error(e.message);
+      process.exit(1);
+    }
+    const service = svcName(doc);
+    const fns = parsed.positional.slice(2);
+    if (fns.length === 0) {
+      const out2 = {
+        service,
+        description: doc.description,
+        ...doc.notes ? { notes: doc.notes } : {},
+        srcPath: srcPathFor(service),
+        functions: doc.functions.map((f) => ({
+          name: f.name,
+          description: f.description
+        }))
+      };
+      console.log(JSON.stringify(out2, null, 2));
+      console.error(
+        `
+Name functions to load schemas: capture lib read ${service} <fn> [fn\u2026]`
+      );
+      return;
+    }
+    const byName = new Map(doc.functions.map((f) => [f.name, f]));
+    const found = [];
+    const missing = [];
+    for (const op of fns) {
+      const fn = byName.get(op);
+      if (fn) found.push(fn);
+      else missing.push(op);
+    }
+    if (found.length === 0) {
+      const available = doc.functions.map((f) => f.name).join(", ");
+      const label = missing.length > 1 ? `Functions "${missing.join('", "')}"` : `Function "${missing[0]}"`;
+      console.error(`${label} not in ${service}. Available: ${available}`);
+      process.exit(1);
+    }
+    const out = {
+      service,
+      srcPath: srcPathFor(service),
+      functions: found.map((f) => ({
+        name: f.name,
+        description: f.description,
+        ...f.notes ? { notes: f.notes } : {},
+        input: f.input,
+        output: f.output
+      })),
+      ...missing.length > 0 ? { missing } : {}
+    };
+    console.log(JSON.stringify(out, null, 2));
+    const firstFn = found[0].name;
+    console.error(
+      `
+Run it: capture exec "import {${firstFn}} from 'libs/${service}'; return await ${firstFn}({\u2026})"`
+    );
+    return;
+  }
+  console.error(USAGE);
+  process.exit(1);
+}
+var path7, USAGE, FUNCTION_NAME_EXACT, FUNCTION_NAME_PREFIX, FUNCTION_NAME_SUBSTRING, SERVICE_NAME_MATCH, FUNCTION_DESC_SUBSTRING, SERVICE_DESC_SUBSTRING, svcName, srcPathFor;
+var init_lib = __esm({
+  "src/cdp/commands/lib.ts"() {
+    path7 = __toESM(require("path"));
+    init_paths();
+    init_docs();
+    USAGE = `Usage: capture lib <list|search|show|read> [options]
+
+  list                          List available libs (name, fn count, description, srcPath)
+  search "<query>" [--limit N]  Fuzzy-search functions across all libs (ranked)
+  show <name>                   Lib + function summaries (no schemas)
+  read <name> [fn\u2026]             Full input/output JSON schemas (+ .ts source path)
+
+Then run a lib in the active authenticated tab:
+  capture exec "import {<fn>} from 'libs/<name>'; return await <fn>({\u2026})"
+
+Dev-checkout-only feature (requires vault/ source + esbuild).`;
+    FUNCTION_NAME_EXACT = 100;
+    FUNCTION_NAME_PREFIX = 60;
+    FUNCTION_NAME_SUBSTRING = 40;
+    SERVICE_NAME_MATCH = 50;
+    FUNCTION_DESC_SUBSTRING = 20;
+    SERVICE_DESC_SUBSTRING = 10;
+    svcName = (doc) => doc.library.replace(/^@vallum\//, "");
+    srcPathFor = (name) => path7.join(vaultLibsDir(), name, "index.ts");
+  }
+});
+
 // src/cdp/dispatch.ts
 async function cdpMain2() {
   const args = process.argv.slice(2);
@@ -5699,6 +6260,8 @@ async function cdpMain2() {
       return cmdNetwork(parsed, args);
     case "har":
       return cmdHar(parsed, args);
+    case "lib":
+      return cmdLib(parsed, args);
     default:
       console.log(CDP_USAGE);
   }
@@ -5712,6 +6275,7 @@ var init_dispatch = __esm({
     init_ui();
     init_traffic();
     init_har();
+    init_lib();
   }
 });
 
@@ -5769,30 +6333,30 @@ var init_cdp = __esm({
 });
 
 // src/capture.ts
-var fs10 = __toESM(require("fs"));
-var path5 = __toESM(require("path"));
+var fs13 = __toESM(require("fs"));
+var path9 = __toESM(require("path"));
 init_cdp();
 
 // src/session/commands.ts
-var fs9 = __toESM(require("fs"));
-var path4 = __toESM(require("path"));
+var fs12 = __toESM(require("fs"));
+var path8 = __toESM(require("path"));
 var os3 = __toESM(require("os"));
 var import_child_process2 = require("child_process");
 init_har_manager();
 init_session_context();
-var CAPTURE_ROOT2 = path4.join(os3.tmpdir(), "capture-sessions");
+var CAPTURE_ROOT2 = path8.join(os3.tmpdir(), "capture-sessions");
 function sessionDir(id) {
-  return path4.join(CAPTURE_ROOT2, id);
+  return path8.join(CAPTURE_ROOT2, id);
 }
 function sessionMetaPath(id) {
-  return path4.join(sessionDir(id), ".session.json");
+  return path8.join(sessionDir(id), ".session.json");
 }
 function readSession(id) {
   const metaPath = sessionMetaPath(id);
-  if (!fs9.existsSync(metaPath)) {
+  if (!fs12.existsSync(metaPath)) {
     throw new Error(`No capture session found: ${id}`);
   }
-  return JSON.parse(fs9.readFileSync(metaPath, "utf-8"));
+  return JSON.parse(fs12.readFileSync(metaPath, "utf-8"));
 }
 function generateId() {
   return `cap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -5806,8 +6370,8 @@ async function start(args) {
   }
   const id = generateId();
   const dir = sessionDir(id);
-  fs9.mkdirSync(path4.join(dir, "shots"), { recursive: true });
-  fs9.mkdirSync(path4.join(dir, "a11y"), { recursive: true });
+  fs12.mkdirSync(path8.join(dir, "shots"), { recursive: true });
+  fs12.mkdirSync(path8.join(dir, "a11y"), { recursive: true });
   let harId = null;
   try {
     const harResult = createHarRecording();
@@ -5836,7 +6400,7 @@ async function start(args) {
     stepCount: 0,
     logPids: []
   };
-  fs9.writeFileSync(sessionMetaPath(id), JSON.stringify(session, null, 2));
+  fs12.writeFileSync(sessionMetaPath(id), JSON.stringify(session, null, 2));
   setActiveSession({
     sessionId: id,
     dir,
@@ -5849,8 +6413,8 @@ async function start(args) {
     bundleDir: dir,
     harId,
     targetId,
-    shotsDir: path4.join(dir, "shots"),
-    a11yDir: path4.join(dir, "a11y")
+    shotsDir: path8.join(dir, "shots"),
+    a11yDir: path8.join(dir, "a11y")
   };
   console.log(JSON.stringify(result, null, 2));
   console.error(`
@@ -5867,8 +6431,8 @@ function logCommand(args) {
     console.error("Usage: capture log <path> [--name label] [--session <id>]");
     process.exit(1);
   }
-  const resolved = path4.resolve(sourcePath);
-  if (!fs9.existsSync(resolved)) {
+  const resolved = path8.resolve(sourcePath);
+  if (!fs12.existsSync(resolved)) {
     throw new Error(`Log file not found: ${resolved}`);
   }
   let name = null;
@@ -5885,21 +6449,21 @@ function logCommand(args) {
     sessionId = active.sessionId;
   }
   const session = readSession(sessionId);
-  name = name ?? path4.basename(resolved, path4.extname(resolved));
-  const logsDir = path4.join(session.dir, "logs");
-  fs9.mkdirSync(logsDir, { recursive: true });
-  const destPath = path4.join(logsDir, `${name}.log`);
-  const outFd = fs9.openSync(destPath, "a");
+  name = name ?? path8.basename(resolved, path8.extname(resolved));
+  const logsDir = path8.join(session.dir, "logs");
+  fs12.mkdirSync(logsDir, { recursive: true });
+  const destPath = path8.join(logsDir, `${name}.log`);
+  const outFd = fs12.openSync(destPath, "a");
   const child = (0, import_child_process2.spawn)(
     "sh",
     ["-c", `tail -f "${resolved}" | perl -MPOSIX -ne 'print strftime("%Y-%m-%dT%H:%M:%SZ",gmtime())." ".$_'`],
     { detached: true, stdio: ["ignore", outFd, "ignore"] }
   );
   child.unref();
-  fs9.closeSync(outFd);
+  fs12.closeSync(outFd);
   const pid = child.pid;
   session.logPids.push({ pid, name, sourcePath: resolved });
-  fs9.writeFileSync(sessionMetaPath(session.id), JSON.stringify(session, null, 2));
+  fs12.writeFileSync(sessionMetaPath(session.id), JSON.stringify(session, null, 2));
   console.log(JSON.stringify({ name, sourcePath: resolved, destPath, pid }, null, 2));
 }
 async function stop(args) {
@@ -5921,17 +6485,17 @@ async function stop(args) {
   if (session.logPids?.length) {
     await new Promise((r) => setTimeout(r, 200));
   }
-  const shotsDir = path4.join(session.dir, "shots");
-  const screenshots = fs9.existsSync(shotsDir) ? fs9.readdirSync(shotsDir).filter((f) => f.endsWith(".png") || f.endsWith(".jpg")).map((f) => ({ name: f, path: path4.join(shotsDir, f) })) : [];
-  const a11yDir = path4.join(session.dir, "a11y");
-  const a11y = fs9.existsSync(a11yDir) ? fs9.readdirSync(a11yDir).filter((f) => f.endsWith(".json") || f.endsWith(".txt")).map((f) => ({ name: f, path: path4.join(a11yDir, f) })) : [];
+  const shotsDir = path8.join(session.dir, "shots");
+  const screenshots = fs12.existsSync(shotsDir) ? fs12.readdirSync(shotsDir).filter((f) => f.endsWith(".png") || f.endsWith(".jpg")).map((f) => ({ name: f, path: path8.join(shotsDir, f) })) : [];
+  const a11yDir = path8.join(session.dir, "a11y");
+  const a11y = fs12.existsSync(a11yDir) ? fs12.readdirSync(a11yDir).filter((f) => f.endsWith(".json") || f.endsWith(".txt")).map((f) => ({ name: f, path: path8.join(a11yDir, f) })) : [];
   let har = null;
   if (session.harId) {
     try {
       const harData = readHarRecording(session.harId);
       if (harData) {
-        const harPath = path4.join(session.dir, "har.json");
-        fs9.writeFileSync(harPath, JSON.stringify(harData, null, 2));
+        const harPath = path8.join(session.dir, "har.json");
+        fs12.writeFileSync(harPath, JSON.stringify(harData, null, 2));
         har = { id: session.harId, path: harPath, entryCount: harData.log.entries.length };
         try {
           deleteHarRecording(session.harId);
@@ -5942,16 +6506,16 @@ async function stop(args) {
       console.error(`Warning: could not read HAR: ${err instanceof Error ? err.message : err}`);
     }
   }
-  const logsDir = path4.join(session.dir, "logs");
-  const logs = fs9.existsSync(logsDir) ? fs9.readdirSync(logsDir).filter((f) => f.endsWith(".log")).map((f) => {
-    const filePath = path4.join(logsDir, f);
-    const content = fs9.readFileSync(filePath, "utf-8");
+  const logsDir = path8.join(session.dir, "logs");
+  const logs = fs12.existsSync(logsDir) ? fs12.readdirSync(logsDir).filter((f) => f.endsWith(".log")).map((f) => {
+    const filePath = path8.join(logsDir, f);
+    const content = fs12.readFileSync(filePath, "utf-8");
     const lines = content ? content.split("\n").filter(Boolean).length : 0;
     return { name: f, path: filePath, lines };
   }) : [];
   const knownDirs = /* @__PURE__ */ new Set(["shots", "a11y", "logs"]);
   const knownFiles = /* @__PURE__ */ new Set([".session.json", "har.json", "bundle.json"]);
-  const other = fs9.readdirSync(session.dir).filter((f) => !knownDirs.has(f) && !knownFiles.has(f)).map((f) => ({ name: f, path: path4.join(session.dir, f) }));
+  const other = fs12.readdirSync(session.dir).filter((f) => !knownDirs.has(f) && !knownFiles.has(f)).map((f) => ({ name: f, path: path8.join(session.dir, f) }));
   clearActiveSession();
   const manifest = {
     id: session.id,
@@ -5965,8 +6529,8 @@ async function stop(args) {
     logs,
     other
   };
-  const bundlePath = path4.join(session.dir, "bundle.json");
-  fs9.writeFileSync(bundlePath, JSON.stringify(manifest, null, 2));
+  const bundlePath = path8.join(session.dir, "bundle.json");
+  fs12.writeFileSync(bundlePath, JSON.stringify(manifest, null, 2));
   console.log(JSON.stringify({
     bundlePath,
     summary: {
@@ -5983,13 +6547,13 @@ Bundle written: ${bundlePath}`);
   console.error(`Read it: capture session view ${id}`);
 }
 function list() {
-  if (!fs9.existsSync(CAPTURE_ROOT2)) {
+  if (!fs12.existsSync(CAPTURE_ROOT2)) {
     console.log("[]");
     return;
   }
-  const sessions = fs9.readdirSync(CAPTURE_ROOT2).filter((d) => fs9.existsSync(sessionMetaPath(d))).map((d) => {
+  const sessions = fs12.readdirSync(CAPTURE_ROOT2).filter((d) => fs12.existsSync(sessionMetaPath(d))).map((d) => {
     const session = readSession(d);
-    const hasBundled = fs9.existsSync(path4.join(session.dir, "bundle.json"));
+    const hasBundled = fs12.existsSync(path8.join(session.dir, "bundle.json"));
     return { id: session.id, startedAt: session.startedAt, url: session.url, status: hasBundled ? "stopped" : "active" };
   });
   console.log(JSON.stringify(sessions, null, 2));
@@ -6001,12 +6565,12 @@ function view(args) {
     process.exit(1);
   }
   const session = readSession(id);
-  const bundlePath = path4.join(session.dir, "bundle.json");
-  if (!fs9.existsSync(bundlePath)) {
+  const bundlePath = path8.join(session.dir, "bundle.json");
+  if (!fs12.existsSync(bundlePath)) {
     console.error(`Session ${id} hasn't been stopped yet. Run: capture session stop ${id}`);
     process.exit(1);
   }
-  const manifest = JSON.parse(fs9.readFileSync(bundlePath, "utf-8"));
+  const manifest = JSON.parse(fs12.readFileSync(bundlePath, "utf-8"));
   const filter = args.find((_, i) => args[i - 1] === "--filter");
   if (filter) {
     const section = manifest[filter];
@@ -6059,14 +6623,14 @@ See also: capture --help                      Full command list`);
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === "--version" || command === "-v" || command === "version") {
-    const declared = "1.3.2";
+    const declared = "1.3.3";
     if (declared) {
       console.log(declared);
       return;
     }
     try {
-      const pkgPath = path5.resolve(__dirname, "..", "package.json");
-      const pkg = JSON.parse(fs10.readFileSync(pkgPath, "utf-8"));
+      const pkgPath = path9.resolve(__dirname, "..", "package.json");
+      const pkg = JSON.parse(fs13.readFileSync(pkgPath, "utf-8"));
       console.log(pkg.version);
     } catch {
       console.log("unknown");
@@ -6090,6 +6654,7 @@ async function main() {
     case "record":
     case "navigate":
     case "har":
+    case "lib":
     case "network":
     case "list":
       return cdpMain2();
@@ -6144,6 +6709,14 @@ DIAGNOSTICS & ONE-OFFS (no session needed)
   record [--duration <secs>]               Passive HAR recording; parallel-safe capture
   network <offline|online>                 Toggle connectivity for a tab
   har create | read [id] | delete <id>     Manage standalone HAR recordings
+
+LIBRARY (vault libs \u2014 dev checkout only)
+
+  lib list                                 List available libs
+  lib search "<query>" [--limit N]          Fuzzy-search functions across libs
+  lib show <name>                          Lib + function summaries
+  lib read <name> [fn\u2026]                    Full input/output schemas (+ .ts source path)
+  exec "import {fn} from 'libs/<name>'; return await fn({\u2026})"   Run a lib in the active tab
 
 TARGETING (only when NOT in a session, or picking a parallel tab)
 

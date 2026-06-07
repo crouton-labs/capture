@@ -3,6 +3,7 @@ import { withConnection } from '../connection.js';
 import { HARRecorder } from '../har-recorder.js';
 import { writeHarAndPrintSummary } from '../har-output.js';
 import { type ParsedArgs } from '../types.js';
+import { hasImports, bundleExec } from '../../vault/bundle.js';
 
 export async function cmdExec(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
@@ -13,7 +14,9 @@ export async function cmdExec(parsed: ParsedArgs, _args: string[]): Promise<void
         '  capture exec "document.title" --target <id>\n' +
         '  capture exec "await fetch(\'/api/data\').then(r=>r.json())" --target <id>\n' +
         '  capture exec "document.querySelector(\'.btn\').click()" --target <id>\n' +
-        '  capture exec --file /tmp/scrape.js --target <id> --record',
+        '  capture exec --file /tmp/scrape.js --target <id> --record\n\n' +
+        'Import vault libs (dev checkout only): static imports first, then your code.\n' +
+        '  capture exec "import {searchEmails} from \'libs/gmail\'; const ctx = await getContext(); return await searchEmails({ ...ctx, query: \'invoice\' })"',
     );
     process.exit(0);
   }
@@ -35,6 +38,19 @@ export async function cmdExec(parsed: ParsedArgs, _args: string[]): Promise<void
     }
   }
 
+  // Import-driven exec: if the code has leading static imports, bundle the
+  // forked vault libs on the fly (esbuild) BEFORE opening a tab — fail fast,
+  // no wasted CDP connection. Plain exec (no imports) skips this entirely.
+  let prebuilt: string | undefined;
+  if (hasImports(code)) {
+    try {
+      prebuilt = await bundleExec(code);
+    } catch (e) {
+      console.error(`ERROR: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  }
+
   await withConnection(
     parsed,
     async (client) => {
@@ -47,13 +63,15 @@ export async function cmdExec(parsed: ParsedArgs, _args: string[]): Promise<void
         await standaloneRecorder.start();
       }
 
-      // Smart wrapping: only use async IIFE when code contains `await`.
-      // Without wrapping, Runtime.evaluate returns the completion value
-      // of the last expression, handling multi-statement code naturally.
-      const needsAsyncWrap = /\bawait\b/.test(code);
-      const expression = needsAsyncWrap
-        ? `(async () => { ${code} })()`
-        : code;
+      // A prebuilt bundle is already a complete IIFE returning the user's
+      // promise. Otherwise fall back to the existing smart wrap: async IIFE
+      // only when code contains `await`; bare code lets Runtime.evaluate return
+      // the last expression's completion value (multi-statement code works).
+      const expression = prebuilt
+        ? prebuilt
+        : /\bawait\b/.test(code)
+          ? `(async () => { ${code} })()`
+          : code;
 
       const evalResult = (await client.send('Runtime.evaluate', {
         expression,

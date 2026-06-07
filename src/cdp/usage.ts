@@ -17,6 +17,10 @@ Commands:
   har create          Create a HAR recording (returns id)
   har read [id]       Read accumulated HAR entries (id optional in active session)
   har delete <id>     Delete a HAR recording
+  lib list            List available vault libs (dev checkout only)
+  lib search "<q>"     Fuzzy-search lib functions [--limit N]
+  lib show <name>     Lib + function summaries
+  lib read <name> [fn…]  Full input/output schemas (+ .ts source path)
 
 Options:
   --port <port>       Override CDP port
@@ -59,4 +63,7 @@ Examples:
   capture har create
   capture exec "document.querySelector('form').submit()" --target <id> --har <id>
   capture har read <id>
+  capture lib search "search emails"
+  capture lib read gmail searchEmails
+  capture exec "import {searchEmails} from 'libs/gmail'; const ctx = await getContext(); return await searchEmails({ ...ctx, query: 'invoice' })"
 `;

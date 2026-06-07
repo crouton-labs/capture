@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "target": "ES2023", "module": "ESNext", "moduleResolution": "bundler",
+    "strict": false, "noImplicitAny": false, "strictNullChecks": true,
+    "skipLibCheck": true, "noEmit": true, "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true, "isolatedModules": true,
+    "baseUrl": ".", "paths": { "@vallum/_runtime": ["libs/_runtime/index.ts"] }
+  },
+  "include": ["libs"],
+  "exclude": ["node_modules", "libs/**/proofs*.ts"]
+}

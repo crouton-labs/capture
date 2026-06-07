@@ -10,7 +10,8 @@
     "src"
   ],
   "scripts": {
-    "build": "esbuild src/capture.ts --bundle --platform=node --format=cjs --outfile=bin/capture '--banner:js=#!/usr/bin/env node' \"--define:globalThis.__CAPTURE_VERSION__=\\\"$npm_package_version\\\"\" && chmod +x bin/capture"
+    "build": "esbuild src/capture.ts --bundle --platform=node --format=cjs --outfile=bin/capture --external:esbuild '--banner:js=#!/usr/bin/env node' \"--define:globalThis.__CAPTURE_VERSION__=\\\"$npm_package_version\\\"\" && chmod +x bin/capture",
+    "dev": "tsx src/capture.ts"
   },
   "repository": {
     "type": "git",
@@ -33,7 +34,9 @@
   "devDependencies": {
     "@types/ws": "^8.18.1",
     "esbuild": "^0.24.0",
-    "typescript": "^5.7.0"
+    "tsx": "^4",
+    "typescript": "^5.7.0",
+    "zod": "^4.3.5"
   },
   "dependencies": {
     "ws": "^8.19.0"

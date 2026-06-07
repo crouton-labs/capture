@@ -5,6 +5,7 @@ import { cmdExec } from './commands/exec.js';
 import { cmdScreenshot, cmdClick, cmdType, cmdA11y } from './commands/ui.js';
 import { cmdRecord, cmdNavigate, cmdNetwork } from './commands/traffic.js';
 import { cmdHar } from './commands/har.js';
+import { cmdLib } from './commands/lib.js';
 
 export async function cdpMain(): Promise<void> {
   const args = process.argv.slice(2);
@@ -24,6 +25,7 @@ export async function cdpMain(): Promise<void> {
     case 'navigate': return cmdNavigate(parsed, args);
     case 'network': return cmdNetwork(parsed, args);
     case 'har': return cmdHar(parsed, args);
+    case 'lib': return cmdLib(parsed, args);
     default:
       console.log(CDP_USAGE);
   }

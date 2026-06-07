@@ -69,6 +69,7 @@ async function main(): Promise<void> {
     case "record":
     case "navigate":
     case "har":
+    case "lib":
     case "network":
     case "list":
       return cdpMain();
@@ -124,6 +125,14 @@ DIAGNOSTICS & ONE-OFFS (no session needed)
   record [--duration <secs>]               Passive HAR recording; parallel-safe capture
   network <offline|online>                 Toggle connectivity for a tab
   har create | read [id] | delete <id>     Manage standalone HAR recordings
+
+LIBRARY (vault libs — dev checkout only)
+
+  lib list                                 List available libs
+  lib search "<query>" [--limit N]          Fuzzy-search functions across libs
+  lib show <name>                          Lib + function summaries
+  lib read <name> [fn…]                    Full input/output schemas (+ .ts source path)
+  exec "import {fn} from 'libs/<name>'; return await fn({…})"   Run a lib in the active tab
 
 TARGETING (only when NOT in a session, or picking a parallel tab)
 
