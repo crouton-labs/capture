@@ -16,7 +16,7 @@ import * as path from "path";
  */
 export const DEV_ONLY_MSG =
   "This is a dev-only feature of capture — run it from a capture checkout\n" +
-  "(vault/ source + `npm i`). Not available in the published package.";
+  "(vault/ source + `pnpm install`). Not available in the published package.";
 
 /**
  * Absolute path to the forked `vault/libs` directory. Dual `__dirname`
@@ -55,6 +55,24 @@ export function listLibs(): string[] {
     .filter((e) => e.isDirectory() && !e.name.startsWith("_"))
     .map((e) => e.name)
     .sort();
+}
+
+/**
+ * The friendly "Unknown lib" message, shared by the exec resolver/preflight
+ * (`bundle.ts`) and the doc generator (`docs.ts`) so an unknown OR malformed
+ * lib name surfaces byte-identical text everywhere.
+ */
+export function unknownLibMsg(name: string): string {
+  return `Unknown lib "${name}". Available: ${listLibs().join(", ")}`;
+}
+
+// A lib name is a single path segment of `[A-Za-z0-9_.-]` (covers `hunter.io`)
+// with no `..`. Rejects path separators / traversal (`libs/../x`, `libs/a/b`)
+// before a name reaches `path.join`/esbuild — defense-in-depth (exec already
+// runs arbitrary JS, so this only buys a clearer error, not isolation).
+const VALID_LIB_NAME = /^[A-Za-z0-9_.-]+$/;
+export function isValidLibName(name: string): boolean {
+  return VALID_LIB_NAME.test(name) && !name.includes("..");
 }
 
 /**

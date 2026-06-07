@@ -11,7 +11,8 @@
   ],
   "scripts": {
     "build": "esbuild src/capture.ts --bundle --platform=node --format=cjs --outfile=bin/capture --external:esbuild '--banner:js=#!/usr/bin/env node' \"--define:globalThis.__CAPTURE_VERSION__=\\\"$npm_package_version\\\"\" && chmod +x bin/capture",
-    "dev": "tsx src/capture.ts"
+    "dev": "tsx src/capture.ts",
+    "test": "node --import tsx --test test/*.test.ts"
   },
   "repository": {
     "type": "git",

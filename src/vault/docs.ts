@@ -18,7 +18,14 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createHash } from "crypto";
-import { vaultLibsDir, vaultRepoRoot, listLibs, loadEsbuild } from "./paths.js";
+import {
+  vaultLibsDir,
+  vaultRepoRoot,
+  listLibs,
+  loadEsbuild,
+  isValidLibName,
+  unknownLibMsg,
+} from "./paths.js";
 
 /** A single library function's doc entry (input/output are JSON Schema). */
 export interface LibraryDocFunction {
@@ -52,6 +59,11 @@ interface FunctionSchema {
 
 /** Mirrors `nl lib`'s agent-visible filter (vault-client.service.ts:49). */
 const AGENT_VISIBLE_VISIBILITIES = new Set(["public", "chat"]);
+
+/** True iff a doc is agent-visible (visibility ∈ {public, chat}). */
+export function isAgentVisible(doc: LibraryDoc): boolean {
+  return AGENT_VISIBLE_VISIBILITIES.has(doc.visibility);
+}
 
 /**
  * A `require` for the in-memory CJS eval below. zod is inlined by `bundle:true`
@@ -161,10 +173,8 @@ async function buildDoc(svc: string): Promise<LibraryDoc> {
  * `lib read`. Throws `Unknown lib …` if the named lib has no `schemas.ts`.
  */
 export async function getDoc(name: string): Promise<LibraryDoc> {
-  if (!fs.existsSync(schemasPathFor(name))) {
-    throw new Error(
-      `Unknown lib "${name}". Available: ${listLibs().join(", ")}`,
-    );
+  if (!isValidLibName(name) || !fs.existsSync(schemasPathFor(name))) {
+    throw new Error(unknownLibMsg(name));
   }
   const sha = srcSha(name);
   const cacheFile = path.join(cacheDir(), `${name}.json`);
@@ -208,7 +218,7 @@ export async function listDocs(): Promise<LibraryDoc[]> {
       );
       continue;
     }
-    if (AGENT_VISIBLE_VISIBILITIES.has(doc.visibility)) out.push(doc);
+    if (isAgentVisible(doc)) out.push(doc);
   }
   return out;
 }

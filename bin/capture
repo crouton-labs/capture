@@ -5177,17 +5177,24 @@ function vaultRepoRoot() {
 function listLibs() {
   return fs7.readdirSync(vaultLibsDir(), { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith("_")).map((e) => e.name).sort();
 }
+function unknownLibMsg(name) {
+  return `Unknown lib "${name}". Available: ${listLibs().join(", ")}`;
+}
+function isValidLibName(name) {
+  return VALID_LIB_NAME.test(name) && !name.includes("..");
+}
 async function loadEsbuild() {
   return await import("esbuild").catch(() => {
     throw new Error(DEV_ONLY_MSG);
   });
 }
-var fs7, path4, DEV_ONLY_MSG;
+var fs7, path4, DEV_ONLY_MSG, VALID_LIB_NAME;
 var init_paths = __esm({
   "src/vault/paths.ts"() {
     fs7 = __toESM(require("fs"));
     path4 = __toESM(require("path"));
-    DEV_ONLY_MSG = "This is a dev-only feature of capture \u2014 run it from a capture checkout\n(vault/ source + `npm i`). Not available in the published package.";
+    DEV_ONLY_MSG = "This is a dev-only feature of capture \u2014 run it from a capture checkout\n(vault/ source + `pnpm install`). Not available in the published package.";
+    VALID_LIB_NAME = /^[A-Za-z0-9_.-]+$/;
   }
 });
 
@@ -5206,16 +5213,13 @@ function splitLeadingImports(code) {
 function hasImports(code) {
   return splitLeadingImports(code).imports.length > 0;
 }
-function unknownLibMsg(name) {
-  return `Unknown lib "${name}". Available: ${listLibs().join(", ")}`;
-}
 function preflightLibs(imports) {
   const libs = vaultLibsDir();
   LIB_SPECIFIER_RE.lastIndex = 0;
   let m;
   while ((m = LIB_SPECIFIER_RE.exec(imports)) !== null) {
     const name = m[2];
-    if (!fs8.existsSync(path5.join(libs, name, "index.ts"))) {
+    if (!isValidLibName(name) || !fs8.existsSync(path5.join(libs, name, "index.ts"))) {
       throw new Error(unknownLibMsg(name));
     }
   }
@@ -5240,6 +5244,9 @@ function vaultResolver() {
       }));
       build.onResolve({ filter: /^libs\// }, (args) => {
         const name = args.path.slice("libs/".length);
+        if (!isValidLibName(name)) {
+          return { errors: [{ text: unknownLibMsg(name) }] };
+        }
         const entry = path5.join(libs, name, "index.ts");
         return fs8.existsSync(entry) ? { path: entry } : { errors: [{ text: unknownLibMsg(name) }] };
       });
@@ -5312,7 +5319,7 @@ var init_bundle = __esm({
     path5 = __toESM(require("path"));
     init_paths();
     SENTINEL = "__CAPTURE_RESULT";
-    IMPORT_STMT_RE = /^\s*(?:(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)*import\b[^'"`]*?(['"])(?:[^'"`\\]|\\.)*\1[^\n;]*;?/;
+    IMPORT_STMT_RE = /^\s*(?:(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)*import\b(?!\s*\()[^'"`]*?(['"])(?:[^'"`\\]|\\.)*\1[^\n;]*;?/;
     LIB_SPECIFIER_RE = /(['"])libs\/((?:[^'"\\]|\\.)*)\1/g;
   }
 });
@@ -5848,6 +5855,9 @@ var init_har = __esm({
 });
 
 // src/vault/docs.ts
+function isAgentVisible(doc) {
+  return AGENT_VISIBLE_VISIBILITIES.has(doc.visibility);
+}
 function cacheDir() {
   return path6.join(vaultRepoRoot(), ".cache", "docs");
 }
@@ -5908,10 +5918,8 @@ async function buildDoc(svc) {
   return doc;
 }
 async function getDoc(name) {
-  if (!fs11.existsSync(schemasPathFor(name))) {
-    throw new Error(
-      `Unknown lib "${name}". Available: ${listLibs().join(", ")}`
-    );
+  if (!isValidLibName(name) || !fs11.existsSync(schemasPathFor(name))) {
+    throw new Error(unknownLibMsg(name));
   }
   const sha = srcSha(name);
   const cacheFile = path6.join(cacheDir(), `${name}.json`);
@@ -5945,7 +5953,7 @@ async function listDocs() {
       );
       continue;
     }
-    if (AGENT_VISIBLE_VISIBILITIES.has(doc.visibility)) out.push(doc);
+    if (isAgentVisible(doc)) out.push(doc);
   }
   return out;
 }
@@ -6100,13 +6108,24 @@ ${hits.length} hit(s)${hits.length > limit ? ` (showing ${limit})` : ""}. Next: 
       console.error("Usage: capture lib show <name>");
       process.exit(1);
     }
-    const docs = await listDocs();
-    const r = resolveName(name, docs.map(svcName));
+    const r = resolveName(name, listLibs());
     if ("error" in r) {
       console.error(r.error);
       process.exit(1);
     }
-    const doc = docs.find((d) => svcName(d) === r.name);
+    let doc;
+    try {
+      doc = await getDoc(r.name);
+    } catch (e) {
+      console.error(e.message);
+      process.exit(1);
+    }
+    if (!isAgentVisible(doc)) {
+      console.error(
+        `Unknown lib "${name}". Available: ${listLibs().join(", ")}`
+      );
+      process.exit(1);
+    }
     const service = r.name;
     const out = {
       service,

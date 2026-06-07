@@ -13,7 +13,12 @@
 import * as path from "path";
 import { type ParsedArgs } from "../types.js";
 import { vaultLibsDir, listLibs } from "../../vault/paths.js";
-import { getDoc, listDocs, type LibraryDoc } from "../../vault/docs.js";
+import {
+  getDoc,
+  listDocs,
+  isAgentVisible,
+  type LibraryDoc,
+} from "../../vault/docs.js";
 
 const USAGE =
   "Usage: capture lib <list|search|show|read> [options]\n\n" +
@@ -224,13 +229,27 @@ export async function cmdLib(
       console.error("Usage: capture lib show <name>");
       process.exit(1);
     }
-    const docs = await listDocs();
-    const r = resolveName(name, docs.map(svcName));
+    // Resolve + build ONLY the named lib (design §3.1: show is single-lib, not
+    // an all-lib bundle). Mirrors the read path; adds show's visibility filter
+    // (a present-but-non-visible lib is treated as Unknown).
+    const r = resolveName(name, listLibs());
     if ("error" in r) {
       console.error(r.error);
       process.exit(1);
     }
-    const doc = docs.find((d) => svcName(d) === r.name)!;
+    let doc: LibraryDoc;
+    try {
+      doc = await getDoc(r.name);
+    } catch (e) {
+      console.error((e as Error).message);
+      process.exit(1);
+    }
+    if (!isAgentVisible(doc)) {
+      console.error(
+        `Unknown lib "${name}". Available: ${listLibs().join(", ")}`,
+      );
+      process.exit(1);
+    }
     const service = r.name;
     const out = {
       service,

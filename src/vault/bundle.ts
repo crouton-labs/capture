@@ -17,8 +17,9 @@ import * as fs from "fs";
 import * as path from "path";
 import type { Plugin, BuildResult, Message } from "esbuild";
 import {
-  listLibs,
+  isValidLibName,
   loadEsbuild,
+  unknownLibMsg,
   vaultLibsDir,
   vaultRepoRoot,
 } from "./paths.js";
@@ -32,10 +33,13 @@ const SENTINEL = "__CAPTURE_RESULT";
 // Matches a leading run of static import statements (plus any leading comments)
 // per statement: leading ws/comments, then `import` through its single
 // module-specifier string and optional `;`. A normal import has exactly one
-// string literal (the specifier), so this is unambiguous. Ported verbatim from
-// bundle-agent-code.ts. Dynamic `await import(...)` inside the body is untouched.
+// string literal (the specifier), so this is unambiguous. Ported from
+// bundle-agent-code.ts, with one addition: the `(?!\s*\()` lookahead so a
+// leading dynamic `import(...)` CALL is NOT misclassified as a static import
+// statement (it would otherwise be hoisted and the body run detached, silently
+// returning undefined). Dynamic `import(...)` anywhere in the body is untouched.
 const IMPORT_STMT_RE =
-  /^\s*(?:(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)*import\b[^'"`]*?(['"])(?:[^'"`\\]|\\.)*\1[^\n;]*;?/;
+  /^\s*(?:(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)*import\b(?!\s*\()[^'"`]*?(['"])(?:[^'"`\\]|\\.)*\1[^\n;]*;?/;
 
 function splitLeadingImports(code: string): { imports: string; body: string } {
   const imports: string[] = [];
@@ -58,10 +62,6 @@ export function hasImports(code: string): boolean {
   return splitLeadingImports(code).imports.length > 0;
 }
 
-function unknownLibMsg(name: string): string {
-  return `Unknown lib "${name}". Available: ${listLibs().join(", ")}`;
-}
-
 // Matches a `libs/<name>` module specifier inside a string literal.
 const LIB_SPECIFIER_RE = /(['"])libs\/((?:[^'"\\]|\\.)*)\1/g;
 
@@ -76,7 +76,7 @@ function preflightLibs(imports: string): void {
   let m: RegExpExecArray | null;
   while ((m = LIB_SPECIFIER_RE.exec(imports)) !== null) {
     const name = m[2];
-    if (!fs.existsSync(path.join(libs, name, "index.ts"))) {
+    if (!isValidLibName(name) || !fs.existsSync(path.join(libs, name, "index.ts"))) {
       throw new Error(unknownLibMsg(name));
     }
   }
@@ -113,6 +113,9 @@ function vaultResolver(): Plugin {
       }));
       build.onResolve({ filter: /^libs\// }, (args) => {
         const name = args.path.slice("libs/".length);
+        if (!isValidLibName(name)) {
+          return { errors: [{ text: unknownLibMsg(name) }] };
+        }
         const entry = path.join(libs, name, "index.ts");
         return fs.existsSync(entry)
           ? { path: entry }
