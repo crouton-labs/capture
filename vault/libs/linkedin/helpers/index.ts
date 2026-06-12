@@ -5,7 +5,7 @@
  */
 
 import type { SearchPeopleOutput } from '../schemas';
-import { ContractDrift, UpstreamError, throwForStatus } from '@vallum/_runtime';
+import { ContractDrift, UpstreamError, Validation, throwForStatus } from '@vallum/_runtime';
 import { AMD_PAGE_GUIDANCE } from './page-guidance';
 
 const LINKEDIN_HEADERS = {
@@ -84,6 +84,16 @@ export async function linkedinFetch<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
+  // A missing csrf otherwise gets sent as the literal header `csrf-token: undefined`,
+  // which LinkedIn rejects with an opaque `403 CSRF check failed` — easily misread
+  // as a logged-out/wrong-tab/--port problem. Fail fast with an actionable message.
+  if (!csrf || typeof csrf !== 'string') {
+    throw new Validation(
+      `linkedinFetch called without a csrf token (got ${JSON.stringify(csrf)}). ` +
+        `Pass the csrf from getContext(): const ctx = await getContext({}); ` +
+        `await searchPeople({ csrf: ctx.csrf, ... }).`,
+    );
+  }
   const response = await fetch(path, {
     ...options,
     credentials: 'include',

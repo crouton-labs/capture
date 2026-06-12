@@ -6642,7 +6642,7 @@ See also: capture --help                      Full command list`);
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === "--version" || command === "-v" || command === "version") {
-    const declared = "1.3.3";
+    const declared = "1.3.4";
     if (declared) {
       console.log(declared);
       return;
