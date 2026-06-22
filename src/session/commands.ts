@@ -65,6 +65,38 @@ function generateId(): string {
   return `cap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
+function hasHelpFlag(args: string[]): boolean {
+  return args.some((arg) => arg === '-h' || arg === '--help');
+}
+
+function printSessionHelp(): void {
+  console.log(`capture session — manage capture sessions
+
+Sub-commands:
+  start [--url <url>]             Start a session (opens tab, records HAR, sets active context)
+  stop  <session-id>              Finalize and bundle artifacts (screenshots, HAR, a11y, logs)
+  list                            List active and stopped sessions
+  view  <id> [--filter section]   View bundle manifest; section = screenshots|har|a11y|logs
+
+Why sessions: once started, every subsequent capture command auto-fills
+--target (the tab) and --har (the recording). No manual flag threading.
+
+Typical flow:
+  1. capture session start --url http://localhost:3000
+  2. Interact — no --target / --har needed:
+       capture a11y --interactive
+       capture click "Sign in"
+       capture type "hi@me.com" --into "Email"
+       capture screenshot
+       capture navigate https://app.example.com/dashboard
+       capture har read --filter-url /api
+  3. capture session stop <session-id>
+  4. capture session view <session-id>
+
+Related:  capture log <path> [--name label]   Tail a log into the active session
+See also: capture --help                      Full command list`);
+}
+
 // ============================================================================
 // Session Commands
 // ============================================================================
@@ -146,6 +178,11 @@ async function start(args: string[]): Promise<void> {
 }
 
 export function logCommand(args: string[]): void {
+  if (hasHelpFlag(args)) {
+    console.log('Usage: capture log <path> [--name label] [--session <id>]');
+    return;
+  }
+
   const sourcePath = args[0];
   if (!sourcePath) {
     console.error('Usage: capture log <path> [--name label] [--session <id>]');
@@ -350,36 +387,17 @@ function view(args: string[]): void {
 export async function sessionMain(args: string[]): Promise<void> {
   const [subcommand, ...rest] = args;
 
+  if (!subcommand || hasHelpFlag(args)) {
+    printSessionHelp();
+    return;
+  }
+
   switch (subcommand) {
     case 'start': return start(rest);
     case 'stop': return stop(rest);
     case 'list': return list();
     case 'view': return view(rest);
     default:
-      console.log(`capture session — manage capture sessions
-
-Sub-commands:
-  start [--url <url>]             Start a session (opens tab, records HAR, sets active context)
-  stop  <session-id>              Finalize and bundle artifacts (screenshots, HAR, a11y, logs)
-  list                            List active and stopped sessions
-  view  <id> [--filter section]   View bundle manifest; section = screenshots|har|a11y|logs
-
-Why sessions: once started, every subsequent capture command auto-fills
---target (the tab) and --har (the recording). No manual flag threading.
-
-Typical flow:
-  1. capture session start --url http://localhost:3000
-  2. Interact — no --target / --har needed:
-       capture a11y --interactive
-       capture click "Sign in"
-       capture type "hi@me.com" --into "Email"
-       capture screenshot
-       capture navigate https://app.example.com/dashboard
-       capture har read --filter-url /api
-  3. capture session stop <session-id>
-  4. capture session view <session-id>
-
-Related:  capture log <path> [--name label]   Tail a log into the active session
-See also: capture --help                      Full command list`);
+      printSessionHelp();
   }
 }
