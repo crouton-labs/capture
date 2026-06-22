@@ -3921,6 +3921,69 @@ async function findTabById(port, targetId) {
   }
   return null;
 }
+function normalizeUrlForMatch(value) {
+  try {
+    const url = new URL(value);
+    const path10 = url.pathname.replace(/\/+$/, "") || "/";
+    return {
+      full: `${url.origin}${path10}${url.search}${url.hash}`.toLowerCase(),
+      host: url.hostname.toLowerCase(),
+      path: path10.toLowerCase()
+    };
+  } catch {
+    return null;
+  }
+}
+function scoreTabUrlMatch(tabUrl, requestedUrl) {
+  const tab = normalizeUrlForMatch(tabUrl);
+  const requested = normalizeUrlForMatch(requestedUrl);
+  if (tab && requested) {
+    if (tab.full === requested.full) return 100;
+    if (tab.host === requested.host && tab.path === requested.path) return 95;
+    if (tab.host === requested.host && tab.path.startsWith(requested.path)) return 90;
+    if (tab.host === requested.host && requested.path.startsWith(tab.path)) return 85;
+    if (tab.host === requested.host) return 70;
+    if (tab.full.includes(requested.full)) return 60;
+    if (tab.full.includes(requested.host)) return 50;
+    if (requested.full.includes(tab.full)) return 40;
+    return 0;
+  }
+  const tabLower = tabUrl.toLowerCase();
+  const requestedLower = requestedUrl.toLowerCase();
+  if (tabLower === requestedLower) return 100;
+  if (tabLower.includes(requestedLower)) return 60;
+  if (requestedLower.includes(tabLower)) return 40;
+  return 0;
+}
+async function findTabByIdAcrossEndpoints(targetId, preferredPort) {
+  const resolvedPorts = preferredPort ? [preferredPort] : (await detectCdpPortsAsync()).map((endpoint) => endpoint.port);
+  for (const port of resolvedPorts) {
+    try {
+      const tab = await findTabById(port, targetId);
+      if (tab) return { port, tab };
+    } catch {
+    }
+  }
+  return null;
+}
+async function findTabByUrlAcrossEndpoints(url, preferredPort) {
+  const resolvedPorts = preferredPort ? [preferredPort] : (await detectCdpPortsAsync()).map((endpoint) => endpoint.port);
+  let best = null;
+  for (const port of resolvedPorts) {
+    try {
+      const targets = await listTargets(port);
+      for (const tab of targets.filter((t) => t.type === "page")) {
+        const score = scoreTabUrlMatch(tab.url, url);
+        if (score <= 0) continue;
+        if (!best || score > best.score || score === best.score && port < best.port) {
+          best = { port, tab, score };
+        }
+      }
+    } catch {
+    }
+  }
+  return best ? { port: best.port, tab: best.tab } : null;
+}
 async function openTab(port, url) {
   const { client } = await getBrowserClient(port);
   try {
@@ -3942,6 +4005,7 @@ async function openTab(port, url) {
 var init_targets = __esm({
   "src/cdp/targets.ts"() {
     init_client();
+    init_detect();
   }
 });
 
@@ -4420,12 +4484,16 @@ var init_execute = __esm({
 
 // src/cdp/record.ts
 async function recordTraffic(options) {
-  const port = options.port ?? await detectCdpPort();
+  let port = options.port ?? 0;
   const duration = options.duration ?? 10;
   if (!options.targetId) {
     throw new Error('Use --target <tabId> to target a tab. Run "capture list" to see available tabs.');
   }
-  const tab = await findTabById(port, options.targetId);
+  const resolved = await findTabByIdAcrossEndpoints(options.targetId, options.port);
+  const tab = resolved?.tab ?? null;
+  if (resolved) {
+    port = resolved.port;
+  }
   if (!tab) {
     throw new Error(
       `No tab found for target "${options.targetId}". Run "capture list" to see available tabs.`
@@ -4436,10 +4504,13 @@ async function recordTraffic(options) {
   }
   const client = new CDPClient(tab.webSocketDebuggerUrl);
   await client.waitReady();
+  console.error(
+    `Using target ${tab.id.slice(0, 8)} on port ${port} (${tab.url})`
+  );
   const recorder = new HARRecorder(client);
   await recorder.start();
   console.error(
-    `Recording traffic on "${tab.url}" for ${duration}s... (click around in the browser)`
+    `Recording traffic on target ${tab.id.slice(0, 8)} on port ${port} (${tab.url}) for ${duration}s... (click around in the browser)`
   );
   await new Promise((r) => setTimeout(r, duration * 1e3));
   const har = await recorder.finish();
@@ -4448,28 +4519,38 @@ async function recordTraffic(options) {
   return { harPath, entryCount: har.log.entries.length, har };
 }
 async function navigateAndRecord(options) {
-  const port = options.port ?? await detectCdpPort();
+  let requestedUrl;
+  try {
+    requestedUrl = new URL(options.url);
+  } catch {
+    throw new Error(`Invalid URL: ${options.url}`);
+  }
   const settle = options.settle ?? 2e3;
+  let port = options.port ?? 0;
   let tab = null;
   let isNewTab = false;
   if (options.targetId) {
-    tab = await findTabById(port, options.targetId);
-    if (!tab) {
+    const resolved = await findTabByIdAcrossEndpoints(options.targetId, options.port);
+    if (!resolved) {
       throw new Error(
         `No tab found with target ID "${options.targetId}". Tab may have been closed.`
       );
     }
+    port = resolved.port;
+    tab = resolved.tab;
   } else {
-    let domain;
-    try {
-      domain = new URL(options.url).hostname;
-    } catch {
-      throw new Error(`Invalid URL: ${options.url}`);
-    }
-    tab = await findTab(port, domain);
-    if (!tab) {
-      tab = await openTab(port, options.url);
-      isNewTab = true;
+    const matched = await findTabByUrlAcrossEndpoints(options.url, options.port);
+    if (matched) {
+      port = matched.port;
+      tab = matched.tab;
+    } else {
+      port = options.port ?? await detectCdpPort();
+      const domain = requestedUrl.hostname;
+      tab = await findTab(port, domain);
+      if (!tab) {
+        tab = await openTab(port, options.url);
+        isNewTab = true;
+      }
     }
   }
   if (!tab.webSocketDebuggerUrl) {
@@ -4478,6 +4559,9 @@ async function navigateAndRecord(options) {
   const client = new CDPClient(tab.webSocketDebuggerUrl);
   await client.waitReady();
   await client.send("Page.enable");
+  console.error(
+    `Using target ${tab.id.slice(0, 8)} on port ${port} (${tab.url})`
+  );
   const recorder = new HARRecorder(client);
   await recorder.start();
   if (!isNewTab) {
@@ -4758,6 +4842,14 @@ function parseCliArgs(argv) {
       positional.push(arg);
     }
   }
+  if (!parsed.port && process.env.CDP_PORT) {
+    const envPort = Number.parseInt(process.env.CDP_PORT, 10);
+    if (Number.isNaN(envPort)) {
+      console.error(`Invalid CDP_PORT: ${process.env.CDP_PORT}`);
+      process.exit(1);
+    }
+    parsed.port = envPort;
+  }
   if (!parsed.target && process.env.CDP_TARGET) {
     parsed.target = process.env.CDP_TARGET;
   }
@@ -4808,6 +4900,7 @@ Commands:
 Options:
   --port <port>       Override CDP port
   --target <tabId>    Target tab by exact ID (preferred, parallel-safe)
+  CDP_PORT / CDP_TARGET  Default port + tab when set by orchestrators
   --new               Force new tab (open)
   --record            Enable HAR recording (exec)
   --har <id>          Append traffic to a HAR recording
@@ -5072,6 +5165,14 @@ var init_har_manager = __esm({
 });
 
 // src/cdp/connection.ts
+function getPortFromWebSocketDebuggerUrl(url) {
+  if (!url) return null;
+  try {
+    return Number(new URL(url).port);
+  } catch {
+    return null;
+  }
+}
 async function connectForCommand(parsed) {
   if (!parsed.target) {
     throw new Error('Use --target <tabId> to target a tab. Run "capture list" to see available tabs.');
@@ -5102,6 +5203,10 @@ async function connectForCommand(parsed) {
   if (activeSession && !activeSession.targetId) {
     updateActiveSession({ targetId: tab.id });
   }
+  const port = parsed.port ?? getPortFromWebSocketDebuggerUrl(tab.webSocketDebuggerUrl);
+  console.error(
+    `Using target ${tab.id.slice(0, 8)}${port ? ` on port ${port}` : ""}${tab.url ? ` (${tab.url})` : ""}`
+  );
   const client = new CDPClient(tab.webSocketDebuggerUrl);
   await client.waitReady();
   return { client, tab };
@@ -5148,8 +5253,8 @@ var init_connection = __esm({
   "src/cdp/connection.ts"() {
     fs6 = __toESM(require("fs"));
     init_client();
-    init_targets();
     init_detect();
+    init_targets();
     init_console_recorder();
     init_har_recorder();
     init_har_manager();
@@ -6445,6 +6550,10 @@ Capture session started: ${id}`);
 When done: capture session stop ${id}`);
 }
 function logCommand(args) {
+  if (args.some((arg) => arg === "-h" || arg === "--help")) {
+    console.log("Usage: capture log <path> [--name label] [--session <id>]");
+    return;
+  }
   const sourcePath = args[0];
   if (!sourcePath) {
     console.error("Usage: capture log <path> [--name label] [--session <id>]");
@@ -6600,6 +6709,34 @@ function view(args) {
 }
 async function sessionMain(args) {
   const [subcommand, ...rest] = args;
+  if (!subcommand || args.some((arg) => arg === "-h" || arg === "--help")) {
+    console.log(`capture session \u2014 manage capture sessions
+
+Sub-commands:
+  start [--url <url>]             Start a session (opens tab, records HAR, sets active context)
+  stop  <session-id>              Finalize and bundle artifacts (screenshots, HAR, a11y, logs)
+  list                            List active and stopped sessions
+  view  <id> [--filter section]   View bundle manifest; section = screenshots|har|a11y|logs
+
+Why sessions: once started, every subsequent capture command auto-fills
+--target (the tab) and --har (the recording). No manual flag threading.
+
+Typical flow:
+  1. capture session start --url http://localhost:3000
+  2. Interact \u2014 no --target / --har needed:
+       capture a11y --interactive
+       capture click "Sign in"
+       capture type "hi@me.com" --into "Email"
+       capture screenshot
+       capture navigate https://app.example.com/dashboard
+       capture har read --filter-url /api
+  3. capture session stop <session-id>
+  4. capture session view <session-id>
+
+Related:  capture log <path> [--name label]   Tail a log into the active session
+See also: capture --help                      Full command list`);
+    return;
+  }
   switch (subcommand) {
     case "start":
       return start(rest);
@@ -6739,9 +6876,10 @@ LIBRARY (vault libs \u2014 dev checkout only)
 
 TARGETING (only when NOT in a session, or picking a parallel tab)
 
-  --target <tabId>   Exact id; a prefix of 8 chars is enough (preferred, parallel-safe)
-  --url <pattern>    Fuzzy URL match against open tabs
-                     NOTE: on \`session start\`, --url is a URL to OPEN, not a pattern.
+  CDP_PORT / CDP_TARGET  Orchestrators can pin the active browser + tab
+  --target <tabId>       Exact id; a prefix of 8 chars is enough (preferred, parallel-safe)
+  --url <pattern>        Fuzzy URL match against open tabs
+                         NOTE: on \`session start\`, --url is a URL to OPEN, not a pattern.
 
 HELP
 
