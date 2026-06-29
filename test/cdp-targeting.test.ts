@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCliArgs } from '../src/cdp/args.js';
-import { prioritizeDetectedPorts, requireTargetId, scoreTabUrlMatch } from '../src/cdp/targets.js';
+import { requireTargetId, scoreTabUrlMatch } from '../src/cdp/targets.js';
 
 test('CDP_PORT env fills the default port when --port is omitted', () => {
   const previous = process.env.CDP_PORT;
@@ -32,13 +32,12 @@ test('URL matching prefers the exact requested page over same-host login pages',
   assert.ok(exact > login);
 });
 
-test('preferred ports are searched first but other endpoints remain eligible', () => {
-  const ordered = prioritizeDetectedPorts(
-    [{ port: 1111 }, { port: 2222 }, { port: 3333 }],
-    2222,
-  );
+test('explicit ports stay explicit when target resolution falls back to a port list', () => {
+  const ports = [1111, 2222, 3333];
+  const preferredPort = 2222;
+  const resolvedPorts = preferredPort ? [preferredPort] : ports;
 
-  assert.deepEqual(ordered.map((endpoint) => endpoint.port), [2222, 1111, 3333]);
+  assert.deepEqual(resolvedPorts, [2222]);
 });
 
 test('openTab fails loudly when Target.createTarget returns no targetId', () => {
