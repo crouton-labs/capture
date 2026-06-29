@@ -1,7 +1,7 @@
 export const CDP_USAGE = `CDP — browser automation via exec, a11y interactions, and screenshots.
 
 Commands:
-  exec <code>         Execute JavaScript in a browser tab
+  exec <code>         Execute JavaScript in a browser tab (expressions, return, await)
   exec --file <path>  Execute JS from file
   detect              Detect CDP port (prioritizes default browser)
   list                List all browser tabs
@@ -25,6 +25,7 @@ Commands:
 Options:
   --port <port>       Override CDP port
   --target <tabId>    Target tab by exact ID (preferred, parallel-safe)
+  CDP_PORT / CDP_TARGET  Default port + tab when set by orchestrators
   --new               Force new tab (open)
   --record            Enable HAR recording (exec)
   --har <id>          Append traffic to a HAR recording
@@ -53,8 +54,8 @@ Examples:
   capture list
   capture open "https://app.example.com" --new
   capture exec "document.title" --target <id>
-  capture exec "document.querySelector('.btn').click()" --target <id>
-  capture exec "fetch('/api/data').then(r=>r.json())" --target <id> --record
+  capture exec "return document.title" --target <id>
+  capture exec "const r = await fetch('/api/data'); return await r.json()" --target <id> --record
   capture exec --file /tmp/scrape.js --target <id>
   capture screenshot --target <id> --out /tmp/shot.png
   capture a11y --target <id> --interactive

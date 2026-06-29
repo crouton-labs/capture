@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import { withConnection } from '../connection.js';
+import { buildExecExpression } from '../exec-expression.js';
 import { HARRecorder } from '../har-recorder.js';
 import { writeHarAndPrintSummary } from '../har-output.js';
 import { type ParsedArgs } from '../types.js';
@@ -9,10 +10,11 @@ export async function cmdExec(parsed: ParsedArgs, _args: string[]): Promise<void
   if (parsed.help) {
     console.log(
       'Usage: capture exec <code> [--target <id>] [--record] [--file <path>] [--har <id>]\n\n' +
-        'Execute JavaScript in a browser tab. Supports await (wrapped in async IIFE).\n\n' +
+        'Execute JavaScript in a browser tab. Plain expressions run directly; statement bodies can use top-level return/await and are wrapped in an async IIFE.\n\n' +
         'Examples:\n' +
         '  capture exec "document.title" --target <id>\n' +
-        '  capture exec "await fetch(\'/api/data\').then(r=>r.json())" --target <id>\n' +
+        '  capture exec "return document.title" --target <id>\n' +
+        '  capture exec "return await fetch(\'/api/data\').then(r=>r.json())" --target <id>\n' +
         '  capture exec "document.querySelector(\'.btn\').click()" --target <id>\n' +
         '  capture exec --file /tmp/scrape.js --target <id> --record\n\n' +
         'Import vault libs (dev checkout only): static imports first, then your code.\n' +
@@ -29,8 +31,13 @@ export async function cmdExec(parsed: ParsedArgs, _args: string[]): Promise<void
       console.error(
         'ERROR: Missing code to execute.\n\n' +
           'Usage: capture exec <code> [--target <id>] [--record] [--file <path>]\n\n' +
+          'Supported shapes:\n' +
+          '  document.title\n' +
+          '  return document.title\n' +
+          '  const r = await fetch(\'/api/data\'); return await r.json()\n\n' +
           'Examples:\n' +
           '  capture exec "document.title" --target <id>\n' +
+          '  capture exec "return document.title" --target <id>\n' +
           '  capture exec "document.querySelector(\'.btn\').click()" --target <id>\n' +
           '  capture exec --file /tmp/scrape.js --target <id> --record',
       );
@@ -64,14 +71,10 @@ export async function cmdExec(parsed: ParsedArgs, _args: string[]): Promise<void
       }
 
       // A prebuilt bundle is already a complete IIFE returning the user's
-      // promise. Otherwise fall back to the existing smart wrap: async IIFE
-      // only when code contains `await`; bare code lets Runtime.evaluate return
-      // the last expression's completion value (multi-statement code works).
-      const expression = prebuilt
-        ? prebuilt
-        : /\bawait\b/.test(code)
-          ? `(async () => { ${code} })()`
-          : code;
+      // promise. Otherwise fall back to the exec expression wrapper: bare
+      // expressions run directly, while snippets containing top-level `return`
+      // or `await` are wrapped in an async IIFE.
+      const expression = buildExecExpression(code, prebuilt);
 
       const evalResult = (await client.send('Runtime.evaluate', {
         expression,

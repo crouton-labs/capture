@@ -125,17 +125,25 @@ export function scoreTabUrlMatch(tabUrl: string, requestedUrl: string): number {
   return 0;
 }
 
+export function prioritizeDetectedPorts<T extends { port: number }>(
+  endpoints: T[],
+  preferredPort?: number,
+): T[] {
+  if (!preferredPort) return [...endpoints];
+  const preferred = endpoints.filter((endpoint) => endpoint.port === preferredPort);
+  const others = endpoints.filter((endpoint) => endpoint.port !== preferredPort);
+  return [...preferred, ...others];
+}
+
 export async function findTabByIdAcrossEndpoints(
   targetId: string,
   preferredPort?: number,
 ): Promise<{ port: number; tab: CDPTarget } | null> {
-  const resolvedPorts = preferredPort
-    ? [preferredPort]
-    : (await detectCdpPortsAsync()).map((endpoint) => endpoint.port);
-  for (const port of resolvedPorts) {
+  const endpoints = prioritizeDetectedPorts(await detectCdpPortsAsync(), preferredPort);
+  for (const endpoint of endpoints) {
     try {
-      const tab = await findTabById(port, targetId);
-      if (tab) return { port, tab };
+      const tab = await findTabById(endpoint.port, targetId);
+      if (tab) return { port: endpoint.port, tab };
     } catch {
       // Skip endpoints that fail or are ambiguous on a different port.
     }
@@ -147,19 +155,17 @@ export async function findTabByUrlAcrossEndpoints(
   url: string,
   preferredPort?: number,
 ): Promise<{ port: number; tab: CDPTarget } | null> {
-  const resolvedPorts = preferredPort
-    ? [preferredPort]
-    : (await detectCdpPortsAsync()).map((endpoint) => endpoint.port);
+  const endpoints = prioritizeDetectedPorts(await detectCdpPortsAsync(), preferredPort);
   let best: { port: number; tab: CDPTarget; score: number } | null = null;
 
-  for (const port of resolvedPorts) {
+  for (const endpoint of endpoints) {
     try {
-      const targets = await listTargets(port);
+      const targets = await listTargets(endpoint.port);
       for (const tab of targets.filter((t) => t.type === 'page')) {
         const score = scoreTabUrlMatch(tab.url, url);
         if (score <= 0) continue;
-        if (!best || score > best.score || (score === best.score && port < best.port)) {
-          best = { port, tab, score };
+        if (!best || score > best.score || (score === best.score && endpoint.port < best.port)) {
+          best = { port: endpoint.port, tab, score };
         }
       }
     } catch {

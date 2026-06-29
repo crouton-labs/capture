@@ -3955,28 +3955,34 @@ function scoreTabUrlMatch(tabUrl, requestedUrl) {
   if (requestedLower.includes(tabLower)) return 40;
   return 0;
 }
+function prioritizeDetectedPorts(endpoints, preferredPort) {
+  if (!preferredPort) return [...endpoints];
+  const preferred = endpoints.filter((endpoint) => endpoint.port === preferredPort);
+  const others = endpoints.filter((endpoint) => endpoint.port !== preferredPort);
+  return [...preferred, ...others];
+}
 async function findTabByIdAcrossEndpoints(targetId, preferredPort) {
-  const resolvedPorts = preferredPort ? [preferredPort] : (await detectCdpPortsAsync()).map((endpoint) => endpoint.port);
-  for (const port of resolvedPorts) {
+  const endpoints = prioritizeDetectedPorts(await detectCdpPortsAsync(), preferredPort);
+  for (const endpoint of endpoints) {
     try {
-      const tab = await findTabById(port, targetId);
-      if (tab) return { port, tab };
+      const tab = await findTabById(endpoint.port, targetId);
+      if (tab) return { port: endpoint.port, tab };
     } catch {
     }
   }
   return null;
 }
 async function findTabByUrlAcrossEndpoints(url, preferredPort) {
-  const resolvedPorts = preferredPort ? [preferredPort] : (await detectCdpPortsAsync()).map((endpoint) => endpoint.port);
+  const endpoints = prioritizeDetectedPorts(await detectCdpPortsAsync(), preferredPort);
   let best = null;
-  for (const port of resolvedPorts) {
+  for (const endpoint of endpoints) {
     try {
-      const targets = await listTargets(port);
+      const targets = await listTargets(endpoint.port);
       for (const tab of targets.filter((t) => t.type === "page")) {
         const score = scoreTabUrlMatch(tab.url, url);
         if (score <= 0) continue;
-        if (!best || score > best.score || score === best.score && port < best.port) {
-          best = { port, tab, score };
+        if (!best || score > best.score || score === best.score && endpoint.port < best.port) {
+          best = { port: endpoint.port, tab, score };
         }
       }
     } catch {
@@ -4219,6 +4225,19 @@ var init_a11y = __esm({
   }
 });
 
+// src/cdp/exec-expression.ts
+function buildExecExpression(code, prebuilt) {
+  if (prebuilt) return prebuilt;
+  if (/\bawait\b/.test(code) || /\breturn\b/.test(code)) {
+    return `(async () => { ${code} })()`;
+  }
+  return code;
+}
+var init_exec_expression = __esm({
+  "src/cdp/exec-expression.ts"() {
+  }
+});
+
 // src/cdp/console-recorder.ts
 function printConsoleSummary(entries) {
   const errors = entries.filter((e) => e.level === "error");
@@ -4413,12 +4432,11 @@ var init_har_output = __esm({
 
 // src/cdp/execute.ts
 async function executeInBrowser(code, options = {}) {
-  const port = options.port ?? await detectCdpPort();
   if (!options.targetId) {
     throw new Error('Use --target <tabId> to target a tab. Run "capture list" to see available tabs.');
   }
-  let tab = null;
-  tab = await findTabById(port, options.targetId);
+  const resolved = await findTabByIdAcrossEndpoints(options.targetId, options.port);
+  const tab = resolved?.tab ?? null;
   if (!tab) {
     throw new Error(
       `No tab found for target "${options.targetId}". Run "capture list" to see available tabs.`
@@ -4441,7 +4459,7 @@ async function executeInBrowser(code, options = {}) {
     const result = await client.send(
       "Runtime.evaluate",
       {
-        expression: code,
+        expression: buildExecExpression(code),
         awaitPromise: true,
         returnByValue: true
       },
@@ -4482,8 +4500,8 @@ async function executeInBrowser(code, options = {}) {
 var init_execute = __esm({
   "src/cdp/execute.ts"() {
     init_client();
-    init_detect();
     init_targets();
+    init_exec_expression();
     init_console_recorder();
     init_har_recorder();
     init_console_recorder();
@@ -4885,7 +4903,7 @@ var init_usage = __esm({
     CDP_USAGE = `CDP \u2014 browser automation via exec, a11y interactions, and screenshots.
 
 Commands:
-  exec <code>         Execute JavaScript in a browser tab
+  exec <code>         Execute JavaScript in a browser tab (expressions, return, await)
   exec --file <path>  Execute JS from file
   detect              Detect CDP port (prioritizes default browser)
   list                List all browser tabs
@@ -4938,8 +4956,8 @@ Examples:
   capture list
   capture open "https://app.example.com" --new
   capture exec "document.title" --target <id>
-  capture exec "document.querySelector('.btn').click()" --target <id>
-  capture exec "fetch('/api/data').then(r=>r.json())" --target <id> --record
+  capture exec "return document.title" --target <id>
+  capture exec "const r = await fetch('/api/data'); return await r.json()" --target <id> --record
   capture exec --file /tmp/scrape.js --target <id>
   capture screenshot --target <id> --out /tmp/shot.png
   capture a11y --target <id> --interactive
@@ -5186,19 +5204,8 @@ async function connectForCommand(parsed) {
   if (!parsed.target) {
     throw new Error('Use --target <tabId> to target a tab. Run "capture list" to see available tabs.');
   }
-  let tab = null;
-  if (parsed.port) {
-    tab = await findTabById(parsed.port, parsed.target);
-  } else {
-    const endpoints = await detectCdpPortsAsync();
-    for (const ep of endpoints) {
-      try {
-        tab = await findTabById(ep.port, parsed.target);
-        if (tab) break;
-      } catch {
-      }
-    }
-  }
+  const resolved = await findTabByIdAcrossEndpoints(parsed.target, parsed.port);
+  const tab = resolved?.tab ?? null;
   if (!tab) {
     const query = parsed.target;
     throw new Error(
@@ -5212,7 +5219,7 @@ async function connectForCommand(parsed) {
   if (activeSession && !activeSession.targetId) {
     updateActiveSession({ targetId: tab.id });
   }
-  const port = parsed.port ?? getPortFromWebSocketDebuggerUrl(tab.webSocketDebuggerUrl);
+  const port = resolved?.port ?? getPortFromWebSocketDebuggerUrl(tab.webSocketDebuggerUrl);
   console.error(
     `Using target ${tab.id.slice(0, 8)}${port ? ` on port ${port}` : ""}${tab.url ? ` (${tab.url})` : ""}`
   );
@@ -5262,7 +5269,6 @@ var init_connection = __esm({
   "src/cdp/connection.ts"() {
     fs6 = __toESM(require("fs"));
     init_client();
-    init_detect();
     init_targets();
     init_console_recorder();
     init_har_recorder();
@@ -5444,11 +5450,12 @@ async function cmdExec(parsed, _args) {
     console.log(
       `Usage: capture exec <code> [--target <id>] [--record] [--file <path>] [--har <id>]
 
-Execute JavaScript in a browser tab. Supports await (wrapped in async IIFE).
+Execute JavaScript in a browser tab. Plain expressions run directly; statement bodies can use top-level return/await and are wrapped in an async IIFE.
 
 Examples:
   capture exec "document.title" --target <id>
-  capture exec "await fetch('/api/data').then(r=>r.json())" --target <id>
+  capture exec "return document.title" --target <id>
+  capture exec "return await fetch('/api/data').then(r=>r.json())" --target <id>
   capture exec "document.querySelector('.btn').click()" --target <id>
   capture exec --file /tmp/scrape.js --target <id> --record
 
@@ -5468,8 +5475,14 @@ Import vault libs (dev checkout only): static imports first, then your code.
 
 Usage: capture exec <code> [--target <id>] [--record] [--file <path>]
 
+Supported shapes:
+  document.title
+  return document.title
+  const r = await fetch('/api/data'); return await r.json()
+
 Examples:
   capture exec "document.title" --target <id>
+  capture exec "return document.title" --target <id>
   capture exec "document.querySelector('.btn').click()" --target <id>
   capture exec --file /tmp/scrape.js --target <id> --record`
       );
@@ -5494,7 +5507,7 @@ Examples:
         standaloneRecorder = new HARRecorder(client);
         await standaloneRecorder.start();
       }
-      const expression = prebuilt ? prebuilt : /\bawait\b/.test(code) ? `(async () => { ${code} })()` : code;
+      const expression = buildExecExpression(code, prebuilt);
       const evalResult = await client.send("Runtime.evaluate", {
         expression,
         awaitPromise: true,
@@ -5521,6 +5534,7 @@ var init_exec = __esm({
   "src/cdp/commands/exec.ts"() {
     fs9 = __toESM(require("fs"));
     init_connection();
+    init_exec_expression();
     init_har_recorder();
     init_har_output();
     init_bundle();
@@ -6868,7 +6882,7 @@ TYPICAL WORKFLOW
        capture type "hi@me.com" --into "Email"
        capture screenshot                   Save current state
        capture navigate https://...         Navigate within the session
-       capture exec "document.title"        Run JS (supports await)
+       capture exec "document.title"        Run JS (expressions, return, await)
        capture har read --filter-url /api   Inspect recorded traffic
 
   3. Bundle and inspect:
@@ -6889,7 +6903,7 @@ INTERACTION COMMANDS (work inside or outside a session)
   click "name" [--role <role>]             Click by accessible name
   type "text" [--into "Field"]             Type into focused element or named field
   screenshot [--out <path>] [--full-page]  Screenshot (viewport: desktop|desktop-wide|tablet|mobile)
-  exec <code>  |  exec --file <path>       Evaluate JS; await is supported
+  exec <code>  |  exec --file <path>       Evaluate JS; expressions, return, and await are supported
   navigate <url> [--settle <ms>]           Navigate the current tab + record HAR
 
 DIAGNOSTICS & ONE-OFFS (no session needed)

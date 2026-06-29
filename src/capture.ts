@@ -92,7 +92,7 @@ TYPICAL WORKFLOW
        capture type "hi@me.com" --into "Email"
        capture screenshot                   Save current state
        capture navigate https://...         Navigate within the session
-       capture exec "document.title"        Run JS (supports await)
+       capture exec "document.title"        Run JS (expressions, return, await)
        capture har read --filter-url /api   Inspect recorded traffic
 
   3. Bundle and inspect:
@@ -113,7 +113,7 @@ INTERACTION COMMANDS (work inside or outside a session)
   click "name" [--role <role>]             Click by accessible name
   type "text" [--into "Field"]             Type into focused element or named field
   screenshot [--out <path>] [--full-page]  Screenshot (viewport: desktop|desktop-wide|tablet|mobile)
-  exec <code>  |  exec --file <path>       Evaluate JS; await is supported
+  exec <code>  |  exec --file <path>       Evaluate JS; expressions, return, and await are supported
   navigate <url> [--settle <ms>]           Navigate the current tab + record HAR
 
 DIAGNOSTICS & ONE-OFFS (no session needed)
@@ -136,9 +136,10 @@ LIBRARY (vault libs — dev checkout only)
 
 TARGETING (only when NOT in a session, or picking a parallel tab)
 
-  --target <tabId>   Exact id; a prefix of 8 chars is enough (preferred, parallel-safe)
-  --url <pattern>    Fuzzy URL match against open tabs
-                     NOTE: on \`session start\`, --url is a URL to OPEN, not a pattern.
+  CDP_PORT / CDP_TARGET  Orchestrators can pin the active browser + tab
+  --target <tabId>       Exact id; a prefix of 8 chars is enough (preferred, parallel-safe)
+  --url <pattern>        Fuzzy URL match against open tabs
+                         NOTE: on \`session start\`, --url is a URL to OPEN, not a pattern.
 
 HELP
 

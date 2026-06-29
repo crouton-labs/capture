@@ -1,7 +1,6 @@
 import { CDPClient } from './client.js';
-import { type CDPTarget } from './types.js';
-import { detectCdpPort } from './detect.js';
-import { findTabById } from './targets.js';
+import { findTabByIdAcrossEndpoints } from './targets.js';
+import { buildExecExpression } from './exec-expression.js';
 import { ConsoleRecorder, type ConsoleEntry } from './console-recorder.js';
 import { HARRecorder } from './har-recorder.js';
 import { printConsoleSummary } from './console-recorder.js';
@@ -28,15 +27,12 @@ export async function executeInBrowser(
   code: string,
   options: ExecuteOptions = {},
 ): Promise<ExecuteResult> {
-  const port = options.port ?? (await detectCdpPort());
-
   if (!options.targetId) {
     throw new Error('Use --target <tabId> to target a tab. Run "capture list" to see available tabs.');
   }
 
-  // Find tab by exact/prefix ID
-  let tab: CDPTarget | null = null;
-  tab = await findTabById(port, options.targetId);
+  const resolved = await findTabByIdAcrossEndpoints(options.targetId, options.port);
+  const tab = resolved?.tab ?? null;
   if (!tab) {
     throw new Error(
       `No tab found for target "${options.targetId}". Run "capture list" to see available tabs.`,
@@ -68,7 +64,7 @@ export async function executeInBrowser(
     const result = (await client.send(
       'Runtime.evaluate',
       {
-        expression: code,
+        expression: buildExecExpression(code),
         awaitPromise: true,
         returnByValue: true,
       },
