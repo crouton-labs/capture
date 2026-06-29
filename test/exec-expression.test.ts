@@ -24,3 +24,13 @@ test('strings and nested functions containing await/return stay expression-safe'
   const code = '(() => "return await")()';
   assert.equal(buildExecExpression(code), code);
 });
+
+test('declarations followed by a final expression preserve the final value', async () => {
+  const code = 'const f = () => { return 42; }; f()';
+  assert.equal(await eval(buildExecExpression(code)), 42);
+});
+
+test('string tokens inside statements do not block the final expression value', async () => {
+  const code = 'const note = "return await"; note';
+  assert.equal(await eval(buildExecExpression(code)), 'return await');
+});
