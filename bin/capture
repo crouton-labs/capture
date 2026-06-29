@@ -3984,6 +3984,14 @@ async function findTabByUrlAcrossEndpoints(url, preferredPort) {
   }
   return best ? { port: best.port, tab: best.tab } : null;
 }
+function requireTargetId(targetId, url) {
+  if (!targetId) {
+    throw new Error(
+      `Target.createTarget returned no targetId for ${url}. Reuse an existing tab with --target.`
+    );
+  }
+  return targetId;
+}
 async function openTab(port, url) {
   const { client } = await getBrowserClient(port);
   try {
@@ -3991,12 +3999,13 @@ async function openTab(port, url) {
       url,
       background: true
     });
+    const targetId = requireTargetId(result.targetId, url);
     return {
-      id: result.targetId,
+      id: targetId,
       title: "",
       url,
       type: "page",
-      webSocketDebuggerUrl: `ws://localhost:${port}/devtools/page/${result.targetId}`
+      webSocketDebuggerUrl: `ws://localhost:${port}/devtools/page/${targetId}`
     };
   } finally {
     client.close();
@@ -6485,6 +6494,47 @@ function readSession(id) {
 function generateId() {
   return `cap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
+function hasHelpFlag(args) {
+  return args.some((arg) => arg === "-h" || arg === "--help");
+}
+async function waitForPageLoad(client, timeoutMs) {
+  await client.waitReady();
+  await client.send("Page.enable");
+  return await new Promise((resolve4) => {
+    const timer = setTimeout(() => resolve4(true), timeoutMs);
+    client.on("Page.loadEventFired", () => {
+      clearTimeout(timer);
+      resolve4(false);
+    });
+  });
+}
+function printSessionHelp() {
+  console.log(`capture session \u2014 manage capture sessions
+
+Sub-commands:
+  start [--url <url>]             Start a session (opens tab, records HAR, sets active context)
+  stop  <session-id>              Finalize and bundle artifacts (screenshots, HAR, a11y, logs)
+  list                            List active and stopped sessions
+  view  <id> [--filter section]   View bundle manifest; section = screenshots|har|a11y|logs
+
+Why sessions: once started, every subsequent capture command auto-fills
+--target (the tab) and --har (the recording). No manual flag threading.
+
+Typical flow:
+  1. capture session start --url http://localhost:3000
+  2. Interact \u2014 no --target / --har needed:
+       capture a11y --interactive
+       capture click "Sign in"
+       capture type "hi@me.com" --into "Email"
+       capture screenshot
+       capture navigate https://app.example.com/dashboard
+       capture har read --filter-url /api
+  3. capture session stop <session-id>
+  4. capture session view <session-id>
+
+Related:  capture log <path> [--name label]   Tail a log into the active session
+See also: capture --help                      Full command list`);
+}
 async function start(args) {
   let url = null;
   for (let i = 0; i < args.length; i++) {
@@ -6504,14 +6554,44 @@ async function start(args) {
     console.error(`Warning: could not start HAR recording: ${err instanceof Error ? err.message : err}`);
   }
   let targetId = null;
+  let pageLoadTimedOut = false;
   if (url) {
     try {
-      const { detectCdpPort: detectCdpPort2, navigateAndWait: navigateAndWait2 } = await Promise.resolve().then(() => (init_cdp(), cdp_exports));
+      const { detectCdpPort: detectCdpPort2, openTab: openTab2, CDPClient: CDPClient2 } = await Promise.resolve().then(() => (init_cdp(), cdp_exports));
       const port = await detectCdpPort2();
-      const tab = await navigateAndWait2(port, url);
+      const tab = await openTab2(port, url);
       targetId = tab.id;
+      if (!targetId) {
+        throw new Error(
+          `capture session start could not attach to ${url}. Reuse an existing tab with --target.`
+        );
+      }
+      if (!tab.webSocketDebuggerUrl) {
+        throw new Error(
+          `capture session start could not attach to ${url}: missing WebSocket debugger URL. Reuse an existing tab with --target.`
+        );
+      }
+      const client = new CDPClient2(tab.webSocketDebuggerUrl);
+      try {
+        try {
+          await client.send("Runtime.enable", {}, 5e3);
+        } catch (err) {
+          throw new Error(
+            `capture session start could not attach to ${url}: ${err instanceof Error ? err.message : err}. Reuse an existing tab with --target.`
+          );
+        }
+        pageLoadTimedOut = await waitForPageLoad(client, 1e4);
+      } finally {
+        client.close();
+      }
     } catch (err) {
-      console.error(`Warning: could not open tab: ${err instanceof Error ? err.message : err}`);
+      if (harId) {
+        try {
+          deleteHarRecording(harId);
+        } catch {
+        }
+      }
+      throw err;
     }
   }
   const session = {
@@ -6537,6 +6617,7 @@ async function start(args) {
     bundleDir: dir,
     harId,
     targetId,
+    pageLoadTimedOut,
     shotsDir: path8.join(dir, "shots"),
     a11yDir: path8.join(dir, "a11y")
   };
@@ -6545,12 +6626,15 @@ async function start(args) {
 Capture session started: ${id}`);
   if (targetId) {
     console.error(`Tab opened \u2014 session context active. No need to pass --target or --har.`);
+    if (pageLoadTimedOut) {
+      console.error(`Page load timed out, but the session is attached to target ${targetId.slice(0, 8)}. Use \`capture exec --target ${targetId.slice(0, 8)}\` or \`capture list\` if you need to recover it.`);
+    }
   }
   console.error(`
 When done: capture session stop ${id}`);
 }
 function logCommand(args) {
-  if (args.some((arg) => arg === "-h" || arg === "--help")) {
+  if (hasHelpFlag(args)) {
     console.log("Usage: capture log <path> [--name label] [--session <id>]");
     return;
   }
@@ -6709,32 +6793,8 @@ function view(args) {
 }
 async function sessionMain(args) {
   const [subcommand, ...rest] = args;
-  if (!subcommand || args.some((arg) => arg === "-h" || arg === "--help")) {
-    console.log(`capture session \u2014 manage capture sessions
-
-Sub-commands:
-  start [--url <url>]             Start a session (opens tab, records HAR, sets active context)
-  stop  <session-id>              Finalize and bundle artifacts (screenshots, HAR, a11y, logs)
-  list                            List active and stopped sessions
-  view  <id> [--filter section]   View bundle manifest; section = screenshots|har|a11y|logs
-
-Why sessions: once started, every subsequent capture command auto-fills
---target (the tab) and --har (the recording). No manual flag threading.
-
-Typical flow:
-  1. capture session start --url http://localhost:3000
-  2. Interact \u2014 no --target / --har needed:
-       capture a11y --interactive
-       capture click "Sign in"
-       capture type "hi@me.com" --into "Email"
-       capture screenshot
-       capture navigate https://app.example.com/dashboard
-       capture har read --filter-url /api
-  3. capture session stop <session-id>
-  4. capture session view <session-id>
-
-Related:  capture log <path> [--name label]   Tail a log into the active session
-See also: capture --help                      Full command list`);
+  if (!subcommand || hasHelpFlag(args)) {
+    printSessionHelp();
     return;
   }
   switch (subcommand) {
@@ -6747,31 +6807,7 @@ See also: capture --help                      Full command list`);
     case "view":
       return view(rest);
     default:
-      console.log(`capture session \u2014 manage capture sessions
-
-Sub-commands:
-  start [--url <url>]             Start a session (opens tab, records HAR, sets active context)
-  stop  <session-id>              Finalize and bundle artifacts (screenshots, HAR, a11y, logs)
-  list                            List active and stopped sessions
-  view  <id> [--filter section]   View bundle manifest; section = screenshots|har|a11y|logs
-
-Why sessions: once started, every subsequent capture command auto-fills
---target (the tab) and --har (the recording). No manual flag threading.
-
-Typical flow:
-  1. capture session start --url http://localhost:3000
-  2. Interact \u2014 no --target / --har needed:
-       capture a11y --interactive
-       capture click "Sign in"
-       capture type "hi@me.com" --into "Email"
-       capture screenshot
-       capture navigate https://app.example.com/dashboard
-       capture har read --filter-url /api
-  3. capture session stop <session-id>
-  4. capture session view <session-id>
-
-Related:  capture log <path> [--name label]   Tail a log into the active session
-See also: capture --help                      Full command list`);
+      printSessionHelp();
   }
 }
 

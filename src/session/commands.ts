@@ -69,6 +69,22 @@ function hasHelpFlag(args: string[]): boolean {
   return args.some((arg) => arg === '-h' || arg === '--help');
 }
 
+export async function waitForPageLoad(
+  client: { waitReady(): Promise<void>; send(method: string, params?: Record<string, unknown>): Promise<unknown>; on(event: string, handler: (params: unknown) => void): void; },
+  timeoutMs: number,
+): Promise<boolean> {
+  await client.waitReady();
+  await client.send('Page.enable');
+
+  return await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(true), timeoutMs);
+    client.on('Page.loadEventFired', () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
+  });
+}
+
 function printSessionHelp(): void {
   console.log(`capture session — manage capture sessions
 
@@ -124,16 +140,49 @@ async function start(args: string[]): Promise<void> {
     console.error(`Warning: could not start HAR recording: ${err instanceof Error ? err.message : err}`);
   }
 
-  // Open tab if URL provided
+  // Open tab if URL provided. Fail fast if the new target cannot attach.
   let targetId: string | null = null;
+  let pageLoadTimedOut = false;
   if (url) {
     try {
-      const { detectCdpPort, navigateAndWait } = await import('../cdp.js');
+      const { detectCdpPort, openTab, CDPClient } = await import('../cdp.js');
       const port = await detectCdpPort();
-      const tab = await navigateAndWait(port, url);
+      const tab = await openTab(port, url);
       targetId = tab.id;
+
+      if (!targetId) {
+        throw new Error(
+          `capture session start could not attach to ${url}. Reuse an existing tab with --target.`,
+        );
+      }
+      if (!tab.webSocketDebuggerUrl) {
+        throw new Error(
+          `capture session start could not attach to ${url}: missing WebSocket debugger URL. Reuse an existing tab with --target.`,
+        );
+      }
+
+      const client = new CDPClient(tab.webSocketDebuggerUrl);
+      try {
+        try {
+          await client.send('Runtime.enable', {}, 5_000);
+        } catch (err) {
+          throw new Error(
+            `capture session start could not attach to ${url}: ${err instanceof Error ? err.message : err}. Reuse an existing tab with --target.`,
+          );
+        }
+        pageLoadTimedOut = await waitForPageLoad(client, 10_000);
+      } finally {
+        client.close();
+      }
     } catch (err) {
-      console.error(`Warning: could not open tab: ${err instanceof Error ? err.message : err}`);
+      if (harId) {
+        try {
+          deleteHarRecording(harId);
+        } catch {
+          /* best effort */
+        }
+      }
+      throw err;
     }
   }
 
@@ -164,6 +213,7 @@ async function start(args: string[]): Promise<void> {
     bundleDir: dir,
     harId,
     targetId,
+    pageLoadTimedOut,
     shotsDir: path.join(dir, 'shots'),
     a11yDir: path.join(dir, 'a11y'),
   };
@@ -173,6 +223,9 @@ async function start(args: string[]): Promise<void> {
   console.error(`\nCapture session started: ${id}`);
   if (targetId) {
     console.error(`Tab opened — session context active. No need to pass --target or --har.`);
+    if (pageLoadTimedOut) {
+      console.error(`Page load timed out, but the session is attached to target ${targetId.slice(0, 8)}. Use \`capture exec --target ${targetId.slice(0, 8)}\` or \`capture list\` if you need to recover it.`);
+    }
   }
   console.error(`\nWhen done: capture session stop ${id}`);
 }

@@ -1,4 +1,5 @@
 import { CDPClient } from './client.js';
+import { detectCdpPortsAsync } from './detect.js';
 import { type CDPTarget } from './types.js';
 
 async function getBrowserClient(
@@ -86,6 +87,101 @@ export async function findTabById(
   return null;
 }
 
+function normalizeUrlForMatch(value: string): { full: string; host: string; path: string } | null {
+  try {
+    const url = new URL(value);
+    const path = url.pathname.replace(/\/+$/, '') || '/';
+    return {
+      full: `${url.origin}${path}${url.search}${url.hash}`.toLowerCase(),
+      host: url.hostname.toLowerCase(),
+      path: path.toLowerCase(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function scoreTabUrlMatch(tabUrl: string, requestedUrl: string): number {
+  const tab = normalizeUrlForMatch(tabUrl);
+  const requested = normalizeUrlForMatch(requestedUrl);
+
+  if (tab && requested) {
+    if (tab.full === requested.full) return 100;
+    if (tab.host === requested.host && tab.path === requested.path) return 95;
+    if (tab.host === requested.host && tab.path.startsWith(requested.path)) return 90;
+    if (tab.host === requested.host && requested.path.startsWith(tab.path)) return 85;
+    if (tab.host === requested.host) return 70;
+    if (tab.full.includes(requested.full)) return 60;
+    if (tab.full.includes(requested.host)) return 50;
+    if (requested.full.includes(tab.full)) return 40;
+    return 0;
+  }
+
+  const tabLower = tabUrl.toLowerCase();
+  const requestedLower = requestedUrl.toLowerCase();
+  if (tabLower === requestedLower) return 100;
+  if (tabLower.includes(requestedLower)) return 60;
+  if (requestedLower.includes(tabLower)) return 40;
+  return 0;
+}
+
+export async function findTabByIdAcrossEndpoints(
+  targetId: string,
+  preferredPort?: number,
+): Promise<{ port: number; tab: CDPTarget } | null> {
+  const resolvedPorts = preferredPort
+    ? [preferredPort]
+    : (await detectCdpPortsAsync()).map((endpoint) => endpoint.port);
+  for (const port of resolvedPorts) {
+    try {
+      const tab = await findTabById(port, targetId);
+      if (tab) return { port, tab };
+    } catch {
+      // Skip endpoints that fail or are ambiguous on a different port.
+    }
+  }
+  return null;
+}
+
+export async function findTabByUrlAcrossEndpoints(
+  url: string,
+  preferredPort?: number,
+): Promise<{ port: number; tab: CDPTarget } | null> {
+  const resolvedPorts = preferredPort
+    ? [preferredPort]
+    : (await detectCdpPortsAsync()).map((endpoint) => endpoint.port);
+  let best: { port: number; tab: CDPTarget; score: number } | null = null;
+
+  for (const port of resolvedPorts) {
+    try {
+      const targets = await listTargets(port);
+      for (const tab of targets.filter((t) => t.type === 'page')) {
+        const score = scoreTabUrlMatch(tab.url, url);
+        if (score <= 0) continue;
+        if (!best || score > best.score || (score === best.score && port < best.port)) {
+          best = { port, tab, score };
+        }
+      }
+    } catch {
+      // Skip endpoints that fail to respond.
+    }
+  }
+
+  return best ? { port: best.port, tab: best.tab } : null;
+}
+
+export function requireTargetId(
+  targetId: string | null | undefined,
+  url: string,
+): string {
+  if (!targetId) {
+    throw new Error(
+      `Target.createTarget returned no targetId for ${url}. Reuse an existing tab with --target.`,
+    );
+  }
+  return targetId;
+}
+
 export async function openTab(port: number, url: string): Promise<CDPTarget> {
   const { client } = await getBrowserClient(port);
 
@@ -95,16 +191,17 @@ export async function openTab(port: number, url: string): Promise<CDPTarget> {
       url,
       background: true,
     })) as {
-      targetId: string;
+      targetId: string | null;
     };
+    const targetId = requireTargetId(result.targetId, url);
 
     // Return target info
     return {
-      id: result.targetId,
+      id: targetId,
       title: '',
       url,
       type: 'page',
-      webSocketDebuggerUrl: `ws://localhost:${port}/devtools/page/${result.targetId}`,
+      webSocketDebuggerUrl: `ws://localhost:${port}/devtools/page/${targetId}`,
     };
   } finally {
     client.close();
