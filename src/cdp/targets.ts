@@ -87,6 +87,22 @@ export async function findTabById(
   return null;
 }
 
+export async function findTabByIdInPorts(
+  targetId: string,
+  ports: number[],
+  finder: (port: number, targetId: string) => Promise<CDPTarget | null> = findTabById,
+): Promise<{ port: number; tab: CDPTarget } | null> {
+  for (const port of ports) {
+    try {
+      const tab = await finder(port, targetId);
+      if (tab) return { port, tab };
+    } catch {
+      // Skip endpoints that fail or are ambiguous on a different port.
+    }
+  }
+  return null;
+}
+
 function normalizeUrlForMatch(value: string): { full: string; host: string; path: string } | null {
   try {
     const url = new URL(value);
@@ -138,15 +154,7 @@ export async function findTabByIdAcrossEndpoints(
   preferredPort?: number,
 ): Promise<{ port: number; tab: CDPTarget } | null> {
   const ports = resolveSearchPorts(await detectCdpPortsAsync(), preferredPort);
-  for (const port of ports) {
-    try {
-      const tab = await findTabById(port, targetId);
-      if (tab) return { port, tab };
-    } catch {
-      // Skip endpoints that fail or are ambiguous on a different port.
-    }
-  }
-  return null;
+  return findTabByIdInPorts(targetId, ports);
 }
 
 export async function findTabByUrlAcrossEndpoints(

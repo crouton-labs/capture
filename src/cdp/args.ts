@@ -83,6 +83,14 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
   }
 
   // Fill gaps from environment variables (set by pipeline orchestrators)
+  if (!parsed.port && process.env.CDP_PORT) {
+    const envPort = Number.parseInt(process.env.CDP_PORT, 10);
+    if (Number.isNaN(envPort)) {
+      console.error(`Invalid CDP_PORT: ${process.env.CDP_PORT}`);
+      process.exit(1);
+    }
+    parsed.port = envPort;
+  }
   if (!parsed.target && process.env.CDP_TARGET) {
     parsed.target = process.env.CDP_TARGET;
   }

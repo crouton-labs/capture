@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCliArgs } from '../src/cdp/args.js';
-import { requireTargetId, scoreTabUrlMatch } from '../src/cdp/targets.js';
+import { findTabByIdInPorts, requireTargetId, scoreTabUrlMatch } from '../src/cdp/targets.js';
 
 test('CDP_PORT env fills the default port when --port is omitted', () => {
   const previous = process.env.CDP_PORT;
@@ -32,12 +32,19 @@ test('URL matching prefers the exact requested page over same-host login pages',
   assert.ok(exact > login);
 });
 
-test('explicit ports stay explicit when target resolution falls back to a port list', () => {
-  const ports = [1111, 2222, 3333];
-  const preferredPort = 2222;
-  const resolvedPorts = preferredPort ? [preferredPort] : ports;
+test('explicit ports stay explicit when target resolution falls back to a port list', async () => {
+  const calls: number[] = [];
+  const resolved = await findTabByIdInPorts('tab-2', [1111, 2222, 3333], async (port, targetId) => {
+    calls.push(port);
+    if (port === 2222 && targetId === 'tab-2') {
+      return { id: 'tab-2', title: '', url: 'https://www.reddit.com/', type: 'page', webSocketDebuggerUrl: 'ws://localhost:2222/devtools/page/tab-2' };
+    }
+    return null;
+  });
 
-  assert.deepEqual(resolvedPorts, [2222]);
+  assert.deepEqual(calls, [1111, 2222]);
+  assert.equal(resolved?.port, 2222);
+  assert.equal(resolved?.tab.id, 'tab-2');
 });
 
 test('openTab fails loudly when Target.createTarget returns no targetId', () => {

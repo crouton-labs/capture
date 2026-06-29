@@ -1,7 +1,13 @@
 import { CDPClient } from './client.js';
-import { type CDPTarget } from './types.js';
 import { detectCdpPort } from './detect.js';
-import { findTab, findTabById, openTab, listTargets } from './targets.js';
+import {
+  findTab,
+  findTabByIdAcrossEndpoints,
+  findTabByUrlAcrossEndpoints,
+  listTargets,
+  openTab,
+  type CDPTarget,
+} from './targets.js';
 import { HARRecorder } from './har-recorder.js';
 import { writeHarAndPrintSummary } from './har-output.js';
 import { type HAREntry } from '../har-manager.js';
@@ -22,14 +28,18 @@ export interface RecordResult {
 export async function recordTraffic(
   options: RecordOptions,
 ): Promise<RecordResult> {
-  const port = options.port ?? (await detectCdpPort());
+  let port = options.port ?? 0;
   const duration = options.duration ?? 10;
 
   if (!options.targetId) {
     throw new Error('Use --target <tabId> to target a tab. Run "capture list" to see available tabs.');
   }
 
-  const tab = await findTabById(port, options.targetId);
+  const resolved = await findTabByIdAcrossEndpoints(options.targetId, options.port);
+  const tab = resolved?.tab ?? null;
+  if (resolved) {
+    port = resolved.port;
+  }
   if (!tab) {
     throw new Error(
       `No tab found for target "${options.targetId}". Run "capture list" to see available tabs.`,
@@ -43,11 +53,15 @@ export async function recordTraffic(
   const client = new CDPClient(tab.webSocketDebuggerUrl);
   await client.waitReady();
 
+  console.error(
+    `Using target ${tab.id.slice(0, 8)} on port ${port} (${tab.url})`,
+  );
+
   const recorder = new HARRecorder(client);
   await recorder.start();
 
   console.error(
-    `Recording traffic on "${tab.url}" for ${duration}s... (click around in the browser)`,
+    `Recording traffic on target ${tab.id.slice(0, 8)} on port ${port} (${tab.url}) for ${duration}s... (click around in the browser)`,
   );
 
   await new Promise((r) => setTimeout(r, duration * 1000));
@@ -79,30 +93,41 @@ export interface NavigateAndRecordResult {
 export async function navigateAndRecord(
   options: NavigateAndRecordOptions,
 ): Promise<NavigateAndRecordResult> {
-  const port = options.port ?? (await detectCdpPort());
+  let requestedUrl: URL;
+  try {
+    requestedUrl = new URL(options.url);
+  } catch {
+    throw new Error(`Invalid URL: ${options.url}`);
+  }
   const settle = options.settle ?? 2000;
 
-  // Find tab — prefer targetId (exact) over domain match (fuzzy)
+  // Find tab — prefer exact target or an already-open matching URL across all endpoints.
+  let port = options.port ?? 0;
   let tab: CDPTarget | null = null;
   let isNewTab = false;
+
   if (options.targetId) {
-    tab = await findTabById(port, options.targetId);
-    if (!tab) {
+    const resolved = await findTabByIdAcrossEndpoints(options.targetId, options.port);
+    if (!resolved) {
       throw new Error(
         `No tab found with target ID "${options.targetId}". Tab may have been closed.`,
       );
     }
+    port = resolved.port;
+    tab = resolved.tab;
   } else {
-    let domain: string;
-    try {
-      domain = new URL(options.url).hostname;
-    } catch {
-      throw new Error(`Invalid URL: ${options.url}`);
-    }
-    tab = await findTab(port, domain);
-    if (!tab) {
-      tab = await openTab(port, options.url);
-      isNewTab = true;
+    const matched = await findTabByUrlAcrossEndpoints(options.url, options.port);
+    if (matched) {
+      port = matched.port;
+      tab = matched.tab;
+    } else {
+      port = options.port ?? (await detectCdpPort());
+      const domain = requestedUrl.hostname;
+      tab = await findTab(port, domain);
+      if (!tab) {
+        tab = await openTab(port, options.url);
+        isNewTab = true;
+      }
     }
   }
   if (!tab.webSocketDebuggerUrl) {
@@ -112,6 +137,10 @@ export async function navigateAndRecord(
   const client = new CDPClient(tab.webSocketDebuggerUrl);
   await client.waitReady();
   await client.send('Page.enable');
+
+  console.error(
+    `Using target ${tab.id.slice(0, 8)} on port ${port} (${tab.url})`,
+  );
 
   // Start recording BEFORE navigation
   const recorder = new HARRecorder(client);

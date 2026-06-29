@@ -3921,6 +3921,16 @@ async function findTabById(port, targetId) {
   }
   return null;
 }
+async function findTabByIdInPorts(targetId, ports, finder = findTabById) {
+  for (const port of ports) {
+    try {
+      const tab = await finder(port, targetId);
+      if (tab) return { port, tab };
+    } catch {
+    }
+  }
+  return null;
+}
 function normalizeUrlForMatch(value) {
   try {
     const url = new URL(value);
@@ -3961,14 +3971,7 @@ function resolveSearchPorts(endpoints, preferredPort) {
 }
 async function findTabByIdAcrossEndpoints(targetId, preferredPort) {
   const ports = resolveSearchPorts(await detectCdpPortsAsync(), preferredPort);
-  for (const port of ports) {
-    try {
-      const tab = await findTabById(port, targetId);
-      if (tab) return { port, tab };
-    } catch {
-    }
-  }
-  return null;
+  return findTabByIdInPorts(targetId, ports);
 }
 async function findTabByUrlAcrossEndpoints(url, preferredPort) {
   const ports = resolveSearchPorts(await detectCdpPortsAsync(), preferredPort);
@@ -4224,12 +4227,24 @@ var init_a11y = __esm({
 });
 
 // src/cdp/exec-expression.ts
+function compiles(source) {
+  try {
+    new Function(source);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function buildExecExpression(code, prebuilt) {
   if (prebuilt) return prebuilt;
-  if (/\bawait\b/.test(code) || /\breturn\b/.test(code)) {
-    return `(async () => { ${code} })()`;
+  if (compiles(`return (${code});`)) {
+    return code;
   }
-  return code;
+  const expression = `return (async () => (${code}))();`;
+  if (compiles(expression)) {
+    return `(async () => (${code}))()`;
+  }
+  return `(async () => { ${code} })()`;
 }
 var init_exec_expression = __esm({
   "src/cdp/exec-expression.ts"() {
