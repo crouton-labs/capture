@@ -149,7 +149,21 @@ export async function navigateAndRecord(
   if (!isNewTab) {
     // Navigate existing tab
     console.error(`Navigating to: ${options.url}`);
-    await client.send('Page.navigate', { url: options.url });
+    const navResult = (await client.send('Page.navigate', {
+      url: options.url,
+    })) as { loaderId?: string; errorText?: string };
+    // A fragment-only change against the current document is a same-document
+    // navigation: Chrome updates location.hash but does NOT reload the page, so
+    // SPAs that read the fragment on mount (e.g. Excalidraw's #url= scene import)
+    // never see it. Same-document navigations return no loaderId. When that
+    // happens, force a genuine cross-document load by bouncing through
+    // about:blank and re-navigating, so the target URL (fragment included) is
+    // delivered to a freshly-mounted document. A plain Page.reload here races
+    // the still-committing fragment nav and can reload the pre-fragment URL.
+    if (!navResult.loaderId) {
+      await client.send('Page.navigate', { url: 'about:blank' });
+      await client.send('Page.navigate', { url: options.url });
+    }
   }
 
   const deadline = 60_000;
