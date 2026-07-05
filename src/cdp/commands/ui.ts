@@ -9,7 +9,7 @@ import { type ParsedArgs } from '../types.js';
 export async function cmdScreenshot(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
     console.log(
-      'Usage: capture screenshot [--target <id>] [--out <path>] [--viewport <preset>] [--height <px>] [--full-page]\n\n' +
+      'Usage: capture screenshot [--target <id> | --url <pattern>] [--out <path>] [--viewport <preset>] [--height <px>] [--full-page]\n\n' +
         'Capture a screenshot of the targeted tab. Saves to --out or auto-generates a path.\n\n' +
         'Options:\n' +
         '  --viewport <preset>  Viewport preset (default: desktop)\n' +

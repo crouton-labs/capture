@@ -27,8 +27,17 @@ interface CdpProbeResult {
   browser: string;
   app: string;
   isElectron: boolean;
+  hasPageTarget: boolean;
 }
 
+// Node's inspector, workerd/Miniflare's inspector, and similar V8-Inspector-
+// protocol processes all speak enough of the Chrome DevTools Protocol to
+// answer /json/version with a `Browser` field, so a naive probe mistakes them
+// for a real browser. They are not: they never return a top-level
+// `webSocketDebuggerUrl` (there's no browser-level target to attach to, only
+// the single runtime target) and they never host a `page`-type target. Both
+// are checked so these endpoints are excluded from auto-selection instead of
+// being confused for the intended browser.
 async function probeCdpPort(port: number): Promise<CdpProbeResult | null> {
   try {
     const controller = new AbortController();
@@ -41,10 +50,14 @@ async function probeCdpPort(port: number): Promise<CdpProbeResult | null> {
       const version = (await resp.json()) as {
         Browser?: string;
         'User-Agent'?: string;
+        webSocketDebuggerUrl?: string;
       };
       const browser = version.Browser;
       const userAgent = version['User-Agent'] ?? '';
       if (!browser) return null;
+      // No browser-level WebSocket debugger URL means there's nothing to
+      // open new tabs on — this isn't a controllable browser.
+      if (!version.webSocketDebuggerUrl) return null;
 
       const isElectron = userAgent.includes('Electron');
 
@@ -58,12 +71,30 @@ async function probeCdpPort(port: number): Promise<CdpProbeResult | null> {
         if (appMatch) app = appMatch[1];
       }
 
-      return { browser, app, isElectron };
+      const hasPageTarget = await probeHasPageTarget(port);
+
+      return { browser, app, isElectron, hasPageTarget };
     }
   } catch {
     // Not a CDP port or not responding
   }
   return null;
+}
+
+async function probeHasPageTarget(port: number): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 500);
+    const resp = await fetch(`http://localhost:${port}/json/list`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!resp.ok) return false;
+    const list = (await resp.json()) as Array<{ type?: string }>;
+    return Array.isArray(list) && list.some((t) => t.type === 'page');
+  } catch {
+    return false;
+  }
 }
 
 function getLocalhostListeningPorts(): number[] {
@@ -92,6 +123,7 @@ export interface CdpEndpoint {
   app: string;
   bundleId: string;
   isElectron: boolean;
+  hasPageTarget: boolean;
 }
 
 export async function detectCdpPortsAsync(): Promise<CdpEndpoint[]> {
@@ -116,12 +148,40 @@ export async function detectCdpPortsAsync(): Promise<CdpEndpoint[]> {
         app: probe.app,
         bundleId,
         isElectron: probe.isElectron,
+        hasPageTarget: probe.hasPageTarget,
       });
     }
   });
 
   await Promise.all(probes);
   return results;
+}
+
+// Selects the endpoint `detect`/`detectCdpPort` should treat as "the"
+// browser out of everything discovered on localhost. Shared so `capture
+// detect`'s printed default always matches what auto-discovery actually
+// picks for session start / navigate / etc.
+export function pickPreferredEndpoint(
+  endpoints: CdpEndpoint[],
+  defaultBrowser: string | null,
+): CdpEndpoint {
+  // Endpoints that already host a real page/tab are real browsers. CDP-
+  // speaking non-browser processes (Node/workerd inspectors, etc.) never do,
+  // so prefer real browsers whenever at least one is present — this is what
+  // keeps an unrelated CDP listener from being picked over the intended one.
+  const withPages = endpoints.filter((e) => e.hasPageTarget);
+  const candidates = withPages.length > 0 ? withPages : endpoints;
+
+  if (defaultBrowser) {
+    const match = candidates.find(
+      (p) => p.bundleId === defaultBrowser && !p.isElectron,
+    );
+    if (match) return match;
+  }
+
+  // Fall back to first non-Electron, then first found
+  const nonElectron = candidates.find((p) => !p.isElectron);
+  return nonElectron ?? candidates[0];
 }
 
 export async function detectCdpPort(): Promise<number> {
@@ -135,16 +195,5 @@ export async function detectCdpPort(): Promise<number> {
     );
   }
 
-  // Use default browser if available (prefer non-Electron)
-  const defaultBrowser = getDefaultBrowserId();
-  if (defaultBrowser) {
-    const match = endpoints.find(
-      (p) => p.bundleId === defaultBrowser && !p.isElectron,
-    );
-    if (match) return match.port;
-  }
-
-  // Fall back to first non-Electron, then first found
-  const nonElectron = endpoints.find((p) => !p.isElectron);
-  return (nonElectron ?? endpoints[0]).port;
+  return pickPreferredEndpoint(endpoints, getDefaultBrowserId()).port;
 }

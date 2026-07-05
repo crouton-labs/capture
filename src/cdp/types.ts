@@ -22,6 +22,7 @@ export interface ParsedArgs {
   har?: string;
   new?: boolean;
   target?: string;
+  url?: string;
   role?: string;
   into?: string;
   noScreenshot?: boolean;

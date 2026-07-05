@@ -12,6 +12,7 @@ import {
   setActiveSession,
   clearActiveSession,
 } from '../session-context.js';
+import { expandEqualsFlags } from '../cdp/args.js';
 
 const CAPTURE_ROOT = path.join(os.tmpdir(), 'capture-sessions');
 
@@ -117,7 +118,8 @@ See also: capture --help                      Full command list`);
 // Session Commands
 // ============================================================================
 
-async function start(args: string[]): Promise<void> {
+async function start(rawArgs: string[]): Promise<void> {
+  const args = expandEqualsFlags(rawArgs);
   let url: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
@@ -230,7 +232,8 @@ async function start(args: string[]): Promise<void> {
   console.error(`\nWhen done: capture session stop ${id}`);
 }
 
-export function logCommand(args: string[]): void {
+export function logCommand(rawArgs: string[]): void {
+  const args = expandEqualsFlags(rawArgs);
   if (hasHelpFlag(args)) {
     console.log('Usage: capture log <path> [--name label] [--session <id>]');
     return;
@@ -411,7 +414,8 @@ function list(): void {
   console.log(JSON.stringify(sessions, null, 2));
 }
 
-function view(args: string[]): void {
+function view(rawArgs: string[]): void {
+  const args = expandEqualsFlags(rawArgs);
   const id = args[0];
   if (!id) {
     console.error('Usage: capture session view <session-id> [--filter screenshots|har|a11y]');

@@ -1,4 +1,4 @@
-import { detectCdpPortsAsync, detectCdpPort, getDefaultBrowserId } from '../detect.js';
+import { detectCdpPortsAsync, detectCdpPort, getDefaultBrowserId, pickPreferredEndpoint } from '../detect.js';
 import { listTargets, openTab } from '../targets.js';
 import { navigateAndWait } from '../record.js';
 import { CDPClient } from '../client.js';
@@ -25,13 +25,7 @@ export async function cmdDetect(parsed: ParsedArgs, _args: string[]): Promise<vo
     );
     process.exit(1);
   }
-  const defaultBrowser = getDefaultBrowserId();
-  const preferred =
-    endpoints.find(
-      (p) => p.bundleId === defaultBrowser && !p.isElectron,
-    ) ??
-    endpoints.find((p) => !p.isElectron) ??
-    endpoints[0];
+  const preferred = pickPreferredEndpoint(endpoints, getDefaultBrowserId());
   console.log(
     JSON.stringify(
       {

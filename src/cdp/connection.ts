@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import { CDPClient } from './client.js';
-import { findTabByIdAcrossEndpoints } from './targets.js';
+import { findTabByIdAcrossEndpoints, findTabByUrlAcrossEndpoints } from './targets.js';
 import { type CDPTarget, type ParsedArgs } from './types.js';
 import { ConsoleRecorder, printConsoleSummary } from './console-recorder.js';
 import { HARRecorder } from './har-recorder.js';
@@ -22,17 +22,19 @@ function getPortFromWebSocketDebuggerUrl(url?: string): number | null {
 export async function connectForCommand(
   parsed: ParsedArgs,
 ): Promise<{ client: CDPClient; tab: CDPTarget }> {
-  if (!parsed.target) {
-    throw new Error('Use --target <tabId> to target a tab. Run "capture list" to see available tabs.');
+  if (!parsed.target && !parsed.url) {
+    throw new Error('Use --target <tabId> or --url <pattern> to target a tab. Run "capture list" to see available tabs.');
   }
 
-  const resolved = await findTabByIdAcrossEndpoints(parsed.target, parsed.port);
+  const resolved = parsed.target
+    ? await findTabByIdAcrossEndpoints(parsed.target, parsed.port)
+    : await findTabByUrlAcrossEndpoints(parsed.url!, parsed.port);
   const tab = resolved?.tab ?? null;
 
   if (!tab) {
-    const query = parsed.target;
+    const query = parsed.target ?? parsed.url;
     throw new Error(
-      `No tab found for target "${query}". Run "capture list" to see available tabs.`,
+      `No tab found for ${parsed.target ? 'target' : 'URL pattern'} "${query}". Run "capture list" to see available tabs.`,
     );
   }
 
