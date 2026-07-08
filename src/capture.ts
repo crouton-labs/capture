@@ -73,6 +73,8 @@ async function main(): Promise<void> {
     case "network":
     case "list":
     case "cdp":
+    case "measure":
+    case "motion":
     case "__bridge-serve":
       return cdpMain();
 
@@ -117,6 +119,14 @@ INTERACTION COMMANDS (work inside or outside a session)
   screenshot [--out <path>] [--full-page]  Screenshot (viewport: desktop|desktop-wide|tablet|mobile)
   exec <code>  |  exec --file <path>       Evaluate JS; expressions, return, and await are supported
   navigate <url> [--settle <ms>]           Navigate the current tab + record HAR
+
+MEASUREMENT & MOTION
+
+  measure snap|check|diff|census|explain|sweep|map    Enriched snapshot substrate + read-only queries
+  motion  rec|mask|timeline|jank|response             Recorder lifecycle + read-only queries over a finalized recording
+
+  capture measure --help                   Full leaf reference (input constraints per leaf)
+  capture motion --help                    Full leaf reference (input constraints per leaf)
 
 DIAGNOSTICS & ONE-OFFS (no session needed)
 

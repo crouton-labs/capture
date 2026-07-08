@@ -64,7 +64,11 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
       parsed.target = next;
       i++;
     } else if (arg === '--url' && next) {
+      // Kept last-wins for every existing command's single-target semantics.
+      // Also accumulated into `urls` so census/sweep-style leaves can accept
+      // the flag repeated for a multi-page set without disturbing that.
       parsed.url = next;
+      (parsed.urls ??= []).push(next);
       i++;
     } else if (arg === '--role' && next) {
       parsed.role = next;
@@ -75,7 +79,12 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--no-screenshot') {
       parsed.noScreenshot = true;
     } else if (arg === '--viewport' && next) {
+      // Kept last-wins for every existing command's single-value semantics.
+      // Also accumulated into `viewports` so check/snap/census-style leaves
+      // can accept the flag repeated for a multi-viewport sweep, mirroring
+      // the `--url` → { url, urls[] } pattern above.
       parsed.viewport = next;
+      (parsed.viewports ??= []).push(next);
       i++;
     } else if (arg === '--full-page') {
       parsed.fullPage = true;
@@ -107,6 +116,79 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
       i++;
     } else if (arg === '--socket' && next) {
       parsed.socket = next;
+      i++;
+    } else if (arg === '--freeze-animations') {
+      parsed.freezeAnimations = true;
+    } else if (arg === '--settle-timeout' && next) {
+      parsed.settleTimeout = parseInt(next, 10);
+      i++;
+    } else if (arg === '--capture-unsettled') {
+      parsed.captureUnsettled = true;
+    } else if (arg === '--pixels') {
+      parsed.pixels = true;
+    } else if (arg === '--state' && next) {
+      (parsed.state ??= []).push(next);
+      i++;
+    } else if (arg === '--for' && next) {
+      parsed.for = next;
+      i++;
+    } else if (arg === '--before' && next) {
+      parsed.before = next;
+      i++;
+    } else if (arg === '--after' && next) {
+      parsed.after = next;
+      i++;
+    } else if (arg === '--full') {
+      parsed.full = true;
+    } else if (arg === '--gate') {
+      parsed.gate = true;
+    } else if (arg === '--snap' && next) {
+      (parsed.snap ??= []).push(next);
+      i++;
+    } else if (arg === '--set-file' && next) {
+      parsed.setFile = next;
+      i++;
+    } else if (arg === '--axis' && next) {
+      parsed.axis = next;
+      i++;
+    } else if (arg === '--from' && next) {
+      // Raw string — axis units vary (width px / dpr float / zoom); parseInt
+      // would lossily truncate a non-integer axis value.
+      parsed.from = next;
+      i++;
+    } else if (arg === '--to' && next) {
+      parsed.to = next;
+      i++;
+    } else if (arg === '--viewport-height' && next) {
+      parsed.viewportHeight = next;
+      i++;
+    } else if (arg === '--rec-id' && next) {
+      parsed.recId = next;
+      i++;
+    } else if (arg === '--selector' && next) {
+      parsed.selector = next;
+      i++;
+    } else if (arg === '--size') {
+      parsed.size = true;
+    } else if (arg === '--text') {
+      parsed.text = true;
+    } else if (arg === '--form') {
+      parsed.form = true;
+    } else if (arg === '--start') {
+      parsed.start = true;
+    } else if (arg === '--stop') {
+      parsed.stop = true;
+    } else if (arg === '--do' && next) {
+      parsed.do = next;
+      i++;
+    } else if (arg === '--element' && next) {
+      parsed.element = next;
+      i++;
+    } else if (arg === '--prop' && next) {
+      parsed.prop = next;
+      i++;
+    } else if (arg === '--action' && next) {
+      parsed.action = next;
       i++;
     } else if (arg === '--help' || arg === '-h') {
       parsed.help = true;

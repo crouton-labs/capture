@@ -36,3 +36,102 @@ export interface BridgeResponseErr {
 }
 
 export type BridgeResponse = BridgeResponseOk | BridgeResponseErr;
+
+// ---------------------------------------------------------------------------
+// Recorder-mode protocol — the SAME NDJSON-over-unix-socket wire format as
+// above, specialized for `capture motion rec` (see ../recorder-bridge.ts).
+// The generic `BridgeRequest`/`BridgeResponse` are unchanged and still
+// govern `capture cdp --browser` / `session start --hold`; a recorder-mode
+// bridge process (spawned in recorder mode, see ../bridge/spawn.ts) speaks
+// this union instead, one request per connection, one response, same as
+// the plain bridge.
+// ---------------------------------------------------------------------------
+
+/** One synchronized (performance.now, wall-clock) pair, captured when the recorder arms. */
+export interface RecorderClockBaselines {
+  performanceNowMs: number;
+  wallClockMs: number;
+}
+
+/**
+ * Arms the recorder on its held tab connection: enables the motion-rec CDP
+ * domains, starts `Page.startScreencast` + `Tracing`, injects the
+ * Mutation/Resize/Performance observers, and captures the clock baseline.
+ * A recorder process only accepts one `rec-start` while `state==="idle"`.
+ */
+export interface RecStartRequest {
+  reqId: number;
+  type: 'rec-start';
+}
+
+export interface RecStartResponseOk {
+  reqId: number;
+  ok: true;
+  type: 'rec-start';
+  /** Returned for the caller to persist into `markers.json` — the recorder itself does not write that file. */
+  markers: RecorderClockBaselines;
+}
+
+/**
+ * Stops screencast + tracing, flushes the injected observers, and tears
+ * down the recorder's subscriptions (not the socket — the caller closes
+ * the bridge process once it has read the response). Returns counts for
+ * the caller's `meta.json`; the recorder itself does not write that file.
+ */
+export interface RecStopRequest {
+  reqId: number;
+  type: 'rec-stop';
+}
+
+export interface RecStopResponseOk {
+  reqId: number;
+  ok: true;
+  type: 'rec-stop';
+  frameCount: number;
+  eventCount: number;
+  durationMs: number;
+}
+
+/**
+ * A CDP request routed through the recorder's held tab connection — the
+ * mechanism intervening session commands (`click`, `type`, `navigate`, ...)
+ * use during a composed recording. Setting `mark` brackets the dispatch
+ * with two performance.now() reads taken in the page's execution context
+ * (`../timing.ts`'s `withDocumentPerformanceNow`) and appends a labeled
+ * input-landmark record to `events.jsonl`, tying the action to the frame
+ * timeline — this is the "marked CDP request message" the protocol
+ * supports. Omit `mark` for a plain passthrough call (still observed
+ * natively by the recorder's own event subscriptions, just not logged as a
+ * distinct input landmark).
+ */
+export interface RecCdpRequest {
+  reqId: number;
+  type: 'cdp';
+  method: string;
+  params?: Record<string, unknown>;
+  mark?: string;
+  waitEvent?: string;
+  timeoutMs?: number;
+}
+
+export interface RecCdpResponseOk {
+  reqId: number;
+  ok: true;
+  type: 'cdp';
+  result?: unknown;
+  event?: unknown;
+}
+
+export type RecorderRequest = RecStartRequest | RecStopRequest | RecCdpRequest;
+
+export interface RecorderResponseErr {
+  reqId: number;
+  ok: false;
+  type: RecorderRequest['type'];
+  error: string;
+}
+
+export type RecStartResponse = RecStartResponseOk | RecorderResponseErr;
+export type RecStopResponse = RecStopResponseOk | RecorderResponseErr;
+export type RecCdpResponse = RecCdpResponseOk | RecorderResponseErr;
+export type RecorderResponse = RecStartResponse | RecStopResponse | RecCdpResponse;

@@ -22,12 +22,20 @@ interface EventWaiter {
   resolve: (v: unknown) => void;
 }
 
-class EventBroker {
+/**
+ * Buffers CDP events by name and resolves `wait()` callers FIFO, either
+ * immediately (from the buffer) or when the next matching event arrives.
+ * Shared by the plain browser-level bridge and the recorder bridge
+ * (`../recorder-bridge.ts`) — both hold one long-lived `CDPClient` and need
+ * the same "consume the next occurrence of this event" primitive for
+ * `waitEvent`-bearing requests.
+ */
+export class EventBroker {
   private queues = new Map<string, unknown[]>();
   private waiters = new Map<string, EventWaiter[]>();
   private listening = new Set<string>();
 
-  constructor(private client: CDPClient) {}
+  constructor(private client: Pick<CDPClient, 'on'>) {}
 
   private ensureListening(eventName: string): void {
     if (this.listening.has(eventName)) return;
@@ -92,26 +100,6 @@ export async function runBridgeServer(socketPath: string, port?: number): Promis
     return result.sessionId;
   }
 
-  fs.mkdirSync(path.dirname(socketPath), { recursive: true });
-  try {
-    fs.unlinkSync(socketPath);
-  } catch {
-    // No stale socket to remove.
-  }
-
-  const server = net.createServer((socket) => {
-    let buffer = '';
-    socket.on('data', (chunk) => {
-      buffer += chunk.toString('utf-8');
-      let idx: number;
-      while ((idx = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 1);
-        if (line.trim()) void handleLine(line, socket);
-      }
-    });
-  });
-
   async function handleLine(line: string, socket: net.Socket): Promise<void> {
     let req: BridgeRequest;
     try {
@@ -132,23 +120,97 @@ export async function runBridgeServer(socketPath: string, port?: number): Promis
     socket.write(JSON.stringify(resp) + '\n');
   }
 
+  const server = await listenNdjsonSocket(socketPath, handleLine);
+
   const cleanup = (): void => {
-    try {
-      server.close();
-    } catch {
-      // Already closed.
-    }
+    closeNdjsonSocket(server, socketPath);
     try {
       client.close();
     } catch {
       // Already closed.
     }
-    try {
-      fs.unlinkSync(socketPath);
-    } catch {
-      // Already gone.
-    }
   };
+  installProcessCleanup(cleanup, client);
+  // Intentionally does not resolve further work here: the open server and
+  // the live websocket keep the event loop (and this detached process) alive
+  // until `stopBridge()` sends SIGTERM.
+}
+
+/**
+ * Ensures `socketPath`'s parent directory exists and removes any stale
+ * socket file left at that path (a previous bridge process that died
+ * without cleaning up). Shared preparation step before binding a new
+ * `net.Server` there.
+ */
+export function prepareSocketPath(socketPath: string): void {
+  fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+  try {
+    fs.unlinkSync(socketPath);
+  } catch {
+    // No stale socket to remove.
+  }
+}
+
+/**
+ * Binds a Unix-domain `net.Server` at `socketPath` that frames each
+ * connection's input as newline-delimited JSON, invoking `handleLine` once
+ * per complete line. This is the wire framing every bridge mode (plain
+ * browser-level bridge, recorder bridge) shares — "one request per
+ * connection, one response, then the socket closes" is a convention the
+ * caller's `handleLine` implements by writing exactly one response per
+ * line and letting the client end the connection; the server itself is
+ * agnostic to that convention and would happily frame a connection that
+ * sends multiple lines.
+ */
+export async function listenNdjsonSocket(
+  socketPath: string,
+  handleLine: (line: string, socket: net.Socket) => void | Promise<void>,
+): Promise<net.Server> {
+  prepareSocketPath(socketPath);
+
+  const server = net.createServer((socket) => {
+    let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('utf-8');
+      let idx: number;
+      while ((idx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 1);
+        if (line.trim()) void handleLine(line, socket);
+      }
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.on('error', reject);
+    server.listen(socketPath, () => resolve());
+  });
+  return server;
+}
+
+/** Closes the socket server and best-effort unlinks the socket file. */
+export function closeNdjsonSocket(server: net.Server, socketPath: string): void {
+  try {
+    server.close();
+  } catch {
+    // Already closed.
+  }
+  try {
+    fs.unlinkSync(socketPath);
+  } catch {
+    // Already gone.
+  }
+}
+
+/**
+ * Wires SIGTERM/SIGINT and the held client's disconnect into one `cleanup`
+ * call followed by `process.exit(0)` — the shutdown sequence every
+ * detached bridge process (plain or recorder) uses.
+ */
+export function installProcessCleanup(
+  cleanup: () => void,
+  client: Pick<CDPClient, 'onDisconnect'>,
+): void {
   process.on('SIGTERM', () => {
     cleanup();
     process.exit(0);
@@ -162,14 +224,6 @@ export async function runBridgeServer(socketPath: string, port?: number): Promis
     cleanup();
     process.exit(0);
   });
-
-  await new Promise<void>((resolve, reject) => {
-    server.on('error', reject);
-    server.listen(socketPath, () => resolve());
-  });
-  // Intentionally does not resolve further work here: the open server and
-  // the live websocket keep the event loop (and this detached process) alive
-  // until `stopBridge()` sends SIGTERM.
 }
 
 async function resolvePort(port?: number): Promise<number> {

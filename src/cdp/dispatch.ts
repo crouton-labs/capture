@@ -8,6 +8,8 @@ import { cmdHar } from './commands/har.js';
 import { cmdLib } from './commands/lib.js';
 import { cmdCdp } from './commands/cdp.js';
 import { cmdBridgeServe } from './commands/bridge-serve.js';
+import { measureMain } from './commands/measure/index.js';
+import { motionMain } from './commands/motion/index.js';
 
 export async function cdpMain(): Promise<void> {
   const args = process.argv.slice(2);
@@ -29,6 +31,8 @@ export async function cdpMain(): Promise<void> {
     case 'har': return cmdHar(parsed, args);
     case 'lib': return cmdLib(parsed, args);
     case 'cdp': return cmdCdp(parsed, args);
+    case 'measure': return measureMain(parsed, args);
+    case 'motion': return motionMain(parsed, args);
     case '__bridge-serve': return cmdBridgeServe(parsed, args);
     default:
       console.log(CDP_USAGE);

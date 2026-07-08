@@ -22,6 +22,8 @@ Commands:
   lib show <name>     Lib + function summaries
   lib read <name> [fn…]  Full input/output schemas (+ .ts source path)
   cdp <Domain.method>  Send a raw CDP command capture doesn't wrap [--browser] [--params json] [--wait-event name]
+  measure <leaf>       Enriched snapshot substrate + read-only queries — see \`capture measure --help\`
+  motion <leaf>        Recorder lifecycle + read-only queries over a recording — see \`capture motion --help\`
 
 Options:
   --port <port>       Override CDP port
