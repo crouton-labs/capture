@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { spawn } from 'child_process';
 import {
   createHarRecording,
@@ -14,8 +13,14 @@ import {
 } from '../session-context.js';
 import { expandEqualsFlags } from '../cdp/args.js';
 import { startBridge, stopBridge } from '../cdp/bridge/spawn.js';
-
-const CAPTURE_ROOT = path.join(os.tmpdir(), 'capture-sessions');
+import {
+  CAPTURE_ROOT,
+  FILE_MODE,
+  ensurePrivateDir,
+  writeJsonPrivate,
+  type SnapMeta,
+  type RecMeta,
+} from './artifacts.js';
 
 interface LogPid {
   pid: number;
@@ -48,10 +53,88 @@ interface BundleManifest {
   a11y: Array<{ name: string; path: string }>;
   logs: Array<{ name: string; path: string; lines: number }>;
   other: Array<{ name: string; path: string }>;
+  /** `measure snap` artifacts collected from `measure/snaps/{id}/meta.json`. */
+  snaps: Array<{ id: string; path: string; url: string | null; viewport: string | null; settled: boolean; capturedAt: string }>;
+  /** `motion rec` artifacts collected from `motion/recs/{id}/meta.json`. */
+  recs: Array<{ id: string; path: string; action: string | null; frames: number; durationMs: number; state: string }>;
 }
 
 function sessionDir(id: string): string {
   return path.join(CAPTURE_ROOT, id);
+}
+
+/** One-shot artifact session outside an active session — see `createOneshotSession`. */
+export interface OneshotSession {
+  /** `oneshot-{id}`; also the dir name under `CAPTURE_ROOT`. */
+  id: string;
+  /** `{CAPTURE_ROOT}/oneshot-{id}` */
+  dir: string;
+  kind: 'measure' | 'motion';
+  /** `{dir}/measure/snaps` or `{dir}/motion/recs`, already created private. */
+  artifactsDir: string;
+}
+
+/**
+ * Creates the ephemeral artifact dir a URL-target `measure`/`motion` leaf
+ * writes into when there is no active session: `oneshot-{id}/measure/snaps`
+ * or `oneshot-{id}/motion/recs` under `CAPTURE_ROOT`. Holds only the one
+ * subtree the caller needs — no HAR, no held bridge, no `.session.json` —
+ * and is never registered as the active session. It is not bundled/torn
+ * down by `session stop`; it accumulates under `/tmp` the same as any other
+ * session dir until the OS reaps `/tmp`.
+ */
+export function createOneshotSession(kind: 'measure' | 'motion'): OneshotSession {
+  const id = `oneshot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const dir = sessionDir(id);
+  const artifactsDir = kind === 'measure'
+    ? path.join(dir, 'measure', 'snaps')
+    : path.join(dir, 'motion', 'recs');
+  ensurePrivateDir(artifactsDir);
+  return { id, dir, kind, artifactsDir };
+}
+
+/** Reads one `measure/snaps/{id}/meta.json` and shapes it into a manifest `snaps[]` entry. */
+function readSnapMeta(snapDir: string, fallbackId: string): BundleManifest['snaps'][number] {
+  const meta = JSON.parse(fs.readFileSync(path.join(snapDir, 'meta.json'), 'utf-8')) as Partial<SnapMeta>;
+  return {
+    id: meta.id ?? fallbackId,
+    path: snapDir,
+    url: meta.url ?? null,
+    viewport: meta.viewport ?? null,
+    settled: meta.settled ?? false,
+    capturedAt: meta.capturedAt ?? '',
+  };
+}
+
+/** Reads one `motion/recs/{id}/meta.json` and shapes it into a manifest `recs[]` entry. */
+function readRecMeta(recDir: string, fallbackId: string): BundleManifest['recs'][number] {
+  const meta = JSON.parse(fs.readFileSync(path.join(recDir, 'meta.json'), 'utf-8')) as Partial<RecMeta>;
+  return {
+    id: meta.id ?? fallbackId,
+    path: recDir,
+    action: meta.action ?? null,
+    frames: meta.frames ?? 0,
+    durationMs: meta.durationMs ?? 0,
+    state: meta.state ?? 'unknown',
+  };
+}
+
+/** Collects finalized snapshots under `{session.dir}/measure/snaps/{id}/meta.json`. */
+function collectSnaps(dir: string): BundleManifest['snaps'] {
+  const snapsRoot = path.join(dir, 'measure', 'snaps');
+  if (!fs.existsSync(snapsRoot)) return [];
+  return fs.readdirSync(snapsRoot)
+    .filter((name) => fs.existsSync(path.join(snapsRoot, name, 'meta.json')))
+    .map((name) => readSnapMeta(path.join(snapsRoot, name), name));
+}
+
+/** Collects finalized recordings under `{session.dir}/motion/recs/{id}/meta.json`. */
+function collectRecs(dir: string): BundleManifest['recs'] {
+  const recsRoot = path.join(dir, 'motion', 'recs');
+  if (!fs.existsSync(recsRoot)) return [];
+  return fs.readdirSync(recsRoot)
+    .filter((name) => fs.existsSync(path.join(recsRoot, name, 'meta.json')))
+    .map((name) => readRecMeta(path.join(recsRoot, name), name));
 }
 
 function sessionMetaPath(id: string): string {
@@ -98,7 +181,8 @@ Sub-commands:
                                    --hold keeps one CDP browser connection open for the session
   stop  <session-id>              Finalize and bundle artifacts (screenshots, HAR, a11y, logs)
   list                            List active and stopped sessions
-  view  <id> [--filter section]   View bundle manifest; section = screenshots|har|a11y|logs
+  view  <id> [--filter section]   View bundle manifest; section = screenshots|har|a11y|logs|measure|motion
+                                   measure -> manifest.snaps, motion -> manifest.recs
 
 Why sessions: once started, every subsequent capture command auto-fills
 --target (the tab) and --har (the recording). No manual flag threading.
@@ -149,8 +233,8 @@ async function start(rawArgs: string[]): Promise<void> {
 
   const id = generateId();
   const dir = sessionDir(id);
-  fs.mkdirSync(path.join(dir, 'shots'), { recursive: true });
-  fs.mkdirSync(path.join(dir, 'a11y'), { recursive: true });
+  ensurePrivateDir(path.join(dir, 'shots'));
+  ensurePrivateDir(path.join(dir, 'a11y'));
 
   // Start HAR recording directly
   let harId: string | null = null;
@@ -246,7 +330,7 @@ async function start(rawArgs: string[]): Promise<void> {
     bridgeSocket,
     bridgePid,
   };
-  fs.writeFileSync(sessionMetaPath(id), JSON.stringify(session, null, 2));
+  writeJsonPrivate(sessionMetaPath(id), session);
 
   // Set as active session for auto-defaults
   setActiveSession({
@@ -322,10 +406,11 @@ export function logCommand(rawArgs: string[]): void {
   name = name ?? path.basename(resolved, path.extname(resolved));
 
   const logsDir = path.join(session.dir, 'logs');
-  fs.mkdirSync(logsDir, { recursive: true });
+  ensurePrivateDir(logsDir);
 
   const destPath = path.join(logsDir, `${name}.log`);
-  const outFd = fs.openSync(destPath, 'a');
+  const outFd = fs.openSync(destPath, 'a', FILE_MODE);
+  fs.chmodSync(destPath, FILE_MODE);
 
   const child = spawn(
     'sh',
@@ -337,7 +422,7 @@ export function logCommand(rawArgs: string[]): void {
 
   const pid = child.pid!;
   session.logPids.push({ pid, name, sourcePath: resolved });
-  fs.writeFileSync(sessionMetaPath(session.id), JSON.stringify(session, null, 2));
+  writeJsonPrivate(sessionMetaPath(session.id), session);
 
   console.log(JSON.stringify({ name, sourcePath: resolved, destPath, pid }, null, 2));
 }
@@ -391,7 +476,7 @@ async function stop(args: string[]): Promise<void> {
       const harData = readHarRecording(session.harId);
       if (harData) {
         const harPath = path.join(session.dir, 'har.json');
-        fs.writeFileSync(harPath, JSON.stringify(harData, null, 2));
+        writeJsonPrivate(harPath, harData);
         har = { id: session.harId, path: harPath, entryCount: harData.log.entries.length };
         // Clean up the HAR recording
         try { deleteHarRecording(session.harId); } catch { /* best effort */ }
@@ -414,8 +499,12 @@ async function stop(args: string[]): Promise<void> {
         })
     : [];
 
+  // Collect measure snapshots and motion recordings
+  const snaps = collectSnaps(session.dir);
+  const recs = collectRecs(session.dir);
+
   // Collect anything else dropped in the session dir
-  const knownDirs = new Set(['shots', 'a11y', 'logs']);
+  const knownDirs = new Set(['shots', 'a11y', 'logs', 'measure', 'motion']);
   const knownFiles = new Set(['.session.json', 'har.json', 'bundle.json', 'bridge.sock']);
   const other = fs.readdirSync(session.dir)
     .filter((f) => !knownDirs.has(f) && !knownFiles.has(f))
@@ -435,10 +524,12 @@ async function stop(args: string[]): Promise<void> {
     a11y,
     logs,
     other,
+    snaps,
+    recs,
   };
 
   const bundlePath = path.join(session.dir, 'bundle.json');
-  fs.writeFileSync(bundlePath, JSON.stringify(manifest, null, 2));
+  writeJsonPrivate(bundlePath, manifest);
 
   console.log(JSON.stringify({
     bundlePath,
@@ -449,6 +540,8 @@ async function stop(args: string[]): Promise<void> {
       a11ySnapshots: a11y.length,
       logFiles: logs.length,
       otherFiles: other.length,
+      snaps: snaps.length,
+      recs: recs.length,
     },
   }, null, 2));
 
@@ -473,11 +566,21 @@ function list(): void {
   console.log(JSON.stringify(sessions, null, 2));
 }
 
+// `session view --filter <name>` reads a manifest section by the same key
+// name for most sections (screenshots|har|a11y|logs|other), but `measure`
+// and `motion` are the query-facing filter names for the `snaps`/`recs`
+// manifest keys (matching the `measure`/`motion` command branches, not the
+// artifact-file naming), so they need an explicit alias.
+const VIEW_FILTER_ALIASES: Record<string, keyof BundleManifest> = {
+  measure: 'snaps',
+  motion: 'recs',
+};
+
 function view(rawArgs: string[]): void {
   const args = expandEqualsFlags(rawArgs);
   const id = args[0];
   if (!id) {
-    console.error('Usage: capture session view <session-id> [--filter screenshots|har|a11y]');
+    console.error('Usage: capture session view <session-id> [--filter screenshots|har|a11y|logs|other|measure|motion]');
     process.exit(1);
   }
 
@@ -493,7 +596,8 @@ function view(rawArgs: string[]): void {
 
   const filter = args.find((_, i) => args[i - 1] === '--filter');
   if (filter) {
-    const section = manifest[filter as keyof BundleManifest];
+    const key = VIEW_FILTER_ALIASES[filter] ?? (filter as keyof BundleManifest);
+    const section = manifest[key];
     console.log(JSON.stringify(section, null, 2));
   } else {
     console.log(JSON.stringify(manifest, null, 2));

@@ -33,6 +33,7 @@
     "access": "public"
   },
   "devDependencies": {
+    "@types/pngjs": "^6.0.5",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.24.0",
     "tsx": "^4",
@@ -40,6 +41,8 @@
     "zod": "^4.3.5"
   },
   "dependencies": {
+    "pixelmatch": "7.2.0",
+    "pngjs": "7.0.0",
     "ws": "^8.19.0"
   }
 }

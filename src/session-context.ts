@@ -10,9 +10,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
-
-const CAPTURE_ROOT = path.join(os.tmpdir(), 'capture-sessions');
+import { CAPTURE_ROOT } from './session/artifacts.js';
 
 /**
  * The active-session pointer is scoped per caller so concurrent, unrelated
@@ -40,6 +38,13 @@ export interface ActiveSessionState {
   stepCount: number;
   /** Unix socket of the session's held CDP bridge (`session start --hold`), if any. */
   bridgeSocket?: string | null;
+  /**
+   * The id of the recording (`motion/recs/{recId}`) currently live under
+   * this session, if `motion rec --start` has armed one. Cleared by
+   * `motion rec --stop` (or a stale-recorder reap). See
+   * {@link setActiveRecId}/{@link clearActiveRecId}/{@link getActiveRecId}.
+   */
+  activeRecId?: string | null;
 }
 
 export function getActiveSession(): ActiveSessionState | null {
@@ -77,6 +82,21 @@ export function updateActiveSession(patch: Partial<ActiveSessionState>): ActiveS
   const updated = { ...current, ...patch };
   setActiveSession(updated);
   return updated;
+}
+
+/** Records `recId` as the active session's live recording. */
+export function setActiveRecId(recId: string): ActiveSessionState | null {
+  return updateActiveSession({ activeRecId: recId });
+}
+
+/** Clears the active session's live-recording pointer (on `rec --stop` / stale reap). */
+export function clearActiveRecId(): ActiveSessionState | null {
+  return updateActiveSession({ activeRecId: null });
+}
+
+/** Reads the active session's live recording id, or `null` if none. */
+export function getActiveRecId(): string | null {
+  return getActiveSession()?.activeRecId ?? null;
 }
 
 function sanitizeLabel(label: string): string {
