@@ -60,13 +60,14 @@ export class CDPClient {
     method: string,
     params: Record<string, unknown> = {},
     timeout = 60000,
+    sessionId?: string,
   ): Promise<unknown> {
     await this.ready;
     const id = ++this.messageId;
 
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ id, method, params }));
+      this.ws.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));
 
       const timer = setTimeout(() => {
         if (this.pendingRequests.has(id)) {
@@ -84,6 +85,11 @@ export class CDPClient {
       this.eventHandlers.set(event, []);
     }
     this.eventHandlers.get(event)!.push(handler);
+  }
+
+  /** Fires when the underlying websocket goes away (browser closed, crashed, CDP endpoint dropped). */
+  onDisconnect(handler: () => void): void {
+    this.ws.on('close', handler);
   }
 
   close(): void {

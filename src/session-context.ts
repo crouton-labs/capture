@@ -19,6 +19,8 @@ export interface ActiveSessionState {
   harId: string | null;
   targetId: string | null;
   stepCount: number;
+  /** Unix socket of the session's held CDP bridge (`session start --hold`), if any. */
+  bridgeSocket?: string | null;
 }
 
 export function getActiveSession(): ActiveSessionState | null {

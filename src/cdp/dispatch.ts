@@ -6,6 +6,8 @@ import { cmdScreenshot, cmdClick, cmdType, cmdA11y } from './commands/ui.js';
 import { cmdRecord, cmdNavigate, cmdNetwork } from './commands/traffic.js';
 import { cmdHar } from './commands/har.js';
 import { cmdLib } from './commands/lib.js';
+import { cmdCdp } from './commands/cdp.js';
+import { cmdBridgeServe } from './commands/bridge-serve.js';
 
 export async function cdpMain(): Promise<void> {
   const args = process.argv.slice(2);
@@ -26,6 +28,8 @@ export async function cdpMain(): Promise<void> {
     case 'network': return cmdNetwork(parsed, args);
     case 'har': return cmdHar(parsed, args);
     case 'lib': return cmdLib(parsed, args);
+    case 'cdp': return cmdCdp(parsed, args);
+    case '__bridge-serve': return cmdBridgeServe(parsed, args);
     default:
       console.log(CDP_USAGE);
   }

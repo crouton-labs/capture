@@ -13,6 +13,7 @@ import {
   clearActiveSession,
 } from '../session-context.js';
 import { expandEqualsFlags } from '../cdp/args.js';
+import { startBridge, stopBridge } from '../cdp/bridge/spawn.js';
 
 const CAPTURE_ROOT = path.join(os.tmpdir(), 'capture-sessions');
 
@@ -31,6 +32,9 @@ interface Session {
   targetId: string | null;
   stepCount: number;
   logPids: LogPid[];
+  /** Set when started with --hold: one CDP browser connection held open for the session. */
+  bridgeSocket: string | null;
+  bridgePid: number | null;
 }
 
 interface BundleManifest {
@@ -90,7 +94,8 @@ function printSessionHelp(): void {
   console.log(`capture session — manage capture sessions
 
 Sub-commands:
-  start [--url <url>]             Start a session (opens tab, records HAR, sets active context)
+  start [--url <url>] [--hold]    Start a session (opens tab, records HAR, sets active context)
+                                   --hold keeps one CDP browser connection open for the session
   stop  <session-id>              Finalize and bundle artifacts (screenshots, HAR, a11y, logs)
   list                            List active and stopped sessions
   view  <id> [--filter section]   View bundle manifest; section = screenshots|har|a11y|logs
@@ -110,6 +115,17 @@ Typical flow:
   3. capture session stop <session-id>
   4. capture session view <session-id>
 
+--hold: keeps one CDP browser connection open for the session's lifetime, so
+browser-level state (Browser.grantPermissions, ServiceWorker.enable, ...)
+survives across separate commands instead of reverting the instant each
+command's own connection closes. Use it together with \`capture cdp --browser\`:
+
+  capture session start --url http://localhost:3000 --hold
+  capture cdp Browser.grantPermissions --browser --params '{"origin":"http://localhost:3000","permissions":["notifications"]}'
+  capture cdp ServiceWorker.enable --browser --target <pageTabId>
+  capture cdp ServiceWorker.deliverPushMessage --browser --target <pageTabId> --params '{...}'
+  capture session stop <session-id>   # also tears down the held connection
+
 Related:  capture log <path> [--name label]   Tail a log into the active session
 See also: capture --help                      Full command list`);
 }
@@ -121,10 +137,13 @@ See also: capture --help                      Full command list`);
 async function start(rawArgs: string[]): Promise<void> {
   const args = expandEqualsFlags(rawArgs);
   let url: string | null = null;
+  let hold = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--url' && args[i + 1]) {
       url = args[++i];
+    } else if (args[i] === '--hold') {
+      hold = true;
     }
   }
 
@@ -145,11 +164,15 @@ async function start(rawArgs: string[]): Promise<void> {
   // Open tab if URL provided. Fail fast if the new target cannot attach.
   let targetId: string | null = null;
   let pageLoadTimedOut = false;
+  let cdpPort: number | null = null;
+  if (url || hold) {
+    const { detectCdpPort } = await import('../cdp.js');
+    cdpPort = await detectCdpPort();
+  }
   if (url) {
     try {
-      const { detectCdpPort, openTab, CDPClient } = await import('../cdp.js');
-      const port = await detectCdpPort();
-      const tab = await openTab(port, url);
+      const { openTab, CDPClient } = await import('../cdp.js');
+      const tab = await openTab(cdpPort!, url);
       targetId = tab.id;
 
       if (!targetId) {
@@ -188,6 +211,29 @@ async function start(rawArgs: string[]): Promise<void> {
     }
   }
 
+  // Hold a CDP browser connection open for the session's lifetime so
+  // browser-level state (permission grants, ServiceWorker enablement)
+  // survives across separate `capture` commands instead of reverting the
+  // instant each command's own connection closes.
+  let bridgeSocket: string | null = null;
+  let bridgePid: number | null = null;
+  if (hold) {
+    try {
+      const bridge = await startBridge(dir, cdpPort!);
+      bridgeSocket = bridge.socketPath;
+      bridgePid = bridge.pid;
+    } catch (err) {
+      if (harId) {
+        try {
+          deleteHarRecording(harId);
+        } catch {
+          /* best effort */
+        }
+      }
+      throw err;
+    }
+  }
+
   const session: Session = {
     id,
     dir,
@@ -197,6 +243,8 @@ async function start(rawArgs: string[]): Promise<void> {
     targetId,
     stepCount: 0,
     logPids: [],
+    bridgeSocket,
+    bridgePid,
   };
   fs.writeFileSync(sessionMetaPath(id), JSON.stringify(session, null, 2));
 
@@ -207,6 +255,7 @@ async function start(rawArgs: string[]): Promise<void> {
     harId,
     targetId,
     stepCount: 0,
+    bridgeSocket,
   });
 
   // Output for agent consumption
@@ -218,6 +267,7 @@ async function start(rawArgs: string[]): Promise<void> {
     pageLoadTimedOut,
     shotsDir: path.join(dir, 'shots'),
     a11yDir: path.join(dir, 'a11y'),
+    held: hold,
   };
   console.log(JSON.stringify(result, null, 2));
 
@@ -228,6 +278,9 @@ async function start(rawArgs: string[]): Promise<void> {
     if (pageLoadTimedOut) {
       console.error(`Page load timed out, but the session is attached to target ${targetId.slice(0, 8)}. Use \`capture exec --target ${targetId.slice(0, 8)}\` or \`capture list\` if you need to recover it.`);
     }
+  }
+  if (hold) {
+    console.error(`CDP bridge held (pid ${bridgePid}) — browser-level state now survives across commands via: capture cdp <Method> --browser [--params '<json>']`);
   }
   console.error(`\nWhen done: capture session stop ${id}`);
 }
@@ -309,6 +362,12 @@ async function stop(args: string[]): Promise<void> {
     await new Promise((r) => setTimeout(r, 200));
   }
 
+  // Tear down the held CDP bridge, if any — releases the browser-level
+  // connection (and any grants/target-enablement it was keeping alive).
+  if (session.bridgePid || session.bridgeSocket) {
+    stopBridge(session.bridgePid, session.bridgeSocket);
+  }
+
   // Collect screenshots
   const shotsDir = path.join(session.dir, 'shots');
   const screenshots = fs.existsSync(shotsDir)
@@ -357,7 +416,7 @@ async function stop(args: string[]): Promise<void> {
 
   // Collect anything else dropped in the session dir
   const knownDirs = new Set(['shots', 'a11y', 'logs']);
-  const knownFiles = new Set(['.session.json', 'har.json', 'bundle.json']);
+  const knownFiles = new Set(['.session.json', 'har.json', 'bundle.json', 'bridge.sock']);
   const other = fs.readdirSync(session.dir)
     .filter((f) => !knownDirs.has(f) && !knownFiles.has(f))
     .map((f) => ({ name: f, path: path.join(session.dir, f) }));

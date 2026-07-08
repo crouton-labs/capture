@@ -72,6 +72,8 @@ async function main(): Promise<void> {
     case "lib":
     case "network":
     case "list":
+    case "cdp":
+    case "__bridge-serve":
       return cdpMain();
 
     default:
@@ -125,6 +127,24 @@ DIAGNOSTICS & ONE-OFFS (no session needed)
   record [--duration <secs>]               Passive HAR recording; parallel-safe capture
   network <offline|online>                 Toggle connectivity for a tab
   har create | read [id] | delete <id>     Manage standalone HAR recordings
+
+RAW CDP ESCAPE HATCH
+
+  cdp <Domain.method> [--params json]      Send any CDP command capture doesn't wrap
+                      [--browser]          Target the browser connection (Browser.*, ServiceWorker.*)
+                      [--wait-event name]  Wait for a CDP event, e.g. after ServiceWorker.enable
+
+  Browser-level state (permission grants, ServiceWorker enablement) reverts
+  the instant its connection closes. session start --hold keeps ONE browser
+  connection open across commands so that state survives between them:
+
+    capture session start --url http://localhost:3000 --hold
+    capture cdp Browser.grantPermissions --browser --params '{"origin":"...","permissions":["notifications"]}'
+    capture cdp ServiceWorker.enable --browser --target <pageTabId>
+    capture cdp ServiceWorker.deliverPushMessage --browser --target <pageTabId> --params '{...}'
+    capture session stop <session-id>
+
+  capture cdp --help                       Full reference
 
 LIBRARY (vault libs — dev checkout only)
 

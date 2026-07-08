@@ -34,4 +34,9 @@ export interface ParsedArgs {
   filterStatus?: string;
   filterMethod?: string;
   limit?: number;
+  browser?: boolean;
+  params?: string;
+  waitEvent?: string;
+  timeoutMs?: number;
+  socket?: string;
 }

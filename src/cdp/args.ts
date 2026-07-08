@@ -94,6 +94,20 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--limit' && next) {
       parsed.limit = parseInt(next, 10);
       i++;
+    } else if (arg === '--browser') {
+      parsed.browser = true;
+    } else if (arg === '--params' && next) {
+      parsed.params = next;
+      i++;
+    } else if (arg === '--wait-event' && next) {
+      parsed.waitEvent = next;
+      i++;
+    } else if (arg === '--timeout' && next) {
+      parsed.timeoutMs = parseInt(next, 10);
+      i++;
+    } else if (arg === '--socket' && next) {
+      parsed.socket = next;
+      i++;
     } else if (arg === '--help' || arg === '-h') {
       parsed.help = true;
     } else if (arg.startsWith('--')) {

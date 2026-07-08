@@ -2,7 +2,14 @@ import { CDPClient } from './client.js';
 import { detectCdpPortsAsync } from './detect.js';
 import { type CDPTarget } from './types.js';
 
-async function getBrowserClient(
+/**
+ * Connects to the BROWSER-level CDP websocket (not a page/tab target).
+ * Browser-scoped domains (`Browser.grantPermissions`, `ServiceWorker.*`,
+ * `Target.*`) only take effect on this connection — and only for as long as
+ * it stays open, which is why `capture cdp --browser` routes through the
+ * session bridge (`src/cdp/bridge/`) instead of opening a fresh one per call.
+ */
+export async function getBrowserClient(
   port: number,
 ): Promise<{ client: CDPClient; browserWsUrl: string }> {
   const versionResp = await fetch(`http://localhost:${port}/json/version`);

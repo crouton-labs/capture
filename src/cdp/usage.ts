@@ -21,6 +21,7 @@ Commands:
   lib search "<q>"     Fuzzy-search lib functions [--limit N]
   lib show <name>     Lib + function summaries
   lib read <name> [fn…]  Full input/output schemas (+ .ts source path)
+  cdp <Domain.method>  Send a raw CDP command capture doesn't wrap [--browser] [--params json] [--wait-event name]
 
 Options:
   --port <port>       Override CDP port
@@ -37,6 +38,10 @@ Options:
   --filter-status <s> Filter HAR by status: code, prefix (4), or range (400-499)
   --filter-method <m> Filter HAR by HTTP method (har read)
   --limit <N>         Return only first N matching HAR entries (har read)
+  --browser           Target the browser-level connection (cdp)
+  --params '<json>'   JSON params for the method (cdp)
+  --wait-event <name> Wait for a CDP event and return it (cdp)
+  --timeout <ms>      Wait timeout, default 10000 (cdp)
   --out <path>        Output path (screenshot)
   --viewport <preset> Viewport preset: desktop-wide|desktop|tablet|mobile (default: desktop)
   --height <px>       Override viewport height (screenshot)
@@ -67,4 +72,6 @@ Examples:
   capture lib search "search emails"
   capture lib read gmail searchEmails
   capture exec "import {searchEmails} from 'libs/gmail'; const ctx = await getContext(); return await searchEmails({ ...ctx, query: 'invoice' })"
+  capture cdp Browser.grantPermissions --browser --params '{"origin":"http://localhost:3000","permissions":["notifications"]}'
+  capture cdp --help   Raw CDP escape hatch (Browser.*, ServiceWorker.*, ...) + how session --hold keeps grants alive
 `;
