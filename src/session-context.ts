@@ -2,7 +2,9 @@
  * Session Context — persists active session state so CDP commands
  * can auto-fill --target, --har, and --out without manual threading.
  *
- * State is written to /tmp/capture-sessions/.active (JSON).
+ * State is written to /tmp/capture-sessions/.active-<scope> (JSON), where
+ * <scope> isolates concurrent callers (see activeScopeKey() below) so one
+ * caller's `session start` never clobbers another's active pointer.
  * Stale sessions (dir deleted, crashed process) are cleaned up on read.
  */
 
@@ -11,7 +13,24 @@ import * as path from 'path';
 import * as os from 'os';
 
 const CAPTURE_ROOT = path.join(os.tmpdir(), 'capture-sessions');
-const ACTIVE_PATH = path.join(CAPTURE_ROOT, '.active');
+
+/**
+ * The active-session pointer is scoped per caller so concurrent, unrelated
+ * capture invocations never clobber one another's "active session" — e.g.
+ * two crtr agent nodes each running `capture session start` in parallel.
+ * When invoked from a crtr node, CRTR_NODE_ID scopes the pointer to that
+ * node (stable across separate tool calls within the node's lifetime).
+ * Outside crtr (a bare interactive terminal), there's no such identity, so
+ * fall back to the single legacy pointer — the original single-user,
+ * single-session-at-a-time contract still holds there.
+ */
+function activeScopeKey(): string {
+  return process.env.CRTR_NODE_ID ?? 'default';
+}
+
+function getActivePath(): string {
+  return path.join(CAPTURE_ROOT, `.active-${activeScopeKey()}`);
+}
 
 export interface ActiveSessionState {
   sessionId: string;
@@ -25,8 +44,9 @@ export interface ActiveSessionState {
 
 export function getActiveSession(): ActiveSessionState | null {
   try {
-    if (!fs.existsSync(ACTIVE_PATH)) return null;
-    const state = JSON.parse(fs.readFileSync(ACTIVE_PATH, 'utf-8')) as ActiveSessionState;
+    const activePath = getActivePath();
+    if (!fs.existsSync(activePath)) return null;
+    const state = JSON.parse(fs.readFileSync(activePath, 'utf-8')) as ActiveSessionState;
     // Validate session dir still exists — clean up stale files
     if (!fs.existsSync(state.dir)) {
       clearActiveSession();
@@ -40,12 +60,12 @@ export function getActiveSession(): ActiveSessionState | null {
 
 export function setActiveSession(state: ActiveSessionState): void {
   fs.mkdirSync(CAPTURE_ROOT, { recursive: true });
-  fs.writeFileSync(ACTIVE_PATH, JSON.stringify(state, null, 2));
+  fs.writeFileSync(getActivePath(), JSON.stringify(state, null, 2));
 }
 
 export function clearActiveSession(): void {
   try {
-    fs.unlinkSync(ACTIVE_PATH);
+    fs.unlinkSync(getActivePath());
   } catch {
     // Already gone
   }

@@ -118,7 +118,23 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
     }
   }
 
-  // Fill gaps from environment variables (set by pipeline orchestrators)
+  // Fill gaps from the active session first. A session is an explicit,
+  // scoped choice the caller made (`capture session start`), so its
+  // target/har must win over ambient CDP_PORT/CDP_TARGET/CDP_HAR_ID env vars
+  // — those are meant for orchestrators only when NOT in a session (see
+  // `capture --help` TARGETING section). Letting a stale/inherited env var
+  // outrank an active session is how a command silently ends up on the
+  // wrong tab instead of the session's own.
+  const session = getActiveSession();
+  if (session) {
+    if (!parsed.har && session.harId) parsed.har = session.harId;
+    // An explicit --url picks a different (parallel) tab than the session's
+    // own — don't let the session's targetId clobber that choice.
+    if (!parsed.target && !parsed.url && session.targetId) parsed.target = session.targetId;
+  }
+
+  // Fill any still-empty gaps from environment variables (set by pipeline
+  // orchestrators that aren't using the session concept).
   if (!parsed.port && process.env.CDP_PORT) {
     const envPort = Number.parseInt(process.env.CDP_PORT, 10);
     if (Number.isNaN(envPort)) {
@@ -132,15 +148,6 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
   }
   if (!parsed.har && process.env.CDP_HAR_ID) {
     parsed.har = process.env.CDP_HAR_ID;
-  }
-
-  // Fill remaining gaps from active session context (explicit flags always win)
-  const session = getActiveSession();
-  if (session) {
-    if (!parsed.har && session.harId) parsed.har = session.harId;
-    // An explicit --url picks a different (parallel) tab than the session's
-    // own — don't let the session's targetId clobber that choice.
-    if (!parsed.target && !parsed.url && session.targetId) parsed.target = session.targetId;
   }
 
   return parsed as ParsedArgs;
