@@ -712,7 +712,11 @@ export async function getProfileByVanityName(opts: {
 export async function getFullProfile(
   opts: GetFullProfileInput,
 ): Promise<GetFullProfileOutput> {
-  if (!opts.memberId) {
+  // Tolerate two common caller mistakes: passing the value under a `vanityName`
+  // key instead of `memberId`, and passing a non-string id (e.g. from search
+  // results). Alias the key and coerce to string before any string ops.
+  const rawId = opts.memberId ?? (opts as { vanityName?: unknown }).vanityName;
+  if (rawId === undefined || rawId === null || rawId === '') {
     throw new UpstreamError(
       'memberId is required. Pass an ACo... member ID or a vanity name string (e.g., "john-smith"). The parameter key is always "memberId" regardless.',
     );
@@ -723,14 +727,14 @@ export async function getFullProfile(
       ? opts.fetchMode
       : 'basic';
 
-  let memberId = opts.memberId;
+  let memberId = String(rawId);
 
   // If memberId doesn't look like a member ID, resolve via vanity name.
   // For "rich" mode we still need a proper member ID for the profileCards call.
-  if (!opts.memberId.startsWith('ACo')) {
+  if (!memberId.startsWith('ACo')) {
     const profile = await getProfileByVanityName({
       csrf: opts.csrf,
-      vanityName: opts.memberId,
+      vanityName: memberId,
     });
     memberId = profile.memberId;
   }

@@ -1021,7 +1021,7 @@ export const createDMFriendSchema = {
 // ============================================================================
 /* REVIVABLE STUB — uncomment in tandem with the allSchemas entry, the type
    exports below, the function in messages/index.ts, and the barrel exports
-   in internet/libs/discord/index.ts.
+   in libs/discord/index.ts.
 
 // `source` discriminator. Encodes WHICH UI flow the agent is simulating — the
 // telemetry trail, dwell behavior, and page-URL precondition all depend on it,
