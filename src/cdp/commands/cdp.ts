@@ -14,7 +14,7 @@
 import * as fs from 'fs';
 import { getActiveSession } from '../../session-context.js';
 import { connectForCommand } from '../connection.js';
-import { getBrowserClient } from '../targets.js';
+import { getBrowserClient, findTabById } from '../targets.js';
 import { detectCdpPort } from '../detect.js';
 import { sendBridgeRequest } from '../bridge/client.js';
 import { type CDPClient } from '../client.js';
@@ -112,6 +112,14 @@ async function runBrowserScope(
     });
     if (!resp.ok) {
       console.error(`ERROR: ${resp.error}`);
+      if (!parsed.target) {
+        console.error(
+          '\nMany CDP domains (Storage.*, Page.*, DOM.*, Emulation.*, ...) are scoped to a specific ' +
+            'tab, not the browser connection as a whole \u2014 sent bare like this, Chrome often rejects them ' +
+            'with just "Internal error" and no further detail. Pass --target <tabId> to attach to the tab ' +
+            'the call should apply to (run "capture list" to find one).',
+        );
+      }
       process.exit(1);
     }
     console.log(JSON.stringify({ result: resp.result, event: resp.event }, null, 2));
@@ -129,8 +137,16 @@ async function runBrowserScope(
   try {
     let sessionId: string | undefined;
     if (parsed.target) {
+      // Accept the same 8-char-prefix targeting every other capture command
+      // promises (see the top-level --help TARGETING section) instead of
+      // requiring the full 32-char target id here.
+      const tab = await findTabById(port, parsed.target);
+      if (!tab) {
+        console.error(`ERROR: No target found for "${parsed.target}" on port ${port}. Run "capture list" to see available tabs.`);
+        process.exit(1);
+      }
       const attached = (await client.send('Target.attachToTarget', {
-        targetId: parsed.target,
+        targetId: tab.id,
         flatten: true,
       })) as { sessionId: string };
       sessionId = attached.sessionId;
@@ -139,6 +155,18 @@ async function runBrowserScope(
     const result = method ? await client.send(method, params ?? {}, 60000, sessionId) : undefined;
     const event = eventPromise ? await eventPromise : undefined;
     console.log(JSON.stringify({ result, event }, null, 2));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`ERROR: ${message}`);
+    if (!parsed.target) {
+      console.error(
+        '\nMany CDP domains (Storage.*, Page.*, DOM.*, Emulation.*, ...) are scoped to a specific ' +
+          'tab, not the browser connection as a whole \u2014 sent bare like this, Chrome often rejects them ' +
+          'with just "Internal error" and no further detail. Pass --target <tabId> to attach to the tab ' +
+          `the call should apply to (run "capture list" to find one${method ? `, e.g. capture cdp ${method} --browser --target <tabId> ...` : ''}).`,
+      );
+    }
+    process.exit(1);
   } finally {
     client.close();
   }

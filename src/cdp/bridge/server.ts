@@ -14,7 +14,7 @@
 import * as fs from 'fs';
 import * as net from 'net';
 import * as path from 'path';
-import { getBrowserClient } from '../targets.js';
+import { getBrowserClient, findTabById } from '../targets.js';
 import { type CDPClient } from '../client.js';
 import { type BridgeRequest, type BridgeResponse } from './protocol.js';
 
@@ -83,7 +83,8 @@ export class EventBroker {
 }
 
 export async function runBridgeServer(socketPath: string, port?: number): Promise<void> {
-  const { client } = await getBrowserClient(await resolvePort(port));
+  const resolvedPort = await resolvePort(port);
+  const { client } = await getBrowserClient(resolvedPort);
   const events = new EventBroker(client);
 
   // Cache flattened Target.attachToTarget sessions so repeated requests
@@ -93,7 +94,14 @@ export async function runBridgeServer(socketPath: string, port?: number): Promis
   async function attach(targetId: string): Promise<string> {
     const cached = targetSessions.get(targetId);
     if (cached) return cached;
-    const result = (await client.send('Target.attachToTarget', { targetId, flatten: true })) as {
+    // Accept the same 8-char-prefix targeting every other capture command
+    // promises (see the top-level --help TARGETING section) instead of
+    // requiring the full 32-char target id here.
+    const tab = await findTabById(resolvedPort, targetId);
+    if (!tab) {
+      throw new Error(`No target found for "${targetId}" on port ${resolvedPort}. Run "capture list" to see available tabs.`);
+    }
+    const result = (await client.send('Target.attachToTarget', { targetId: tab.id, flatten: true })) as {
       sessionId: string;
     };
     targetSessions.set(targetId, result.sessionId);
