@@ -766,8 +766,130 @@ test('pollForSettle: a matching+quiet sample that arrives after the deadline doe
 });
 
 // ============================================================================
-// 7. groupChurnEvidence — pure unit test
+// 7. churn evidence and groupChurnEvidence
 // ============================================================================
+
+test('collectChurnEvidence releases each distinct mutation-target remote object after identity resolution', async () => {
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const client = {
+    async send(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+      calls.push({ method, params });
+      if (method === 'Runtime.callFunctionOn') {
+        const declaration = String(params.functionDeclaration ?? '');
+        if (declaration.includes('__captureSettleTeardown')) {
+          return { result: { value: { mutations: [
+            { t: 1, type: 'attributes', selector: '#first' },
+            { t: 2, type: 'attributes', selector: '#also-first' },
+            { t: 3, type: 'childList', selector: '#second' },
+          ], resizeCount: 0 } } };
+        }
+        if (declaration.includes('mutations.map')) return { result: { objectId: 'mutation-targets' } };
+      }
+      if (method === 'Runtime.getProperties') {
+        assert.equal(params.objectId, 'mutation-targets');
+        assert.equal(params.ownProperties, true, 'identity resolution must read own properties only, never the prototype chain');
+        return {
+          result: [
+            { name: '0', value: { objectId: 'target-first' }, get: { objectId: 'target-getter' }, set: { objectId: 'target-setter' }, symbol: { objectId: 'target-symbol' } },
+            { name: '1', value: { objectId: 'target-first' } },
+            { name: '2', value: { objectId: 'target-second' } },
+          ],
+          internalProperties: [{ name: '[[Prototype]]', value: { objectId: 'array-prototype' } }],
+          privateProperties: [{ name: '#targetCache', value: { objectId: 'target-cache' } }],
+        };
+      }
+      if (method === 'DOM.describeNode') {
+        return { node: { backendNodeId: params.objectId === 'target-first' ? 101 : 202 } };
+      }
+      return {};
+    },
+  } as unknown as CDPClient;
+
+  const evidence = await collectChurnEvidence(client, { stateObjectId: 'settle-state' });
+
+  assert.deepEqual(evidence.mutations.map((mutation) => mutation.backendNodeId), [101, 101, 202]);
+  assert.deepEqual(
+    calls.filter((call) => call.method === 'Runtime.releaseObject').map((call) => call.params.objectId),
+    ['target-first', 'target-getter', 'target-setter', 'target-symbol', 'target-second', 'array-prototype', 'target-cache', 'mutation-targets', 'settle-state'],
+  );
+});
+
+test('collectChurnEvidence releases the targets handle and returns selector-only mutations when getProperties throws', async () => {
+  const releases: string[] = [];
+  const client = {
+    async send(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+      if (method === 'Runtime.callFunctionOn') {
+        const declaration = String(params.functionDeclaration ?? '');
+        if (declaration.includes('__captureSettleTeardown')) {
+          return { result: { value: { mutations: [{ t: 1, type: 'attributes', selector: '#first' }], resizeCount: 0 } } };
+        }
+        if (declaration.includes('mutations.map')) return { result: { objectId: 'mutation-targets' } };
+      }
+      if (method === 'Runtime.getProperties') throw new Error('stub: getProperties transport failure');
+      if (method === 'Runtime.releaseObject') {
+        releases.push(String(params.objectId));
+        return {};
+      }
+      return {};
+    },
+  } as unknown as CDPClient;
+
+  const evidence = await collectChurnEvidence(client, { stateObjectId: 'settle-state' });
+
+  // Identity enrichment threw before any node was described, so the mutation
+  // stays selector-only rather than the whole collection aborting.
+  assert.deepEqual(evidence.mutations.map((mutation) => mutation.backendNodeId), [undefined]);
+  assert.equal(evidence.mutations[0]?.selector, '#first');
+  // The held targets-array handle and the state handle are still released.
+  assert.ok(releases.includes('mutation-targets'), 'the targets-array handle is released even when getProperties throws');
+  assert.ok(releases.includes('settle-state'), 'the state handle is always released');
+});
+
+test('collectChurnEvidence salvages the remaining nodes and releases every handle when one describeNode throws', async () => {
+  const releases: string[] = [];
+  const client = {
+    async send(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+      if (method === 'Runtime.callFunctionOn') {
+        const declaration = String(params.functionDeclaration ?? '');
+        if (declaration.includes('__captureSettleTeardown')) {
+          return { result: { value: { mutations: [
+            { t: 1, type: 'attributes', selector: '#first' },
+            { t: 2, type: 'childList', selector: '#second' },
+          ], resizeCount: 0 } } };
+        }
+        if (declaration.includes('mutations.map')) return { result: { objectId: 'mutation-targets' } };
+      }
+      if (method === 'Runtime.getProperties') {
+        return {
+          result: [
+            { name: '0', value: { objectId: 'target-first' } },
+            { name: '1', value: { objectId: 'target-second' } },
+          ],
+        };
+      }
+      if (method === 'DOM.describeNode') {
+        if (params.objectId === 'target-first') throw new Error('stub: describeNode failure for one node');
+        return { node: { backendNodeId: 303 } };
+      }
+      if (method === 'Runtime.releaseObject') {
+        releases.push(String(params.objectId));
+        return {};
+      }
+      return {};
+    },
+  } as unknown as CDPClient;
+
+  const evidence = await collectChurnEvidence(client, { stateObjectId: 'settle-state' });
+
+  // The failed node stays selector-only; the other still resolves its identity.
+  assert.deepEqual(evidence.mutations.map((mutation) => mutation.backendNodeId), [undefined, 303]);
+  // Every collected child handle, the targets container, and the state handle are released.
+  assert.deepEqual(
+    releases.slice().sort(),
+    ['mutation-targets', 'settle-state', 'target-first', 'target-second'],
+    'a describeNode failure still releases every collected remote object',
+  );
+});
 
 test('groupChurnEvidence groups mutation regions by selector, then appends running-infinite animation regions', () => {
   const raw = {
@@ -807,6 +929,34 @@ test('groupChurnEvidence groups mutation regions by selector, then appends runni
   assert.equal(report.settled, false);
   assert.equal(report.settleTimeoutMs, 5000);
   assert.equal(report.elapsedMs, 1234);
+});
+
+test('groupChurnEvidence persists mutation-target backend identities for exact downstream caveat joins', () => {
+  const { unstableRegions } = groupChurnEvidence({
+    mutations: [
+      { t: 10, type: 'attributes', selector: 'div#foo.bar.target', backendNodeId: 2 },
+      { t: 20, type: 'attributes', selector: 'div.notice.banner.pinned.transient', backendNodeId: 4 },
+    ],
+    resizeCount: 0,
+  }, { animations: [], infiniteCount: 0 }, 100, 5000);
+
+  assert.deepEqual(unstableRegions.map((region) => region.elementIds), [['2'], ['4']]);
+});
+
+test('groupChurnEvidence coalesces same-backendNodeId mutations with different selectors into one region', () => {
+  const { report, unstableRegions } = groupChurnEvidence({
+    mutations: [
+      { t: 10, type: 'attributes', selector: 'div#foo.bar', backendNodeId: 7 },
+      { t: 20, type: 'childList', selector: 'div#foo.bar.mutated', backendNodeId: 7 },
+    ],
+    resizeCount: 0,
+  }, { animations: [], infiniteCount: 0 }, 100, 5000);
+
+  // One stable backend identity across two selectors collapses to a single
+  // backendNodeId-keyed region, not two selector-keyed ones.
+  assert.equal(report.regions.length, 1);
+  assert.equal(report.regions[0]?.mutationCount, 2);
+  assert.deepEqual(unstableRegions.map((region) => region.elementIds), [['7']]);
 });
 
 // ============================================================================
@@ -1105,6 +1255,10 @@ describe('D10 real-Chrome: the churn-observer lifecycle never triggers a page-de
     assert.ok(
       evidence.mutations.some((m) => m.selector && m.selector.includes('churn')),
       'the recorded mutation must reference the mutated #churn element',
+    );
+    assert.ok(
+      evidence.mutations.some((m) => typeof m.backendNodeId === 'number'),
+      'the held mutation target must resolve to a stable CDP backend node identity',
     );
 
     const fired = await rcReadSetterFired(c);

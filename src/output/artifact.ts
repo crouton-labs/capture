@@ -235,6 +235,7 @@ const CREATING_COMMAND_BY_FILE: Record<string, string> = {
   'forms.json': 'capture measure snap',
   'animation.json': 'capture measure snap',
   'ax.json': 'capture measure snap',
+  'media.json': 'capture measure snap',
   'queries.json': 'capture measure snap',
   'focus.json': 'capture measure snap',
   'scroll.json': 'capture measure snap',
@@ -410,6 +411,11 @@ export function readChurn<T = unknown>(ref: SnapRef): T {
 export function readPixels<T = unknown>(ref: SnapRef): T {
   assertKind(ref, 'snap', 'readPixels');
   return readJsonArtifactFile<T>(ref, 'pixels.json');
+}
+
+export function readMedia<T = unknown>(ref: SnapRef): T {
+  assertKind(ref, 'snap', 'readMedia');
+  return readJsonArtifactFile<T>(ref, 'media.json');
 }
 
 export function readRects<T = unknown>(ref: RecRef): T[] {

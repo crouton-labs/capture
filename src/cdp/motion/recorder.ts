@@ -29,6 +29,8 @@ import {
 import { startRecorderBridge, recorderSocketPath, stopBridge } from '../bridge/spawn.js';
 import { requestRecStart, requestRecStop } from '../recorder-client.js';
 import { detectCdpPort } from '../detect.js';
+import { findTabByIdAcrossEndpoints } from '../targets.js';
+import { CDPClient } from '../client.js';
 import { sanitizeString } from '../measure/redaction.js';
 import { type RecorderClockBaselines } from '../bridge/protocol.js';
 import { getActiveRecId, setActiveRecId, clearActiveRecId, getActiveSession, type ActiveSessionState } from '../../session-context.js';
@@ -225,8 +227,10 @@ export interface FinalizedRecording {
   durationMs: number;
   fps: number;
   state: RecorderLiveState;
-  /** Input-landmark count observed at graceful `rec-stop` time; `null` when
-   * the recorder was orphaned/best-effort finalized (no live socket to ask). */
+  /** Whether a viewport override owned by this recording was restored. */
+  viewportRestored: boolean | null;
+  /** Total events.jsonl record count observed at graceful `rec-stop` time;
+   * `null` when the recorder was orphaned/best-effort finalized (no live socket to ask). */
   eventCount: number | null;
 }
 
@@ -242,7 +246,106 @@ function clearActiveRecIdIfOwned(sessionDir: string, recId: string): void {
   }
 }
 
-function writeFinalizedArtifacts(
+const VIEWPORT_STATE_FILE = 'viewport-override.json';
+
+let viewportDeps = {
+  findTarget: findTabByIdAcrossEndpoints,
+  createClient: (url: string) => new CDPClient(url),
+};
+
+/** Focused lifecycle tests inject the target/CDP boundary; production always
+ * uses the normal target resolver and client. */
+export function __setViewportLifecycleDepsForTest(overrides: Partial<typeof viewportDeps>): () => void {
+  const previous = viewportDeps;
+  viewportDeps = { ...viewportDeps, ...overrides };
+  return () => { viewportDeps = previous; };
+}
+
+/** Persist the lifecycle-owned restoration obligation only after the recorder
+ * is live, so every finalization route (stop, reap, session-stop) sees it. */
+export function recordViewportOverride(recDir: string): void {
+  writeJsonPrivate(path.join(recDir, VIEWPORT_STATE_FILE), { phase: 'applied' });
+}
+
+export interface RecordingViewport {
+  width: number;
+  height: number;
+}
+
+async function applyViewportOverride(recDir: string, targetId: string, viewport: RecordingViewport | undefined): Promise<boolean> {
+  if (!viewport) return false;
+  const tab = await viewportDeps.findTarget(targetId);
+  if (!tab?.tab.webSocketDebuggerUrl) throw new Error('recording target is unavailable');
+  const client = viewportDeps.createClient(tab.tab.webSocketDebuggerUrl);
+  try {
+    await client.waitReady();
+    // From this write onward the set request may reach Chrome even if its
+    // response is lost, so teardown owns a compensating clear.
+    writeJsonPrivate(path.join(recDir, VIEWPORT_STATE_FILE), { phase: 'attempting', targetId });
+    await client.send('Emulation.setDeviceMetricsOverride', {
+      width: viewport.width,
+      height: viewport.height,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    writeJsonPrivate(path.join(recDir, VIEWPORT_STATE_FILE), { phase: 'applied', targetId });
+    return true;
+  } finally {
+    client.close();
+  }
+}
+
+interface ViewportOverrideState {
+  phase?: unknown;
+  applied?: unknown;
+  targetId?: unknown;
+}
+
+function readViewportOverrideState(statePath: string): ViewportOverrideState | null {
+  try {
+    return JSON.parse(fs.readFileSync(statePath, 'utf8')) as ViewportOverrideState;
+  } catch {
+    return null;
+  }
+}
+
+async function restoreViewportOverride(recDir: string, targetId: string): Promise<boolean | null> {
+  const statePath = path.join(recDir, VIEWPORT_STATE_FILE);
+  if (!fs.existsSync(statePath)) return null;
+  const state = readViewportOverrideState(statePath);
+  // Only an in-flight or acknowledged set can have mutated Chrome. A
+  // prepared obligation is discarded rather than clearing another owner.
+  const mayHaveApplied = state?.phase === 'attempting' || state?.phase === 'applied' || state?.applied === true;
+  if (!mayHaveApplied) {
+    removeArtifactTree(statePath);
+    return null;
+  }
+  try {
+    const tab = await viewportDeps.findTarget(targetId);
+    if (!tab?.tab.webSocketDebuggerUrl) throw new Error('recording target is unavailable');
+    const client = viewportDeps.createClient(tab.tab.webSocketDebuggerUrl);
+    try {
+      await client.waitReady();
+      await client.send('Emulation.clearDeviceMetricsOverride');
+    } finally {
+      client.close();
+    }
+    removeArtifactTree(statePath);
+    return true;
+  } catch {
+    // Preserve the state file as the factual failed-restoration evidence.
+    return false;
+  }
+}
+
+export class StartRecorderError extends Error {
+  constructor(message: string, readonly viewportRestored: boolean | null) {
+    super(message);
+    this.name = 'StartRecorderError';
+  }
+}
+
+async function writeFinalizedArtifacts(
   sessionDir: string,
   recDir: string,
   recId: string,
@@ -252,10 +355,12 @@ function writeFinalizedArtifacts(
   state: RecorderLiveState,
   markers: RecorderClockBaselines,
   eventCount: number | null,
-): FinalizedRecording {
+  targetId: string,
+): Promise<FinalizedRecording> {
   const fps = durationMs > 0 ? round1(frames / (durationMs / 1000)) : 0;
+  const viewportRestored = await restoreViewportOverride(recDir, targetId);
   writeJsonPrivate(markersPath(recDir), markers);
-  const meta: RecMeta & { url: string | null; fps: number; eventCount: number | null } = {
+  const meta: RecMeta & { url: string | null; fps: number; eventCount: number | null; viewportRestored: boolean | null } = {
     id: recId,
     action: null,
     frames,
@@ -264,11 +369,12 @@ function writeFinalizedArtifacts(
     url,
     fps,
     eventCount,
+    viewportRestored,
   };
   writeJsonPrivate(metaPath(recDir), meta);
   removeArtifactTree(recorderJsonPath(recDir));
   clearActiveRecIdIfOwned(sessionDir, recId);
-  return { recId, recDir, frames, durationMs, fps, state, eventCount };
+  return { recId, recDir, frames, durationMs, fps, state, eventCount, viewportRestored };
 }
 
 /** Best-effort finalize when the recorder process is dead, or known-alive but
@@ -282,11 +388,11 @@ function writeFinalizedArtifacts(
  * a live process without ever stopping it. Callers finalizing an already-dead
  * pid pass `null` (the default) — killing a dead pid would be a no-op anyway,
  * but staying explicit keeps that path from depending on `rj.pid`'s liveness. */
-function finalizeOrphaned(rj: RecorderJson, recDir: string, sessionDir: string, killPid: number | null = null): FinalizedRecording {
+async function finalizeOrphaned(rj: RecorderJson, recDir: string, sessionDir: string, killPid: number | null = null): Promise<FinalizedRecording> {
   const frames = countFrames(recDir);
   const durationMs = Math.max(0, Date.now() - Date.parse(rj.startedAt));
   stopBridge(killPid, rj.socketPath); // best-effort: SIGTERM only if a live pid was passed; always cleans up the socket file
-  return writeFinalizedArtifacts(sessionDir, recDir, rj.recId, rj.url, frames, durationMs, 'orphaned-finalized', rj.markers, null);
+  return writeFinalizedArtifacts(sessionDir, recDir, rj.recId, rj.url, frames, durationMs, 'orphaned-finalized', rj.markers, null, rj.targetId);
 }
 
 // ---------------------------------------------------------------------------
@@ -308,14 +414,14 @@ function finalizeOrphaned(rj: RecorderJson, recDir: string, sessionDir: string, 
  * (pointer set, but no matching on-disk handle left to reap). Returns the
  * handle the pointer named, if any was reaped, else the first one reaped,
  * else `null` if there was nothing stale to reap. */
-export function reapStaleActiveRecorder(sessionDir: string): FinalizedRecording | null {
+export async function reapStaleActiveRecorder(sessionDir: string): Promise<FinalizedRecording | null> {
   const handles = listLiveRecorderHandles(sessionDir);
   const activeHere = activeSessionMatching(sessionDir);
 
   let primary: FinalizedRecording | null = null;
   for (const { recId, recDir, rj } of handles) {
     if (isPidAlive(rj.pid)) continue;
-    const finalized = finalizeOrphaned(rj, recDir, sessionDir);
+    const finalized = await finalizeOrphaned(rj, recDir, sessionDir);
     if (recId === activeHere?.activeRecId || primary === null) primary = finalized;
   }
 
@@ -356,19 +462,25 @@ export async function startComposedRecorder(
   opts: {
     sessionDir: string;
     targetId: string | null;
+    viewport?: RecordingViewport;
   },
   deps: StartRecorderDeps = {},
 ): Promise<StartRecorderResult> {
-  const reapedStale = reapStaleActiveRecorder(opts.sessionDir);
-
-  // The lock closes the check-then-spawn race between two concurrent
-  // `startComposedRecorder` calls (see `acquireStartLock`'s doc comment);
-  // the directory scan below (not just the `activeRecId` pointer) is what
-  // closes the "live recorder.json with a missing/cleared pointer" gap.
+  // The lock covers stale reap, live validation, viewport mutation, and
+  // bridge startup. A rejected start therefore cannot touch a live
+  // recording's viewport, and a stale reap completes before a new override.
   const lockFd = acquireStartLock(opts.sessionDir);
   try {
-    const liveElsewhere = listLiveRecorderHandles(opts.sessionDir).some(({ rj }) => isPidAlive(rj.pid));
-    if (getActiveRecId() || liveElsewhere) {
+    // Never reap a dead sibling while any live recorder owns this session:
+    // the stale handle's cleanup could clear that live recording's viewport.
+    const initialHandles = listLiveRecorderHandles(opts.sessionDir);
+    if (initialHandles.some(({ rj }) => isPidAlive(rj.pid))) {
+      throw new Error(
+        'A recording is already active on this session. Stop it first: `capture motion rec --stop`.',
+      );
+    }
+    const reapedStale = await reapStaleActiveRecorder(opts.sessionDir);
+    if (getActiveRecId()) {
       throw new Error(
         'A recording is already active on this session. Stop it first: `capture motion rec --stop`.',
       );
@@ -383,36 +495,41 @@ export async function startComposedRecorder(
     const recDir = recDirFor(opts.sessionDir, recId);
     ensurePrivateDir(recDir);
     ensurePrivateDir(path.join(recDir, 'frames'));
-
-    const port = await (deps.detectPort ?? detectCdpPort)();
-    const socketPath = recorderSocketPath(recDir);
-    const spawnRecorderBridge = deps.spawnRecorderBridge ?? startRecorderBridge;
-    const { pid } = await spawnRecorderBridge(socketPath, port, opts.targetId, recDir);
-
-    let markers: RecorderClockBaselines;
+    let viewportAttempted = false;
+    let pid: number | null = null;
+    let socketPath: string | null = null;
     try {
+      viewportAttempted = await applyViewportOverride(recDir, opts.targetId, opts.viewport);
+      const port = await (deps.detectPort ?? detectCdpPort)();
+      socketPath = recorderSocketPath(recDir);
+      const spawnRecorderBridge = deps.spawnRecorderBridge ?? startRecorderBridge;
+      ({ pid } = await spawnRecorderBridge(socketPath, port, opts.targetId, recDir));
       const startResp = await requestRecStart(socketPath);
-      markers = startResp.markers;
+      const markers = startResp.markers;
+
+      const recorderJson: RecorderJson = {
+        recId,
+        pid,
+        socketPath,
+        targetId: opts.targetId,
+        url: readSessionUrl(opts.sessionDir),
+        startedAt: new Date().toISOString(),
+        state: 'recording',
+        markers,
+      };
+      writeJsonPrivate(recorderJsonPath(recDir), recorderJson);
+      setActiveRecId(recId);
+      return { recId, recDir, state: 'recording', reapedStale };
     } catch (err) {
-      stopBridge(pid, socketPath);
-      removeArtifactTree(recDir);
-      throw err;
+      if (pid !== null) stopBridge(pid, socketPath);
+      const restored = viewportAttempted || fs.existsSync(path.join(recDir, VIEWPORT_STATE_FILE))
+        ? await restoreViewportOverride(recDir, opts.targetId)
+        : null;
+      // A failed restoration is a live lifecycle obligation, not disposable
+      // partial output. Leave it for the next session teardown to retry.
+      if (restored !== false) removeArtifactTree(recDir);
+      throw new StartRecorderError(err instanceof Error ? err.message : String(err), restored);
     }
-
-    const recorderJson: RecorderJson = {
-      recId,
-      pid,
-      socketPath,
-      targetId: opts.targetId,
-      url: readSessionUrl(opts.sessionDir),
-      startedAt: new Date().toISOString(),
-      state: 'recording',
-      markers,
-    };
-    writeJsonPrivate(recorderJsonPath(recDir), recorderJson);
-    setActiveRecId(recId);
-
-    return { recId, recDir, state: 'recording', reapedStale };
   } finally {
     releaseStartLock(opts.sessionDir, lockFd);
   }
@@ -440,18 +557,18 @@ export async function stopComposedRecorder(opts: {
   }
 
   if (!isPidAlive(rj.pid)) {
-    return finalizeOrphaned(rj, recDir, opts.sessionDir);
+    return await finalizeOrphaned(rj, recDir, opts.sessionDir);
   }
 
   try {
     const stopResp = await requestRecStop(rj.socketPath);
     stopBridge(rj.pid, rj.socketPath);
-    return writeFinalizedArtifacts(opts.sessionDir, recDir, recId, rj.url, stopResp.frameCount, stopResp.durationMs, 'finalized', stopResp.markers, stopResp.eventCount);
+    return await writeFinalizedArtifacts(opts.sessionDir, recDir, recId, rj.url, stopResp.frameCount, stopResp.durationMs, 'finalized', stopResp.markers, stopResp.eventCount, rj.targetId);
   } catch {
     // Known-live pid, but the socket round trip failed (wedged/missing
     // bridge) — kill the pid and best-effort finalize from whatever made it
     // to disk, same fallback `teardownAnyLiveRecorderAtSessionStop` uses.
-    return finalizeOrphaned(rj, recDir, opts.sessionDir, rj.pid);
+    return await finalizeOrphaned(rj, recDir, opts.sessionDir, rj.pid);
   }
 }
 
@@ -471,9 +588,39 @@ export async function stopComposedRecorder(opts: {
  * pid answers, otherwise a best-effort orphaned finalize; reap never
  * resumes a stale one. The pointer is cleared only for handles this
  * session actually owns (`clearActiveRecIdIfOwned`) — a pointer naming
- * some other session is left completely untouched. No-op (returns `null`)
- * if there is nothing on disk to tear down. */
-export async function teardownAnyLiveRecorderAtSessionStop(sessionDir: string): Promise<FinalizedRecording | null> {
+ * some other session is left completely untouched. Returns the finalized
+ * recording, if any, plus every pending failed-start viewport retry outcome. */
+export interface PendingViewportRestoration {
+  recId: string;
+  viewportRestored: boolean | null;
+}
+
+async function restorePendingStartViewportOverrides(sessionDir: string): Promise<PendingViewportRestoration[]> {
+  const recsRoot = recsRootFor(sessionDir);
+  if (!fs.existsSync(recsRoot)) return [];
+  const outcomes: PendingViewportRestoration[] = [];
+  for (const entry of fs.readdirSync(recsRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const recDir = path.join(recsRoot, entry.name);
+    if (readRecorderJson(recDir)) continue;
+    const statePath = path.join(recDir, VIEWPORT_STATE_FILE);
+    if (!fs.existsSync(statePath)) continue;
+    const state = readViewportOverrideState(statePath);
+    const targetId = typeof state?.targetId === 'string' ? state.targetId : null;
+    const viewportRestored = targetId ? await restoreViewportOverride(recDir, targetId) : null;
+    outcomes.push({ recId: entry.name, viewportRestored });
+  }
+  return outcomes;
+}
+
+export type SessionRecorderTeardown = (FinalizedRecording & {
+  pendingViewportRestorations: PendingViewportRestoration[];
+}) | {
+  recording: null;
+  pendingViewportRestorations: PendingViewportRestoration[];
+} | null;
+
+export async function teardownAnyLiveRecorderAtSessionStop(sessionDir: string): Promise<SessionRecorderTeardown> {
   const handles = listLiveRecorderHandles(sessionDir);
   const activeHere = activeSessionMatching(sessionDir);
 
@@ -481,12 +628,12 @@ export async function teardownAnyLiveRecorderAtSessionStop(sessionDir: string): 
   for (const { recId, recDir, rj } of handles) {
     let finalized: FinalizedRecording;
     if (!isPidAlive(rj.pid)) {
-      finalized = finalizeOrphaned(rj, recDir, sessionDir);
+      finalized = await finalizeOrphaned(rj, recDir, sessionDir);
     } else {
       try {
         const stopResp = await requestRecStop(rj.socketPath);
         stopBridge(rj.pid, rj.socketPath);
-        finalized = writeFinalizedArtifacts(
+        finalized = await writeFinalizedArtifacts(
           sessionDir,
           recDir,
           recId,
@@ -496,6 +643,7 @@ export async function teardownAnyLiveRecorderAtSessionStop(sessionDir: string): 
           'finalized',
           stopResp.markers,
           stopResp.eventCount,
+          rj.targetId,
         );
       } catch {
         // The process answered isPidAlive() but the socket round trip itself
@@ -504,7 +652,7 @@ export async function teardownAnyLiveRecorderAtSessionStop(sessionDir: string): 
         // stuck with a live-looking recorder it can never stop. The pid IS
         // known-live here, so pass it through to be SIGTERM'd — otherwise the
         // bridge process is finalized on disk but never killed and leaks.
-        finalized = finalizeOrphaned(rj, recDir, sessionDir, rj.pid);
+        finalized = await finalizeOrphaned(rj, recDir, sessionDir, rj.pid);
       }
     }
     if (recId === activeHere?.activeRecId || primary === null) primary = finalized;
@@ -516,5 +664,8 @@ export async function teardownAnyLiveRecorderAtSessionStop(sessionDir: string): 
     clearActiveRecId();
   }
 
-  return primary;
+  const pendingViewportRestorations = await restorePendingStartViewportOverrides(sessionDir);
+  if (primary) return { ...primary, pendingViewportRestorations };
+  if (pendingViewportRestorations.length) return { recording: null, pendingViewportRestorations };
+  return null;
 }

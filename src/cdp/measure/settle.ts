@@ -116,6 +116,8 @@ export interface ChurnMutationRecord {
   readonly t: number;
   readonly type: string;
   readonly selector: string | null;
+  /** Stable CDP identity of the mutation target, when the held target object could be described. */
+  readonly backendNodeId?: number;
 }
 
 /** Fixed, factual reasons {@link collectChurnEvidence} could not read a well-formed teardown payload back (never a raw exception message). Present only when {@link ChurnEvidenceRaw.teardownUnavailable} is `true`. */
@@ -187,6 +189,73 @@ async function callOnHeld<T>(client: CDPClient, objectId: string, functionDeclar
   return response.result?.value as T;
 }
 
+/** Resolves the mutation targets retained in the held observer state to CDP identities without exposing a page-observable marker. */
+async function mutationTargetBackendNodeIds(client: CDPClient, stateObjectId: string, count: number): Promise<Array<number | undefined>> {
+  const identities = new Array<number | undefined>(count);
+  const childObjectIds = new Set<string>();
+  let targetsObjectId: string | undefined;
+  try {
+    const targets = (await client.send('Runtime.callFunctionOn', {
+      objectId: stateObjectId,
+      functionDeclaration: 'function() { return this.mutations.map(function(mutation) { return mutation.target; }); }',
+      returnByValue: false,
+    })) as { result?: { objectId?: string } };
+    targetsObjectId = targets.result?.objectId;
+    if (!targetsObjectId) return identities;
+    type RemoteObject = { objectId?: string };
+    type PropertyDescriptor = { name?: string; value?: RemoteObject; get?: RemoteObject; set?: RemoteObject; symbol?: RemoteObject };
+    const properties = (await client.send('Runtime.getProperties', { objectId: targetsObjectId, ownProperties: true })) as {
+      result?: PropertyDescriptor[];
+      internalProperties?: PropertyDescriptor[];
+      privateProperties?: PropertyDescriptor[];
+    };
+    for (const descriptor of [...(properties.result ?? []), ...(properties.internalProperties ?? []), ...(properties.privateProperties ?? [])]) {
+      for (const object of [descriptor.value, descriptor.get, descriptor.set, descriptor.symbol]) {
+        if (object?.objectId) childObjectIds.add(object.objectId);
+      }
+    }
+    const indexesByObjectId = new Map<string, number[]>();
+    for (const descriptor of properties.result ?? []) {
+      const objectId = descriptor.value?.objectId;
+      const index = typeof descriptor.name === 'string' && /^\d+$/u.test(descriptor.name) ? Number(descriptor.name) : undefined;
+      if (index === undefined || index >= count || !objectId) continue;
+      const indexes = indexesByObjectId.get(objectId) ?? [];
+      indexes.push(index);
+      indexesByObjectId.set(objectId, indexes);
+    }
+    for (const [objectId, indexes] of indexesByObjectId) {
+      try {
+        const described = (await client.send('DOM.describeNode', { objectId })) as { node?: { backendNodeId?: unknown } };
+        if (typeof described.node?.backendNodeId === 'number') {
+          for (const index of indexes) identities[index] = described.node.backendNodeId;
+        }
+      } catch {
+        // One node's identity read failing leaves only that node selector-only;
+        // the remaining targets still resolve rather than the whole batch aborting.
+      }
+    }
+  } catch {
+    // Identity enrichment is optional: a failed CDP bridge leaves this legacy
+    // record unjoined rather than assigning a caveat through its selector.
+  } finally {
+    for (const objectId of childObjectIds) {
+      try {
+        await client.send('Runtime.releaseObject', { objectId });
+      } catch {
+        // CDP-session-scoped bridge cleanup only.
+      }
+    }
+    if (targetsObjectId) {
+      try {
+        await client.send('Runtime.releaseObject', { objectId: targetsObjectId });
+      } catch {
+        // CDP-session-scoped bridge cleanup only.
+      }
+    }
+  }
+  return identities;
+}
+
 const BOOTSTRAP_SCRIPT = `/* __captureSettleBootstrap */
 (function() {
   var state = { lastMutationTs: performance.now(), mutations: [], mutationsObserved: 0, resizeCount: 0 };
@@ -219,7 +288,7 @@ const BOOTSTRAP_SCRIPT = `/* __captureSettleBootstrap */
       state.mutationsObserved += 1;
       if (state.mutations.length >= 200) continue;
       var r = records[i];
-      state.mutations.push({ t: state.lastMutationTs, type: r.type, selector: describeTarget(r.target) });
+      state.mutations.push({ t: state.lastMutationTs, type: r.type, selector: describeTarget(r.target), target: r.target });
     }
   });
   mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
@@ -276,7 +345,12 @@ const TEARDOWN_SCRIPT = `/* __captureSettleTeardown */ function() {
   var state = this;
   try { state.mo.disconnect(); } catch (e) {}
   try { if (state.ro) state.ro.disconnect(); } catch (e) {}
-  return { mutations: state.mutations, resizeCount: state.resizeCount, mutationsObserved: state.mutationsObserved, resizeObserverUnavailable: state.resizeObserverUnavailable === true };
+  // Project each record to its serializable fields only. The live node kept in
+  // state.mutations[i].target stays on the held object for identity resolution;
+  // it must not ride the returnByValue read, where a DOM node serializes to a
+  // junk {} on every record.
+  var mutations = state.mutations.map(function(m) { return { t: m.t, type: m.type, selector: m.selector }; });
+  return { mutations: mutations, resizeCount: state.resizeCount, mutationsObserved: state.mutationsObserved, resizeObserverUnavailable: state.resizeObserverUnavailable === true };
 }`;
 
 /**
@@ -532,8 +606,13 @@ export async function collectChurnEvidence(client: CDPClient, handle: ChurnObser
     // is the empty DEFAULT rather than a genuine zero-resize observation.
     // Never conflate the two: a malformed teardown read never sets this,
     // and a resize-observer setup failure never sets `teardownUnavailable`.
+    const mutations = value.mutations as ChurnMutationRecord[];
+    const targetBackendNodeIds = await mutationTargetBackendNodeIds(client, handle.stateObjectId, mutations.length);
     return {
-      mutations: value.mutations as ChurnMutationRecord[],
+      mutations: mutations.map((mutation, index) => ({
+        ...mutation,
+        ...(targetBackendNodeIds[index] === undefined ? {} : { backendNodeId: targetBackendNodeIds[index] }),
+      })),
       resizeCount: value.resizeCount as number,
       mutationsObserved: typeof value.mutationsObserved === 'number' ? value.mutationsObserved : undefined,
       ...(value.resizeObserverUnavailable === true
@@ -862,12 +941,13 @@ export function groupChurnEvidence(
   elapsedMs: number,
   settleTimeoutMs: number,
 ): { report: ChurnReportRecord; unstableRegions: UnstableRegion[] } {
-  const buckets = new Map<string, MutationBucket>();
+  const buckets = new Map<string, MutationBucket & { backendNodeId?: number }>();
   for (const mutation of raw.mutations) {
-    const key = mutation.selector ?? '(unknown)';
+    const backendNodeId = typeof mutation.backendNodeId === 'number' ? mutation.backendNodeId : undefined;
+    const key = backendNodeId === undefined ? `selector:${mutation.selector ?? '(unknown)'}` : `backend:${backendNodeId}`;
     let bucket = buckets.get(key);
     if (!bucket) {
-      bucket = { selector: mutation.selector === null ? undefined : sanitizeString(mutation.selector), count: 0 };
+      bucket = { selector: mutation.selector === null ? undefined : sanitizeString(mutation.selector), count: 0, ...(backendNodeId === undefined ? {} : { backendNodeId }) };
       buckets.set(key, bucket);
     }
     bucket.count += 1;
@@ -894,6 +974,7 @@ export function groupChurnEvidence(
     unstableRegions.push({
       id,
       ...(bucket.selector ? { selector: bucket.selector } : {}),
+      ...(bucket.backendNodeId === undefined ? {} : { elementIds: [String(bucket.backendNodeId)] }),
       reason,
     });
   }

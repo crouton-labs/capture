@@ -9,10 +9,14 @@ import { measureMain, MEASURE_USAGE, MEASURE_MAP_USAGE } from '../src/cdp/comman
 import { motionMain, MOTION_USAGE } from '../src/cdp/commands/motion/index.js';
 
 /** Capture console.log (branch-level usage) + process.stdout.write (leaf
- * emitResult output) + trap process.exit (leaf stubs call
- * process.exit(0)/process.exit(1)), restoring all three in `finally`.
- * Mirrors the capture patterns in test/session-help.test.ts and
- * test/output-render.test.ts. */
+ * emitResult output) and surface the resulting exit code, restoring all
+ * three in `finally`. Two exit mechanisms are unified: the branch router and
+ * gate guard call process.exit(code) (trapped here), while a leaf signals a
+ * structured error by setting process.exitCode = 1 and returning — so the
+ * returned exitCode prefers a trapped process.exit but falls back to the
+ * process.exitCode a leaf left behind. process.exitCode is reset around the
+ * call so a leaf's failing code never leaks to the test runner. Mirrors the
+ * capture patterns in test/session-help.test.ts and test/output-render.test.ts. */
 async function withCapture(fn: () => Promise<void>): Promise<{
   logs: string;
   stdout: string;
@@ -21,6 +25,8 @@ async function withCapture(fn: () => Promise<void>): Promise<{
   const originalLog = console.log;
   const originalWrite = process.stdout.write.bind(process.stdout);
   const originalExit = process.exit;
+  const originalExitCode = process.exitCode;
+  process.exitCode = undefined;
 
   const logs: string[] = [];
   let stdout = '';
@@ -41,7 +47,7 @@ async function withCapture(fn: () => Promise<void>): Promise<{
   try {
     await fn();
   } catch (err) {
-    // process.exit throwing is expected for every leaf-stub path; anything
+    // process.exit throwing is expected for every leaf error path; anything
     // else is a real test failure and should propagate.
     if (!(err instanceof Error) || !/^process\.exit\(\d+\)$/.test(err.message)) throw err;
   } finally {
@@ -49,6 +55,11 @@ async function withCapture(fn: () => Promise<void>): Promise<{
     process.stdout.write = originalWrite;
     process.exit = originalExit;
   }
+
+  // A trapped process.exit(code) wins; otherwise fall back to the
+  // process.exitCode a leaf sets on a structured error.
+  if (exitCode === undefined && typeof process.exitCode === 'number') exitCode = process.exitCode;
+  process.exitCode = originalExitCode;
 
   return { logs: logs.join('\n'), stdout, exitCode };
 }
@@ -127,19 +138,19 @@ interface LeafCase {
 }
 
 const measureLeafCases: LeafCase[] = [
-  { name: 'measure snap', argv: ['measure', 'snap', 'https://example.com/'], command: 'measure snap', main: measureMain },
+  { name: 'measure snap', argv: ['measure', 'snap', 'snap-a3f2'], command: 'measure snap', main: measureMain },
   { name: 'measure check', argv: ['measure', 'check', 'snap-a3f2', '--for', 'overlap'], command: 'measure check', main: measureMain },
   { name: 'measure diff', argv: ['measure', 'diff', '--before', 'snap-a', '--after', 'snap-b'], command: 'measure diff', main: measureMain },
   { name: 'measure census', argv: ['measure', 'census', '--axis', 'color'], command: 'measure census', main: measureMain },
   { name: 'measure explain', argv: ['measure', 'explain', 'snap-a3f2', '--selector', '.foo'], command: 'measure explain', main: measureMain },
-  { name: 'measure sweep', argv: ['measure', 'sweep', 'https://example.com/'], command: 'measure sweep', main: measureMain },
+  { name: 'measure sweep', argv: ['measure', 'sweep'], command: 'measure sweep', main: measureMain },
   { name: 'measure map focus', argv: ['measure', 'map', 'focus', 'snap-a3f2'], command: 'measure map focus', main: measureMain },
   { name: 'measure map scroll', argv: ['measure', 'map', 'scroll', 'snap-a3f2'], command: 'measure map scroll', main: measureMain },
   { name: 'measure map layers', argv: ['measure', 'map', 'layers', 'snap-a3f2'], command: 'measure map layers', main: measureMain },
 ];
 
 const motionLeafCases: LeafCase[] = [
-  { name: 'motion rec', argv: ['motion', 'rec', 'https://example.com/', '--do', 'click:button'], command: 'motion rec', main: motionMain },
+  { name: 'motion rec', argv: ['motion', 'rec'], command: 'motion rec', main: motionMain },
   { name: 'motion mask', argv: ['motion', 'mask', 'rec-9f31'], command: 'motion mask', main: motionMain },
   { name: 'motion timeline', argv: ['motion', 'timeline', 'rec-9f31', '--element', '.toast'], command: 'motion timeline', main: motionMain },
   { name: 'motion jank', argv: ['motion', 'jank', 'rec-9f31'], command: 'motion jank', main: motionMain },
@@ -147,29 +158,35 @@ const motionLeafCases: LeafCase[] = [
 ];
 
 for (const { name, argv, command, main } of [...measureLeafCases, ...motionLeafCases]) {
-  test(`${name} routes end-to-end: parseCliArgs -> branch router -> leaf stub -> renderer`, async () => {
+  test(`${name} routes end-to-end: parseCliArgs -> branch router -> leaf dispatch -> renderer`, async () => {
     const { stdout, exitCode } = await withCapture(() => main(parseCliArgs(argv), []));
 
+    // The branch router dispatched to the right leaf: the leaf ran its own
+    // logic and emitted a structured <error> stamped with its own command
+    // path. Each argv targets an unreachable snapshot/recording or omits a
+    // required arg, so the leaf fails fast before driving a browser — routing
+    // is proven without a live browser. The command attribute is the tell:
+    // dispatch to the wrong leaf would stamp a different command path.
     assert.equal(exitCode, 1);
     assert.match(stdout, /<error /);
-    assert.match(stdout, /status="not_implemented"/);
     assert.match(stdout, new RegExp(`command="${command.replace(/ /g, '\\s')}"`));
+    assert.doesNotMatch(stdout, /not_implemented/);
   });
 }
 
-test('leaf stubs honor --json: valid JSON, tag "error", status "not_implemented"', async () => {
+test('measure leaves honor --json: a structured error renders as valid JSON with the current tag/status vocabulary', async () => {
   const { stdout, exitCode } = await withCapture(() =>
-    measureMain(parseCliArgs(['measure', 'snap', '--json']), []),
+    measureMain(parseCliArgs(['measure', 'snap', 'snap-a3f2', '--json']), []),
   );
 
   assert.equal(exitCode, 1);
   const parsed = JSON.parse(stdout);
   assert.equal(parsed.tag, 'error');
-  assert.equal(parsed.attrs.status, 'not_implemented');
+  assert.equal(parsed.attrs.status, 'snapshot_ref_unavailable');
   assert.equal(parsed.attrs.command, 'measure snap');
 });
 
-test('motion leaf stubs also honor --json', async () => {
+test('motion leaves also honor --json', async () => {
   const { stdout, exitCode } = await withCapture(() =>
     motionMain(parseCliArgs(['motion', 'jank', 'rec-9f31', '--json']), []),
   );
@@ -177,7 +194,7 @@ test('motion leaf stubs also honor --json', async () => {
   assert.equal(exitCode, 1);
   const parsed = JSON.parse(stdout);
   assert.equal(parsed.tag, 'error');
-  assert.equal(parsed.attrs.status, 'not_implemented');
+  assert.equal(parsed.attrs.status, 'artifact_unavailable');
   assert.equal(parsed.attrs.command, 'motion jank');
 });
 
@@ -203,12 +220,15 @@ for (const { name, argv, command, main } of [...measureLeafCases, ...motionLeafC
 for (const { name, argv, command, main } of [...measureLeafCases, ...motionLeafCases]) {
   if (!gateAllowedCommands.has(command)) continue;
 
-  test(`${name} still accepts --gate (parses through to the leaf's own not_implemented stub)`, async () => {
+  test(`${name} still accepts --gate (it parses through to the implemented leaf instead of being rejected)`, async () => {
     const { stdout, exitCode } = await withCapture(() => main(parseCliArgs([...argv, '--gate']), []));
 
+    // --gate is a valid flag on this leaf: the guard lets it through and the
+    // leaf runs its real logic (here it fails resolving the unreachable
+    // snapshot ref). The tell is that --gate was NOT rejected as unsupported.
     assert.equal(exitCode, 1);
     assert.match(stdout, /<error /);
-    assert.match(stdout, /status="not_implemented"/);
+    assert.match(stdout, new RegExp(`command="${command.replace(/ /g, '\\s')}"`));
     assert.doesNotMatch(stdout, /unsupported_flag/);
   });
 }

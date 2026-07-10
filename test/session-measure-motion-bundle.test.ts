@@ -84,6 +84,10 @@ test('session stop collects measure/snaps and motion/recs meta.json into bundle.
     });
 
     assert.equal(manifest.recs.length, 1);
+    // A rec bundle entry always carries viewportRestored; the collector
+    // defaults it to null when the recording's meta.json omits it (this
+    // fixture does), so a null here is the collector filling the field, not
+    // the fixture supplying it.
     assert.deepEqual(manifest.recs[0], {
       id: 'rec-b1',
       path: recDir,
@@ -91,6 +95,7 @@ test('session stop collects measure/snaps and motion/recs meta.json into bundle.
       frames: 42,
       durationMs: 1234,
       state: 'finalized',
+      viewportRestored: null,
     });
 
     // measure/ and motion/ subtrees must not spill into the `other` bucket.

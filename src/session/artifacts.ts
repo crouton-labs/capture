@@ -43,6 +43,7 @@ export interface RecMeta {
   frames: number;
   durationMs: number;
   state: string;
+  viewportRestored?: boolean | null;
 }
 
 // ============================================================================

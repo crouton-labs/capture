@@ -57,7 +57,9 @@ interface BundleManifest {
   /** `measure snap` artifacts collected from `measure/snaps/{id}/meta.json`. */
   snaps: Array<{ id: string; path: string; url: string | null; viewport: string | null; settled: boolean; capturedAt: string }>;
   /** `motion rec` artifacts collected from `motion/recs/{id}/meta.json`. */
-  recs: Array<{ id: string; path: string; action: string | null; frames: number; durationMs: number; state: string }>;
+  recs: Array<{ id: string; path: string; action: string | null; frames: number; durationMs: number; state: string; viewportRestored: boolean | null }>;
+  /** Retry outcomes for viewport obligations retained by failed recorder starts. */
+  pendingViewportRestorations: Array<{ recId: string; viewportRestored: boolean | null }>;
 }
 
 function sessionDir(id: string): string {
@@ -117,6 +119,7 @@ function readRecMeta(recDir: string, fallbackId: string): BundleManifest['recs']
     frames: meta.frames ?? 0,
     durationMs: meta.durationMs ?? 0,
     state: meta.state ?? 'unknown',
+    viewportRestored: typeof meta.viewportRestored === 'boolean' ? meta.viewportRestored : null,
   };
 }
 
@@ -457,8 +460,9 @@ async function stop(args: string[]): Promise<void> {
   // Recorder lifecycle teardown — finalize/tear down any live recorder
   // before bundle collection (cdp/motion/recorder.ts); a stale recorder.json
   // with a dead pid is reaped, never resumed.
+  let recorderTeardown: Awaited<ReturnType<typeof teardownAnyLiveRecorderAtSessionStop>> | null = null;
   try {
-    await teardownAnyLiveRecorderAtSessionStop(session.dir);
+    recorderTeardown = await teardownAnyLiveRecorderAtSessionStop(session.dir);
   } catch (err) {
     console.error(`Warning: could not finalize active recording: ${err instanceof Error ? err.message : err}`);
   }
@@ -536,6 +540,7 @@ async function stop(args: string[]): Promise<void> {
     other,
     snaps,
     recs,
+    pendingViewportRestorations: recorderTeardown?.pendingViewportRestorations ?? [],
   };
 
   const bundlePath = path.join(session.dir, 'bundle.json');
@@ -552,6 +557,8 @@ async function stop(args: string[]): Promise<void> {
       otherFiles: other.length,
       snaps: snaps.length,
       recs: recs.length,
+      ...(recorderTeardown && !('recording' in recorderTeardown) ? { recording: { recId: recorderTeardown.recId, state: recorderTeardown.state, viewportRestored: recorderTeardown.viewportRestored } } : {}),
+      ...(recorderTeardown?.pendingViewportRestorations.length ? { pendingViewportRestorations: recorderTeardown.pendingViewportRestorations } : {}),
     },
   }, null, 2));
 

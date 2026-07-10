@@ -324,6 +324,22 @@ test('readGeometry reads and parses geometry.json for a resolved snap ref', asyn
   }
 });
 
+test('readMedia reads and parses media.json through the shared snap reader', async () => {
+  const { resolveSnapRef, readMedia } = await import('../src/output/artifact.js');
+  const sessionDir = freshSessionDir('read-media');
+  const snapDir = makeSnapDir(sessionDir, 'snap-media1');
+  writeJsonPrivate(path.join(snapDir, 'media.json'), { elements: [{ id: 'img-1', tag: 'img', naturalWidth: 320 }] });
+  try {
+    const ref = await resolveSnapRef(snapDir);
+    const media = readMedia<{ elements: Array<{ id: string; tag: string; naturalWidth: number }> }>(ref);
+    assert.equal(media.elements[0].id, 'img-1');
+    assert.equal(media.elements[0].tag, 'img');
+    assert.equal(media.elements[0].naturalWidth, 320);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 test('readGeometry throws a structured error naming the missing file and the creating command', async () => {
   const { resolveSnapRef, readGeometry, ArtifactResolutionError } = await import('../src/output/artifact.js');
   const sessionDir = freshSessionDir('read-geometry-missing');

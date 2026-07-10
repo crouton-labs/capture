@@ -113,8 +113,15 @@ export async function requestRecStop(socketPath: string): Promise<RecStopRespons
  * or type, not incidental navigation resolution. */
 const MARKABLE_EXACT_METHODS = new Set(['Input.insertText', 'Page.navigate']);
 
-function isMarkableActionMethod(method: string): boolean {
-  return method.startsWith('Input.dispatch') || MARKABLE_EXACT_METHODS.has(method);
+function isMarkableActionMethod(method: string, params: Record<string, unknown>): boolean {
+  if (MARKABLE_EXACT_METHODS.has(method)) return true;
+  // A logical input may require several low-level dispatches. Mark its
+  // initiating edge only: e.g. clickByName emits press + release, which is
+  // one landmark rather than two identically-labelled observations.
+  if (method === 'Input.dispatchMouseEvent') return params.type === 'mousePressed';
+  if (method === 'Input.dispatchKeyEvent') return params.type === 'keyDown' || params.type === 'rawKeyDown';
+  if (method === 'Input.dispatchTouchEvent') return params.type === 'touchStart';
+  return false;
 }
 
 export interface RecorderHeldClientOptions {
@@ -140,11 +147,18 @@ export class RecorderHeldClient {
   private readonly socketPath: string;
   private readonly actionLabel: string;
   private readonly defaultTimeoutMs: number;
+  private suppressNextMousePressMark = false;
 
   constructor(opts: RecorderHeldClientOptions) {
     this.socketPath = opts.socketPath;
     this.actionLabel = opts.actionLabel;
     this.defaultTimeoutMs = opts.timeoutMs ?? 60000;
+  }
+
+  /** Suppresses the focus click's initiating edge so a routed `type --into`
+   * has one landmark on its actual text insertion. */
+  suppressNextFocusClickMark(): void {
+    this.suppressNextMousePressMark = true;
   }
 
   async send(
@@ -204,7 +218,9 @@ export class RecorderHeldClient {
     waitEvent?: string,
     timeoutMs?: number,
   ): Promise<{ result: unknown; event?: unknown }> {
-    const mark = isMarkableActionMethod(method) ? this.actionLabel : undefined;
+    const suppressMousePress = method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed' && this.suppressNextMousePressMark;
+    if (suppressMousePress) this.suppressNextMousePressMark = false;
+    const mark = !suppressMousePress && isMarkableActionMethod(method, params) ? this.actionLabel : undefined;
     const resp = await sendRecorderRequest(this.socketPath, {
       type: 'cdp',
       method,

@@ -20,12 +20,16 @@ import {
   recDirFor,
   readRecorderJson,
   isPidAlive,
+  recordViewportOverride,
+  __setViewportLifecycleDepsForTest,
+  teardownAnyLiveRecorderAtSessionStop,
   type RecorderJson,
 } from '../src/cdp/motion/recorder.js';
 import { connectForCommand } from '../src/cdp/connection.js';
 import { isRecorderHeldClient } from '../src/cdp/recorder-client.js';
 import { type RecorderRequest, type RecorderResponse, type RecorderClockBaselines } from '../src/cdp/bridge/protocol.js';
 import { type ParsedArgs } from '../src/cdp/types.js';
+import { clickByName, focusAndType } from '../src/interact.js';
 
 // Isolates this file's active-session pointer from any other concurrent
 // `capture` usage on the machine (session-context.ts scopes its pointer
@@ -199,7 +203,38 @@ test('connectForCommand routes through the active recorder, marking Input.dispat
   }
 });
 
-test('connectForCommand routes a `type` call, marks Input.insertText with the action label, and never leaks the typed text into the mark', async () => {
+test('a composed routed click emits exactly one coherent input landmark', async () => {
+  const sessionDir = freshSessionDir('routed-click');
+  const recId = 'rec-routed-click';
+  const recDir = recDirFor(sessionDir, recId);
+  ensurePrivateDir(recDir);
+  const socketPath = recorderSocketPath(recDir);
+  const placeholder = spawnPlaceholderChild();
+  writeJsonPrivate(path.join(recDir, 'recorder.json'), { recId, pid: placeholder.pid, socketPath, targetId: 'target-abc', url: 'https://example.com', startedAt: new Date().toISOString(), state: 'recording', markers: PENDING_MARKERS } satisfies RecorderJson);
+  setActiveSession({ sessionId: 's-routed-click', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  setActiveRecId(recId);
+  const fakeServer = await startFakeRecorderServer(socketPath, {
+    cdp: (req) => {
+      const method = (req as { method?: string }).method;
+      const result = method === 'Accessibility.getFullAXTree'
+        ? { nodes: [{ nodeId: 'ax-1', backendDOMNodeId: 7, role: { value: 'button' }, name: { value: 'Send' } }] }
+        : method === 'DOM.getBoxModel' ? { model: { content: [0, 0, 20, 0, 20, 20, 0, 20] } } : {};
+      return { reqId: req.reqId, ok: true, type: 'cdp', result };
+    },
+  });
+  try {
+    const { client } = await connectForCommand(minimalParsedArgs('click', { positional: ['Send'] }));
+    await clickByName(client, 'Send', 'button');
+    const mouse = fakeServer.received.filter((r) => r.type === 'cdp' && r.method === 'Input.dispatchMouseEvent') as Array<{ mark?: string; params?: { type?: string } }>;
+    assert.equal(mouse.length, 2);
+    assert.deepEqual(mouse.map((r) => [r.params?.type, r.mark]), [['mousePressed', 'click:Send'], ['mouseReleased', undefined]]);
+    assert.equal(mouse.filter((r) => r.mark).length, 1);
+  } finally {
+    fakeServer.close(); placeholder.kill(); clearActiveSession(); fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('a composed routed `type --into` emits one insertion landmark, never a duplicate focus-click landmark', async () => {
   const sessionDir = freshSessionDir('routed-type');
   const recId = 'rec-routed-type1';
   const recDir = recDirFor(sessionDir, recId);
@@ -222,7 +257,15 @@ test('connectForCommand routes a `type` call, marks Input.insertText with the ac
   setActiveRecId(recId);
 
   const secretText = 'hunter2-super-secret-password';
-  const fakeServer = await startFakeRecorderServer(socketPath);
+  const fakeServer = await startFakeRecorderServer(socketPath, {
+    cdp: (req) => {
+      const method = (req as { method?: string }).method;
+      const result = method === 'Accessibility.getFullAXTree'
+        ? { nodes: [{ nodeId: 'ax-1', backendDOMNodeId: 7, role: { value: 'textbox' }, name: { value: 'Password' } }] }
+        : method === 'DOM.getBoxModel' ? { model: { content: [0, 0, 20, 0, 20, 20, 0, 20] } } : {};
+      return { reqId: req.reqId, ok: true, type: 'cdp', result };
+    },
+  });
   try {
     // `capture type "<secret>" --into "Password"` -- positional[0] is the
     // raw typed text (never safe to expose), --into names the field.
@@ -230,11 +273,15 @@ test('connectForCommand routes a `type` call, marks Input.insertText with the ac
     const { client } = await connectForCommand(parsed);
     assert.ok(isRecorderHeldClient(client));
 
-    await client.send('Input.insertText', { text: secretText });
+    await focusAndType(client, 'Password', secretText, 'textbox');
 
-    const marked = fakeServer.received.find((r) => r.type === 'cdp' && r.method === 'Input.insertText');
-    assert.ok(marked, 'Input.insertText must be routed through the recorder');
-    const mark = (marked as { mark?: string }).mark;
+    const input = fakeServer.received.filter((r) => r.type === 'cdp' && ['Input.dispatchMouseEvent', 'Input.insertText'].includes((r as { method?: string }).method ?? '')) as Array<{ method?: string; mark?: string }>;
+    assert.deepEqual(input.map((r) => [r.method, r.mark]), [
+      ['Input.dispatchMouseEvent', undefined],
+      ['Input.dispatchMouseEvent', undefined],
+      ['Input.insertText', 'type:Password'],
+    ]);
+    const mark = input.find((r) => r.method === 'Input.insertText')?.mark;
     assert.equal(mark, 'type:Password', 'the mark must be the action label (command:field), not the typed text');
     assert.notEqual(mark, secretText, 'the mark must never be the raw typed text');
     assert.ok(!String(mark).includes(secretText), 'the mark must not embed the typed text at all');
@@ -286,6 +333,68 @@ test('connectForCommand derives a safe `type` mark even without --into (never fa
     fakeServer.close();
     placeholder.kill();
     clearActiveSession();
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('composed lifecycle restores viewport on stale reap and session-stop, removing successful live state', async () => {
+  const restored: string[] = [];
+  const restoreDeps = __setViewportLifecycleDepsForTest({
+    findTarget: async (targetId: string) => ({ port: 9222, tab: { id: targetId, title: '', url: '', type: 'page', webSocketDebuggerUrl: 'ws://viewport' } }),
+    createClient: () => ({ waitReady: async () => {}, send: async (method: string) => { restored.push(method); }, close: () => {} }) as never,
+  });
+  const sessionDir = freshSessionDir('viewport-lifecycle');
+  const staleId = 'rec-viewport-stale';
+  const staleDir = recDirFor(sessionDir, staleId);
+  ensurePrivateDir(staleDir);
+  const deadPid = await spawnAndWaitDead();
+  writeJsonPrivate(path.join(staleDir, 'recorder.json'), { recId: staleId, pid: deadPid, socketPath: recorderSocketPath(staleDir), targetId: 'target-stale', url: null, startedAt: new Date().toISOString(), state: 'recording', markers: PENDING_MARKERS } satisfies RecorderJson);
+  recordViewportOverride(staleDir);
+  try {
+    const reaped = await startComposedRecorder({ sessionDir, targetId: null }).catch(() => null);
+    assert.equal(fs.existsSync(path.join(staleDir, 'viewport-override.json')), false);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(staleDir, 'meta.json'), 'utf8')).viewportRestored, true);
+    assert.ok(reaped === null, 'start rejects its missing target after reaping');
+
+    const liveId = 'rec-viewport-session-stop';
+    const liveDir = recDirFor(sessionDir, liveId);
+    ensurePrivateDir(liveDir);
+    const placeholder = spawnPlaceholderChild();
+    const socketPath = recorderSocketPath(liveDir);
+    writeJsonPrivate(path.join(liveDir, 'recorder.json'), { recId: liveId, pid: placeholder.pid, socketPath, targetId: 'target-live', url: null, startedAt: new Date().toISOString(), state: 'recording', markers: PENDING_MARKERS } satisfies RecorderJson);
+    recordViewportOverride(liveDir);
+    const server = await startFakeRecorderServer(socketPath);
+    try {
+      await teardownAnyLiveRecorderAtSessionStop(sessionDir);
+      assert.equal(fs.existsSync(path.join(liveDir, 'viewport-override.json')), false);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(liveDir, 'meta.json'), 'utf8')).viewportRestored, true);
+    } finally { server.close(); placeholder.kill(); }
+    assert.deepEqual(restored, ['Emulation.clearDeviceMetricsOverride', 'Emulation.clearDeviceMetricsOverride']);
+  } finally {
+    restoreDeps();
+    clearActiveSession();
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('viewport restoration failure is preserved and recorded factually', async () => {
+  const restoreDeps = __setViewportLifecycleDepsForTest({
+    findTarget: async (targetId: string) => ({ port: 9222, tab: { id: targetId, title: '', url: '', type: 'page', webSocketDebuggerUrl: 'ws://viewport' } }),
+    createClient: () => ({ waitReady: async () => {}, send: async () => { throw new Error('clear failed'); }, close: () => {} }) as never,
+  });
+  const sessionDir = freshSessionDir('viewport-failure');
+  const recId = 'rec-viewport-failure';
+  const recDir = recDirFor(sessionDir, recId);
+  ensurePrivateDir(recDir);
+  const deadPid = await spawnAndWaitDead();
+  writeJsonPrivate(path.join(recDir, 'recorder.json'), { recId, pid: deadPid, socketPath: recorderSocketPath(recDir), targetId: 'target-failure', url: null, startedAt: new Date().toISOString(), state: 'recording', markers: PENDING_MARKERS } satisfies RecorderJson);
+  recordViewportOverride(recDir);
+  try {
+    await stopComposedRecorder({ sessionDir, recId });
+    assert.equal(fs.existsSync(path.join(recDir, 'viewport-override.json')), true);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(recDir, 'meta.json'), 'utf8')).viewportRestored, false);
+  } finally {
+    restoreDeps();
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
@@ -381,6 +490,12 @@ test('startComposedRecorder reaps a stale (dead-pid) recorder.json before arming
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(staleRecDir, 'recorder.json'), staleRecorderJson);
+  recordViewportOverride(staleRecDir);
+  const viewportEvents: string[] = [];
+  const restoreViewportDeps = __setViewportLifecycleDepsForTest({
+    findTarget: async (targetId: string) => ({ port: 9222, tab: { id: targetId, title: '', url: '', type: 'page', webSocketDebuggerUrl: 'ws://viewport' } }),
+    createClient: () => ({ waitReady: async () => {}, send: async (method: string) => { viewportEvents.push(method); }, close: () => {} }) as never,
+  });
   setActiveSession({ sessionId: 's-reap', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
   setActiveRecId(staleRecId);
 
@@ -388,7 +503,7 @@ test('startComposedRecorder reaps a stale (dead-pid) recorder.json before arming
   const placeholder = spawnPlaceholderChild();
   try {
     const result = await startComposedRecorder(
-      { sessionDir, targetId: 'target-abc' },
+      { sessionDir, targetId: 'target-abc', viewport: { width: 390, height: 844 } },
       {
         detectPort: async () => 9222,
         spawnRecorderBridge: async (socketPath) => {
@@ -405,6 +520,7 @@ test('startComposedRecorder reaps a stale (dead-pid) recorder.json before arming
     const staleMeta = JSON.parse(fs.readFileSync(path.join(staleRecDir, 'meta.json'), 'utf-8'));
     assert.equal(staleMeta.state, 'orphaned-finalized');
     assert.equal(fs.existsSync(path.join(staleRecDir, 'recorder.json')), false);
+    assert.deepEqual(viewportEvents, ['Emulation.clearDeviceMetricsOverride', 'Emulation.setDeviceMetricsOverride'], 'stale cleanup completes before the new recording applies its viewport');
 
     // The new recording still armed cleanly after the reap.
     assert.equal(getActiveRecId(), result.recId);
@@ -412,6 +528,7 @@ test('startComposedRecorder reaps a stale (dead-pid) recorder.json before arming
   } finally {
     fakeServer?.close();
     placeholder.kill();
+    restoreViewportDeps();
     clearActiveSession();
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
@@ -578,6 +695,33 @@ test('stopComposedRecorder still accepts a normal safe --rec-id (regression: val
 // `--start` calls.
 // ---------------------------------------------------------------------------
 
+test('a rejected start with live and stale handles leaves both viewport owners untouched', async () => {
+  const sessionDir = freshSessionDir('mixed-live-stale');
+  const liveDir = recDirFor(sessionDir, 'rec-live');
+  const staleDir = recDirFor(sessionDir, 'rec-stale');
+  ensurePrivateDir(liveDir);
+  ensurePrivateDir(staleDir);
+  const live = spawnPlaceholderChild();
+  const deadPid = await spawnAndWaitDead();
+  writeJsonPrivate(path.join(liveDir, 'recorder.json'), { recId: 'rec-live', pid: live.pid, socketPath: recorderSocketPath(liveDir), targetId: 'live-target', url: null, startedAt: new Date().toISOString(), state: 'recording', markers: PENDING_MARKERS } satisfies RecorderJson);
+  writeJsonPrivate(path.join(staleDir, 'recorder.json'), { recId: 'rec-stale', pid: deadPid, socketPath: recorderSocketPath(staleDir), targetId: 'stale-target', url: null, startedAt: new Date().toISOString(), state: 'recording', markers: PENDING_MARKERS } satisfies RecorderJson);
+  recordViewportOverride(staleDir);
+  const mutations: string[] = [];
+  const restoreViewportDeps = __setViewportLifecycleDepsForTest({
+    findTarget: async () => ({ port: 9222, tab: { id: 'target', title: '', url: '', type: 'page', webSocketDebuggerUrl: 'ws://viewport' } }),
+    createClient: () => ({ waitReady: async () => {}, send: async (method: string) => { mutations.push(method); }, close: () => {} }) as never,
+  });
+  try {
+    await assert.rejects(() => startComposedRecorder({ sessionDir, targetId: 'new-target', viewport: { width: 390, height: 844 } }), /already active/);
+    assert.deepEqual(mutations, [], 'duplicate start neither reaps the stale override nor applies a new one');
+    assert.ok(fs.existsSync(path.join(staleDir, 'recorder.json')), 'stale handle remains for a later safe teardown');
+  } finally {
+    restoreViewportDeps();
+    live.kill();
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 test('startComposedRecorder rejects when a live recorder.json exists on disk but activeRecId is unset (directory scan is authoritative, not just the pointer)', async () => {
   const sessionDir = freshSessionDir('missing-pointer');
   const existingRecId = 'rec-existing1';
@@ -663,6 +807,47 @@ test('two concurrent startComposedRecorder calls against the same session: exact
     fakeServers.forEach((s) => s.close());
     placeholders.forEach((p) => p.kill());
     clearActiveSession();
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('a viewport target failure before set never clears an override', async () => {
+  const sessionDir = freshSessionDir('viewport-before-set');
+  const viewportEvents: string[] = [];
+  const restoreDeps = __setViewportLifecycleDepsForTest({
+    findTarget: async () => { throw new Error('target lookup failed'); },
+    createClient: () => ({ waitReady: async () => {}, send: async (method: string) => { viewportEvents.push(method); }, close: () => {} }) as never,
+  });
+  try {
+    await assert.rejects(
+      () => startComposedRecorder({ sessionDir, targetId: 'target-before-set', viewport: { width: 390, height: 844 } }),
+      /target lookup failed/,
+    );
+    assert.deepEqual(viewportEvents, [], 'a failed lookup must not send either set or clear');
+    const recsRoot = path.join(sessionDir, 'motion', 'recs');
+    assert.equal(fs.readdirSync(recsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()).length, 0);
+  } finally {
+    restoreDeps();
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('session-stop reports retained failed-start viewport restoration retries', async () => {
+  const sessionDir = freshSessionDir('pending-viewport-retry');
+  const recId = 'rec-pending-viewport';
+  const recDir = recDirFor(sessionDir, recId);
+  ensurePrivateDir(recDir);
+  writeJsonPrivate(path.join(recDir, 'viewport-override.json'), { phase: 'attempting', targetId: 'target-pending' });
+  const restoreDeps = __setViewportLifecycleDepsForTest({
+    findTarget: async (targetId: string) => ({ port: 9222, tab: { id: targetId, title: '', url: '', type: 'page', webSocketDebuggerUrl: 'ws://viewport' } }),
+    createClient: () => ({ waitReady: async () => {}, send: async () => { throw new Error('clear failed'); }, close: () => {} }) as never,
+  });
+  try {
+    const teardown = await teardownAnyLiveRecorderAtSessionStop(sessionDir);
+    assert.deepEqual(teardown.pendingViewportRestorations, [{ recId, viewportRestored: false }]);
+    assert.ok(fs.existsSync(path.join(recDir, 'viewport-override.json')), 'failed retry remains durable');
+  } finally {
+    restoreDeps();
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });

@@ -144,6 +144,7 @@ export async function startRecorderBridge(
   const start = Date.now();
   while (!fs.existsSync(socketPath)) {
     if (Date.now() - start > timeoutMs) {
+      stopBridge(pid, socketPath);
       throw new Error(
         `Recorder bridge (pid ${pid}) did not come up within ${timeoutMs}ms. ` +
           `Check that target "${targetId}" is reachable on port ${port}.`,

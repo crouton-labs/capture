@@ -136,6 +136,9 @@ export async function focusAndType(
   text: string,
   role?: string,
 ): Promise<ClickResult> {
+  // A recorder-routed type has one command-level landmark: its insertion.
+  // The focus click is a prerequisite, not a second `type:<field>` action.
+  (client as unknown as { suppressNextFocusClickMark?: () => void }).suppressNextFocusClickMark?.();
   const result = await clickByName(client, fieldName, role);
   // Small delay for focus to settle
   await new Promise((r) => setTimeout(r, 100));
