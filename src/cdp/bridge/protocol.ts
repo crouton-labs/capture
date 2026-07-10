@@ -47,10 +47,26 @@ export type BridgeResponse = BridgeResponseOk | BridgeResponseErr;
 // the plain bridge.
 // ---------------------------------------------------------------------------
 
-/** One synchronized (performance.now, wall-clock) pair, captured when the recorder arms. */
+/**
+ * The three-way clock baseline the design's "Recorder timing model" requires to convert
+ * screencast-frame and Tracing timestamps into the authoritative `performance.now()` domain.
+ * `performanceNowMs`/`wallClockMs` are read synchronously when the recorder arms (`rec-start`);
+ * `firstScreencastTimestampSec`/`firstTraceEventTsUs` cannot be — no frame or trace batch has
+ * necessarily arrived yet at that instant — so they are filled in opportunistically as the
+ * recorder's own screencast/tracing handlers observe the first occurrence of each, and stay
+ * `null` (with `baselinesPending: true`) until then. `rec-stop`'s response carries the same
+ * object read again at stop time — the flush path a caller uses to get the completed baselines
+ * for `markers.json` even when `rec-start`'s own response returned it still pending.
+ */
 export interface RecorderClockBaselines {
   performanceNowMs: number;
   wallClockMs: number;
+  /** First `Page.screencastFrame`'s `metadata.timestamp` (wall-clock seconds), or `null` if none had arrived yet at the moment this snapshot was taken. */
+  firstScreencastTimestampSec: number | null;
+  /** First `Tracing.dataCollected` batch's earliest event `ts` (trace-clock microseconds), or `null` if none had arrived yet at the moment this snapshot was taken. */
+  firstTraceEventTsUs: number | null;
+  /** `true` while either timestamp above is still `null`. */
+  baselinesPending: boolean;
 }
 
 /**
@@ -90,6 +106,8 @@ export interface RecStopResponseOk {
   frameCount: number;
   eventCount: number;
   durationMs: number;
+  /** The clock baselines re-read at stop time — the flush path for a `rec-start` response whose baselines were still pending. */
+  markers: RecorderClockBaselines;
 }
 
 /**
@@ -102,9 +120,11 @@ export interface RecStopResponseOk {
  * timeline — this is the "marked CDP request message" the protocol
  * supports. Omit `mark` for a plain passthrough call (still observed
  * natively by the recorder's own event subscriptions, just not logged as a
- * distinct input landmark).
+ * distinct input landmark). Omit `method` for a wait-event-only request;
+ * the bridge will block on its existing event broker and return the matched
+ * event in one response.
  */
-export interface RecCdpRequest {
+export interface RecCdpDispatchRequest {
   reqId: number;
   type: 'cdp';
   method: string;
@@ -113,6 +133,16 @@ export interface RecCdpRequest {
   waitEvent?: string;
   timeoutMs?: number;
 }
+
+export interface RecCdpWaitEventRequest {
+  reqId: number;
+  type: 'cdp';
+  method?: undefined;
+  waitEvent: string;
+  timeoutMs?: number;
+}
+
+export type RecCdpRequest = RecCdpDispatchRequest | RecCdpWaitEventRequest;
 
 export interface RecCdpResponseOk {
   reqId: number;

@@ -1,5 +1,6 @@
 import { type ParsedArgs } from '../../types.js';
 import { emitResult, fact, type RenderableResult } from '../../../output/render.js';
+import { rejectUnsupportedGate } from '../gate-guard.js';
 
 const USAGE = `Usage: capture measure explain <snap> --selector <sel> [--size] [--text] [--form]
 
@@ -21,6 +22,7 @@ export async function cmdMeasureExplain(parsed: ParsedArgs, _args: string[]): Pr
     console.log(USAGE);
     process.exit(0);
   }
+  if (rejectUnsupportedGate(parsed, 'measure explain')) return;
   const result: RenderableResult = {
     tag: 'error',
     attrs: { command: 'measure explain', status: 'not_implemented' },

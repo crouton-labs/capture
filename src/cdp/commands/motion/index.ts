@@ -7,6 +7,7 @@
  * command does.
  */
 import { type ParsedArgs } from '../../types.js';
+import { rejectUnsupportedGate } from '../gate-guard.js';
 import { cmdMotionRec } from './rec.js';
 import { cmdMotionMask } from './mask.js';
 import { cmdMotionTimeline } from './timeline.js';
@@ -51,6 +52,7 @@ export async function motionMain(parsed: ParsedArgs, args: string[]): Promise<vo
     case 'response':
       return cmdMotionResponse(rest, args);
     case undefined:
+      if (rejectUnsupportedGate(parsed, 'motion')) return;
       console.log(MOTION_USAGE);
       return;
     default:

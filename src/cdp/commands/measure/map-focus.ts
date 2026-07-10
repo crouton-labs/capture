@@ -1,5 +1,6 @@
 import { type ParsedArgs } from '../../types.js';
 import { emitResult, fact, type RenderableResult } from '../../../output/render.js';
+import { rejectUnsupportedGate } from '../gate-guard.js';
 
 const USAGE = `Usage: capture measure map focus [url|snap]
 
@@ -14,6 +15,7 @@ export async function cmdMeasureMapFocus(parsed: ParsedArgs, _args: string[]): P
     console.log(USAGE);
     process.exit(0);
   }
+  if (rejectUnsupportedGate(parsed, 'measure map focus')) return;
   const result: RenderableResult = {
     tag: 'error',
     attrs: { command: 'measure map focus', status: 'not_implemented' },

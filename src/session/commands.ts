@@ -13,6 +13,7 @@ import {
 } from '../session-context.js';
 import { expandEqualsFlags } from '../cdp/args.js';
 import { startBridge, stopBridge } from '../cdp/bridge/spawn.js';
+import { teardownAnyLiveRecorderAtSessionStop } from '../cdp/motion/recorder.js';
 import {
   CAPTURE_ROOT,
   FILE_MODE,
@@ -451,6 +452,15 @@ async function stop(args: string[]): Promise<void> {
   // connection (and any grants/target-enablement it was keeping alive).
   if (session.bridgePid || session.bridgeSocket) {
     stopBridge(session.bridgePid, session.bridgeSocket);
+  }
+
+  // Recorder lifecycle teardown — finalize/tear down any live recorder
+  // before bundle collection (cdp/motion/recorder.ts); a stale recorder.json
+  // with a dead pid is reaped, never resumed.
+  try {
+    await teardownAnyLiveRecorderAtSessionStop(session.dir);
+  } catch (err) {
+    console.error(`Warning: could not finalize active recording: ${err instanceof Error ? err.message : err}`);
   }
 
   // Collect screenshots

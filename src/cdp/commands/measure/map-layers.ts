@@ -1,5 +1,6 @@
 import { type ParsedArgs } from '../../types.js';
 import { emitResult, fact, type RenderableResult } from '../../../output/render.js';
+import { rejectUnsupportedGate } from '../gate-guard.js';
 
 const USAGE = `Usage: capture measure map layers [url|snap]
 
@@ -15,6 +16,7 @@ export async function cmdMeasureMapLayers(parsed: ParsedArgs, _args: string[]): 
     console.log(USAGE);
     process.exit(0);
   }
+  if (rejectUnsupportedGate(parsed, 'measure map layers')) return;
   const result: RenderableResult = {
     tag: 'error',
     attrs: { command: 'measure map layers', status: 'not_implemented' },

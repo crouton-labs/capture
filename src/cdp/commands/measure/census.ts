@@ -1,5 +1,6 @@
 import { type ParsedArgs } from '../../types.js';
 import { emitResult, fact, type RenderableResult } from '../../../output/render.js';
+import { rejectUnsupportedGate } from '../gate-guard.js';
 
 const USAGE = `Usage: capture measure census [--snap <id>]... [--url <url>]... [--set-file <path>] --axis <axis>
 
@@ -21,6 +22,7 @@ export async function cmdMeasureCensus(parsed: ParsedArgs, _args: string[]): Pro
     console.log(USAGE);
     process.exit(0);
   }
+  if (rejectUnsupportedGate(parsed, 'measure census')) return;
   const result: RenderableResult = {
     tag: 'error',
     attrs: { command: 'measure census', status: 'not_implemented' },

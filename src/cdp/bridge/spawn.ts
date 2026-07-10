@@ -5,16 +5,45 @@
  */
 
 import { spawn } from 'child_process';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { CAPTURE_ROOT, ensurePrivateDir } from '../../session/artifacts.js';
 
 export function bridgeSocketPath(sessionDir: string): string {
   return path.join(sessionDir, 'bridge.sock');
 }
 
-/** The recorder bridge's own socket, scoped to its recording dir so it can't collide with a session's plain `--hold` bridge. */
+/**
+ * Fixed, short, private (`0700`) directory every recorder socket lives in — flat, and
+ * deliberately NOT nested under a recording's (long) artifact dir. macOS caps `AF_UNIX`
+ * pathnames at ~104 bytes; a real recording dir (`{CAPTURE_ROOT}/{session}/motion/recs/{recId}`)
+ * combined with `os.tmpdir()`'s own (often long, per-user) prefix can already exceed that before
+ * adding a filename, so the socket can never live inside `recDir` — see `recorderSocketPath()`.
+ */
+function recorderSocketDir(): string {
+  return ensurePrivateDir(path.join(CAPTURE_ROOT, 'sock'));
+}
+
+/**
+ * A short, fixed-length filename deterministically derived from `recDir` (not from `recDir`'s
+ * own length/depth), so the resulting socket path stays bounded regardless of how deep the
+ * recording's session/motion/recs nesting is.
+ */
+function shortSocketName(recDir: string): string {
+  return crypto.createHash('sha1').update(path.resolve(recDir)).digest('hex').slice(0, 16);
+}
+
+/**
+ * The recorder bridge's own socket path. Lives in the short, flat `recorderSocketDir()` — NOT
+ * inside `recDir` (the long, deep artifact directory `frames`/`events.jsonl`/etc. write into) —
+ * so binding it never risks exceeding the platform's `AF_UNIX` pathname limit. `recDir` is still
+ * required by every recorder-mode caller (spawn args, artifact writers); this function only
+ * derives the socket's own location from it, deterministically, without embedding `recDir` in
+ * the path itself.
+ */
 export function recorderSocketPath(recDir: string): string {
-  return path.join(recDir, 'recorder.sock');
+  return path.join(recorderSocketDir(), `${shortSocketName(recDir)}.sock`);
 }
 
 export async function startBridge(

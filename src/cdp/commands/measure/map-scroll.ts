@@ -1,5 +1,6 @@
 import { type ParsedArgs } from '../../types.js';
 import { emitResult, fact, type RenderableResult } from '../../../output/render.js';
+import { rejectUnsupportedGate } from '../gate-guard.js';
 
 const USAGE = `Usage: capture measure map scroll [url|snap]
 
@@ -14,6 +15,7 @@ export async function cmdMeasureMapScroll(parsed: ParsedArgs, _args: string[]): 
     console.log(USAGE);
     process.exit(0);
   }
+  if (rejectUnsupportedGate(parsed, 'measure map scroll')) return;
   const result: RenderableResult = {
     tag: 'error',
     attrs: { command: 'measure map scroll', status: 'not_implemented' },

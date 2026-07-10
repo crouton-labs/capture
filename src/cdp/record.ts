@@ -74,6 +74,100 @@ export async function recordTraffic(
   return { harPath, entryCount: har.log.entries.length, har };
 }
 
+/**
+ * Navigates `client`'s tab to `url`, bouncing through `about:blank` and
+ * re-navigating when Chrome reports a same-document (fragment-only) nav —
+ * shared by `navigateAndRecord()` (below) and F2's recorder-routed path
+ * (`../commands/traffic.ts`'s `cmdNavigate`), which calls this same helper
+ * over a `RecorderHeldClient` instead of a fresh `CDPClient`.
+ *
+ * A fragment-only change against the current document is a same-document
+ * navigation: Chrome updates location.hash but does NOT reload the page, so
+ * SPAs that read the fragment on mount (e.g. Excalidraw's #url= scene import)
+ * never see it. Same-document navigations return no loaderId. When that
+ * happens, force a genuine cross-document load by bouncing through
+ * about:blank and re-navigating, so the target URL (fragment included) is
+ * delivered to a freshly-mounted document. A plain Page.reload here races
+ * the still-committing fragment nav and can reload the pre-fragment URL.
+ */
+export async function navigateWithFragmentFix(
+  client: Pick<CDPClient, 'send'>,
+  url: string,
+): Promise<void> {
+  const navResult = (await client.send('Page.navigate', { url })) as { loaderId?: string; errorText?: string };
+  if (!navResult.loaderId) {
+    await client.send('Page.navigate', { url: 'about:blank' });
+    await client.send('Page.navigate', { url });
+  }
+}
+
+export interface WaitAndSettleResult {
+  /** `true` when the OUTER `deadlineMs` elapsed before load-wait + settle finished. */
+  timedOut: boolean;
+}
+
+/**
+ * Shared wait/settle/overall-timeout semantics for a post-navigate pause —
+ * factored out of `navigateAndRecord()` (below) so F2's recorder-routed path
+ * (`../commands/traffic.ts`'s `tryNavigateViaActiveRecorder()`) can honor the
+ * SAME `--settle`/timeout behavior as the non-routed path instead of
+ * returning immediately after `Page.navigate` resolves. `waitForLoadEvent`
+ * is caller-supplied so each path can wait on its own transport (a plain
+ * `client.on('Page.loadEventFired', ...)` listener for a real `CDPClient`,
+ * `RecorderHeldClient.waitEvent('Page.loadEventFired', ...)` for the
+ * recorder-routed adapter) — it must resolve once the load signal is
+ * observed and never reject on its own "no load event yet" timeout (that
+ * tolerance is the caller's job, matching the non-routed path's existing
+ * "Page load timeout (10s), continuing with settle..." behavior); only the
+ * OUTER `deadlineMs` here turns into the returned `timedOut` flag.
+ *
+ * `afterSettle`, when given, runs INSIDE the raced/deadline-bounded branch,
+ * immediately after the settle pause and before the race resolves — this is
+ * how the non-routed `navigateAndRecord()` path below keeps its HAR
+ * finalization (`recorder.finish()`) covered by the same 60s deadline as
+ * load-wait + settle, matching this function's pre-extraction behavior
+ * (HAR finalization used to happen inline inside the same raced branch).
+ * `logTimeout`, default `true`, controls whether this function prints its
+ * own `Navigate timeout (...)` line on timeout; `navigateAndRecord()` passes
+ * `false` and prints its own single, pre-existing timeout line itself so
+ * the non-routed path emits exactly one timeout log line, matching its
+ * pre-extraction output byte-for-byte.
+ */
+export async function waitForLoadAndSettle(
+  waitForLoadEvent: () => Promise<void>,
+  settleMs: number,
+  deadlineMs = 60_000,
+  afterSettle?: () => Promise<void>,
+  logTimeout = true,
+): Promise<WaitAndSettleResult> {
+  const t0 = Date.now();
+  try {
+    await Promise.race([
+      (async () => {
+        await waitForLoadEvent();
+
+        // Settle time for SPAs that load after DOMContentLoaded
+        console.error(`Settling for ${settleMs}ms...`);
+        await new Promise((r) => setTimeout(r, settleMs));
+
+        if (afterSettle) await afterSettle();
+      })(),
+      new Promise<never>((_, reject) => {
+        const t = setTimeout(() => reject(new Error('__navigate_timeout__')), deadlineMs - (Date.now() - t0));
+        // Don't keep process alive just for the deadline timer
+        if (typeof t === 'object' && 'unref' in t) t.unref();
+      }),
+    ]);
+    return { timedOut: false };
+  } catch (err) {
+    if (err instanceof Error && err.message === '__navigate_timeout__') {
+      if (logTimeout) console.error(`Navigate timeout (${deadlineMs / 1000}s)`);
+      return { timedOut: true };
+    }
+    throw err;
+  }
+}
+
 export interface NavigateAndRecordOptions {
   port?: number;
   url: string;
@@ -149,63 +243,39 @@ export async function navigateAndRecord(
   if (!isNewTab) {
     // Navigate existing tab
     console.error(`Navigating to: ${options.url}`);
-    const navResult = (await client.send('Page.navigate', {
-      url: options.url,
-    })) as { loaderId?: string; errorText?: string };
-    // A fragment-only change against the current document is a same-document
-    // navigation: Chrome updates location.hash but does NOT reload the page, so
-    // SPAs that read the fragment on mount (e.g. Excalidraw's #url= scene import)
-    // never see it. Same-document navigations return no loaderId. When that
-    // happens, force a genuine cross-document load by bouncing through
-    // about:blank and re-navigating, so the target URL (fragment included) is
-    // delivered to a freshly-mounted document. A plain Page.reload here races
-    // the still-committing fragment nav and can reload the pre-fragment URL.
-    if (!navResult.loaderId) {
-      await client.send('Page.navigate', { url: 'about:blank' });
-      await client.send('Page.navigate', { url: options.url });
-    }
+    await navigateWithFragmentFix(client, options.url);
   }
 
-  const deadline = 60_000;
-  const t0 = Date.now();
-  let timedOut = false;
+  const waitForLoadEvent = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        console.error('Page load timeout (10s), continuing with settle...');
+        resolve();
+      }, 10000);
+      client.on('Page.loadEventFired', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+
+  // HAR finalization runs as `afterSettle`, INSIDE the raced/deadline-bounded
+  // region (via `logTimeout: false` so this path keeps its own single timeout
+  // line below) — this restores the pre-extraction invariant that the 60s
+  // deadline covers load-wait + settle + HAR finalization, not just the first
+  // two, so a near-deadline `recorder.finish()` can still trip `timedOut`.
   let har!: { log: { entries: HAREntry[] } };
-
-  try {
-    await Promise.race([
-      (async () => {
-        // Wait for load event
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(() => {
-            console.error('Page load timeout (10s), continuing with settle...');
-            resolve();
-          }, 10000);
-          client.on('Page.loadEventFired', () => {
-            clearTimeout(timer);
-            resolve();
-          });
-        });
-
-        // Settle time for SPAs that load after DOMContentLoaded
-        console.error(`Settling for ${settle}ms...`);
-        await new Promise((r) => setTimeout(r, settle));
-
-        har = await recorder.finish();
-      })(),
-      new Promise<never>((_, reject) => {
-        const t = setTimeout(() => reject(new Error('__navigate_timeout__')), deadline - (Date.now() - t0));
-        // Don't keep process alive just for the deadline timer
-        if (typeof t === 'object' && 'unref' in t) t.unref();
-      }),
-    ]);
-  } catch (err) {
-    if (err instanceof Error && err.message === '__navigate_timeout__') {
-      timedOut = true;
-      console.error('Navigate timeout (60s) — returning partial HAR');
-      har = recorder.finishPartial();
-    } else {
-      throw err;
-    }
+  const { timedOut } = await waitForLoadAndSettle(
+    waitForLoadEvent,
+    settle,
+    60_000,
+    async () => {
+      har = await recorder.finish();
+    },
+    false,
+  );
+  if (timedOut) {
+    console.error('Navigate timeout (60s) — returning partial HAR');
+    har = recorder.finishPartial();
   }
 
   const harPath = writeHarAndPrintSummary(har, options.harOutPath);

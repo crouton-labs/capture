@@ -87,6 +87,15 @@ export class CDPClient {
     this.eventHandlers.get(event)!.push(handler);
   }
 
+  /** Unregisters a handler previously added with {@link on}. Required so one-shot event consumers (e.g. the `LayerTree.layerTreeDidChange` collector) can remove their listener on settle/timeout instead of leaking a retained closure for the connection's lifetime. */
+  off(event: string, handler: (params: unknown) => void): void {
+    const handlers = this.eventHandlers.get(event);
+    if (!handlers) return;
+    const index = handlers.indexOf(handler);
+    if (index !== -1) handlers.splice(index, 1);
+    if (handlers.length === 0) this.eventHandlers.delete(event);
+  }
+
   /** Fires when the underlying websocket goes away (browser closed, crashed, CDP endpoint dropped). */
   onDisconnect(handler: () => void): void {
     this.ws.on('close', handler);

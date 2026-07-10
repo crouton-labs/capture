@@ -8,6 +8,7 @@
  * branch.
  */
 import { type ParsedArgs } from '../../types.js';
+import { rejectUnsupportedGate } from '../gate-guard.js';
 import { cmdMeasureSnap } from './snap.js';
 import { cmdMeasureCheck } from './check.js';
 import { cmdMeasureDiff } from './diff.js';
@@ -85,6 +86,7 @@ export async function measureMain(parsed: ParsedArgs, args: string[]): Promise<v
     case 'map':
       return measureMapMain(rest, args);
     case undefined:
+      if (rejectUnsupportedGate(parsed, 'measure')) return;
       console.log(MEASURE_USAGE);
       return;
     default:
@@ -105,6 +107,7 @@ async function measureMapMain(parsed: ParsedArgs, args: string[]): Promise<void>
     case 'layers':
       return cmdMeasureMapLayers(rest, args);
     case undefined:
+      if (rejectUnsupportedGate(parsed, 'measure map')) return;
       console.log(MEASURE_MAP_USAGE);
       return;
     default:

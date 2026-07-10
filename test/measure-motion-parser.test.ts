@@ -205,6 +205,12 @@ test('unknown flags are still rejected for an existing (pre-U02) command', () =>
   assert.ok(errors.some((e) => e.includes('Unknown flag: --nonsense')));
 });
 
+test('parseCliArgs itself still tokenizes --gate anywhere it appears (leaf-level rejection is enforced by the command layer, not the tokenizer)', () => {
+  const parsed = parseCliArgs(['measure', 'snap', '--gate']);
+
+  assert.equal(parsed.gate, true);
+});
+
 test('an existing single-value flag combo still parses correctly post-change', () => {
   const parsed = parseCliArgs(['click', 'Sign in', '--role', 'button', '--target', 'tab-1']);
 

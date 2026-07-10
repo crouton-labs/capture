@@ -1,5 +1,6 @@
 import { type ParsedArgs } from '../../types.js';
 import { emitResult, fact, type RenderableResult } from '../../../output/render.js';
+import { rejectUnsupportedGate } from '../gate-guard.js';
 
 const USAGE = `Usage: capture motion timeline <rec> --element <sel> [--prop <prop>]
 
@@ -17,6 +18,7 @@ export async function cmdMotionTimeline(parsed: ParsedArgs, _args: string[]): Pr
     console.log(USAGE);
     process.exit(0);
   }
+  if (rejectUnsupportedGate(parsed, 'motion timeline')) return;
   const result: RenderableResult = {
     tag: 'error',
     attrs: { command: 'motion timeline', status: 'not_implemented' },

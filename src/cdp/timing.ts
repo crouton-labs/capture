@@ -20,13 +20,15 @@ export interface BracketedTiming<T> {
 /**
  * Runs `fn`, bracketed by two `performance.now()` reads taken in the page's document execution
  * context. Used to attribute a discrete action (e.g. an `Input.dispatch*` call) to a window in
- * the recorder's authoritative `performance.now()` clock domain — this is the mechanism behind
- * the recorder-client adapter's internal `performance.mark(input_name)` bracketing (U14).
+ * the recorder's authoritative `performance.now()` clock domain. The action's landmark label
+ * (`mark`, when the caller supplied one) is recorded host-side only — appended straight to
+ * `events.jsonl` alongside these two bracket numbers (see `../recorder-bridge.ts`'s `handleCdp`)
+ * — never written into the page's own PerformanceTimeline via `performance.mark()`: that page-
+ * visible side channel was removed (a predictable, page-observable channel the injected
+ * PerformanceObserver would otherwise re-observe as its own event, in violation of the
+ * observational-collector invariant against page-side channels).
  */
-export async function withDocumentPerformanceNow<T>(
-  client: CDPClient,
-  fn: () => Promise<T>,
-): Promise<BracketedTiming<T>> {
+export async function withDocumentPerformanceNow<T>(client: CDPClient, fn: () => Promise<T>): Promise<BracketedTiming<T>> {
   const startPerformanceNow = await readPerformanceNow(client);
   const result = await fn();
   const endPerformanceNow = await readPerformanceNow(client);
@@ -57,10 +59,13 @@ export interface TraceClockBaseline {
 
 /**
  * Reads one synchronized (`performance.now()`, wall-clock) pair from the page in a single
- * round trip. The recorder bridge captures this once at `--start` as the `capture-rec-start`
- * baseline stored in `markers.json`; screencast-frame `metadata.timestamp` (wall-clock seconds)
- * and Tracing `ts` (wall-clock-anchored microseconds) are then converted into the
- * `performance.now()` domain by subtracting this baseline's wall-clock offset.
+ * round trip. The recorder bridge reads this once when it arms (`rec-start`) as the anchor half
+ * of the three-way `markers.json` baseline; the other two members — the first screencast frame's
+ * `metadata.timestamp` (wall-clock seconds) and the first Tracing batch's earliest event `ts`
+ * (trace-clock microseconds) — are captured separately by the recorder bridge itself as those
+ * events arrive (not by this function, since neither exists yet at arm time). Post-processing
+ * converts frame-time and trace-time into the `performance.now()` domain by subtracting this
+ * baseline's wall-clock offset.
  */
 export async function readTraceClockBaseline(client: CDPClient): Promise<TraceClockBaseline> {
   const evaluation = (await client.send('Runtime.evaluate', {

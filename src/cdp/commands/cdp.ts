@@ -18,6 +18,7 @@ import { getBrowserClient, findTabById } from '../targets.js';
 import { detectCdpPort } from '../detect.js';
 import { sendBridgeRequest } from '../bridge/client.js';
 import { type CDPClient } from '../client.js';
+import { isRecorderHeldClient } from '../recorder-client.js';
 import { type ParsedArgs } from '../types.js';
 
 const DEFAULT_TIMEOUT_MS = 10000;
@@ -172,7 +173,12 @@ async function runBrowserScope(
   }
 }
 
-async function runPageScope(
+/**
+ * Exported for testing (`test/recorder-navigate-waitevent.test.ts`): the
+ * recorder-held branch below (`isRecorderHeldClient(client)`) is the actual
+ * command wiring `capture cdp --wait-event` runs under an active recording.
+ */
+export async function runPageScope(
   method: string | undefined,
   params: Record<string, unknown> | undefined,
   parsed: ParsedArgs,
@@ -180,9 +186,34 @@ async function runPageScope(
 ): Promise<void> {
   const { client } = await connectForCommand(parsed);
   try {
-    const eventPromise = parsed.waitEvent ? waitForEventOnce(client, parsed.waitEvent, timeoutMs) : undefined;
-    const result = method ? await client.send(method, params ?? {}) : undefined;
-    const event = eventPromise ? await eventPromise : undefined;
+    let result: unknown;
+    let event: unknown;
+    if (isRecorderHeldClient(client)) {
+      // The recorder-held adapter's `.on()` is a documented no-op (nothing
+      // pushes unsolicited events back over its one-request-one-response
+      // socket) — `waitForEventOnce` below would hang until its own timeout.
+      // `.waitEvent()`/`.dispatch()` are the real event-wait surface for this
+      // adapter, routing the wait through the recorder bridge's own event
+      // broker. When both a method and a wait-event are requested,
+      // `.dispatch()` carries them in ONE request so the bridge arms the wait
+      // before dispatching the call — sending them as two separate requests
+      // (`.send()` then `.waitEvent()`) risks the action firing the event
+      // before the wait-only request even reaches the bridge. This command has
+      // no fragment-nav-style multi-call logic and already throws on an
+      // event-wait timeout, so bundling here is a pure simplification with no
+      // tradeoff (contrast `../commands/traffic.ts`'s `navigateAtomicWithFragmentFix`).
+      if (method) {
+        const combined = await client.dispatch(method, params ?? {}, parsed.waitEvent, timeoutMs);
+        result = combined.result;
+        event = combined.event;
+      } else if (parsed.waitEvent) {
+        event = await client.waitEvent(parsed.waitEvent, timeoutMs);
+      }
+    } else {
+      const eventPromise = parsed.waitEvent ? waitForEventOnce(client, parsed.waitEvent, timeoutMs) : undefined;
+      result = method ? await client.send(method, params ?? {}) : undefined;
+      event = eventPromise ? await eventPromise : undefined;
+    }
     console.log(JSON.stringify({ result, event }, null, 2));
   } finally {
     client.close();

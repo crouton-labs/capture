@@ -8,7 +8,9 @@ import {
   harFilePath,
   appendToHarRecording as appendToHar,
 } from '../har-manager.js';
-import { getActiveSession, updateActiveSession } from '../session-context.js';
+import { getActiveSession, updateActiveSession, type ActiveSessionState } from '../session-context.js';
+import { RecorderHeldClient, isRecorderHeldClient } from './recorder-client.js';
+import { recDirFor, readRecorderJson } from './motion/recorder.js';
 
 function getPortFromWebSocketDebuggerUrl(url?: string): number | null {
   if (!url) return null;
@@ -19,9 +21,82 @@ function getPortFromWebSocketDebuggerUrl(url?: string): number | null {
   }
 }
 
+/**
+ * Builds a short, human-readable label for this command invocation, used to
+ * tag every marked (`Input.dispatch*`) CDP call the recorder-held adapter
+ * makes on its behalf — e.g. `click:Send`, `type:another message`,
+ * `navigate:https://...` — matching the design's "labeled input landmark"
+ * shape in `events.jsonl`. Derived generically from the command name plus
+ * its primary target rather than per-leaf, so this stays a `connection.ts`
+ * concern instead of every intervening command having to supply one.
+ */
+function deriveActionLabel(parsed: ParsedArgs): string {
+  // `type`'s positional[0] is the raw text being typed (often a password,
+  // token, or other secret) — it must never flow into the mark label, which
+  // lands verbatim in events.jsonl as a host-side input-landmark record (it
+  // no longer ever touches the page — see `../timing.ts`'s
+  // `withDocumentPerformanceNow`). Use the --into field name when given (the
+  // actual target of the action), otherwise a generic placeholder — never
+  // the typed content itself.
+  if (parsed.command === 'type') {
+    return `type:${parsed.into ?? 'focused element'}`;
+  }
+  const target = parsed.positional[0] ?? parsed.into ?? parsed.url ?? '';
+  return target ? `${parsed.command}:${target}` : parsed.command;
+}
+
+/**
+ * Routes a command's connection through an ACTIVE composed recording
+ * (`motion rec --start` ... `--stop`) instead of opening a fresh tab
+ * websocket — the "session-tab commands route through the recorder's held
+ * socket" mechanism the design calls for. Returns `null` (falling back to
+ * the plain path below) when there is no active recording, an explicit
+ * `--url` names a different (parallel) tab, an explicit `--target` names a
+ * tab other than the recorder's own, or the recorder's live-state handle
+ * (`recorder.json`) is missing/not currently `recording` (already reaped or
+ * mid-teardown — fall back rather than fail the whole command).
+ */
+function connectToActiveRecorder(
+  session: ActiveSessionState,
+  parsed: ParsedArgs,
+): { client: CDPClient; tab: CDPTarget } | null {
+  const recId = session.activeRecId;
+  if (!recId) return null;
+  if (parsed.url) return null;
+  if (parsed.target && parsed.target !== session.targetId) return null;
+
+  const recDir = recDirFor(session.dir, recId);
+  const rj = readRecorderJson(recDir);
+  if (!rj || rj.state !== 'recording') return null;
+
+  const actionLabel = deriveActionLabel(parsed);
+  const client = new RecorderHeldClient({ socketPath: rj.socketPath, actionLabel });
+  const tab: CDPTarget = {
+    id: rj.targetId,
+    title: '',
+    url: rj.url ?? '',
+    type: 'page',
+    webSocketDebuggerUrl: undefined,
+  };
+
+  console.error(`Routing via active recorder ${recId} (recorder-held tab connection, action "${actionLabel}")`);
+
+  // Documented cast — RecorderHeldClient only ever needs to satisfy the
+  // structural send/on/onDisconnect/close surface every command leaf calls;
+  // see recorder-client.ts's own header for why this mirrors
+  // recorder-bridge.ts's `asCDPClient()`.
+  return { client: client as unknown as CDPClient, tab };
+}
+
 export async function connectForCommand(
   parsed: ParsedArgs,
 ): Promise<{ client: CDPClient; tab: CDPTarget }> {
+  const activeSession = getActiveSession();
+  if (activeSession?.activeRecId) {
+    const routed = connectToActiveRecorder(activeSession, parsed);
+    if (routed) return routed;
+  }
+
   if (!parsed.target && !parsed.url) {
     throw new Error('Use --target <tabId> or --url <pattern> to target a tab. Run "capture list" to see available tabs.');
   }
@@ -43,7 +118,6 @@ export async function connectForCommand(
   }
 
   // Lazy-populate targetId in active session if not yet set
-  const activeSession = getActiveSession();
   if (activeSession && !activeSession.targetId) {
     updateActiveSession({ targetId: tab.id });
   }
@@ -65,12 +139,16 @@ export async function withConnection<T>(
   opts: { settle?: number } = {},
 ): Promise<T> {
   const { client, tab } = await connectForCommand(parsed);
+  const routed = isRecorderHeldClient(client);
 
-  const consoleRecorder = new ConsoleRecorder(client);
-  await consoleRecorder.start();
+  let consoleRecorder: ConsoleRecorder | undefined;
+  if (!routed) {
+    consoleRecorder = new ConsoleRecorder(client);
+    await consoleRecorder.start();
+  }
 
   let harRecorder: HARRecorder | undefined;
-  if (parsed.har) {
+  if (parsed.har && !routed) {
     // Validate HAR ID exists before starting recording
     const harPath = harFilePath(parsed.har);
     if (!fs.existsSync(harPath)) {
@@ -81,6 +159,12 @@ export async function withConnection<T>(
     }
     harRecorder = new HARRecorder(client);
     await harRecorder.start();
+  }
+
+  if (routed) {
+    console.error(
+      '  [recorder] console/HAR live capture skipped while routed through the active recording \u2014 see events.jsonl for the equivalent record.',
+    );
   }
 
   try {
@@ -101,7 +185,9 @@ export async function withConnection<T>(
       }
     }
 
-    printConsoleSummary(consoleRecorder.finish());
+    if (consoleRecorder) {
+      printConsoleSummary(consoleRecorder.finish());
+    }
 
     return result;
   } finally {

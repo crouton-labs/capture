@@ -1,5 +1,6 @@
 import { type ParsedArgs } from '../../types.js';
 import { emitResult, fact, type RenderableResult } from '../../../output/render.js';
+import { rejectUnsupportedGate } from '../gate-guard.js';
 
 const USAGE = `Usage: capture motion mask <rec>
 
@@ -13,6 +14,7 @@ export async function cmdMotionMask(parsed: ParsedArgs, _args: string[]): Promis
     console.log(USAGE);
     process.exit(0);
   }
+  if (rejectUnsupportedGate(parsed, 'motion mask')) return;
   const result: RenderableResult = {
     tag: 'error',
     attrs: { command: 'motion mask', status: 'not_implemented' },

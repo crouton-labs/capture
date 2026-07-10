@@ -1,5 +1,6 @@
 import { type ParsedArgs } from '../../types.js';
 import { emitResult, fact, type RenderableResult } from '../../../output/render.js';
+import { rejectUnsupportedGate } from '../gate-guard.js';
 
 const USAGE = `Usage: capture measure snap [url|snap] [--freeze-animations] [--settle-timeout <ms>] [--capture-unsettled] [--pixels] [--state <state[:selector]>]... [--viewport <WxH>]...
 
@@ -26,6 +27,7 @@ export async function cmdMeasureSnap(parsed: ParsedArgs, _args: string[]): Promi
     console.log(USAGE);
     process.exit(0);
   }
+  if (rejectUnsupportedGate(parsed, 'measure snap')) return;
   const result: RenderableResult = {
     tag: 'error',
     attrs: { command: 'measure snap', status: 'not_implemented' },

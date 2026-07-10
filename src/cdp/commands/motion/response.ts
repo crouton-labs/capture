@@ -1,5 +1,6 @@
 import { type ParsedArgs } from '../../types.js';
 import { emitResult, fact, type RenderableResult } from '../../../output/render.js';
+import { rejectUnsupportedGate } from '../gate-guard.js';
 
 const USAGE = `Usage: capture motion response <rec> [--action <action>]
 
@@ -16,6 +17,7 @@ export async function cmdMotionResponse(parsed: ParsedArgs, _args: string[]): Pr
     console.log(USAGE);
     process.exit(0);
   }
+  if (rejectUnsupportedGate(parsed, 'motion response')) return;
   const result: RenderableResult = {
     tag: 'error',
     attrs: { command: 'motion response', status: 'not_implemented' },

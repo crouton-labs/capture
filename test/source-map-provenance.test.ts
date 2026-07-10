@@ -145,3 +145,32 @@ test('resolveAuthoredSourceLocation degrades to the generated location when the 
 
   assert.equal(resolved.kind, 'generated');
 });
+
+test('resolveAuthoredSourceLocation REJECTS (does not degrade to `generated`) when the source map\'s `mappings` string is malformed VLQ — the root-cause path for style-provenance.ts finding #7', async () => {
+  // Distinct from every other degradation path above: a missing map, an unfetchable map, or an
+  // unparseable-as-JSON map all resolve to an honest `GeneratedLocation` (see
+  // `loadSourceMap`/`parseDataURISourceMap`'s internal try/catch in src/cdp/source-map.ts). A
+  // structurally-valid JSON source map whose `mappings` field contains an invalid VLQ character
+  // is NOT caught anywhere inside this module (`decodeVLQSegment` throws synchronously, and
+  // neither `mapGeneratedPosition` nor `resolveAuthoredSourceLocation` wraps that call) — so this
+  // is a genuine promise REJECTION a caller must handle explicitly, not a value it can trust.
+  const malformedMap = { version: 3, sources: ['app.css'], mappings: '!!!!' };
+  const mapJson = JSON.stringify(malformedMap);
+  const mapDataURI = `data:application/json;base64,${Buffer.from(mapJson, 'utf8').toString('base64')}`;
+  const generatedText = `.box{color:red}\n/*# sourceMappingURL=${mapDataURI} */`;
+
+  const client = stubClient({
+    'CSS.getStyleSheetText': () => ({ text: generatedText }),
+  });
+
+  await assert.rejects(
+    () =>
+      resolveAuthoredSourceLocation(client, {
+        styleSheetId: 'sheet-malformed-mappings',
+        sourceURL: 'https://example.com/app.css',
+        line: 0,
+        column: 5,
+      }),
+    /Invalid base64 VLQ character/,
+  );
+});
