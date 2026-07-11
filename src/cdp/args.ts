@@ -190,6 +190,14 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--action' && next) {
       parsed.action = next;
       i++;
+    } else if (arg === '--occurrence' && next) {
+      const occurrence = Number(next);
+      if (!Number.isInteger(occurrence) || occurrence < 1) {
+        console.error(`Invalid --occurrence: ${next} (expected a positive integer)`);
+        process.exit(1);
+      }
+      parsed.occurrence = occurrence;
+      i++;
     } else if (arg === '--help' || arg === '-h') {
       parsed.help = true;
     } else if (arg.startsWith('--')) {

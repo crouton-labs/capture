@@ -44,6 +44,13 @@ export interface MotionMaskResult {
   height: number;
   comparedFramePairs: number;
   regions: MotionMaskRegion[];
+  /**
+   * Set only when the recording spans more than one viewport size: a factual
+   * provenance note stating which contiguous same-size frame run the composite
+   * and region facts were computed over, its dimensions, and that frames of a
+   * different size were excluded. Undefined when every frame shared one size.
+   */
+  caveat?: string;
 }
 
 interface ChangeSample {
@@ -67,15 +74,35 @@ export function createMotionMask(ref: RecRef): MotionMaskResult {
   if (!fs.statSync(framesDir).isDirectory()) {
     throw new Error(`Recording ${ref.id} has frames but ${framesDir} is not a directory; create a finalized recording with \`capture motion rec\`.`);
   }
-  const frameFiles = fs.readdirSync(framesDir)
+  const allFrameFiles = fs.readdirSync(framesDir)
     .filter((name) => name.endsWith('.png'))
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  if (frameFiles.length < 2) {
-    throw new Error(`Recording ${ref.id} has ${frameFiles.length} frame PNG(s) at ${framesDir}; motion mask needs at least two frames. Record again with \`capture motion rec\`.`);
+  if (allFrameFiles.length < 2) {
+    throw new Error(`Recording ${ref.id} has ${allFrameFiles.length} frame PNG(s) at ${framesDir}; motion mask needs at least two frames. Record again with \`capture motion rec\`.`);
   }
 
+  // A recording that spans a viewport resize holds frames of more than one
+  // size. Rather than fail the whole recording, measure over the longest
+  // contiguous run of same-size frames and report a caveat naming that run.
+  const dims = allFrameFiles.map((name) => readPngDimensions(path.join(framesDir, name)));
+  const run = longestSameSizeRun(dims);
+  if (run.length < 2) {
+    throw new Error(`Recording ${ref.id} has no contiguous run of two or more same-size frames at ${framesDir}; every adjacent frame pair differs in viewport size, so a motion composite cannot be built. Record again at one viewport size with \`capture motion rec\`.`);
+  }
+  const frameFiles = allFrameFiles.slice(run.start, run.start + run.length);
+  const runDims = dims[run.start];
+  const excludedCount = allFrameFiles.length - frameFiles.length;
+  const caveat = excludedCount > 0
+    ? `Partial-window fallback: recorded frames span more than one viewport size. Composite and region facts cover only the longest contiguous same-size run — frames ${run.start}\u2013${run.start + run.length - 1} (${frameFiles[0]}\u2013${frameFiles[frameFiles.length - 1]}) at ${runDims.width}\u00d7${runDims.height}. ${excludedCount} frame(s) outside this run were excluded; some may share these dimensions.`
+    : undefined;
+
+  // Region facts (attribution, distance, velocity, timing) must cover ONLY the
+  // selected same-size run — the same window the raster composite spans. Rect
+  // records from excluded frames are dropped here so an element that appears
+  // only outside the run cannot win attribution or contribute movement.
+  const runFiles = new Set(frameFiles);
   const rectRecords = readRects<MotionRect>(ref).sort((a, b) => a.frame - b.frame);
-  const recordsByFile = new Map(rectRecords.filter((record) => record.file).map((record) => [record.file!, record]));
+  const recordsByFile = new Map(rectRecords.filter((record) => record.file && runFiles.has(record.file)).map((record) => [record.file!, record]));
   const meta = readMeta<{ durationMs?: unknown }>(ref);
   const outputPath = path.join(ref.dir, 'motion-mask.png');
   const workDir = path.join(ref.dir, '.motion-mask-work');
@@ -130,13 +157,43 @@ export function createMotionMask(ref: RecRef): MotionMaskResult {
       recordsByFile,
       durationMs,
       width,
+      run.start,
+      allFrameFiles.length,
     ));
-    return { outputPath, width, height, comparedFramePairs: samples.length, regions };
+    return { outputPath, width, height, comparedFramePairs: samples.length, regions, caveat };
   } finally {
     // The wrapper's pairwise outputs are private transient files, not
     // recording artifacts. The final composite is atomically private-written.
     fs.rmSync(workDir, { recursive: true, force: true });
   }
+}
+
+function readPngDimensions(file: string): { width: number; height: number } {
+  // PNG dimensions live in the IHDR chunk: 8-byte signature, 4-byte length,
+  // 4-byte "IHDR", then big-endian uint32 width (offset 16) and height (20).
+  const fd = fs.openSync(file, 'r');
+  try {
+    const header = Buffer.alloc(24);
+    fs.readSync(fd, header, 0, 24, 0);
+    return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function longestSameSizeRun(dims: Array<{ width: number; height: number }>): { start: number; length: number } {
+  let bestStart = 0;
+  let bestLength = dims.length ? 1 : 0;
+  let runStart = 0;
+  for (let i = 1; i < dims.length; i++) {
+    if (dims[i].width !== dims[i - 1].width || dims[i].height !== dims[i - 1].height) runStart = i;
+    const length = i - runStart + 1;
+    if (length > bestLength) {
+      bestLength = length;
+      bestStart = runStart;
+    }
+  }
+  return { start: bestStart, length: bestLength };
 }
 
 function recordingArtifactPath(ref: RecRef, filename: string): string {
@@ -185,6 +242,8 @@ function regionForComponent(
   recordsByFile: Map<string, MotionRect>,
   durationMs: number,
   width: number,
+  runStart: number,
+  totalFrames: number,
 ): MotionMaskRegion {
   const xs = component.pixels.map((pixel) => pixel.x);
   const ys = component.pixels.map((pixel) => pixel.y);
@@ -195,8 +254,8 @@ function regionForComponent(
   const activeSamples = samples.filter((sample) => sample.pixels.some((pixel) => component.lookup.has(pixel.y * width + pixel.x)));
   const startPair = activeSamples[0]?.pair ?? 0;
   const endPair = activeSamples.at(-1)?.pair ?? startPair;
-  const startMs = timestampForPair(startPair, frameFiles, recordsByFile, durationMs);
-  const endMs = timestampForPair(endPair + 1, frameFiles, recordsByFile, durationMs);
+  const startMs = timestampForPair(startPair, frameFiles, recordsByFile, durationMs, runStart, totalFrames);
+  const endMs = timestampForPair(endPair + 1, frameFiles, recordsByFile, durationMs, runStart, totalFrames);
   const attribution = attributeElement(component, recordsByFile, width);
   const rectDistance = attribution ? distanceForElement(attribution.element, recordsByFile) : null;
   const pixelDistance = centroidDistance(activeSamples, component, width);
@@ -259,11 +318,14 @@ function centroidDistance(samples: ChangeSample[], component: Component, width: 
   return centers.slice(1).reduce((total, center, i) => total + Math.hypot(center.x - centers[i].x, center.y - centers[i].y), 0);
 }
 
-function timestampForPair(pair: number, frameFiles: string[], recordsByFile: Map<string, MotionRect>, durationMs: number): number {
+function timestampForPair(pair: number, frameFiles: string[], recordsByFile: Map<string, MotionRect>, durationMs: number, runStart: number, totalFrames: number): number {
   const record = recordsByFile.get(frameFiles[Math.min(pair, frameFiles.length - 1)]);
   const first = recordsByFile.get(frameFiles[0])?.screencastTimestamp;
   if (typeof record?.screencastTimestamp === 'number' && typeof first === 'number') return (record.screencastTimestamp - first) * 1000;
-  return frameFiles.length > 1 ? (pair / (frameFiles.length - 1)) * durationMs : 0;
+  // Absent rect timestamps: map this pair's ABSOLUTE frame index across the
+  // whole recording's duration so timing stays scoped to the selected run's
+  // slice, not stretched to fill the full durationMs.
+  return totalFrames > 1 ? ((runStart + pair) / (totalFrames - 1)) * durationMs : 0;
 }
 
 function elementLabel(element: MotionElement): string {

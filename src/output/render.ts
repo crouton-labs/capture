@@ -95,9 +95,383 @@ function capLength(s: string, max: number): string {
   return `${s.slice(0, max)}…[+${s.length - max} chars]`;
 }
 
-/** Escape for use inside XML-ish element text content. */
+// XML name-start characters this renderer treats as beginning a tag-like span.
+// This is the FULL XML 1.0 NameStartChar production, including the astral
+// #x10000-#xEFFFF plane: ASCII letters, `_`/`:`, the Unicode letter/name-start
+// BMP ranges XML permits, and astral name-start code points. The `u` flag makes
+// the class code-point-aware so an astral name-start char (a surrogate pair such
+// as `𐀀`, U+10000) is matched as one code point, not a lone surrogate. So
+// hostile, page-derived but XML-valid names — `<_hostile>`, `<évil>`, `<Ω>`,
+// `<名>`, `<𐀀>` — are neutralized like any `<tag>` rather than slipping through
+// because they aren't ASCII-letter-led or sit outside the BMP.
+const TAG_NAME_START =
+  /[:A-Z_a-z\u{C0}-\u{D6}\u{D8}-\u{F6}\u{F8}-\u{2FF}\u{370}-\u{37D}\u{37F}-\u{1FFF}\u{200C}\u{200D}\u{2070}-\u{218F}\u{2C00}-\u{2FEF}\u{3001}-\u{D7FF}\u{F900}-\u{FDCF}\u{FDF0}-\u{FFFD}\u{10000}-\u{EFFFF}]/u;
+
+// The additional characters XML 1.0 NameChar permits BEYOND NameStartChar
+// (used only to continue a name, never to begin one): `-`, `.`, ASCII digits,
+// U+00B7 MIDDLE DOT, and the combining/connector ranges U+0300-U+036F and
+// U+203F-U+2040. Combined with TAG_NAME_START this is the full NameChar set.
+const TAG_NAME_CONT = /[-.0-9\u{B7}\u{0300}-\u{036F}\u{203F}-\u{2040}]/u;
+
+/** True iff the code point may appear inside an XML tag name (NameStartChar or
+ * the NameChar-only continuation set). Code-point-aware so astral name chars
+ * are matched whole. */
+function isTagNameChar(cp: number): boolean {
+  const c = String.fromCodePoint(cp);
+  return TAG_NAME_START.test(c) || TAG_NAME_CONT.test(c);
+}
+
+/** True iff the `<` at `ltIndex` opens a markup-like span — i.e. it is
+ * immediately (after an optional `/`) followed by an XML 1.0 NameStartChar.
+ * Code-point-aware: `codePointAt` reads a full astral char (a surrogate pair
+ * such as `𐀀`, U+10000) so an XML-valid astral name is recognized as a real
+ * tag opener rather than dismissed as an unmatched lone surrogate. */
+function startsMarkupName(s: string, ltIndex: number): boolean {
+  let j = ltIndex + 1;
+  if (s[j] === '/') j++;
+  if (j >= s.length) return false;
+  const cp = s.codePointAt(j);
+  if (cp === undefined) return false;
+  return TAG_NAME_START.test(String.fromCodePoint(cp));
+}
+
+/** From a `<` at `start` (its name-start already confirmed by
+ * `startsMarkupName`), return the index of the `>` that TRULY closes the
+ * markup-like span, or -1 if `<start` is not genuine tag syntax. The scan is
+ * CONTEXTUAL — `insideCssString` selects between two models, because the two
+ * contexts genuinely tokenize the same bytes differently:
+ *
+ *  - Top level / prose (`insideCssString === false`) → `scanMarkupCloseHtml`,
+ *    faithful HTML tag-token semantics. A tag name runs until whitespace, `/`,
+ *    or `>` (HTML consumes any other byte — backslash, quote — INTO the name),
+ *    and quotes suppress `>` only when they open a quoted attribute value after
+ *    `=`. So HTML-tokenizable data whose real `>` an XML-name gate would miss
+ *    (`<img\foo>`, `<img " >`, `<img alt=foo" >`) is fully neutralized.
+ *  - Inside a CSS attribute-selector quoted string (`insideCssString === true`)
+ *    → `scanMarkupCloseCss`, the strict XML-name gate. There backslash is a CSS
+ *    string escape, so inert selector data like `<value\"` (name run ended by
+ *    `\`, not whitespace/`/`/`>`) is NOT a tag and returns -1 — its `<` is
+ *    still escaped, but a later child-combinator `>` stays raw/copy-pastable.
+ *    A genuine buried tag (`<img alt="x">`, name ended by whitespace) is still
+ *    recognized and its real `>` neutralized. Applying HTML name semantics
+ *    here instead would let a run-on name swallow the `] > b` combinator. */
+function scanMarkupClose(s: string, start: number, insideCssString: boolean): number {
+  let k = start + 1;
+  if (s[k] === '/') k++;
+  return insideCssString ? scanMarkupCloseCss(s, k) : scanMarkupCloseHtml(s, k);
+}
+
+function isTagWhitespace(ch: string | undefined): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\f' || ch === '\r';
+}
+
+/** Strict-XML markup close for a `<` nested inside a CSS attribute-selector
+ * quoted string. `k` is the first name char (past any `/`). See
+ * `scanMarkupClose`. */
+function scanMarkupCloseCss(s: string, startName: number): number {
+  let k = startName;
+  // Gate 1 — walk the tag name (first char already confirmed a NameStartChar
+  // by startsMarkupName) and require a valid tag-name terminator after it.
+  let nameLen = 0;
+  while (k < s.length) {
+    const cp = s.codePointAt(k)!;
+    if (!isTagNameChar(cp)) break;
+    k += cp > 0xffff ? 2 : 1;
+    nameLen++;
+  }
+  if (nameLen === 0) return -1;
+  const boundary = s[k];
+  if (boundary !== ' ' && boundary !== '\t' && boundary !== '/' && boundary !== '>') return -1;
+  // Gate 2 — find the real `>` with XML attribute-quote semantics. Backslash is
+  // a LITERAL attribute character (XML attrs do not backslash-escape), so
+  // `<img alt="1 > 0\">` closes at the `>` right after the `\"`.
+  let attrQuote: string | null = null;
+  while (k < s.length) {
+    const ck = s[k];
+    if (attrQuote) {
+      if (ck === attrQuote) attrQuote = null;
+      k++;
+      continue;
+    }
+    if (ck === '"' || ck === "'") {
+      attrQuote = ck;
+      k++;
+      continue;
+    }
+    if (ck === '>') return k;
+    if (ck === '<') return -1; // a new span opens before this one closed — abort
+    k++;
+  }
+  return -1;
+}
+
+/** HTML tag-token close for a top-level / prose `<`. `k` is the first name
+ * char (past any `/`). Implements enough of the HTML tokenizer's tag states to
+ * find the real `>`: the name runs until whitespace/`/`/`>` (every other byte,
+ * backslash and quote included, is part of the name), and a quote suppresses
+ * `>` ONLY inside a quoted attribute value it opened after `=`. A malformed
+ * quote that is not a value delimiter (a stray `"` in before-attribute-name, or
+ * a `"` inside an unquoted value) does NOT hide the real close. See
+ * `scanMarkupClose`. */
+function scanMarkupCloseHtml(s: string, startName: number): number {
+  const n = s.length;
+  let k = startName;
+  // Tag-name state: consume until a name terminator (HTML absorbs any other
+  // byte, e.g. `\` or `"`, into the name).
+  let nameLen = 0;
+  while (k < n) {
+    const ch = s[k];
+    if (isTagWhitespace(ch) || ch === '/' || ch === '>') break;
+    k++;
+    nameLen++;
+  }
+  if (nameLen === 0) return -1;
+  // Attribute states. `reconsume` re-reads the current char in the next state
+  // without advancing (mirrors the HTML tokenizer's reconsume steps).
+  type St = 'beforeName' | 'name' | 'afterName' | 'beforeValue' | 'valueDQ' | 'valueSQ' | 'valueUnquoted' | 'afterValueQuoted';
+  let state: St = 'beforeName';
+  while (k < n) {
+    const ch = s[k];
+    switch (state) {
+      case 'beforeName':
+        if (isTagWhitespace(ch) || ch === '/') { k++; break; }
+        if (ch === '>') return k;
+        state = 'name'; // reconsume ch as the start of an attribute name
+        break;
+      case 'name':
+        if (isTagWhitespace(ch)) { state = 'afterName'; k++; break; }
+        if (ch === '/') { state = 'afterName'; break; }
+        if (ch === '>') return k;
+        if (ch === '=') { state = 'beforeValue'; k++; break; }
+        k++;
+        break;
+      case 'afterName':
+        if (isTagWhitespace(ch) || ch === '/') { k++; break; }
+        if (ch === '=') { state = 'beforeValue'; k++; break; }
+        if (ch === '>') return k;
+        state = 'name'; // reconsume as a new attribute name
+        break;
+      case 'beforeValue':
+        if (isTagWhitespace(ch)) { k++; break; }
+        if (ch === '"') { state = 'valueDQ'; k++; break; }
+        if (ch === "'") { state = 'valueSQ'; k++; break; }
+        if (ch === '>') return k; // attribute with a missing value
+        state = 'valueUnquoted'; // reconsume ch as the first unquoted-value byte
+        break;
+      case 'valueDQ':
+        if (ch === '"') state = 'afterValueQuoted';
+        k++;
+        break;
+      case 'valueSQ':
+        if (ch === "'") state = 'afterValueQuoted';
+        k++;
+        break;
+      case 'valueUnquoted':
+        if (isTagWhitespace(ch)) { state = 'beforeName'; k++; break; }
+        if (ch === '>') return k;
+        k++; // `"`/`'` here are ordinary unquoted-value bytes, not delimiters
+        break;
+      case 'afterValueQuoted':
+        if (isTagWhitespace(ch)) { state = 'beforeName'; k++; break; }
+        if (ch === '/') { k++; break; }
+        if (ch === '>') return k;
+        state = 'beforeName'; // reconsume as the next attribute name
+        break;
+    }
+  }
+  return -1;
+}
+
+/** True iff a CSS identifier character (an attribute-selector name body):
+ * ASCII letters, digits, `-`, `_`, or any non-ASCII codepoint (CSS idents
+ * allow those). Deliberately excludes `.`, `#`, `:`, `(`, `[`, whitespace.
+ * Used only by `opensAttrSelectorString`'s walk-back over `[ident=`. */
+function isCssIdentChar(ch: string | undefined): boolean {
+  if (ch === undefined) return false;
+  const cp = ch.codePointAt(0)!;
+  if (cp > 127) return true;
+  return /[A-Za-z0-9_-]/.test(ch);
+}
+
+/** True iff the quote at `quoteIndex` opens a CSS ATTRIBUTE-SELECTOR string —
+ * the ONE syntactic shape that switches the scan out of its prose/HTML default
+ * into XML-strict CSS-string context. It is anchored on exactly one form:
+ *
+ *   `[` ident (optional one of `~ | ^ $ *`) `=` `"`/`'`
+ *
+ * The quote must be preceded by `=` (optionally one operator char), then an
+ * identifier (the attribute name), then an unclosed `[`. Nothing else opens CSS
+ * context. A bare prose `=` (`x = "…"`, or `said, x="…"` with no bracket) does
+ * NOT qualify — there is no enclosing `[`. Function-call notation (`url("…")`,
+ * `foo("…")`) is DELIBERATELY not recognized: `fn("…")` is inherently ambiguous
+ * between CSS functional notation and ordinary prose, so it stays prose and its
+ * nested markup is neutralized with faithful HTML tokenization.
+ *
+ * Why anchoring here is closed-form, not another heuristic (the safety argument
+ * is asymmetric):
+ *  - `<` is escaped UNCONDITIONALLY in every context, so no output can ever
+ *    carry a tag whose opener is live. This `>`-marking machinery exists only
+ *    to avoid the half-escaped `&lt;tag …>` shape.
+ *  - Misclassifying a real CSS string as prose (the only direction this shrunk
+ *    recognizer can err for genuine selectors, e.g. `url("<value\"") > span`)
+ *    at worst OVER-escapes a later combinator `>` — a copy-paste nit, never a
+ *    security hole.
+ *  - Misclassifying prose as CSS is now only possible when the prose LITERALLY
+ *    contains `[ident="…"]` attribute-selector syntax. Inside that shape the
+ *    behavior is the required copy-pastable-selector behavior: `<` is dead, an
+ *    XML-tokenizable buried tag still gets its `>` escaped, and only a
+ *    non-XML-tokenizable span (`<value\"`) stays inert.
+ *
+ * So the boundary is: prose ⇒ full HTML tokenization (escape-happy); a
+ * syntactic `[ident="…"]` string ⇒ XML-strict (copy-paste-preserving). There is
+ * no third context and no punctuation heuristic left to relitigate. */
+function opensAttrSelectorString(s: string, quoteIndex: number): boolean {
+  let j = quoteIndex - 1;
+  while (j >= 0 && (s[j] === ' ' || s[j] === '\t')) j--;
+  if (j < 0) return false;
+  if (s[j] !== '=') return false;
+  // Attribute selector `[name="v"]`: walk back over an optional operator char,
+  // the attribute name, and require an unclosed `[`.
+  let k = j - 1;
+  if (k >= 0 && '~|^$*'.includes(s[k]!)) k--;
+  while (k >= 0 && (s[k] === ' ' || s[k] === '\t')) k--;
+  if (!isCssIdentChar(s[k])) return false; // no attribute name → prose `=`
+  while (k >= 0 && isCssIdentChar(s[k])) k--;
+  while (k >= 0 && (s[k] === ' ' || s[k] === '\t')) k--;
+  return k >= 0 && s[k] === '[';
+}
+
+/** Scan over the ORIGINAL (pre-escape) text returning the set of `>` indices
+ * that must be escaped. A `>` qualifies iff it is either:
+ *  - the REAL closing delimiter of a markup-like span (found via
+ *    `scanMarkupClose`, which skips a `>` inside a quoted attribute so only
+ *    the tag's true terminator is marked); or
+ *  - the `>` completing `]]>`, which XML forbids as literal character data.
+ * Because the scan runs on the original text, a later `<` (still a literal `<`
+ * here, not yet `&lt;`) correctly delimits spans.
+ *
+ * The scan tracks ONE piece of outer context: whether the cursor is inside a
+ * CSS attribute-selector quoted string, decided by `opensAttrSelectorString`
+ * from the one unambiguous syntactic shape `[ident="…"]` — NOT prose
+ * punctuation and NOT function-call notation. That is the distinction the
+ * security fix turns on — a `<` inside an attribute-selector string obeys the
+ * strict-XML-name gate with CSS backslash semantics, a `<` anywhere else (the
+ * prose/HTML default, including one nested inside an ordinary prose quote or a
+ * `fn("…")` argument) obeys faithful HTML tag-token semantics (see
+ * `scanMarkupClose`). The acceptance cases:
+ *  - #1 `The function foo("<img\foo>payload") returned` — `foo("` is prose, not
+ *    selector syntax, so `<img\foo>` is HTML-tokenized: the `\` is part of the
+ *    name and the `>` is the real terminator, marked (fully neutralized).
+ *  - #2 `foo("<img " >payload")` and #3 `foo("<img alt=foo" >payload")` — also
+ *    prose; a quote that does not open a value after `=` never hides the real
+ *    close, so the `>` is marked.
+ *  - #4 `div[data-x="<value\""] > span` — the `"` sits inside `[data-x=…]`, so
+ *    it IS an attribute-selector string, but `<value\"` is not real tag syntax:
+ *    its name run ends on `\`, so the strict-XML name-boundary gate rejects it
+ *    as inert CSS data. The `<` is still escaped, but the child-combinator `>`
+ *    after `]` stays raw/copy-pastable.
+ *  - #5 `a[data-x="<img alt="1 > 0\">"] > b` — also a real selector string, but
+ *    here `<img …>` IS genuine tag syntax (name terminated by whitespace). The
+ *    scan finds the real closing `>` (right after the literal `\"`, since XML
+ *    attributes do not backslash-escape) and marks it, while the
+ *    child-combinator `>` after `]` stays raw.
+ *  - #8 `<img alt="1 > 0" onerror="x">` — top-level markup; the `>` inside a
+ *    quoted attribute stays raw and only the true terminator is marked.
+ *  - #10 `</response> matched main > section` — the tag close is marked; the
+ *    `main > section` combinator stays raw.
+ *  - #12 `x[a="<img alt=foo" >payload"]` — CSS context by design (it has
+ *    `[a=`): under the XML gate the span is inert, `<` escaped, the `>` stays
+ *    raw. The boundary carve-out, pinned so it is not rediscovered.
+ *  - #13 `url("<value\"") > span` — prose (function-call notation is not
+ *    recognized), so the trailing combinator `>` MAY be over-escaped; safe
+ *    direction, no live markup survives.
+ * Crucially, a genuine tag inside an attribute-selector string is still marked
+ * — a hostile `<tag>` wrapped in a real selector string is neutralized rather
+ * than swallowed by the quote and left half-escaped. */
+function markupCloseIndices(s: string): ReadonlySet<number> {
+  const marks = new Set<number>();
+  const n = s.length;
+  let i = 0;
+  while (i < n) {
+    const c = s[i];
+    if ((c === '"' || c === "'") && opensAttrSelectorString(s, i)) {
+      // A CSS attribute-selector quoted string (CSS backslash semantics). A `<` buried
+      // inside is markup only when it genuinely self-closes (its own attribute
+      // quotes toggle and a top-level `>` is reached); otherwise it is inert
+      // CSS data and any `>` outside stays raw.
+      const delim = c;
+      let k = i + 1;
+      while (k < n) {
+        const ck = s[k];
+        if (ck === '\\') {
+          k += 2;
+          continue;
+        }
+        if (ck === delim) {
+          k++;
+          break;
+        }
+        if (ck === '<' && startsMarkupName(s, k)) {
+          const close = scanMarkupClose(s, k, true);
+          if (close >= 0) {
+            marks.add(close);
+            k = close + 1;
+            continue;
+          }
+        }
+        k++;
+      }
+      i = k;
+      continue;
+    }
+    if (c === '<' && startsMarkupName(s, i)) {
+      const close = scanMarkupClose(s, i, false);
+      if (close >= 0) {
+        marks.add(close);
+        i = close + 1;
+        continue;
+      }
+    }
+    i++;
+  }
+  for (let p = 0; p + 2 < n; p++) {
+    if (s[p] === ']' && s[p + 1] === ']' && s[p + 2] === '>') marks.add(p + 2);
+  }
+  return marks;
+}
+
+/** Escape for use inside XML-ish element text/attribute content. `&` and `<`
+ * are always escaped — `<` is what could open a forged tag and `&` what could
+ * open an entity. `>` is escaped SELECTIVELY, resolving two competing needs:
+ *  - A bare `>` cannot break out of text content and, left verbatim, keeps
+ *    page-derived CSS selectors (`div#root > main`, even `div[data-x="<value"]
+ *    > span`) copy-pastable straight out of the rendered prose instead of
+ *    printing as `div#root &gt; main`. So an ordinary combinator `>` (one that
+ *    does NOT close a markup-like tag span) is emitted raw.
+ *  - The `>` that CLOSES a markup-like tag span (`</response>`, `<script>`,
+ *    `<img alt="1 > 0" onerror="x">`, `<_hostile>`) — whose opening `<` is
+ *    already `&lt;` — is escaped to `&gt;`, so hostile, page-derived markup can
+ *    never render as a live tag or leave a half-escaped `&lt;tag>` that a
+ *    lenient XML/HTML reader might still parse. The real closing delimiter is
+ *    found by a quote-aware scan (`markupCloseIndices`), so a `>` inside a
+ *    quoted attribute is left raw and only the tag's true terminator escapes.
+ *  - The sequence `]]>`, which XML forbids as literal character data even
+ *    outside CDATA, is neutralized to `]]&gt;` wherever it survives, so
+ *    page-derived text carrying it cannot make an XML consumer reject the
+ *    block.
+ * The net rule: a `>` is escaped iff it terminates a `<…>` tag-like span or
+ * completes `]]>`; every other `>` (the selector-combinator case) stays raw. */
 function escapeXmlText(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const marks = markupCloseIndices(s);
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '&') out += '&amp;';
+    else if (c === '<') out += '&lt;';
+    else if (c === '>') out += marks.has(i) ? '&gt;' : '>';
+    else out += c;
+  }
+  return out;
 }
 
 /** Escape for use inside a double-quoted XML-ish attribute value. */

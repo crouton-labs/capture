@@ -23,11 +23,13 @@ export interface CheckFinding {
 interface GeometryElement {
   id: string;
   selector?: string;
+  domPath?: string;
   tag?: string;
   backendNodeId?: number | null;
   rect: { x: number; y: number; width: number; height: number };
-  visibility?: { visible?: boolean };
+  visibility?: { visible?: boolean; opacity?: number };
   zIndex?: string;
+  stackingContext?: { creates?: boolean; reasons?: string[] };
   clipping?: { clippedBy?: string; clippedFraction?: number } | null;
   layout?: { scrollWidth?: number; clientWidth?: number; scrollHeight?: number; clientHeight?: number; position?: string; overflowX?: string };
 }
@@ -35,6 +37,153 @@ interface GeometryElement {
 function rectOf(r: { x: number; y: number; width: number; height: number }): Rect { return { x: r.x, y: r.y, w: r.width, h: r.height }; }
 function intersects(a: GeometryElement['rect'], b: GeometryElement['rect']): boolean { return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y; }
 function label(e: { selector?: string; id?: string }): string { return e.selector || e.id || '(unidentified element)'; }
+
+// --- Overlap: opaque direct-sibling intersection detection ------------------
+// The naive all-pairs intersection reports every ancestor–descendant pair
+// (a child rect sits inside its parent rect) AND every cousin/descendant-of-
+// sibling pair, flooding the report. A meaningful overlap is between two
+// DIRECT DOM siblings (same parent) whose rects intersect and whose actual
+// top painter — resolved from the artifact's authoritative paint order — is
+// effectively opaque, i.e. a real visual occlusion, per the design contract's
+// "opaque sibling intersections".
+
+/** The parent domPath of an element: everything before the final `/` segment.
+ * `body[0]/div[1]/span[0]` → `body[0]/div[1]`; a root-level `body[0]` → `''`.
+ * Undefined when domPath is absent (sibling relationship unprovable). */
+function parentPath(domPath?: string): string | undefined {
+  if (domPath == null) return undefined;
+  const i = domPath.lastIndexOf('/');
+  return i < 0 ? '' : domPath.slice(0, i);
+}
+
+/** True when `a` and `b` are DIRECT DOM siblings — same parent domPath,
+ * distinct elements. Requires both domPaths: without them the sibling
+ * relationship cannot be proven, so the pair is not reported. This alone
+ * excludes ancestor–descendant containment (an ancestor and descendant never
+ * share a parent) and cousin / descendant-of-sibling pairs (different
+ * parents), collapsing what were previously many noisy cross-subtree findings
+ * to the single direct-sibling intersection that actually occludes. */
+function areDirectSiblings(a: GeometryElement, b: GeometryElement): boolean {
+  const pa = parentPath(a.domPath), pb = parentPath(b.domPath);
+  return pa !== undefined && pb !== undefined && pa === pb && a.domPath !== b.domPath;
+}
+
+/** Parse a CSS alpha token — a bare number (`0.8`) or a percentage (`50%`). */
+function parseAlphaToken(token: string): number {
+  const t = token.trim();
+  return t.endsWith('%') ? Number(t.slice(0, -1)) / 100 : Number(t);
+}
+
+/** Alpha of a CSS color string across the syntaxes a real browser computes:
+ * legacy comma `rgba(r,g,b,a)`/`hsla(...)` (fourth channel), hex (`#RGBA`/
+ * `#RRGGBBAA` alpha nibble/byte, else 1), and modern space-separated color
+ * functions — `rgb(r g b / a)`, `oklch(l c h / a)`, `oklab(l a b / a)`,
+ * `hsl`, `hwb`, `lab`, `lch`, `color(...)` — whose optional alpha follows a
+ * `/`. A recognized color with no alpha component is opaque (1);
+ * `transparent`/empty is 0. Undefined when the value is unrecognized so the
+ * caller can treat opacity as unknown. */
+function colorAlpha(value: string | null | undefined): number | undefined {
+  if (value == null) return undefined;
+  const v = value.trim().toLowerCase();
+  if (v === 'transparent' || v === '') return 0;
+  const hex = /^#([0-9a-f]+)$/.exec(v);
+  if (hex) {
+    const h = hex[1];
+    if (h.length === 4) return parseInt(h[3] + h[3], 16) / 255;
+    if (h.length === 8) return parseInt(h.slice(6, 8), 16) / 255;
+    if (h.length === 3 || h.length === 6) return 1;
+    return undefined;
+  }
+  const fn = /^[a-z-]+\((.*)\)$/.exec(v);
+  if (fn) {
+    const inner = fn[1];
+    if (inner.includes(',')) {
+      // Legacy comma form: rgba/hsla carry alpha as the fourth channel.
+      const parts = inner.split(',');
+      if (parts.length >= 4) { const a = parseAlphaToken(parts[3]); return Number.isFinite(a) ? Math.min(1, Math.max(0, a)) : undefined; }
+      return 1;
+    }
+    // Modern space form: alpha, when present, follows a `/`.
+    const slash = inner.split('/');
+    if (slash.length >= 2) { const a = parseAlphaToken(slash[slash.length - 1]); return Number.isFinite(a) ? Math.min(1, Math.max(0, a)) : undefined; }
+    return 1;
+  }
+  if (/^[a-z]+$/.test(v)) return 1;
+  return undefined;
+}
+
+interface BackgroundMap { byNode: Map<number, number>; bySelector: Map<string, number> }
+
+/** Per-element background alpha, keyed by backendNodeId and selector, read
+ * from styles.json. Empty when styles.json is unavailable (overlap then
+ * reports nothing rather than flooding — an opaque occluder cannot be proven
+ * without the computed background). */
+function backgroundAlphaMap(ref: SnapRef): BackgroundMap {
+  const byNode = new Map<number, number>();
+  const bySelector = new Map<string, number>();
+  try {
+    const styles = readRequired<{ elements?: Array<{ selector?: string; backendNodeId?: number | null; computed?: Record<string, string | null> }> }>(ref, 'styles.json');
+    for (const s of styles.elements ?? []) {
+      const alpha = colorAlpha(s.computed?.backgroundColor ?? s.computed?.['background-color']);
+      if (alpha === undefined) continue;
+      if (s.backendNodeId != null) byNode.set(s.backendNodeId, alpha);
+      if (s.selector) bySelector.set(s.selector, alpha);
+    }
+  } catch { /* styles.json unavailable — leave maps empty */ }
+  return { byNode, bySelector };
+}
+
+/** Effective opacity of an element: its own `opacity` multiplied by that of
+ * every DOM ancestor (opacity establishes a group whose transparency applies
+ * to the whole subtree). Walks the ancestor chain by domPath prefix. An
+ * element is only a full occluder when its effective opacity is 1. */
+function effectiveOpacity(e: GeometryElement, byPath: Map<string, GeometryElement>): number {
+  let opacity = e.visibility?.opacity ?? 1;
+  let p = parentPath(e.domPath);
+  while (p) {
+    const ancestor = byPath.get(p);
+    if (!ancestor) break;
+    opacity *= ancestor.visibility?.opacity ?? 1;
+    p = parentPath(ancestor.domPath);
+  }
+  return opacity;
+}
+
+/** An element occludes what it overlaps only when it is effectively fully
+ * opaque (own + ancestor opacity all 1) AND paints an opaque background. */
+function isOpaque(e: GeometryElement, bg: BackgroundMap, byPath: Map<string, GeometryElement>): boolean {
+  if (effectiveOpacity(e, byPath) < 1) return false;
+  const alpha = (e.backendNodeId != null ? bg.byNode.get(e.backendNodeId) : undefined) ?? (e.selector ? bg.bySelector.get(e.selector) : undefined);
+  return alpha !== undefined && alpha >= 1;
+}
+
+/** The artifact's AUTHORITATIVE paint order (`layers.json.paintOrder`): a
+ * back-to-front list of backendNodeIds, mapped to their paint index (higher =
+ * painted later = on top). This is Chrome's real DOMSnapshot paint order,
+ * sound across stacking contexts and CSS paint phases — unlike a global
+ * z-index guess. Empty when layers.json lacks a resolved paint order, in which
+ * case no occlusion can be proven and overlap reports nothing. */
+function paintOrderMap(ref: SnapRef): Map<number, number> {
+  try {
+    const layers = readRequired<{ paintOrder?: { available?: boolean; backendNodeIds?: number[] } }>(ref, 'layers.json');
+    const po = layers.paintOrder;
+    const index = new Map<number, number>();
+    if (po?.available && Array.isArray(po.backendNodeIds)) po.backendNodeIds.forEach((id, i) => index.set(id, i));
+    return index;
+  } catch { return new Map(); }
+}
+
+/** Whether `a` paints above `b`, resolved SOLELY from the artifact's
+ * authoritative paint order. Returns undefined when either element is absent
+ * from that order: DOM order is not paint order for positioned/z-indexed
+ * elements or stacking contexts, so without authoritative evidence for both
+ * the top painter is unknowable and the tool must not claim an occlusion. */
+function paintsAbove(a: GeometryElement, b: GeometryElement, paint: Map<number, number>): boolean | undefined {
+  const ia = a.backendNodeId != null ? paint.get(a.backendNodeId) : undefined;
+  const ib = b.backendNodeId != null ? paint.get(b.backendNodeId) : undefined;
+  if (ia === undefined || ib === undefined) return undefined;
+  return ia > ib;
+}
 
 export function parseChecks(value?: string): CheckName[] {
   if (!value || value === 'all') return [...CHECK_NAMES];
@@ -88,9 +237,29 @@ export function checkSnapshot(ref: SnapRef, requested: readonly CheckName[]): { 
   const vp = viewport(meta, elements);
   const visible = elements.filter((e) => e.visibility?.visible !== false && e.rect.width > 0 && e.rect.height > 0);
 
-  if (selected.has('overlap')) for (let i = 0; i < visible.length; i++) for (let j = i + 1; j < visible.length; j++) {
-    const a = visible[i], b = visible[j];
-    if (intersects(a.rect, b.rect)) findings.push(finding('overlap', a, `${label(a)} intersects ${label(b)}; rects x=${a.rect.x} y=${a.rect.y} w=${a.rect.width} h=${a.rect.height} and x=${b.rect.x} y=${b.rect.y} w=${b.rect.width} h=${b.rect.height}`, `z-index ${a.zIndex ?? 'auto'} and ${b.zIndex ?? 'auto'}`));
+  if (selected.has('overlap')) {
+    const bg = backgroundAlphaMap(ref);
+    const paint = paintOrderMap(ref);
+    const byPath = new Map<string, GeometryElement>();
+    for (const e of elements) if (e.domPath) byPath.set(e.domPath, e);
+    for (let i = 0; i < visible.length; i++) for (let j = i + 1; j < visible.length; j++) {
+      const a = visible[i], b = visible[j];
+      if (!intersects(a.rect, b.rect)) continue;
+      if (!areDirectSiblings(a, b)) continue;                       // only direct-sibling intersections are reported; cousins/descendants are noise
+      const above = paintsAbove(a, b, paint);
+      if (above === undefined) continue;                            // top painter unprovable without authoritative paint order for BOTH — never infer occlusion from DOM order
+      const [over, under] = above ? [a, b] : [b, a];
+      if (!isOpaque(over, bg, byPath)) continue;                    // the actual TOP painter must be opaque to occlude what is under it
+      const ix = Math.max(a.rect.x, b.rect.x), iy = Math.max(a.rect.y, b.rect.y);
+      const iw = Math.min(a.rect.x + a.rect.width, b.rect.x + b.rect.width) - ix;
+      const ih = Math.min(a.rect.y + a.rect.height, b.rect.y + b.rect.height) - iy;
+      const underArea = under.rect.width * under.rect.height;
+      const pct = underArea > 0 ? Math.round((iw * ih) / underArea * 100) : 0;
+      const stacking = over.stackingContext?.creates ? `; ${label(over)} creates a stacking context` : '';
+      findings.push(finding('overlap', under,
+        `${label(under)} ${pct}% occluded by ${label(over)}; ${label(under)} x=${under.rect.x} y=${under.rect.y} w=${under.rect.width} h=${under.rect.height} and ${label(over)} x=${over.rect.x} y=${over.rect.y} w=${over.rect.width} h=${over.rect.height}; overlap ${iw}×${ih}px`,
+        `${label(over)} paints above ${label(under)} in DOMSnapshot paint order${stacking}`));
+    }
   }
   if (selected.has('offscreen')) for (const e of visible) {
     const insideW = Math.max(0, Math.min(e.rect.x + e.rect.width, vp.width) - Math.max(e.rect.x, 0));

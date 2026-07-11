@@ -148,6 +148,55 @@ test('motion response requires unique --action semantics and lists duplicate occ
   }
 });
 
+test('motion response selects a repeated action label by --occurrence and errors factually out of range', () => {
+  const root = path.join(CAPTURE_ROOT, `u29-response-occurrence-${process.pid}-${Date.now()}`);
+  const recDir = path.join(root, 'motion', 'recs', 'rec-occurrence');
+  try {
+    ensurePrivateDir(recDir);
+    writeJsonPrivate(path.join(recDir, 'meta.json'), { id: 'rec-occurrence', state: 'finalized' });
+    writeJsonPrivate(path.join(recDir, 'markers.json'), MARKERS);
+    writeNdjsonPrivate(path.join(recDir, 'events.jsonl'), [
+      { kind: 'input', mark: 'click:Send_message', startPerformanceNow: 120, endPerformanceNow: 121 },
+      { kind: 'input', mark: 'click:Send_message', startPerformanceNow: 150, endPerformanceNow: 152 },
+    ]);
+    writeNdjsonPrivate(path.join(recDir, 'rects.jsonl'), []);
+
+    // --occurrence 2 selects the 2nd occurrence's timeline (startPerformanceNow 150 - performanceNowMs 100 = 50ms).
+    const second = loadResponseTimeline(recDir, 'click:Send_message', 2);
+    assert.equal(second.timeline.inputStartMs, 50);
+    assert.equal(second.timeline.inputEndMs, 52);
+    assert.equal(second.timeline.points.find((point) => point.stage === 'input')?.source, 'input dispatch mark (occurrence 2)');
+
+    // Occurrence 1 stays reachable and distinct.
+    const first = loadResponseTimeline(recDir, 'click:Send_message', 1);
+    assert.equal(first.timeline.inputStartMs, 20);
+
+    // Out-of-range occurrence errors factually, listing available occurrences.
+    assert.throws(
+      () => loadResponseTimeline(recDir, 'click:Send_message', 3),
+      (err: unknown) => {
+        assert.ok(err instanceof ResponseActionSelectionError);
+        assert.match(err.message, /has no occurrence 3; 2 occurrence\(s\) available/);
+        assert.deepEqual(err.actions, ['click:Send_message (occurrence 1, t=20.00ms)', 'click:Send_message (occurrence 2, t=50.00ms)']);
+        return true;
+      },
+    );
+
+    // Ambiguous with no occurrence still lists occurrences and raises the selection error.
+    assert.throws(
+      () => loadResponseTimeline(recDir, 'click:Send_message'),
+      (err: unknown) => {
+        assert.ok(err instanceof ResponseActionSelectionError);
+        assert.match(err.message, /appears 2 times; pass --occurrence <n>/);
+        assert.deepEqual(err.actions, ['click:Send_message (occurrence 1, t=20.00ms)', 'click:Send_message (occurrence 2, t=50.00ms)']);
+        return true;
+      },
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function png(color: [number, number, number, number]): Buffer {
   const image = new PNG({ width: 2, height: 2 });
   for (let i = 0; i < image.data.length; i += 4) image.data.set(color, i);

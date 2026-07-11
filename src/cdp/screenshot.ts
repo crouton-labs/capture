@@ -1,6 +1,6 @@
-import * as fs from 'fs';
 import { CDPClient } from './client.js';
 import { nextStepPath } from '../session-context.js';
+import { writeBinaryPrivate } from '../session/artifacts.js';
 
 export async function captureScreenshot(
   client: CDPClient,
@@ -94,7 +94,9 @@ export async function autoScreenshot(
   // Brief settle for UI to update
   await new Promise((r) => setTimeout(r, 300));
   const png = await captureScreenshot(client);
-  fs.writeFileSync(shotPath, png);
+  // Shot path always resolves under the session dir (CAPTURE_ROOT); the
+  // private writer creates the file 0600 and re-ensures shots/ is 0700.
+  writeBinaryPrivate(shotPath, png);
   console.error(`  [screenshot] ${shotPath}`);
   return shotPath;
 }

@@ -14,15 +14,23 @@
  *
  * - `layerTree` — CDP's `LayerTree` domain is event-driven, not
  *   pull-based: there is no `LayerTree.getLayers` command. `LayerTree.enable`
- *   is idempotent (already called once by `enableDomainsForSnap`) and, in
- *   real Chrome, re-sends the current layer tree as a fresh
- *   `LayerTree.layerTreeDidChange` event on every `.enable` call — this
- *   collector relies on that redelivery. The one-shot listener is removed
- *   (`client.off`) on BOTH the event and the timeout path so no retained
- *   closure leaks for the connection's lifetime. When the event never
- *   arrives (timeout) or the client can't deliver events, `layerTree` is
- *   `{ available: false, reason }` and `layers` is empty — an explicit
- *   unavailability fact, never an ambiguous empty array.
+ *   is idempotent (already called once by `enableDomainsForSnap`), so this
+ *   collector's own enable is a bare RE-enable. Real Chrome's compositor
+ *   delivers `LayerTree.layerTreeDidChange` when a frame is actually
+ *   PRODUCED, not merely when the domain is (re-)enabled: verified on live
+ *   Chrome 150, a bare re-enable redelivers the tree only ~1/5 of the time
+ *   (the first-ever enable's delivery is consumed by nobody, since
+ *   `enableDomainsForSnap` enabled before any listener attached), while
+ *   forcing a frame via `Page.captureScreenshot` delivers it 5/5. So after
+ *   re-enabling, this collector provokes delivery by forcing frames — a
+ *   read-only `Page.captureScreenshot` paint (no page mutation) spammed a
+ *   few times across the listener window, stopped the instant the event
+ *   settles. The one-shot listener is removed (`client.off`) on BOTH the
+ *   event and the timeout path so no retained closure leaks for the
+ *   connection's lifetime. When the event never arrives (timeout — e.g. a
+ *   non-compositing headless sandbox) or the client can't deliver events,
+ *   `layerTree` is `{ available: false, reason }` and `layers` is empty — an
+ *   explicit unavailability fact, never an ambiguous empty array.
  *
  * - `paintOrder` — the authoritative paint order comes from
  *   `DOMSnapshot.captureSnapshot({includePaintOrder:true})` (a pull-based
@@ -193,8 +201,8 @@ async function collectRawLayers(client: CDPClient): Promise<RawLayersResult> {
     return { layers: [], available: false, reason: 'client-lacks-event-support' };
   }
 
+  let settled = false;
   const eventPromise = new Promise<{ layers: RawLayer[] } | 'timeout' | 'missing-layers'>((resolve) => {
-    let settled = false;
     const handler = (params: unknown): void => {
       if (settled) return;
       settled = true;
@@ -213,6 +221,36 @@ async function collectRawLayers(client: CDPClient): Promise<RawLayersResult> {
   });
 
   await client.send('LayerTree.enable');
+  // `LayerTree.enable` is idempotent and `enableDomainsForSnap` already made
+  // the first-ever enable call before this collector runs — so this is a bare
+  // RE-enable, and real Chrome's compositor only (re)delivers
+  // `layerTreeDidChange` when a frame is actually PRODUCED, not merely when
+  // the domain is (re-)enabled. Verified on live Chrome 150: a bare re-enable
+  // delivers the tree ~1/5 of the time (the first enable's delivery is
+  // consumed by nobody, since `enableDomainsForSnap` enabled before any
+  // listener was attached), whereas forcing a frame via `Page.captureScreenshot`
+  // delivers it 5/5. So provoke delivery by forcing frames: a read-only paint
+  // (`Page.captureScreenshot` mutates no page state), spammed a few times
+  // across the listener window so at least one frame lands before the
+  // timeout, and stopped the instant the event settles. Best-effort — if the
+  // screenshots all fail (or the runtime genuinely never composites, e.g. a
+  // non-compositing headless sandbox), the timeout path still yields an
+  // honest `no-layertree-event-within-timeout` unavailability fact rather
+  // than fabricated layer data.
+  void (async () => {
+    for (let i = 0; i < 8 && !settled; i++) {
+      try {
+        await client.send('Page.captureScreenshot', { format: 'png' });
+      } catch {
+        // best-effort frame production — a failed screenshot must never abort
+        // the layer read; the event may still arrive, or the timeout path
+        // reports the honest unavailable fact.
+      }
+      if (settled) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  })();
+
   const result = await eventPromise;
   if (result === 'timeout') return { layers: [], available: false, reason: 'no-layertree-event-within-timeout' };
   if (result === 'missing-layers') return { layers: [], available: false, reason: 'layertree-event-missing-layers' };

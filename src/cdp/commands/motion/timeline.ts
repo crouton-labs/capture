@@ -26,7 +26,11 @@ Per-frame bounding-box geometry, sampled scroll offsets, and optional sampled
 property values for one element across a finalized recording.
 
 Options:
-  --element <sel>   Element selector to track (required; tag, #id, .class, or a simple combination)
+  --element <sel>   Element selector to track (required). Supported: a tag, #id,
+                    .class, or their simple combination (e.g. div.toast). Not
+                    supported: descendant/child/sibling combinators, pseudo-classes,
+                    or attribute selectors — the recording retains no DOM tree, so
+                    the selector is matched against sampled bounding boxes only.
   --prop <prop>     Report one sampled geometry, scroll, or recorded property per frame
 
 The recorder samples bounding boxes, not DOM quads. Frame-derived timestamps

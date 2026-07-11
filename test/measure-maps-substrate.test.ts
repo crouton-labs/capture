@@ -67,6 +67,9 @@ interface FocusCandidateFixture {
 class FocusStubCdpClient {
   calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
   private sampleIndex = 0;
+  // The collector-private cycle key of the LAST sample served — answered back
+  // through the objectId -> DOM.describeNode bridge on document.activeElement.
+  private lastSampledBackendNodeId = 0;
 
   private readonly candidates: FocusCandidateFixture[] = [
     { id: 'focus-1', selector: 'a.skip-link', tabIndex: 0, rect: { x: 8, y: 8, width: 44, height: 20 }, visible: true, domIndex: 0 },
@@ -92,6 +95,14 @@ class FocusStubCdpClient {
     if (method === 'Input.dispatchKeyEvent') return {};
     if (method === 'Runtime.evaluate') {
       const expression = String((params as { expression?: unknown }).expression ?? '');
+      // The collector-private identity bridge: document.activeElement as a held
+      // RemoteObject (returnByValue:false). Map the just-served stop to a
+      // distinct objectId encoding its private backendNodeId cycle key. This is
+      // NEVER emitted — the marker→backendNodeId join (DOM.getDocument, absent
+      // here) is what fills the emitted backendNodeId, so those stay null.
+      if (expression.trim() === 'document.activeElement' && (params as { returnByValue?: unknown }).returnByValue === false) {
+        return { result: { objectId: `obj-${this.lastSampledBackendNodeId}` } };
+      }
       if (expression.includes('__captureFocusOrigin')) {
         // Non-mutating origin read, answered FIRST (before any marker is
         // stamped) — this is what the collector's `originCaptured` gate
@@ -118,6 +129,11 @@ class FocusStubCdpClient {
         const id = sequence[localIndex];
         this.sampleIndex += 1;
         const candidate = this.byId(id)!;
+        // Fixed per-candidate private backendNodeId (focus-N -> 900N) served
+        // through the objectId bridge below. The forward/reverse rings close on
+        // a repeated candidate, so the repeated backendNodeId terminates each
+        // walk exactly where the old id-based cycle logic did.
+        this.lastSampledBackendNodeId = 9000 + Number(candidate.id.split('-')[1]);
         return {
           result: {
             value: {
@@ -131,6 +147,7 @@ class FocusStubCdpClient {
               scrollX: 0,
               scrollY: 0,
               isBody: false,
+              hasActiveElement: true,
             },
           },
         };
@@ -147,6 +164,16 @@ class FocusStubCdpClient {
       }
       return { result: {} };
     }
+    // Decode the private backendNodeId the objectId bridge encoded. The
+    // marker→backendNodeId path (DOM.getDocument/querySelectorAll, unanswered
+    // by this stub) resolves nothing, so emitted backendNodeIds stay null.
+    if (method === 'DOM.describeNode') {
+      const objectId = String((params as { objectId?: unknown }).objectId ?? '');
+      const m = objectId.match(/^obj-(\d+)$/);
+      if (m) return { node: { backendNodeId: Number(m[1]) } };
+      return { node: {} };
+    }
+    if (method === 'Runtime.releaseObject') return {};
     return {};
   }
 }

@@ -145,12 +145,17 @@ function inputMarks(events: readonly EventRecord[], markers: Markers): ActionMar
   return marks.sort((a, b) => a.startMs - b.startMs || a.occurrence - b.occurrence);
 }
 
-function selectAction(actions: readonly ActionMark[], action: string): ActionMark {
+function selectAction(actions: readonly ActionMark[], action: string, occurrence?: number): ActionMark {
   const sanitized = sanitizeString(action, { max: 200 });
   const matches = actions.filter((item) => item.label === sanitized);
+  if (matches.length === 0) throw new Error(`No input mark exists for action ${JSON.stringify(sanitized)}.`);
+  if (occurrence !== undefined) {
+    const match = matches.find((item) => item.occurrence === occurrence);
+    if (match) return match;
+    throw new ResponseActionSelectionError(matches, `Action ${JSON.stringify(sanitized)} has no occurrence ${occurrence}; ${matches.length} occurrence(s) available.`);
+  }
   if (matches.length === 1) return matches[0];
-  if (matches.length > 1) throw new ResponseActionSelectionError(actions, `Action ${JSON.stringify(sanitized)} appears ${matches.length} times; select a recording with a unique action label or inspect occurrences individually.`);
-  throw new Error(`No input mark exists for action ${JSON.stringify(sanitized)}.`);
+  throw new ResponseActionSelectionError(matches, `Action ${JSON.stringify(sanitized)} appears ${matches.length} times; pass --occurrence <n> to select one.`);
 }
 
 function eventDropCaveats(events: readonly EventRecord[]): string[] {
@@ -217,6 +222,7 @@ export function responseTimelineFromArtifacts(
   frames: readonly FrameRecord[],
   markers: Markers,
   state: string,
+  occurrence?: number,
 ): ResponseTimeline {
   if (!finite(markers.performanceNowMs)) throw new Error('markers.json has no finite performanceNowMs baseline; re-record with `capture motion rec`.');
   const caveats = eventDropCaveats(events);
@@ -225,7 +231,7 @@ export function responseTimelineFromArtifacts(
   if (!finite(markers.wallClockMs)) caveats.push('screencast wall-clock anchor unavailable; frame-derived paint and settle timing are unavailable.');
 
   const actions = inputMarks(events, markers);
-  const selected = selectAction(actions, action);
+  const selected = selectAction(actions, action, occurrence);
   const nextAction = actions.find((item) => item.startMs > selected.startMs);
   const actionWindowEndMs = nextAction?.startMs ?? null;
 
@@ -312,7 +318,7 @@ function withFrameDeltas(ref: RecRef, rects: readonly FrameRecord[], markers: Ma
 }
 
 /** Resolves and validates a finalized recording before reading its response artifacts. */
-export function loadResponseTimeline(rec: string, action?: string): LoadedResponseTimeline {
+export function loadResponseTimeline(rec: string, action?: string, occurrence?: number): LoadedResponseTimeline {
   const ref = resolveRecRef(rec);
   const meta = readMeta<{ state?: unknown }>(ref);
   const state = typeof meta.state === 'string' ? meta.state : 'unknown';
@@ -328,7 +334,7 @@ export function loadResponseTimeline(rec: string, action?: string): LoadedRespon
   if (!selected) throw new ResponseActionSelectionError(actions);
   const rects = readRects<FrameRecord>(ref);
   const frames = withFrameDeltas(ref, rects, markers);
-  return { ref, timeline: responseTimelineFromArtifacts(selected, events, frames, markers, state), availableActions: actions.map((item) => actionOccurrenceLabel(item)) };
+  return { ref, timeline: responseTimelineFromArtifacts(selected, events, frames, markers, state, occurrence), availableActions: actions.map((item) => actionOccurrenceLabel(item)) };
 }
 
 function actionOccurrenceLabel(action: ActionMark): string {

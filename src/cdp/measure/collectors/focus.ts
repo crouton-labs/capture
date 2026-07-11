@@ -211,11 +211,23 @@ const FOCUS_INIT_SCRIPT = `/* __captureFocusInit */
   };
 })();`;
 
-const FOCUS_SAMPLE_SCRIPT = `/* __captureFocusSample */
+/** Exported for the script-unit regression that proves the sample reads no page attribute/global for identity. */
+export const FOCUS_SAMPLE_SCRIPT = `/* __captureFocusSample */
 (function() {
   ${SHARED_HELPERS}
   var active = document.activeElement;
   var id = (active && active.getAttribute) ? active.getAttribute('data-capture-focus-id') : null;
+  // Identity for a real-but-untagged active element (id === null &&
+  // hasActiveElement, e.g. a contenteditable div outside the candidate
+  // selector) is NOT derived in this script. This sample must never stamp a
+  // page-visible marker, assign or read a page-reachable global, or trust a
+  // page-authored attribute as node identity (I-2): all three are
+  // page-controlled and collide/preseed trivially. The collector resolves
+  // such a node's stable backendNodeId out of band via a private CDP
+  // objectId -> DOM.describeNode bridge on document.activeElement (see
+  // resolveActiveElementBackendId), which the page cannot observe or forge.
+  // So this read touches no attribute/global for cycle identity and leaves
+  // page state exactly as found.
   var focusVisibleStyle = null;
   try {
     var computed = window.getComputedStyle(active);
@@ -261,7 +273,8 @@ const FOCUS_SAMPLE_SCRIPT = `/* __captureFocusSample */
  * possibly-wrong `(0,0)`. Touches nothing but the `data-capture-focus-*`
  * marker attributes this collector itself stamped.
  */
-const MARKER_CLEANUP_SCRIPT = `/* __captureFocusMarkerCleanup */
+/** Exported for the script-unit regression that proves cleanup preserves page-owned attributes/globals. */
+export const MARKER_CLEANUP_SCRIPT = `/* __captureFocusMarkerCleanup */
 (function() {
   var origMarkers = document.querySelectorAll('[data-capture-focus-original]');
   for (var m = 0; m < origMarkers.length; m++) { origMarkers[m].removeAttribute('data-capture-focus-original'); }
@@ -269,11 +282,15 @@ const MARKER_CLEANUP_SCRIPT = `/* __captureFocusMarkerCleanup */
   for (var i = 0; i < tagged.length; i++) { tagged[i].removeAttribute('data-capture-focus-id'); }
   var clk = document.querySelectorAll('[data-capture-focus-clickable-id]');
   for (var k = 0; k < clk.length; k++) { clk[k].removeAttribute('data-capture-focus-clickable-id'); }
+  // Only markers this collector stamped are removed -- never a
+  // page-authored attribute. Identity is resolved via CDP, so there is no
+  // walk marker to strip and no page-owned attribute/global to disturb.
   var markersRemoved = document.querySelectorAll('[data-capture-focus-id],[data-capture-focus-clickable-id],[data-capture-focus-original]').length === 0;
   return { markersRemoved: markersRemoved };
 })();`;
 
-function buildRestoreScript(hadOriginalFocus: boolean, scrollX: number, scrollY: number): string {
+/** Exported for the script-unit regression that proves restore preserves page-owned attributes/globals. */
+export function buildRestoreScript(hadOriginalFocus: boolean, scrollX: number, scrollY: number): string {
   return `/* __captureFocusRestore */
 (function() {
   var hadOriginalFocus = ${JSON.stringify(Boolean(hadOriginalFocus))};
@@ -295,6 +312,8 @@ function buildRestoreScript(hadOriginalFocus: boolean, scrollX: number, scrollY:
   for (var i = 0; i < tagged.length; i++) { tagged[i].removeAttribute('data-capture-focus-id'); }
   var clk = document.querySelectorAll('[data-capture-focus-clickable-id]');
   for (var k = 0; k < clk.length; k++) { clk[k].removeAttribute('data-capture-focus-clickable-id'); }
+  // Only collector-stamped markers are removed; no page-authored attribute
+  // (identity is CDP-resolved, so no walk marker exists to strip).
   var markersRemoved = document.querySelectorAll('[data-capture-focus-id],[data-capture-focus-clickable-id],[data-capture-focus-original]').length === 0;
   window.scrollTo(scrollX, scrollY);
   var scrollRestored = window.scrollX === scrollX && window.scrollY === scrollY;
@@ -555,18 +574,97 @@ interface WalkResult {
    * unfocused `null` active element as element-bearing).
    */
   readonly hasActiveElement: boolean[];
-  /** `true` only when the walk exhausted {@link MAX_STEPS_HARD_CAP} steps without ever reaching a natural stop (a cycle back to the first stop, a non-advancing Tab, or no sample at all) — the real tab order may extend further than `stops` records. */
+  /** `true` only when the walk exhausted {@link MAX_STEPS_HARD_CAP} steps without ever reaching a natural stop (a return to any already-visited stop — the ring wrapping back to a prior stop, or a non-advancing Tab repeating the same element; see {@link stopKey}) — the real tab order may extend further than `stops` records. */
   readonly truncated: boolean;
 }
 
 /**
+ * A stable per-stop cycle-detection key that identifies the SAME focus stop
+ * across a full tab ring by true per-node identity — never by geometry or
+ * content, which two distinct DOM nodes can share, and NEVER by `raw.id`,
+ * which is a page-authorable `data-capture-focus-id` attribute value the
+ * collector reads back verbatim. Keying on `id` would let a page control
+ * cycle identity: two distinct real active elements carrying the same
+ * page-authored `data-capture-focus-id` (or one colliding with a collector
+ * `focus-N` marker) would compare equal and the second would be dropped as a
+ * false cycle. So identity for EVERY element-bearing stop comes only from the
+ * collector-private CDP `backendNodeId`, never from the marker.
+ *
+ * - A genuinely unfocused stop (`!hasActiveElement`: `document.body` or
+ *   `null`) keys on a single `body` sentinel — the ring passes through this
+ *   gap once per cycle, so its second occurrence marks one full cycle. (This
+ *   is what lets a forward walk whose wraparound passes through the
+ *   `document.body` gap between a ring's last and first element detect
+ *   completion instead of running to the {@link MAX_STEPS_HARD_CAP} cap.)
+ * - Every real active element — tagged candidate or untagged focusable alike
+ *   — keys on its CDP-resolved `backendNodeId` (`sampledBackendNodeId`,
+ *   resolved via the private objectId -> `DOM.describeNode` bridge on
+ *   `document.activeElement`, NOT any page attribute/global). This
+ *   backendNodeId is a COLLECTOR-PRIVATE cycle key only — it is never emitted
+ *   into `FocusStop` JSON (an untagged stop still reports `backendNodeId:
+ *   null` + `identityUnresolved: true`, since it has no marker the
+ *   cross-artifact identity path resolved). It is genuine,
+ *   page-uncontrollable node identity: two distinct nodes that happen to
+ *   share selector, rect, role, name, AND page-authored
+ *   `data-capture-focus-id` get distinct backendNodeIds and are BOTH
+ *   retained, and the same node revisited on the next lap resolves the same
+ *   backendNodeId regardless of a scroll shift.
+ *
+ * Returns `null` for the rare real element whose backendNodeId could not be
+ * resolved (the objectId bridge failed): identity is unknown, so {@link walk}
+ * must treat it as never-a-repeat rather than collapse it against another stop.
+ */
+function stopKey(raw: FocusSampleRaw, sampledBackendNodeId: number | undefined): string | null {
+  if (!raw.hasActiveElement) return 'body';
+  if (sampledBackendNodeId !== undefined) return `backend:${sampledBackendNodeId}`;
+  return null;
+}
+
+/**
+ * Resolves the stable `backendNodeId` of the current `document.activeElement`
+ * through a collector-private CDP bridge — evaluate `document.activeElement`
+ * as a held RemoteObject (never `returnByValue`), `DOM.describeNode` off its
+ * `objectId`, then release the handle. This is the ONLY identity source for a
+ * real-but-untagged active element: it is invisible to the page (no marker
+ * stamped, no global touched, no page-authored attribute trusted) and stable
+ * across CDP calls, so a revisit of the same node resolves the same id.
+ * Best-effort: any CDP hiccup yields `undefined` (identity unknown), never a
+ * throw that would abort the walk.
+ */
+async function resolveActiveElementBackendId(client: CDPClient): Promise<number | undefined> {
+  let objectId: string | undefined;
+  try {
+    const evalRes = (await client.send('Runtime.evaluate', {
+      expression: 'document.activeElement',
+      returnByValue: false,
+    })) as { result?: { objectId?: string } };
+    objectId = evalRes.result?.objectId;
+    if (objectId === undefined) return undefined;
+    const described = (await client.send('DOM.describeNode', { objectId })) as { node?: { backendNodeId?: number } };
+    return described.node?.backendNodeId;
+  } catch {
+    return undefined;
+  } finally {
+    if (objectId !== undefined) {
+      try {
+        await client.send('Runtime.releaseObject', { objectId });
+      } catch {
+        // Releasing the transient handle is best-effort; a failure here does
+        // not affect the resolved identity.
+      }
+    }
+  }
+}
+
+/**
  * Drives one direction's Tab walk starting from whatever currently has
- * focus, stopping on a detected cycle, a non-advancing step, or the hard
- * cap. `originScroll` seeds the first step's `scrollBefore` with the real
- * pre-walk scroll offset (the non-mutating {@link FOCUS_ORIGIN_SCRIPT} read,
- * or the origin the reverse walk was just restored to) — never `{x:0,y:0}`,
- * which would report a false scroll jump on step 1 of a page that was
- * already scrolled before this collector ran.
+ * focus, stopping when a step returns to an already-visited stop (a full
+ * cycle back to a prior stop, OR a non-advancing Tab that repeats the same
+ * element) or at the hard cap. `originScroll` seeds the first step's
+ * `scrollBefore` with the real pre-walk scroll offset (the non-mutating
+ * {@link FOCUS_ORIGIN_SCRIPT} read, or the origin the reverse walk was just
+ * restored to) — never `{x:0,y:0}`, which would report a false scroll jump
+ * on step 1 of a page that was already scrolled before this collector ran.
  */
 async function walk(
   client: CDPClient,
@@ -576,10 +674,12 @@ async function walk(
 ): Promise<WalkResult> {
   const stops: FocusStop[] = [];
   const hasActiveElement: boolean[] = [];
-  let firstId: string | null | undefined;
-  let previousId: string | null | undefined;
+  // Every stop's cycle key (see {@link stopKey}) seen so far. The FIRST
+  // repeat of any key — the ring wrapping back to a prior stop, or a
+  // non-advancing Tab repeating the same element — completes the walk.
+  const seen = new Set<string>();
   let scrollBefore = { x: originScroll.x, y: originScroll.y };
-  // Defaults to "the cap was hit"; every natural-stop branch below flips this
+  // Defaults to "the cap was hit"; the natural-stop branch below flips this
   // to false right before its break, so it survives to the end of the loop
   // ONLY when all MAX_STEPS_HARD_CAP iterations ran without one.
   let truncated = true;
@@ -598,24 +698,37 @@ async function walk(
       throw new Error('focus sample evaluate returned no value');
     }
     const domIndex = raw.id ? (candidatesById.get(raw.id)?.domIndex ?? null) : null;
+    // EVERY element-bearing active element — tagged or untagged — is
+    // identified for cycle detection ONLY by its CDP-resolved backendNodeId,
+    // resolved here out of band with no page-visible side effect. The
+    // page-authorable marker `id` is never a cycle key (see {@link stopKey}),
+    // so identity is resolved regardless of `raw.id`; only genuinely-unfocused
+    // (body/null) samples skip it.
+    const sampledBackendNodeId =
+      raw.hasActiveElement ? await resolveActiveElementBackendId(client) : undefined;
     const stop = toStop(step, raw, domIndex, scrollBefore);
     scrollBefore = { x: raw.scrollX, y: raw.scrollY };
 
-    if (firstId === undefined) {
-      firstId = raw.id;
-    } else if (raw.id !== null && raw.id === firstId) {
-      // Cycled back to the first stop — the walk is complete; do not
-      // record the repeated wraparound stop.
+    const key = stopKey(raw, sampledBackendNodeId);
+    if (key !== null && seen.has(key)) {
+      // Returned to an already-visited stop, matched by stable identity — the
+      // single `body` sentinel, or a real active element's CDP-resolved
+      // backendNodeId (never the page-authorable marker `id`). The walk is complete
+      // (the ring wrapped back to a prior stop, or Tab stopped advancing and
+      // repeated the same element). Do NOT record the repeated wraparound
+      // stop. This fires even when the repeated stop is untagged (`id ===
+      // null`) — the `document.body` ring gap or an untagged focusable — so
+      // the forward walk terminates after one cycle instead of running to the
+      // hard cap.
       truncated = false;
       break;
     }
-
-    if (raw.id !== null && raw.id === previousId) {
-      // Tab had no effect (end of traversable content, no wraparound) —
-      // recording this stop would just repeat the previous one forever.
-      truncated = false;
-      break;
-    }
+    // A `null` key is a real element whose backendNodeId could not be
+    // resolved via the objectId bridge — identity is unknown, so it is never
+    // treated as a repeat: keep walking (honest truncation at the cap if no
+    // keyable stop is ever reached) rather than risk dropping a legitimate
+    // distinct stop by guessing it is a cycle.
+    if (key !== null) seen.add(key);
 
     stops.push(stop);
     // `raw.hasActiveElement` (not `raw.id`, and not `!raw.isBody` —
@@ -623,7 +736,6 @@ async function walk(
     // `document.body` nor a real element) is the true element-bearing fact
     // — see {@link WalkResult.hasActiveElement}.
     hasActiveElement.push(raw.hasActiveElement);
-    previousId = raw.id;
   }
 
   return { stops, hasActiveElement, truncated };
@@ -825,7 +937,12 @@ export const collectFocus: Collector = async (ctx) => {
   // `identityUnresolved: true` whenever there is no marker to resolve OR the
   // marker→backendNodeId lookup came back empty (per I-3/I-5, never silently
   // omitted) — `s.id !== null ? focusBackendById.get(s.id) : undefined`
-  // naturally yields `undefined` (unresolved) for an untagged element.
+  // naturally yields `undefined` (unresolved) for an untagged element. The
+  // objectId-bridge backendNodeId `walk` resolves is a collector-private cycle
+  // key only and is deliberately NOT threaded here: the emitted FocusStop
+  // identity contract is unchanged — an untagged stop reports `backendNodeId:
+  // null` + `identityUnresolved: true` (no marker the cross-artifact join
+  // resolved), never a value derived from a per-sample handle.
   const decorate = (stops: FocusStop[], hasActiveElement: boolean[]): FocusStop[] =>
     stops.map((s, i) => ({
       ...s,

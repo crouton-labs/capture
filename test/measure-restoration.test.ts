@@ -113,6 +113,13 @@ class FocusStub {
       return { nodeIds: [] };
     }
     if (method === 'DOM.describeNode') {
+      // The objectId bridge path: decode the COLLECTOR-PRIVATE cycle-key
+      // backendNodeId (obj-N -> N). Branch on objectId presence FIRST so it
+      // never clobbers the marker→backendNodeId (nodeId) path below, which is
+      // what fills the EMITTED backendNodeId (1010/1011/2020).
+      const objectId = String((params as { objectId?: unknown }).objectId ?? '');
+      const om = objectId.match(/^obj-(\d+)$/);
+      if (om) return { node: { backendNodeId: Number(om[1]) } };
       const nodeId = (params as { nodeId?: number }).nodeId;
       if (nodeId === 10) return { node: { backendNodeId: 1010, attributes: ['data-capture-focus-id', 'focus-1'] } };
       if (nodeId === 11) return { node: { backendNodeId: 1011, attributes: ['data-capture-focus-id', 'focus-2'] } };
@@ -121,6 +128,18 @@ class FocusStub {
     }
     if (method === 'Runtime.evaluate') {
       const expr = String((params as { expression?: unknown }).expression ?? '');
+      // The collector-private identity bridge: document.activeElement as a held
+      // RemoteObject. Map each candidate id to a fixed private backendNodeId
+      // (focus-1 -> 3001, focus-2 -> 3002) so the deliberately repeating
+      // ['focus-1','focus-2','focus-2'] sample sequence registers its repeat and
+      // the walk exits naturally. These are private cycle keys, NEVER emitted —
+      // the emitted backendNodeIds come from the marker path (1010/1011/2020).
+      if (expr.trim() === 'document.activeElement' && (params as { returnByValue?: unknown }).returnByValue === false) {
+        const seq = ['focus-1', 'focus-2', 'focus-2'];
+        const lastId = seq[Math.min(this.sampleCount - 1, seq.length - 1)];
+        const backend = lastId === 'focus-1' ? 3001 : 3002;
+        return { result: { objectId: `obj-${backend}` } };
+      }
       if (expr.includes('__captureFocusOrigin')) {
         if (this.opts.throwOnOrigin) {
           // Models the non-mutating origin read itself throwing, BEFORE any

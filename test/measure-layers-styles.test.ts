@@ -139,6 +139,71 @@ test('collectLayers: timeout path removes the LayerTree listener and reports lay
   assert.deepEqual(layers.layers, [], 'no layers when the layer tree is unavailable');
 });
 
+// ============================================================================
+// U29 defect 4 fix — the collector must FORCE frame production itself.
+//
+// On live Chrome 150 (verified empirically against the running validator
+// runtime), a bare `LayerTree.enable` re-enable delivers `layerTreeDidChange`
+// only ~1/5 of the time — the first-ever enable's delivery (in
+// `enableDomainsForSnap`) is consumed before any listener attaches, and
+// Chrome's compositor only (re)delivers the tree when a frame is actually
+// PRODUCED. Forcing a frame via `Page.captureScreenshot` delivers it 5/5.
+// This stub reproduces exactly that runtime behavior: `LayerTree.enable`
+// emits NOTHING, and the layer tree is delivered ONLY once a
+// `Page.captureScreenshot` frame is forced. Before the fix (no self-
+// triggered screenshot) this run reported `available:false`; after it, the
+// collector's own forced frame provokes delivery.
+// ============================================================================
+
+class ScreenshotGatedLayersStubCdpClient extends EventEmitter {
+  screenshotCount = 0;
+  private readonly layers = [
+    { layerId: 'L1', backendNodeId: 10, offsetX: 0, offsetY: 0, width: 390, height: 1840, paintCount: 5, drawsContent: true },
+  ];
+
+  async send(method: string, _params: Record<string, unknown> = {}): Promise<unknown> {
+    switch (method) {
+      case 'LayerTree.enable':
+        // A bare re-enable delivers nothing — exactly the live Chrome 150 gate.
+        return {};
+      case 'Page.captureScreenshot':
+        // A forced frame is what makes the compositor (re)deliver the tree.
+        this.screenshotCount += 1;
+        this.emit(LAYER_TREE_EVENT, { layers: this.layers });
+        return { data: '' };
+      case 'LayerTree.compositingReasons':
+        return { compositingReasonIds: [] };
+      case 'DOMSnapshot.captureSnapshot':
+        return DOM_SNAPSHOT_CANNED;
+      case 'DOM.describeNode':
+        return { node: { nodeName: 'DIV', attributes: [] } };
+      case 'DOM.pushNodesByBackendIdsToFrontend':
+        return { nodeIds: [100] };
+      case 'CSS.getMatchedStylesForNode':
+        return { matchedCSSRules: [] };
+      case 'CSS.getComputedStyleForNode':
+        return { computedStyle: [] };
+      default:
+        return {};
+    }
+  }
+}
+
+test('collectLayers: forces frame production (Page.captureScreenshot) itself, so a runtime that only delivers layerTreeDidChange on a produced frame (live Chrome 150) reports layerTree.available=true', async () => {
+  const client = new ScreenshotGatedLayersStubCdpClient();
+  const { ctx, written } = makeCtx(client);
+
+  await collectLayers(ctx);
+
+  assert.ok(client.screenshotCount >= 1, 'the collector must force at least one frame via Page.captureScreenshot to provoke layerTreeDidChange delivery');
+  assert.equal(client.listenerCount(LAYER_TREE_EVENT), 0, 'the one-shot LayerTree listener must be removed once the forced-frame event settles');
+
+  const layers = written.get('layers.json') as any;
+  assert.deepEqual(layers.layerTree, { available: true }, 'the collector-forced frame makes the layer tree available — not a bare re-enable that this runtime ignores');
+  assert.equal(layers.layers.length, 1, 'the delivered layer is serialized');
+  assert.equal(layers.layers[0].backendNodeId, 10);
+});
+
 test('collectLayers: paint order comes from DOMSnapshot (backendNodeIds sorted by paint rank) with an availability fact', async () => {
   const client = new LayersEventStubCdpClient({ emitEvent: true, domSnapshot: true });
   const { ctx, written } = makeCtx(client);

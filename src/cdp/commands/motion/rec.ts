@@ -322,6 +322,30 @@ function assertRuntimeEvaluateSucceeded(result: unknown, prefix: string): void {
 
 export type VideoEncoding = { status: 'encoded' | 'unavailable' | 'failed'; reason?: string };
 
+/** ffmpeg encode time grows with frame count, so a fixed 30s ceiling spuriously
+ * fails long recordings (thousands of frames take minutes to encode). Budget a
+ * generous fixed base plus a per-frame allowance, capped by an upper safety bound
+ * so a pathological run still cannot hang indefinitely. */
+export function encodeTimeoutMs(frameCount: number): number {
+  const BASE_MS = 30_000; // fixed startup + probe + muxing overhead
+  const PER_FRAME_MS = 60; // per-frame VP9 encode budget (generous for slow hosts)
+  const MAX_MS = 15 * 60_000; // 15-minute upper safety bound
+  return Math.min(MAX_MS, BASE_MS + Math.max(0, frameCount) * PER_FRAME_MS);
+}
+
+/** Distinguishes a timeout kill from a genuine encode failure for precise
+ * provenance. Only spawnSync's own timeout — surfaced as an ETIMEDOUT error —
+ * establishes a timeout; the accompanying SIGTERM is how spawnSync kills the
+ * child on timeout, but a bare SIGTERM with no ETIMEDOUT is an external/self
+ * termination, not proof of a timeout, so it is reported as termination rather
+ * than falsely as timed-out. This is provenance, not coaching. */
+export function classifyEncodeFailure(result: { error?: (Error & { code?: string }) | null; signal?: NodeJS.Signals | null }): string {
+  if (result.error && (result.error as { code?: string }).code === 'ETIMEDOUT') return 'ffmpeg_encoding_timed_out';
+  if (result.error) return 'ffmpeg_execution_failed';
+  if (result.signal === 'SIGTERM') return 'ffmpeg_terminated';
+  return 'ffmpeg_encoding_failed';
+}
+
 /** Encodes inside a new private directory, then installs through the shared
  * atomic no-follow writer. Frame cadence is measured from the recording's
  * duration rather than assumed from a display refresh rate. */
@@ -339,10 +363,10 @@ export function encodeVideoIfAvailable(recDir: string, durationMs: number): Vide
   const result = spawnSync('ffmpeg', [
     '-y', '-framerate', cadence, '-pattern_type', 'glob', '-i', path.join(framesDir, '*.png'),
     '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', tempOutput,
-  ], { stdio: 'ignore', timeout: 30_000 });
+  ], { stdio: 'ignore', timeout: encodeTimeoutMs(frames.length) });
   try {
     if (result.error || result.status !== 0 || !fs.existsSync(tempOutput)) {
-      return { status: 'failed', reason: result.error ? 'ffmpeg_execution_failed' : 'ffmpeg_encoding_failed' };
+      return { status: 'failed', reason: classifyEncodeFailure(result) };
     }
     try {
       writeBinaryPrivate(path.join(recDir, 'video.webm'), fs.readFileSync(tempOutput));

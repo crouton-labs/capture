@@ -176,7 +176,40 @@ test('motion jank retains post-navigation observer entries without assigning the
   assert.deepEqual(analysis.layoutShifts[0].rects, []);
   assert.equal(analysis.longTasksIncomplete, true);
   assert.equal(analysis.layoutShiftsIncomplete, true);
-  assert.match(analysis.timingNote, /after a navigation gap have no synchronized recorder-relative baseline/);
+  assert.match(analysis.timingNote, /after a navigation gap with no synchronized recorder-relative baseline/);
+  // No pre-arm buffered entry is present, so the note must not attribute one.
+  assert.doesNotMatch(analysis.timingNote, /buffered from before the recorder arm baseline/);
+});
+
+test('motion jank routes a pre-arm buffered observer entry to unavailable rather than a negative recorder-relative time', () => {
+  const analysis = analyzeMotionJank({
+    rects,
+    events: [
+      // startTime predates markers.performanceNowMs (500): the buffered entry's document
+      // time origin precedes the recorder arm baseline, so its recorder-relative time is negative.
+      { kind: 'performance', entryType: 'layout-shift', startTime: 12, value: 0.2, sources: [{ backendNodeId: 9 }] },
+      { kind: 'performance', entryType: 'longtask', startTime: 20, duration: 60 },
+    ],
+    markers,
+  });
+
+  assert.equal(analysis.layoutShifts.length, 1);
+  assert.equal(analysis.layoutShifts[0].tMs, null, 'a pre-arm layout shift is never assigned a negative recorder-relative time');
+  assert.equal(analysis.layoutShifts[0].attribution, 'unavailable');
+  assert.deepEqual(analysis.layoutShifts[0].rects, []);
+  assert.equal(analysis.longTasks.length, 1);
+  assert.equal(analysis.longTasks[0].timingDomain, 'unavailable');
+  assert.equal(analysis.longTasks[0].startMs, null);
+  assert.equal(analysis.longTasks[0].endMs, null);
+
+  // Every retained observer timestamp is nonnegative or explicitly null.
+  for (const shift of analysis.layoutShifts) assert.ok(shift.tMs === null || shift.tMs >= 0);
+  for (const task of analysis.longTasks) assert.ok(task.startMs === null || task.startMs >= 0);
+
+  // No navigation occurred: the unavailable-timing note must attribute the pre-arm buffered
+  // cause and must NOT falsely claim these entries occurred after a navigation gap.
+  assert.doesNotMatch(analysis.timingNote, /navigation gap/, 'a pre-arm buffered entry must not be attributed to a navigation gap');
+  assert.match(analysis.timingNote, /buffered from before the recorder arm baseline, with a document timestamp that predates it/);
 });
 
 test('motion jank preserves rect-sample loss without marking retained frame timestamp counts incomplete', () => {

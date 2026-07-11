@@ -4,7 +4,24 @@ import { captureScreenshot, autoScreenshot } from '../screenshot.js';
 import { getAccessibilityTree, flattenA11yTree } from '../a11y.js';
 import { clickByName, typeText, focusAndType } from '../../interact.js';
 import { nextStepPath } from '../../session-context.js';
+import { assertUnderCaptureRoot, writeBinaryPrivate } from '../../session/artifacts.js';
 import { type ParsedArgs } from '../types.js';
+
+/**
+ * Writes a screenshot PNG privately (0600) when it lands under CAPTURE_ROOT
+ * (auto-generated session paths), and with a plain write when the user gave
+ * an explicit `--out` outside the capture tree (a user-chosen destination
+ * whose permissions are the user's to decide).
+ */
+function writeScreenshot(outPath: string, png: Buffer): void {
+  try {
+    assertUnderCaptureRoot(outPath);
+  } catch {
+    fs.writeFileSync(outPath, png);
+    return;
+  }
+  writeBinaryPrivate(outPath, png);
+}
 
 export async function cmdScreenshot(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
@@ -45,7 +62,7 @@ export async function cmdScreenshot(parsed: ParsedArgs, _args: string[]): Promis
       const outPath = parsed.out
         ? parsed.out
         : (nextStepPath('screenshot', 'manual') ?? `/tmp/capture-screenshot-${Date.now()}.png`);
-      fs.writeFileSync(outPath, png);
+      writeScreenshot(outPath, png);
       return { path: outPath, bytes: png.length };
     },
     { settle: 0 },

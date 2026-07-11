@@ -105,4 +105,6 @@ export interface ParsedArgs {
   prop?: string;
   /** `motion response --action <action>` */
   action?: string;
+  /** `motion response --occurrence <n>` — 1-based occurrence of a repeated action label. */
+  occurrence?: number;
 }

@@ -295,17 +295,27 @@ export function analyzeMotionJank(input: { rects: readonly unknown[]; events: re
   const traceEvents = flattenTraceEvents(input.events);
   const observedTraceBaselineUs = traceEvents.map((event) => finite(event.ts)).filter((ts): ts is number => ts !== undefined).sort((a, b) => a - b)[0];
   const observerEntries = observerRecords(input.events);
+  // The two distinct causes of unavailable observer timing, tracked separately so the
+  // user-visible note attributes each factually instead of blaming navigation for both.
+  let observerNavGapUnavailable = false; // null recorder-relative time: no synchronized baseline (post-navigation-gap).
+  let observerPreArmUnavailable = false; // negative recorder-relative time: buffered entry whose document timestamp predates the arm baseline.
   const longTasks: LongTaskFact[] = [];
   for (const { item, timingAvailable } of observerEntries) {
     if (item.entryType !== 'longtask') continue;
     const durationMs = finite(item.duration);
     if (durationMs === undefined) continue;
-    if (!timingAvailable) {
+    // A negative recorder-relative start comes from a buffered entry whose document
+    // time origin predates the recorder arm baseline; it has no valid recorder-relative
+    // baseline, so route it (like a null or post-navigation-gap start) to 'unavailable'
+    // rather than emitting a negative time or silently dropping it.
+    const startMs = timingAvailable ? observerToPerformanceMs(item, input.markers) : null;
+    if (startMs === null || startMs < 0) {
+      if (startMs === null) observerNavGapUnavailable = true;
+      else observerPreArmUnavailable = true;
       longTasks.push({ source: 'observer', timingDomain: 'unavailable', startMs: null, durationMs, endMs: null, overlapsDroppedFrames: null });
       continue;
     }
-    const startMs = observerToPerformanceMs(item, input.markers);
-    if (startMs !== null) longTasks.push(longTask('observer', 'recorder-performance', startMs, durationMs, droppedFrames));
+    longTasks.push(longTask('observer', 'recorder-performance', startMs, durationMs, droppedFrames));
   }
   for (const trace of traceEvents) {
     const name = typeof trace.name === 'string' ? trace.name : '';
@@ -322,7 +332,14 @@ export function analyzeMotionJank(input: { rects: readonly unknown[]; events: re
     if (item.entryType !== 'layout-shift') continue;
     const value = finite(item.value);
     if (value === undefined) continue;
-    if (!timingAvailable) {
+    // A negative recorder-relative time comes from a buffered entry whose document
+    // time origin predates the recorder arm baseline; it has no valid recorder-relative
+    // baseline, so route it (like a null or post-navigation-gap time) to 'unavailable'
+    // rather than emitting a negative time or silently dropping it.
+    const tMs = timingAvailable ? observerToPerformanceMs(item, input.markers) : null;
+    if (tMs === null || tMs < 0) {
+      if (tMs === null) observerNavGapUnavailable = true;
+      else observerPreArmUnavailable = true;
       layoutShifts.push({
         tMs: null,
         value,
@@ -332,8 +349,6 @@ export function analyzeMotionJank(input: { rects: readonly unknown[]; events: re
       });
       continue;
     }
-    const tMs = observerToPerformanceMs(item, input.markers);
-    if (tMs === null) continue;
     const explicit = rectFactsFromObserverSources(item);
     const inferred = explicit.length ? undefined : inferredRectFacts(tMs, frameElementRecords);
     layoutShifts.push({
@@ -359,10 +374,15 @@ export function analyzeMotionJank(input: { rects: readonly unknown[]; events: re
   if (missingFrameSampleCount > 0 || cadenceMs === null) incomplete.add('dropped-frames');
   const traceAligned = longTasks.some((task) => task.source === 'trace' && task.timingDomain === 'recorder-performance');
   const traceRelative = longTasks.some((task) => task.source === 'trace' && task.timingDomain === 'trace-relative-first-event');
-  const postNavigationObserverTimingUnavailable = longTasks.some((task) => task.source === 'observer' && task.timingDomain === 'unavailable') || layoutShifts.some((shift) => shift.tMs === null);
   const frameTimestampUncertainty: '±frame' | 'unavailable' = frames.length ? '±frame' : 'unavailable';
-  const observerTiming = postNavigationObserverTimingUnavailable
-    ? 'Observer entries after a navigation gap have no synchronized recorder-relative baseline; their timing, dropped-frame overlap, and frame-diff attribution are unavailable.'
+  // Attribute each unavailable-timing cause factually. A navigation gap and a pre-arm
+  // buffered entry both route to 'unavailable', but only the former involves a navigation;
+  // asserting navigation for a pre-arm entry would be false provenance.
+  const observerUnavailableCauses: string[] = [];
+  if (observerNavGapUnavailable) observerUnavailableCauses.push('some occurred after a navigation gap with no synchronized recorder-relative baseline');
+  if (observerPreArmUnavailable) observerUnavailableCauses.push('some were buffered from before the recorder arm baseline, with a document timestamp that predates it');
+  const observerTiming = observerUnavailableCauses.length
+    ? `Observer entries with unavailable timing (${observerUnavailableCauses.join('; ')}) have no recorder-relative baseline; their timing, dropped-frame overlap, and frame-diff attribution are unavailable.`
     : 'Observer and screencast timestamps are recorder-relative performance.now() milliseconds.';
   const timingNote = traceRelative
     ? `${observerTiming} Frame-derived intervals have ±frame uncertainty. Trace timestamps are relative to the first trace event because no explicit trace/performance baseline marker was retained.`

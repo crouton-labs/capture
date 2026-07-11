@@ -190,11 +190,11 @@ describe('focus.ts — Finding C (I-5), stub proof (TS passthrough): clickableUn
 // ============================================================================
 
 /**
- * Forces the forward walk to exhaust every one of its 300 steps: the
- * sample script returns a NEW, never-before-seen id on every single call,
- * so `walk()` never detects a cycle (`raw.id === firstId`) and never
- * detects a non-advancing step (`raw.id === previousId`) -- the only exit
- * left is the hard cap, which sets `truncated: true`.
+ * Forces the forward walk to exhaust every one of its 300 steps: each
+ * sample resolves the current active element through the private objectId →
+ * backendNodeId bridge to a NEW, never-before-seen backendNodeId. `walk()`
+ * therefore detects neither a cycle nor a non-advancing active element; the
+ * only exit left is the hard cap, which sets `truncated: true`.
  */
 class FocusStepCapStub {
   private sampleCounter = 0;
@@ -203,7 +203,16 @@ class FocusStepCapStub {
     if (method === 'Input.dispatchKeyEvent') return {};
     if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
     if (method === 'DOM.querySelectorAll') return { nodeIds: [] };
-    if (method === 'DOM.describeNode') return { node: {} };
+    // Decode the private backendNodeId the objectId bridge encoded (obj-N -> N),
+    // a DISTINCT value per sample step so the walk's cycle key genuinely never
+    // repeats and the only exit is the 300-step hard cap.
+    if (method === 'DOM.describeNode') {
+      const objectId = String((params as { objectId?: unknown }).objectId ?? '');
+      const m = objectId.match(/^obj-(\d+)$/);
+      if (m) return { node: { backendNodeId: Number(m[1]) } };
+      return { node: {} };
+    }
+    if (method === 'Runtime.releaseObject') return {};
     if (method === 'Runtime.evaluate') {
       const expr = String((params as { expression?: unknown }).expression ?? '');
       if (expr.includes('__captureFocusOrigin')) {
@@ -212,12 +221,19 @@ class FocusStepCapStub {
       if (expr.includes('__captureFocusInit')) {
         return { result: { value: { candidates: [], clickableUnfocusable: [], clickableTruncated: false, iframesPresent: 0, shadowHostsPresent: 0 } } };
       }
+      // Private identity bridge: resolve a DISTINCT backendNodeId per step
+      // (obj-<sampleCounter>, just incremented by the preceding sample), so the
+      // cycle key is resolvable yet never repeats — the walk exits only via the
+      // hard cap, exercising the "never cycles" path this test's title claims.
+      if (expr.trim() === 'document.activeElement' && (params as { returnByValue?: unknown }).returnByValue === false) {
+        return { result: { objectId: `obj-${this.sampleCounter}` } };
+      }
       if (expr.includes('__captureFocusSample')) {
         this.sampleCounter += 1;
         const id = `never-repeats-${this.sampleCounter}`;
         return {
           result: {
-            value: { id, selector: `div.item-${this.sampleCounter}`, role: null, name: null, rect: null, tabIndex: 0, focusVisibleStyle: null, scrollX: 0, scrollY: 0, isBody: false },
+            value: { id, selector: `div.item-${this.sampleCounter}`, role: null, name: null, rect: null, tabIndex: 0, focusVisibleStyle: null, scrollX: 0, scrollY: 0, isBody: false, hasActiveElement: true },
           },
         };
       }
@@ -253,12 +269,14 @@ describe('focus.ts — Finding C (I-5), stub proof (TS logic): forwardTruncated 
 // ============================================================================
 
 /**
- * Direction-aware stub: the forward (Tab) walk gets a fixed, repeating
- * sample so it cycles back to its own first stop on step 2 and terminates
- * naturally (`forwardTruncated === false`) after recording exactly one
- * stop; the reverse (Shift+Tab) walk then gets a brand-new, never-before-
- * seen id on every call, so it never detects a cycle or a non-advancing
- * step and the only exit is the 300-step hard cap. Direction is inferred
+ * Direction-aware stub: the forward (Tab) walk resolves every active
+ * element through the private objectId → backendNodeId bridge to the same
+ * backendNodeId, so it cycles back to its own first stop on step 2 and
+ * terminates naturally (`forwardTruncated === false`) after recording
+ * exactly one stop; the reverse (Shift+Tab) walk resolves each active
+ * element to a brand-new backendNodeId, so it never detects a cycle or a
+ * non-advancing active element and the only exit is the 300-step hard cap.
+ * Direction is inferred
  * from the `modifiers` bit `Input.dispatchKeyEvent` carries (8 == Shift,
  * i.e. reverse) on the immediately preceding key dispatch, mirroring how
  * `walk()` itself drives `dispatchTab(client, reverse)`.
@@ -266,6 +284,10 @@ describe('focus.ts — Finding C (I-5), stub proof (TS logic): forwardTruncated 
 class FocusReverseStepCapStub {
   private reverseCounter = 0;
   private currentlyReverse = false;
+  // The private backendNodeId of the LAST sample served, answered back through
+  // the objectId bridge: a FIXED value forward (natural cycle at step 2) and a
+  // DISTINCT value per reverse step (never repeats -> reverse hard cap).
+  private lastBackend = 0;
 
   async send(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
     if (method === 'Input.dispatchKeyEvent') {
@@ -274,7 +296,15 @@ class FocusReverseStepCapStub {
     }
     if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
     if (method === 'DOM.querySelectorAll') return { nodeIds: [] };
-    if (method === 'DOM.describeNode') return { node: {} };
+    // Decode the private backendNodeId the objectId bridge encoded; branch on
+    // objectId so the bridge answer never clobbers the marker path (unused here).
+    if (method === 'DOM.describeNode') {
+      const objectId = String((params as { objectId?: unknown }).objectId ?? '');
+      const m = objectId.match(/^obj-(\d+)$/);
+      if (m) return { node: { backendNodeId: Number(m[1]) } };
+      return { node: {} };
+    }
+    if (method === 'Runtime.releaseObject') return {};
     if (method === 'Runtime.evaluate') {
       const expr = String((params as { expression?: unknown }).expression ?? '');
       if (expr.includes('__captureFocusOrigin')) {
@@ -283,24 +313,32 @@ class FocusReverseStepCapStub {
       if (expr.includes('__captureFocusInit')) {
         return { result: { value: { candidates: [], clickableUnfocusable: [], clickableTruncated: false, iframesPresent: 0, shadowHostsPresent: 0 } } };
       }
+      // Direction-aware private identity bridge. Forward: the SAME backendNodeId
+      // every call (natural cycle at step 2). Reverse: a DISTINCT backendNodeId
+      // per call (never repeats -> hard cap). Set by the sample branch below.
+      if (expr.trim() === 'document.activeElement' && (params as { returnByValue?: unknown }).returnByValue === false) {
+        return { result: { objectId: `obj-${this.lastBackend}` } };
+      }
       if (expr.includes('__captureFocusSample')) {
         if (!this.currentlyReverse) {
-          // Forward walk: the exact same id every call, so step 2 detects a
-          // cycle back to the first stop and the forward walk terminates
-          // naturally, well short of the hard cap.
+          // Forward walk: the same private backendNodeId every call, so
+          // step 2 detects a cycle and terminates naturally, well short of
+          // the hard cap. The marker id remains emitted data, not identity.
+          this.lastBackend = 7001;
           return {
             result: {
-              value: { id: 'forward-fixed', selector: 'div.forward-fixed', role: null, name: null, rect: null, tabIndex: 0, focusVisibleStyle: null, scrollX: 0, scrollY: 0, isBody: false },
+              value: { id: 'forward-fixed', selector: 'div.forward-fixed', role: null, name: null, rect: null, tabIndex: 0, focusVisibleStyle: null, scrollX: 0, scrollY: 0, isBody: false, hasActiveElement: true },
             },
           };
         }
-        // Reverse walk: a brand-new id every single call -- never cycles,
-        // never repeats -- so the only exit is the 300-step hard cap.
+        // Reverse walk: a brand-new private backendNodeId every call, so
+        // the active element never cycles or repeats; only the hard cap exits.
         this.reverseCounter += 1;
         const id = `reverse-never-repeats-${this.reverseCounter}`;
+        this.lastBackend = 8000 + this.reverseCounter;
         return {
           result: {
-            value: { id, selector: `div.reverse-${this.reverseCounter}`, role: null, name: null, rect: null, tabIndex: 0, focusVisibleStyle: null, scrollX: 0, scrollY: 0, isBody: false },
+            value: { id, selector: `div.reverse-${this.reverseCounter}`, role: null, name: null, rect: null, tabIndex: 0, focusVisibleStyle: null, scrollX: 0, scrollY: 0, isBody: false, hasActiveElement: true },
           },
         };
       }

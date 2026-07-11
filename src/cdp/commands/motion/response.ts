@@ -5,13 +5,14 @@ import { sanitizeString } from '../../measure/redaction.js';
 import { loadResponseTimeline, ResponseActionSelectionError, type ResponsePoint } from '../../motion/response.js';
 import { rejectUnsupportedGate } from '../gate-guard.js';
 
-const USAGE = `Usage: capture motion response <rec> [--action <action>]
+const USAGE = `Usage: capture motion response <rec> [--action <action>] [--occurrence <n>]
 
 Input-to-settled response timeline over a finalized recording:
 input -> mutation -> layout -> paint -> network -> settle.
 
 Options:
-  --action <action>   Narrow to one recorded action`;
+  --action <action>    Narrow to one recorded action
+  --occurrence <n>     Select the nth (1-based) occurrence of a repeated action label`;
 
 function formatPoint(point: ResponsePoint): FactLine {
   const uncertainty = point.precision === 'frame' ? text` (±1 frame)` : text``;
@@ -40,7 +41,7 @@ export async function cmdMotionResponse(parsed: ParsedArgs, _args: string[]): Pr
   }
 
   try {
-    const loaded = loadResponseTimeline(parsed.positional[0], parsed.action);
+    const loaded = loadResponseTimeline(parsed.positional[0], parsed.action, parsed.occurrence);
     const { ref, timeline } = loaded;
     const result: RenderableResult = {
       tag: 'response',

@@ -32,7 +32,9 @@ Leaves:
   response <rec> [--action <action>]          Input-to-settled response timeline
 
 Every leaf defaults to rendered prose; --json mirrors the same result as JSON.
-Exit codes: 0 always — findings are a report, not a failure. No leaf accepts --gate.
+Exit codes: findings exit 0 — a report, not a failure. Input/precondition
+errors — a bad or missing recording target, an unfinalized recording, an
+unusable artifact — exit 1. No leaf accepts --gate.
 
 capture motion <leaf> --help    Per-leaf usage`;
 

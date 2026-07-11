@@ -42,6 +42,8 @@ import {
   driveOneShotAction,
   finalizeOneShotRecording,
   encodeVideoIfAvailable,
+  encodeTimeoutMs,
+  classifyEncodeFailure,
 } from '../src/cdp/commands/motion/rec.js';
 
 const TINY_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=', 'base64');
@@ -367,6 +369,29 @@ test('video encoding contract receives measured duration and never writes throug
       assert.ok(Math.abs(Number(probe.stdout.trim()) - 1) < 0.05, `VP9 duration must follow recording timing, got ${probe.stdout.trim()}s`);
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('encodeTimeoutMs scales with frame count so long recordings finish, within an upper safety bound', () => {
+  // A short recording still gets the generous fixed base.
+  assert.ok(encodeTimeoutMs(1) >= 30_000);
+  // The 2561-frame long recording that spuriously timed out at the fixed 30s ceiling
+  // now gets minutes of budget.
+  assert.ok(encodeTimeoutMs(2561) > 120_000, `2561 frames must budget well beyond the old 30s ceiling, got ${encodeTimeoutMs(2561)}ms`);
+  // Monotonic in frame count.
+  assert.ok(encodeTimeoutMs(5000) >= encodeTimeoutMs(2561));
+  // Capped by the upper safety bound so a pathological run cannot hang indefinitely.
+  assert.equal(encodeTimeoutMs(10_000_000), 15 * 60_000);
+});
+
+test('classifyEncodeFailure only reports a timeout when ETIMEDOUT establishes it, not on a bare SIGTERM', () => {
+  const etimedout = Object.assign(new Error('spawnSync ffmpeg ETIMEDOUT'), { code: 'ETIMEDOUT' });
+  // ETIMEDOUT (with the SIGTERM spawnSync sends to kill the child) is the only genuine timeout.
+  assert.equal(classifyEncodeFailure({ error: etimedout, signal: 'SIGTERM' }), 'ffmpeg_encoding_timed_out');
+  assert.equal(classifyEncodeFailure({ error: etimedout, signal: null }), 'ffmpeg_encoding_timed_out', 'ETIMEDOUT alone establishes the timeout');
+  // A bare SIGTERM with no ETIMEDOUT is external/self termination, NOT proof of a timeout — false provenance if labeled timed-out.
+  assert.equal(classifyEncodeFailure({ error: null, signal: 'SIGTERM' }), 'ffmpeg_terminated', 'a bare SIGTERM without ETIMEDOUT is termination, not a timeout');
+  assert.equal(classifyEncodeFailure({ error: Object.assign(new Error('spawn ffmpeg ENOENT'), { code: 'ENOENT' }), signal: null }), 'ffmpeg_execution_failed');
+  assert.equal(classifyEncodeFailure({ error: null, signal: null }), 'ffmpeg_encoding_failed', 'a nonzero exit / missing output maps to encoding_failed');
 });
 
 test('motion rec one-shot finalizer preserves finalized metadata shape and private permissions', () => {

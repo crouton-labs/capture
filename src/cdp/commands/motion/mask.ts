@@ -45,10 +45,14 @@ export async function cmdMotionMask(parsed: ParsedArgs, _args: string[]): Promis
         regions: mask.regions.length,
         image: `${ref.id}/motion-mask.png`,
         'timestamp-uncertainty': '±1 frame',
+        ...(mask.caveat ? { window: 'partial (viewport resize)' } : {}),
       },
       summary: fact`Composite written: motion-mask.png (${mask.width}×${mask.height}, ${mask.comparedFramePairs} adjacent frame pair(s)); transparent pixels did not differ and hue runs blue (early) to red (late).`,
       artifacts: formatArtifactList([{ name: 'motion-mask.png', note: 'motion-diff composite' }]),
-      sections: [lineList(regionLines)],
+      sections: [
+        ...(mask.caveat ? [line(text`${mask.caveat}`)] : []),
+        lineList(regionLines),
+      ],
       followUp: mask.regions[0]?.element
         ? line(text`Per-frame geometry for region 1: \`capture motion timeline `, fact`${ref.id}`, text` --element `, fact`${mask.regions[0].element.label}\`.`)
         : undefined,
