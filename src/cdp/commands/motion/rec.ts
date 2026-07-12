@@ -66,7 +66,7 @@ export function __setMotionRecDepsForTest(overrides: Partial<RecCommandDeps>): (
 
 const USAGE = `capture motion rec — record the page over time: composed (whatever the active session does between --start and --stop) or one-shot (one scripted action on a URL or the active session tab).
 
-Input:
+input:
   [url] --do <action>       one-shot: open <url> (or record the active session tab when <url> is omitted), record one action, finalize
     action                  click:<target> | scroll:<target>,to=<top|bottom|px>
     target                  css selector (bare string) | ax:<name> (case-insensitive substring) | axid:<id> | backend:<id>
@@ -78,10 +78,10 @@ Input:
   --stop                    finalize the composed recording
     --rec-id <id>           explicit recording id (default: the session's active recording)
 
-Output:
+output:
   <recording> block — frames, fps, duration, state, event-records, video status, artifact list; --json mirrors.
 
-Effects:
+effects:
   One-shot on a URL opens a new tab and writes a private one-shot artifact dir; with <url> omitted it records the active session tab and writes under the session. Composed writes under the active session. Scripted actions dispatch real input, marked as labeled landmarks in events.jsonl. Video encodes via ffmpeg when available.`;
 
 export async function cmdMotionRec(parsed: ParsedArgs, _args: string[]): Promise<void> {
