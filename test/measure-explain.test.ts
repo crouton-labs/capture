@@ -86,6 +86,12 @@ before(() => {
         zIndex: 'auto', stackingContext: { creates: false, reasons: [] }, clipping: null,
         visibility: { visible: true, opacity: 1 }, layout: { overflowX: 'visible', overflowY: 'visible' },
       },
+      ...Array.from({ length: 12 }, (_, index) => ({
+        id: `geo-unrelated-${index}`, backendNodeId: 100 + index, selector: `.unrelated-${index}`, tag: 'div',
+        domPath: `html[0]/body[0]/div[${index + 2}]`, rect: { x: 0, y: 300 + index * 10, width: 10, height: 10 },
+        zIndex: 'auto', stackingContext: { creates: false, reasons: [] }, clipping: null,
+        visibility: { visible: true, opacity: 1 }, layout: { overflowX: 'visible', overflowY: 'visible' },
+      })),
     ],
     unstableRegions: [{
       id: 'region-card', selector: '.card', rect: { x: 15, y: 35, w: 230, h: 80 },
@@ -215,22 +221,32 @@ test('detail flags add size, text, and redacted form facts without rendering any
   assert.ok(!result.stdout.includes(RAW_VALIDITY));
 });
 
-test('missing selector returns a typed recovery result and command output lists CSS/backend/axid/ax/text forms', () => {
+test('missing selector returns bounded nearest CSS recovery candidates while full identity facts remain in snapshot artifacts', () => {
   const typed = explainSnapshot(ref, '.missing');
   assert.equal(typed.kind, 'missing-selector');
   if (typed.kind !== 'missing-selector') return;
-  assert.ok(typed.available.css.includes('.card'));
-  assert.ok(typed.available.backend.includes('backend:42'));
-  assert.ok(typed.available.axid.includes('axid:AX-42'));
-  assert.ok(typed.available.ax.includes('ax:Account token field'));
-  assert.ok(typed.available.text.includes('text:Target copy'));
+  assert.equal(typed.available.recordCount, 17);
+  assert.ok(typed.available.candidates.includes('.card'));
+  assert.equal(typed.available.candidates.length, 8);
 
   const result = run('snap-test', '--selector', '.missing');
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stdout, /status="missing_selector"/);
-  assert.match(result.stdout, /CSS: \.card/);
-  assert.match(result.stdout, /backend: backend:42/);
-  assert.match(result.stdout, /axid: axid:AX-42/);
-  assert.match(result.stdout, /ax: ax:Account token field/);
-  assert.match(result.stdout, /text: text:Target copy/);
+  assert.match(result.stdout, /Nearest recorded CSS selectors: 8 shown from 17 geometry record\(s\), ranked by identifier similarity then string distance/);
+  assert.match(result.stdout, /\d+\. \.card/);
+  assert.match(result.stdout, /geometry\.json, ax\.json, and text\.json artifacts/);
+  assert.doesNotMatch(result.stdout, /backend: backend:42/);
+});
+
+test('missing identity input ranks and renders candidates in the requested selector form', () => {
+  const typed = explainSnapshot(ref, 'axid:AX-4x');
+  assert.equal(typed.kind, 'missing-selector');
+  if (typed.kind !== 'missing-selector') return;
+  assert.equal(typed.available.kind, 'axid');
+  assert.equal(typed.available.candidates[0], 'axid:AX-42');
+
+  const result = run('snap-test', '--selector', 'axid:AX-4x');
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /Nearest recorded axid: selector inputs/);
+  assert.match(result.stdout, /1\. axid:AX-42/);
 });

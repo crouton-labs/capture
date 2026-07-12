@@ -34,6 +34,8 @@ export interface ParsedArgs {
   filterStatus?: string;
   filterMethod?: string;
   limit?: number;
+  /** Original --limit token for leaves that require a strict integer rather than the shared parser's legacy parseInt behavior. */
+  limitRaw?: string;
   browser?: boolean;
   params?: string;
   waitEvent?: string;

@@ -101,6 +101,7 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
       parsed.filterMethod = next.toUpperCase();
       i++;
     } else if (arg === '--limit' && next) {
+      parsed.limitRaw = next;
       parsed.limit = parseInt(next, 10);
       i++;
     } else if (arg === '--browser') {

@@ -16,7 +16,7 @@ import {
   type Rect,
   type SnapRef,
 } from '../../output/artifact.js';
-import { resolveSelectorInput, selectorHints, type ElementRecord } from '../../output/selector.js';
+import { parseSelectorInput, resolveSelectorInput, type ElementRecord, type SelectorInputKind } from '../../output/selector.js';
 import { fact, line, text, type FactLine } from '../../output/render.js';
 
 export interface ExplainDetailOptions {
@@ -95,11 +95,9 @@ export interface ExplainSuccess {
 }
 
 export interface MissingSelectorRecovery {
-  readonly css: readonly string[];
-  readonly backend: readonly string[];
-  readonly axid: readonly string[];
-  readonly ax: readonly string[];
-  readonly text: readonly string[];
+  readonly recordCount: number;
+  readonly kind: SelectorInputKind;
+  readonly candidates: readonly string[];
 }
 
 export interface ExplainMissingSelector {
@@ -155,16 +153,50 @@ function readOptional<T>(ref: SnapRef, filename: string, reader: (snap: SnapRef)
   return artifactExists(ref, filename) ? reader(ref) : fallback;
 }
 
-function recoveryForms(elements: readonly ElementRecord[]): MissingSelectorRecovery {
-  const hints = selectorHints(elements, 8);
-  const unique = (values: readonly (string | undefined)[]): string[] => [...new Set(values.filter((value): value is string => Boolean(value)))].slice(0, 8);
-  return {
-    css: hints.selectors,
-    backend: unique(elements.map((element) => typeof element.backendNodeId === 'number' ? `backend:${element.backendNodeId}` : undefined)),
-    axid: unique(elements.map((element) => element.axId ? `axid:${element.axId}` : undefined)),
-    ax: unique(hints.axNames.map((name) => `ax:${name}`)),
-    text: unique(hints.texts.map((value) => `text:${value}`)),
+const RECOVERY_CANDIDATE_LIMIT = 8;
+
+function editDistance(a: string, b: string): number {
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    let diagonal = previous[0]!;
+    previous[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const above = previous[j]!;
+      previous[j] = Math.min(previous[j]! + 1, previous[j - 1]! + 1, diagonal + Number(a[i - 1] !== b[j - 1]));
+      diagonal = above;
+    }
+  }
+  return previous[b.length]!;
+}
+
+function selectorIdentifierDistance(requested: string, candidate: string): number {
+  const identifiers = (value: string) => value.toLowerCase().match(/[a-z][a-z0-9_-]*/g)?.filter((token) => token.length > 1) ?? [];
+  const requestedTokens = identifiers(requested);
+  const candidateTokens = identifiers(candidate);
+  if (!requestedTokens.length || !candidateTokens.length) return Number.POSITIVE_INFINITY;
+  return requestedTokens.reduce((total, token) => total + Math.min(...candidateTokens.map((other) => editDistance(token, other) / Math.max(token.length, other.length))), 0);
+}
+
+function recoveryForms(elements: readonly ElementRecord[], requested: string): MissingSelectorRecovery {
+  const input = parseSelectorInput(requested);
+  const formFor = (element: ElementRecord): string | undefined => {
+    switch (input.kind) {
+      case 'css': return element.selector;
+      case 'backend': return typeof element.backendNodeId === 'number' ? `backend:${element.backendNodeId}` : undefined;
+      case 'axid': return element.axId ? `axid:${element.axId}` : undefined;
+      case 'ax': return element.axName ? `ax:${element.axName}` : undefined;
+      case 'text': return element.text ? `text:${element.text}` : undefined;
+    }
   };
+  const valueOf = (candidate: string) => input.kind === 'css' ? candidate : candidate.slice(candidate.indexOf(':') + 1);
+  const candidates = [...new Set(elements.map(formFor).filter((candidate): candidate is string => Boolean(candidate)))];
+  candidates.sort((a, b) => {
+    const aValue = valueOf(a).toLowerCase(), bValue = valueOf(b).toLowerCase();
+    const aIdentifierDistance = selectorIdentifierDistance(input.value, aValue), bIdentifierDistance = selectorIdentifierDistance(input.value, bValue);
+    const aDistance = editDistance(input.value.toLowerCase(), aValue), bDistance = editDistance(input.value.toLowerCase(), bValue);
+    return aIdentifierDistance - bIdentifierDistance || aDistance - bDistance || a.length - b.length || a.localeCompare(b);
+  });
+  return { recordCount: elements.length, kind: input.kind, candidates: candidates.slice(0, RECOVERY_CANDIDATE_LIMIT) };
 }
 
 function sourceDescription(declaration: WinningDeclaration): string | undefined {
@@ -432,7 +464,7 @@ export function explainSnapshot(ref: SnapRef, selector: string, detailOpts: Expl
     matches = resolveSelectorInput(selectable, selector);
   }
   if (!matches.length) {
-    return { kind: 'missing-selector', ref, selector, meta, available: recoveryForms(selectable) };
+    return { kind: 'missing-selector', ref, selector, meta, available: recoveryForms(selectable, selector) };
   }
 
   const selectedId = matches[0]!.id;

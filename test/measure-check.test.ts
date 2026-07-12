@@ -42,7 +42,7 @@ json('styles.json', { elements: [
 // Authoritative back-to-front paint order (Chrome's DOMSnapshot order): .b
 // (backend 2) is painted after .a (backend 1), so .b paints on top.
 json('layers.json', { paintOrder: { available: true, backendNodeIds: [1, 2, 3, 4] } });
-json('hittest.json', { elements: [{ selector: '.a', selfHitCount: 0, selfHitTotal: 5, points: [{ result: { x: 90, y: 20, topReceiver: { selector: '.b' }, stack: [{ selector: '.b', pointerEvents: 'auto' }] } }] }] });
+json('hittest.json', { elements: Array.from({ length: 25 }, (_, index) => ({ selector: `.hit-${index}`, selfHitCount: 0, selfHitTotal: 5, points: [{ result: { x: 90, y: 20, topReceiver: { selector: '.b' }, stack: [{ selector: '.b', pointerEvents: 'auto' }] } }] })) });
 json('text.json', { elements: [{ selector: '.a', truncated: true, scrollWidth: 130, clientWidth: 100 }] });
 json('forms.json', { controls: [] });
 json('animation.json', { animations: [{ id: 'anim-1', selector: '.a', infinite: true, durationMs: 200, iterationCount: 'infinite', playState: 'running' }] });
@@ -211,12 +211,30 @@ test('check accepts individual checks and rejects unknown names', () => {
   assert.throws(() => parseChecks('advice'), /unknown check/);
 });
 
-test('command renders findings and --gate exits 2 only when findings exist', () => {
-  const gated = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'geometry', '--gate'], { encoding: 'utf8' });
+test('command renders a bounded cross-kind sample with a factual rollup, while JSON retains every finding', () => {
+  const gated = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--gate'], { encoding: 'utf8' });
   assert.equal(gated.status, 2);
-  assert.match(gated.stdout, /<checks /);
+  assert.match(gated.stdout, /<checks [^>]*findings="32"[^>]*displayed="20"/);
+  assert.match(gated.stdout, /Finding counts: overlap=1, offscreen=1, overflow=1, tap-targets=1, hit-test=25, truncation=1, media=1, animation=1/);
+  assert.equal((gated.stdout.match(/^\d+\. /gm) ?? []).length, 20);
   assert.match(gated.stdout, /snap-check\/findings\/1-overlap\.png/);
-  assert.match(gated.stdout, /Nondeterminism caveat/);
+
+  const jsonResult = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--json'], { encoding: 'utf8' });
+  assert.equal(jsonResult.status, 0);
+  const rendered = JSON.parse(jsonResult.stdout) as { attrs: { findings: number; displayed: number }; sections: string[] };
+  assert.equal(rendered.attrs.findings, 32);
+  assert.equal(rendered.attrs.displayed, 32);
+  assert.equal(rendered.sections.length, 33);
+
+  for (const limit of ['0', '1.9', 'nope', 'Infinity']) {
+    const invalid = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--limit', limit], { encoding: 'utf8' });
+    assert.equal(invalid.status, 1, `${limit}: ${invalid.stdout}`);
+    assert.match(invalid.stdout, /--limit must be a positive integer/);
+  }
+  const customLimit = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--limit', '3'], { encoding: 'utf8' });
+  assert.equal(customLimit.status, 0);
+  assert.equal((customLimit.stdout.match(/^\d+\. /gm) ?? []).length, 3);
+
   const clean = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'contrast', '--gate'], { encoding: 'utf8' });
   assert.equal(clean.status, 0);
   assert.match(clean.stdout, /result="clean"/);

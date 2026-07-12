@@ -47,20 +47,16 @@ function caveatSuffix(caveats: readonly { regionId: string; selector?: string; r
 }
 
 function recoverySections(missing: ExplainMissingSelector): FactLine[] {
-  const groups: Array<[keyof ExplainMissingSelector['available'], string]> = [
-    ['css', 'CSS'],
-    ['backend', 'backend'],
-    ['axid', 'axid'],
-    ['ax', 'ax'],
-    ['text', 'text'],
+  const { candidates, recordCount, kind } = missing.available;
+  const label = kind === 'css' ? 'CSS selectors' : `${kind}: selector inputs`;
+  const rows = candidates.length
+    ? candidates.map((candidate, index) => fact`${index + 1}. ${candidate}`)
+    : [fact`No recorded ${label} were available from geometry records.`];
+  return [
+    fact`Nearest recorded ${label}: ${candidates.length} shown from ${recordCount} geometry record(s), ranked by identifier similarity then string distance from the requested selector.`,
+    lineList(rows),
+    text`All recorded selector and identity facts remain in this snapshot's geometry.json, ax.json, and text.json artifacts.`,
   ];
-  return groups.map(([key, label]) => {
-    const values = missing.available[key];
-    const rows = values.length
-      ? values.map((value) => line(fact`${label}: `, data(value)))
-      : [fact`${label}: no recorded form`];
-    return lineList(rows);
-  });
 }
 
 function invalidInput(message: FactLine): RenderableResult {
@@ -97,9 +93,9 @@ export async function cmdMeasureExplain(parsed: ParsedArgs, _args: string[]): Pr
         tag: 'error',
         attestation: attestation(report.ref, report.meta),
         attrs: { command: 'measure explain', status: 'missing_selector', selector: report.selector },
-        summary: fact`No geometry element matched selector input ${report.selector}. Available recovery forms from this snapshot follow.`,
+        summary: fact`No geometry element matched selector input ${report.selector}. Bounded recovery candidates from this snapshot follow.`,
         sections: recoverySections(report),
-        followUp: text`Re-run capture measure explain with one of the recorded CSS, backend:, axid:, ax:, or text: forms above.`,
+        followUp: text`The selector input also accepts CSS, backend:, axid:, ax:, and text: forms.`,
       }, { json: parsed.json });
       process.exitCode = 1;
       return;
