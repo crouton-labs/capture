@@ -284,7 +284,8 @@ test('motion rec composed lifecycle records a real Chrome routed type action bet
     await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], stop: true }, []));
     const recDir = path.join(root, 'motion', 'recs', fs.readdirSync(path.join(root, 'motion', 'recs'))[0]);
     const events = fs.readFileSync(path.join(recDir, 'events.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    assert.equal(events.filter((event) => event.mark === 'type:Message').length, 1, 'the routed command produces one coherent type landmark');
+    assert.equal(events.filter((event) => event.action === 'type:Message').length, 1, 'the routed command preserves one coherent original action identity');
+    assert.match(events.find((event) => event.action === 'type:Message').mark, /^mark-[a-f0-9]{64}$/, 'the internal structural mark is distinct');
   } finally {
     restore();
     clearActiveSession();
@@ -429,6 +430,22 @@ test('classifyEncodeFailure only reports a timeout when ETIMEDOUT establishes it
   assert.equal(classifyEncodeFailure({ error: null, signal: 'SIGTERM' }), 'ffmpeg_terminated', 'a bare SIGTERM without ETIMEDOUT is termination, not a timeout');
   assert.equal(classifyEncodeFailure({ error: Object.assign(new Error('spawn ffmpeg ENOENT'), { code: 'ENOENT' }), signal: null }), 'ffmpeg_execution_failed');
   assert.equal(classifyEncodeFailure({ error: null, signal: null }), 'ffmpeg_encoding_failed', 'a nonzero exit / missing output maps to encoding_failed');
+});
+
+test('one-shot with zero frames writes a factual partial no-frames artifact instead of finalized success', () => {
+  const root = makeRoot('no-frames');
+  const recDir = path.join(root, 'motion', 'recs', 'rec-no-frames');
+  try {
+    const result = finalizeOneShotRecording(recDir, 'rec-no-frames', 'https://example.test/?token=evidence', 'click:button[data-action="send now"]', {
+      frameCount: 0, eventCount: 3, durationMs: 1000, markers: { performanceNowMs: 1 },
+    }, () => ({ status: 'unavailable', reason: 'no_frames' }));
+    const meta = JSON.parse(fs.readFileSync(path.join(recDir, 'meta.json'), 'utf8'));
+    assert.equal(result.state, 'partial');
+    assert.equal(meta.state, 'partial');
+    assert.equal(meta.reason, 'no_frames');
+    assert.equal(meta.action, 'click:button[data-action="send now"]');
+    assert.equal(meta.url, 'https://example.test/?token=evidence');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('motion rec one-shot finalizer preserves finalized metadata shape and private permissions', () => {

@@ -4,7 +4,6 @@ import * as path from 'path';
 import { diffPngs } from '../../output/diff.js';
 import { artifactPath, readEvents, readMarkers, readMeta, readRects, resolveRecRef, type RecRef } from '../../output/artifact.js';
 import { ensurePrivateDir } from '../../session/artifacts.js';
-import { sanitizeString } from '../measure/redaction.js';
 
 export type ResponseStage = 'input' | 'mutation' | 'layout' | 'paint' | 'network' | 'longtask' | 'settle';
 export type TimestampPrecision = 'exact' | 'frame';
@@ -45,6 +44,7 @@ interface Markers {
 interface EventRecord {
   kind?: unknown;
   mark?: unknown;
+  action?: unknown;
   startPerformanceNow?: unknown;
   endPerformanceNow?: unknown;
   performanceNowMs?: unknown;
@@ -121,7 +121,7 @@ function traceEvents(events: readonly EventRecord[], markers: Markers, caveats: 
       if (!finite(trace.ts) || typeof trace.name !== 'string') continue;
       const timestampMs = tracePerformance(trace.ts, markers);
       if (timestampMs === null) continue;
-      output.push({ name: sanitizeString(trace.name, { max: 100 }), timestampMs, durationMs: finite(trace.dur) ? trace.dur / 1000 : undefined });
+      output.push({ name: trace.name, timestampMs, durationMs: finite(trace.dur) ? trace.dur / 1000 : undefined });
     }
   }
   if (events.some((event) => event.kind === 'trace') && output.length === 0) {
@@ -135,7 +135,10 @@ function inputMarks(events: readonly EventRecord[], markers: Markers): ActionMar
   const marks: ActionMark[] = [];
   for (const event of events) {
     if (event.kind !== 'input' || typeof event.mark !== 'string' || !finite(event.startPerformanceNow)) continue;
-    const label = sanitizeString(event.mark, { max: 200 });
+    // New artifacts retain the verbatim action separately from the internal
+    // structural mark. Legacy artifacts have only `mark`.
+    const label = typeof event.action === 'string' ? event.action : event.mark;
+    if (typeof label !== 'string') continue;
     const occurrence = (seen.get(label) ?? 0) + 1;
     seen.set(label, occurrence);
     const startMs = relativePerformance(event.startPerformanceNow, markers);
@@ -146,16 +149,15 @@ function inputMarks(events: readonly EventRecord[], markers: Markers): ActionMar
 }
 
 function selectAction(actions: readonly ActionMark[], action: string, occurrence?: number): ActionMark {
-  const sanitized = sanitizeString(action, { max: 200 });
-  const matches = actions.filter((item) => item.label === sanitized);
-  if (matches.length === 0) throw new Error(`No input mark exists for action ${JSON.stringify(sanitized)}.`);
+  const matches = actions.filter((item) => item.label === action);
+  if (matches.length === 0) throw new Error(`No input mark exists for action ${JSON.stringify(action)}.`);
   if (occurrence !== undefined) {
     const match = matches.find((item) => item.occurrence === occurrence);
     if (match) return match;
-    throw new ResponseActionSelectionError(matches, `Action ${JSON.stringify(sanitized)} has no occurrence ${occurrence}; ${matches.length} occurrence(s) available.`);
+    throw new ResponseActionSelectionError(matches, `Action ${JSON.stringify(action)} has no occurrence ${occurrence}; ${matches.length} occurrence(s) available.`);
   }
   if (matches.length === 1) return matches[0];
-  throw new ResponseActionSelectionError(matches, `Action ${JSON.stringify(sanitized)} appears ${matches.length} times; pass --occurrence <n> to select one.`);
+  throw new ResponseActionSelectionError(matches, `Action ${JSON.stringify(action)} appears ${matches.length} times; pass --occurrence <n> to select one.`);
 }
 
 function eventDropCaveats(events: readonly EventRecord[]): string[] {
@@ -163,7 +165,7 @@ function eventDropCaveats(events: readonly EventRecord[]): string[] {
   for (const event of events) {
     if (event.kind !== 'trace-dropped' && event.kind !== 'binding-dropped' && event.kind !== 'rect-sample-dropped') continue;
     const dropped = count(event.count);
-    const reason = typeof event.reason === 'string' ? sanitizeString(event.reason, { max: 80 }) : 'unknown reason';
+    const reason = typeof event.reason === 'string' ? event.reason : 'unknown reason';
     caveats.push(`${event.kind}: ${dropped ?? 'unknown'} record(s) dropped (${reason}); response evidence may be truncated.`);
   }
   return caveats;
@@ -280,7 +282,7 @@ export function responseTimelineFromArtifacts(
     points,
     unavailableStages,
     caveats,
-    state: sanitizeString(state, { max: 80 }),
+    state,
     timingNote: 'Timestamps use performance.now() relative to recorder arm; observer points use PerformanceEntry.startTime when present, trace points require a real trace alignment marker, and frame-derived points use the screencast wall-clock anchor with ±1 frame uncertainty.',
   };
 }

@@ -276,7 +276,8 @@ test('a marked cdp request brackets the dispatch and appends an input landmark t
     }>;
     const inputEvents = events.filter((e) => e.kind === 'input');
     assert.equal(inputEvents.length, 1);
-    assert.equal(inputEvents[0].mark, 'input_click');
+    assert.equal(inputEvents[0].action, 'input_click');
+    assert.match(String(inputEvents[0].mark), /^mark-[a-f0-9]{64}$/);
     assert.equal(inputEvents[0].method, 'Input.dispatchMouseEvent');
     assert.equal(typeof inputEvents[0].startPerformanceNow, 'number');
     assert.equal(typeof inputEvents[0].endPerformanceNow, 'number');
@@ -1213,12 +1214,11 @@ test('a secret-shaped rect id/classes is redacted (not just length-capped) befor
     await tick();
 
     const rectsRaw = fs.readFileSync(session.rectsPath, 'utf-8');
-    assert.ok(!rectsRaw.includes(SECRET_TOKEN), 'the raw secret must never reach rects.jsonl');
-    assert.ok(rectsRaw.includes('[REDACTED]'), 'the redaction marker must be present in its place');
+    assert.ok(rectsRaw.includes(SECRET_TOKEN), 'browser evidence is retained verbatim in rects.jsonl');
 
     const rects = readNdjson(session.rectsPath) as Array<{ elements: Array<{ id: string | null; classes: string | null }> }>;
-    assert.equal(rects[0].elements[0].id, '[REDACTED]');
-    assert.equal(rects[0].elements[0].classes, 'box [REDACTED] active');
+    assert.equal(rects[0].elements[0].id, SECRET_TOKEN);
+    assert.equal(rects[0].elements[0].classes, `box ${SECRET_TOKEN} active`);
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }
@@ -1245,12 +1245,12 @@ test('a secret-shaped performance-entry name from the observer binding is redact
     await tick();
 
     const eventsRaw = fs.readFileSync(session.eventsPath, 'utf-8');
-    assert.ok(!eventsRaw.includes(SECRET_TOKEN), 'the raw secret must never reach events.jsonl');
+    assert.ok(eventsRaw.includes(SECRET_TOKEN), 'browser evidence is retained verbatim in events.jsonl');
 
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
     const perf = events.find((e) => e.kind === 'performance');
     assert.ok(perf, 'expected a performance-kind event');
-    assert.equal(perf!.name, '[REDACTED]');
+    assert.equal(perf!.name, SECRET_TOKEN);
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }
@@ -1268,12 +1268,12 @@ test('a secret-shaped navigation-gap URL is redacted before it reaches events.js
     await tick();
 
     const eventsRaw = fs.readFileSync(session.eventsPath, 'utf-8');
-    assert.ok(!eventsRaw.includes(SECRET_TOKEN), 'the raw secret must never reach events.jsonl');
+    assert.ok(eventsRaw.includes(SECRET_TOKEN), 'browser evidence is retained verbatim in events.jsonl');
 
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
     const gap = events.find((e) => e.kind === 'navigation-gap');
     assert.ok(gap);
-    assert.ok(String(gap!.url).includes('[REDACTED]'));
+    assert.ok(String(gap!.url).includes(SECRET_TOKEN));
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }
@@ -1294,11 +1294,12 @@ test('a secret-shaped mark label is redacted before the input landmark is writte
     });
 
     const eventsRaw = fs.readFileSync(session.eventsPath, 'utf-8');
-    assert.ok(!eventsRaw.includes(SECRET_TOKEN), 'the raw secret must never reach events.jsonl as a mark label');
+    assert.ok(eventsRaw.includes(SECRET_TOKEN), 'the original action is retained verbatim in events.jsonl');
 
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
     const input = events.find((e) => e.kind === 'input');
     assert.ok(input);
+    assert.equal(input!.action, SECRET_TOKEN);
     assert.notEqual(input!.mark, SECRET_TOKEN);
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
@@ -1328,11 +1329,8 @@ test('a mark label secret that straddles the truncation boundary is fully redact
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
     const input = events.find((e) => e.kind === 'input');
     assert.ok(input, 'expected an input landmark');
-    const mark = String(input!.mark);
-    assert.ok(
-      !mark.includes('github_'),
-      `redacting before truncation must remove the whole secret run before the length cap slices it; got ${JSON.stringify(mark)}`,
-    );
+    assert.equal(input!.action, boundaryStraddlingMark, 'the original action remains verbatim evidence');
+    assert.match(String(input!.mark), /^mark-[a-f0-9]{64}$/, 'the internal structural mark remains distinct');
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }
@@ -1695,7 +1693,8 @@ test('a marked cdp request never evaluates performance.mark(...) into the page, 
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
     const input = events.find((e) => e.kind === 'input');
     assert.ok(input, 'the host-side input landmark must still be recorded');
-    assert.equal(input!.mark, 'input_click');
+    assert.equal(input!.action, 'input_click');
+    assert.match(String(input!.mark), /^mark-[a-f0-9]{64}$/);
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }
@@ -2383,9 +2382,9 @@ test('the production rect-sample expression caps its stashed identity-handle arr
       },
     };
     const runExpr = new Function('window', 'document', `return ${capturedExpression};`);
-    const out = runExpr(fakeWindow, fakeDocument) as unknown[];
+    const out = runExpr(fakeWindow, fakeDocument) as { elements: unknown[] };
 
-    assert.equal(out.length, overCap, 'all 305 descriptive facts are returned (MAX_RECT_ELEMENTS is a far higher 2000 cap)');
+    assert.equal(out.elements.length, overCap, 'all 305 descriptive facts are returned (MAX_RECT_ELEMENTS is a far higher 2000 cap)');
     assert.equal(stashed.length, 1, 'the expression stashed exactly one identity-handle array for this frame');
     assert.equal(
       stashed[0].length,

@@ -148,6 +148,15 @@ test('motion response requires unique --action semantics and lists duplicate occ
   }
 });
 
+test('motion response queries the original action identity rather than the internal mark', () => {
+  const timeline = responseTimelineFromArtifacts(
+    'click:Open Hearth chat',
+    [{ kind: 'input', action: 'click:Open Hearth chat', mark: 'mark-0123456789abcdef', startPerformanceNow: 120 }],
+    [], MARKERS, 'finalized',
+  );
+  assert.equal(timeline.action, 'click:Open Hearth chat');
+});
+
 test('motion response selects a repeated action label by --occurrence and errors factually out of range', () => {
   const root = path.join(CAPTURE_ROOT, `u29-response-occurrence-${process.pid}-${Date.now()}`);
   const recDir = path.join(root, 'motion', 'recs', 'rec-occurrence');

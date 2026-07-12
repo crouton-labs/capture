@@ -10,6 +10,8 @@ export interface MotionRect {
   frame: number;
   file?: string;
   screencastTimestamp?: number | null;
+  /** Per-frame top-visual-viewport CSS-px → PNG device-px transform. */
+  cssToDevice?: { scaleX?: number; scaleY?: number; devicePixelRatio?: number } | null;
   elements?: MotionElement[];
 }
 
@@ -291,10 +293,12 @@ function computeComponentStats(
     for (const element of record.elements ?? []) {
       if (![element.x, element.y, element.width, element.height].every((value) => typeof value === 'number' && Number.isFinite(value))) continue;
       const key = typeof element.backendNodeId === 'number' ? `backend:${element.backendNodeId}` : elementLabel(element);
-      const x0 = Math.max(0, Math.floor(element.x!));
-      const x1 = Math.min(width, Math.ceil(element.x! + element.width!));
-      const y0 = Math.max(0, Math.floor(element.y!));
-      const y1 = Math.min(height, Math.ceil(element.y! + element.height!));
+      const transformed = deviceRect(element, record.cssToDevice);
+      if (!transformed) continue;
+      const x0 = Math.max(0, Math.floor(transformed.x));
+      const x1 = Math.min(width, Math.ceil(transformed.x + transformed.width));
+      const y0 = Math.max(0, Math.floor(transformed.y));
+      const y1 = Math.min(height, Math.ceil(transformed.y + transformed.height));
       for (let py = y0; py < y1; py++) {
         const rowBase = py * width;
         for (let px = x0; px < x1; px++) {
@@ -367,8 +371,9 @@ function distanceForElement(target: MotionElement, recordsByFile: Map<string, Mo
   const centers: Array<{ x: number; y: number }> = [];
   for (const record of [...recordsByFile.values()].sort((a, b) => a.frame - b.frame)) {
     const element = (record.elements ?? []).find((candidate) => (typeof candidate.backendNodeId === 'number' ? `backend:${candidate.backendNodeId}` : elementLabel(candidate)) === key);
-    if (!element || ![element.x, element.y, element.width, element.height].every((value) => typeof value === 'number' && Number.isFinite(value))) continue;
-    centers.push({ x: element.x! + element.width! / 2, y: element.y! + element.height! / 2 });
+    const rect = element ? deviceRect(element, record.cssToDevice) : null;
+    if (!rect) continue;
+    centers.push({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 });
   }
   if (centers.length < 2) return null;
   return centers.slice(1).reduce((total, center, i) => total + Math.hypot(center.x - centers[i].x, center.y - centers[i].y), 0);
@@ -382,6 +387,14 @@ function timestampForPair(pair: number, frameFiles: string[], recordsByFile: Map
   // whole recording's duration so timing stays scoped to the selected run's
   // slice, not stretched to fill the full durationMs.
   return totalFrames > 1 ? ((runStart + pair) / (totalFrames - 1)) * durationMs : 0;
+}
+
+function deviceRect(element: MotionElement, transform: MotionRect['cssToDevice']): { x: number; y: number; width: number; height: number } | null {
+  if (![element.x, element.y, element.width, element.height].every((value) => typeof value === 'number' && Number.isFinite(value))) return null;
+  const scaleX = transform?.scaleX;
+  const scaleY = transform?.scaleY;
+  if (typeof scaleX !== 'number' || !Number.isFinite(scaleX) || scaleX <= 0 || typeof scaleY !== 'number' || !Number.isFinite(scaleY) || scaleY <= 0) return null;
+  return { x: element.x! * scaleX, y: element.y! * scaleY, width: element.width! * scaleX, height: element.height! * scaleY };
 }
 
 function elementLabel(element: MotionElement): string {

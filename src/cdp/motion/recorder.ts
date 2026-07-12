@@ -31,7 +31,6 @@ import { requestRecStart, requestRecStop } from '../recorder-client.js';
 import { detectCdpPort } from '../detect.js';
 import { findTabByIdAcrossEndpoints } from '../targets.js';
 import { CDPClient } from '../client.js';
-import { sanitizeString } from '../measure/redaction.js';
 import { type RecorderClockBaselines } from '../bridge/protocol.js';
 import { getActiveRecId, setActiveRecId, clearActiveRecId, getActiveSession, type ActiveSessionState } from '../../session-context.js';
 
@@ -41,7 +40,7 @@ import { getActiveRecId, setActiveRecId, clearActiveRecId, getActiveSession, typ
 // reader/writer of it.
 // ---------------------------------------------------------------------------
 
-export type RecorderLiveState = 'recording' | 'finalized' | 'orphaned-finalized';
+export type RecorderLiveState = 'recording' | 'finalized' | 'orphaned-finalized' | 'partial';
 
 export interface RecorderJson {
   recId: string;
@@ -190,15 +189,12 @@ export function isPidAlive(pid: number): boolean {
  * threading `session/commands.ts`'s internal `Session` type through here —
  * keeps this module decoupled from that file (which itself calls INTO this
  * module at session-stop time; an import back the other way would cycle).
- * Redacted at this single boundary — a URL query param can carry a
- * secret token, and this is the one place a session's raw url enters both
- * `recorder.json.url` (below) and, via that field, `meta.json.url` (see
- * `writeFinalizedArtifacts`), so redacting here covers both artifacts. */
+ * This remains verbatim because session URLs are browser evidence. */
 function readSessionUrl(sessionDir: string): string | null {
   try {
     const meta = JSON.parse(fs.readFileSync(path.join(sessionDir, '.session.json'), 'utf-8')) as { url?: string | null };
     const url = meta.url ?? null;
-    return url === null ? null : sanitizeString(url);
+    return url === null ? null : url;
   } catch {
     return null;
   }

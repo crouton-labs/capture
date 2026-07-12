@@ -17,7 +17,6 @@ import {
 import { getActiveSession } from '../../../session-context.js';
 import { createOneshotSession } from '../../../session/commands.js';
 import { ensurePrivateDir, writeBinaryPrivate, writeJsonPrivate, writeNdjsonPrivate, type RecMeta } from '../../../session/artifacts.js';
-import { sanitizeString } from '../../measure/redaction.js';
 import {
   startComposedRecorder,
   stopComposedRecorder,
@@ -230,21 +229,23 @@ export function finalizeOneShotRecording(
   ensureFinalizedInventory(recDir);
   const video = encodeVideo(recDir, stopped.durationMs);
   const fps = stopped.durationMs > 0 ? Math.round((stopped.frameCount / (stopped.durationMs / 1000)) * 10) / 10 : 0;
+  const state = stopped.frameCount > 0 ? 'finalized' : 'partial';
   writeJsonPrivate(path.join(recDir, 'markers.json'), stopped.markers);
-  const meta: RecMeta & { url: string; fps: number; eventCount: number; video: VideoEncoding; viewportRestored: boolean | null } = {
+  const meta: RecMeta & { url: string; fps: number; eventCount: number; video: VideoEncoding; viewportRestored: boolean | null; reason?: 'no_frames' } = {
     id: recId,
-    action: sanitizeString(action),
+    action,
     frames: stopped.frameCount,
     durationMs: stopped.durationMs,
-    state: 'finalized',
-    url: sanitizeString(url),
+    state,
+    ...(state === 'partial' ? { reason: 'no_frames' as const } : {}),
+    url,
     fps,
     eventCount: stopped.eventCount,
     video,
     viewportRestored,
   };
   writeJsonPrivate(path.join(recDir, 'meta.json'), meta);
-  return { recId, recDir, frames: stopped.frameCount, durationMs: stopped.durationMs, fps, state: 'finalized', eventCount: stopped.eventCount, viewportRestored, action: sanitizeString(action), video };
+  return { recId, recDir, frames: stopped.frameCount, durationMs: stopped.durationMs, fps, state, eventCount: stopped.eventCount, viewportRestored, action, video };
 }
 
 function ensureFinalizedInventory(recDir: string): void {
@@ -480,11 +481,13 @@ function emitFinalizedResult(parsed: ParsedArgs, stopped: FinalizedRecording & {
       ...('video' in stopped ? { video: (stopped as { video?: VideoEncoding }).video?.status ?? 'unavailable' } : {}),
       'timestamp-uncertainty': '±1 frame for frame-derived timestamps',
     },
-    summary: stopped.state === 'orphaned-finalized'
-      ? fact`Recorder process was no longer running; finalized best-effort from artifacts already flushed to disk.`
-      : stopped.eventCount !== null
-        ? fact`Recording finalized: ${stopped.frames} frame(s) over ${durationS}, ${stopped.eventCount} event record(s).`
-        : fact`Recording finalized: ${stopped.frames} frame(s) over ${durationS}.`,
+    summary: stopped.state === 'partial'
+      ? fact`Recording is partial: no screencast frames were captured over ${durationS}; retained event and recorder artifacts are available.`
+      : stopped.state === 'orphaned-finalized'
+        ? fact`Recorder process was no longer running; finalized best-effort from artifacts already flushed to disk.`
+        : stopped.eventCount !== null
+          ? fact`Recording finalized: ${stopped.frames} frame(s) over ${durationS}, ${stopped.eventCount} event record(s).`
+          : fact`Recording finalized: ${stopped.frames} frame(s) over ${durationS}.`,
     artifacts: formatArtifactList(listRecordingArtifacts(stopped.recDir)),
   };
   emitResult(result, { json: parsed.json });
@@ -500,7 +503,7 @@ function baselineAvailability(recDir: string): string {
 }
 
 function emitCommandError(parsed: ParsedArgs, status: string, message: string, attrs: Record<string, boolean> = {}): void {
-  emitResult({ tag: 'error', attrs: { command: 'motion rec', status, ...attrs }, summary: fact`${sanitizeString(message)}` }, { json: parsed.json });
+  emitResult({ tag: 'error', attrs: { command: 'motion rec', status, ...attrs }, summary: fact`${message}` }, { json: parsed.json });
   process.exitCode = 1;
 }
 

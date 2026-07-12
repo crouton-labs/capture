@@ -94,7 +94,6 @@ import {
   type RecCdpRequest,
 } from './bridge/protocol.js';
 import { ensurePrivateDir, appendNdjsonPrivate, writeBinaryPrivate } from '../session/artifacts.js';
-import { redactSecretSubstrings } from './measure/redaction.js';
 import { resolveIndexedObjectIds, describeBackendNodeId } from './measure/collectors/geometry.js';
 
 // ---------------------------------------------------------------------------
@@ -130,9 +129,19 @@ export interface SampledRect {
  * (`DOM.getContentQuads`, frame/shadow stitching) is `measure snap`'s `geometry.json`, a
  * separate substrate this recorder does not produce.
  */
+export interface FrameCssToDeviceTransform {
+  /** Exact per-frame scale from top visual viewport CSS pixels to PNG device pixels. */
+  scaleX: number;
+  scaleY: number;
+  /** The page-reported device-pixel ratio, retained independently of raster scale. */
+  devicePixelRatio: number;
+}
+
 export interface FrameRectsRecord {
   frame: number;
   file: string;
+  /** Per-frame CSS-to-device transform used by motion-mask DOM joins. */
+  cssToDevice: FrameCssToDeviceTransform | null;
   /** `Page.screencastFrame`'s own `metadata.timestamp` (wall-clock seconds), raw — not baseline-converted. */
   screencastTimestamp: number | null;
   /**
@@ -295,8 +304,8 @@ async function resolveCappedRectObjectIds(
 // hostile-page threat class as the binding channel and rect samples above: individual event
 // `args` can carry page URLs, script names, and frame names, and a batch is otherwise unbounded
 // in count and size. Every appended trace event is whitelisted field-by-field (dropping `args`
-// entirely — a field-whitelisting design choice, not a lossy hedge), redacted, and the batch is
-// capped by both event count and total serialized bytes, exactly like `sanitizeRectSample`.
+// entirely — a field-whitelisting design choice), retained verbatim within explicit string bounds,
+// and capped by both event count and total serialized bytes, exactly like `sanitizeRectSample`.
 // ---------------------------------------------------------------------------
 
 const MAX_TRACE_EVENTS_PER_BATCH = 500;
@@ -326,16 +335,10 @@ function sanitizeBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
 }
 
-/** Redacts secret-shaped substrings (`../measure/redaction.js`'s shared authority) BEFORE
- * length-capping — a boundary-straddling token becomes the fixed `[REDACTED]` marker before the
- * slice, rather than risking the cap slicing a secret in half and leaving an unrecognizable-but-
- * still-partial fragment past the boundary. Every page-controlled string this recorder emits
- * (performance-entry names, rect tag/id/classes, resize target tags, navigation-gap URLs, mutation
- * type names) routes through this one function. */
+/** Preserves page-controlled strings verbatim within the explicit artifact size bound. */
 function sanitizeString(value: unknown, maxLength = MAX_BINDING_STRING_LENGTH): string | undefined {
   if (typeof value !== 'string') return undefined;
-  const redacted = redactSecretSubstrings(value);
-  return redacted.length > maxLength ? redacted.slice(0, maxLength) : redacted;
+  return value.length > maxLength ? value.slice(0, maxLength) : value;
 }
 
 function sanitizeStringArray(value: unknown): string[] | undefined {
@@ -344,8 +347,7 @@ function sanitizeStringArray(value: unknown): string[] | undefined {
   for (const item of value) {
     if (out.length >= MAX_BINDING_ARRAY_LENGTH) break;
     if (typeof item !== 'string') continue;
-    const redacted = redactSecretSubstrings(item);
-    out.push(redacted.length > MAX_BINDING_STRING_LENGTH ? redacted.slice(0, MAX_BINDING_STRING_LENGTH) : redacted);
+    out.push(item.length > MAX_BINDING_STRING_LENGTH ? item.slice(0, MAX_BINDING_STRING_LENGTH) : item);
   }
   return out;
 }
@@ -592,13 +594,14 @@ export class RecorderSession {
     }
 
     if (req.mark) {
-      const safeMark = sanitizeMarkLabel(req.mark);
+      const internalMark = structuralMarkLabel(req.mark);
       const bracket = await withDocumentPerformanceNow(asCDPClient(this.client), () =>
         this.client.send(req.method!, req.params ?? {}, req.timeoutMs ?? 60000),
       );
       this.appendEvent({
         kind: 'input',
-        mark: safeMark,
+        action: req.mark,
+        mark: internalMark,
         method: req.method,
         startPerformanceNow: bracket.startPerformanceNow,
         endPerformanceNow: bracket.endPerformanceNow,
@@ -888,6 +891,7 @@ export class RecorderSession {
       appendNdjsonPrivate(this.rectsPath, {
         frame: frameIndex,
         file: frameName,
+        cssToDevice: cssToDeviceTransform(sample.viewport, framePngDimensions(params.data)),
         screencastTimestamp: params.metadata?.timestamp ?? null,
         screencastTimestampPrecision: 'frame-metadata',
         recordedAtWallClockMs: Date.now(),
@@ -917,8 +921,8 @@ export class RecorderSession {
 
   /**
    * Host-side sanitizer for one `Tracing.dataCollected` batch — whitelists a bounded
-   * per-event shape (`SanitizedTraceEvent`), redacting+capping every string field via the shared
-   * `sanitizeString`/`redactSecretSubstrings` path, and drops every other field on the raw event
+   * per-event shape (`SanitizedTraceEvent`), retaining each selected string verbatim within its
+   * explicit bound, and drops every other field on the raw event
    * (notably `args`, which can carry page URLs/script/frame names) outright. Caps the number of
    * events kept and enforces a total serialized-byte budget, same style as `sanitizeRectSample`;
    * anything dropped/truncated is tallied by reason into `traceDropCounts` (flushed as
@@ -1176,7 +1180,7 @@ export class RecorderSession {
    * method must never hand back that data typed as if it were already safe) alongside this frame's
    * resolved `backendNodeId`s, one per fact in the same order.
    */
-  private async sampleRects(frameIndex: number): Promise<{ facts: unknown; backendNodeIds: Array<number | undefined> }> {
+  private async sampleRects(frameIndex: number): Promise<{ facts: unknown; viewport: unknown; backendNodeIds: Array<number | undefined> }> {
     const evaluation = (await this.client.send('Runtime.evaluate', {
       expression: buildSampleRectsExpression(this.bindingNonce, frameIndex),
       returnByValue: true,
@@ -1185,10 +1189,13 @@ export class RecorderSession {
     if (evaluation.exceptionDetails) {
       throw new Error(`rect sampling failed: ${JSON.stringify(evaluation.exceptionDetails)}`);
     }
-    const facts = evaluation.result.value;
+    const value = evaluation.result.value as { elements?: unknown; viewport?: unknown } | unknown[] | undefined;
+    // Older recording seams returned the raw array; new recordings return the
+    // array plus viewport facts needed for the transform.
+    const facts = Array.isArray(value) ? value : value?.elements;
     const count = Array.isArray(facts) ? facts.length : 0;
     const backendNodeIds = await this.resolveRectIdentity(frameIndex, count);
-    return { facts, backendNodeIds };
+    return { facts, viewport: Array.isArray(value) ? undefined : value?.viewport, backendNodeIds };
   }
 
   /**
@@ -1315,24 +1322,10 @@ export class RecorderSession {
   }
 }
 
-const MAX_MARK_LABEL_LENGTH = 128;
-
-/**
- * Secret-redacts, then length-caps, then character-restricts a `mark` label before it is written
- * to `events.jsonl`. `mark` is supplied by the host-side caller (the recorder-client adapter),
- * not the page, but is still treated as untrusted text here — it flows into artifact/render input
- * downstream. Redaction runs on the FULL string, before truncation and before the charset filter:
- * truncating first could slice a secret-shaped token in half at the length boundary, leaving a
- * fragment that no longer matches the redaction pattern and survives into `events.jsonl`; running
- * redaction first also means a secret-shaped label is never merely reduced to underscores in a
- * shape a human could still recognize — it is replaced outright, same as every other
- * page-controlled string this module emits.
- */
-function sanitizeMarkLabel(mark: string): string {
-  const redacted = redactSecretSubstrings(mark);
-  const trimmed = redacted.length > MAX_MARK_LABEL_LENGTH ? redacted.slice(0, MAX_MARK_LABEL_LENGTH) : redacted;
-  const safe = trimmed.replace(/[^\w:.-]/g, '_');
-  return safe.length > 0 ? safe : 'mark';
+/** A structural-safe implementation mark is deliberately distinct from the
+ * verbatim action identity retained in the adjacent `action` field. */
+function structuralMarkLabel(action: string): string {
+  return `mark-${crypto.createHash('sha256').update(action).digest('hex')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1589,8 +1582,38 @@ function buildSampleRectsExpression(nonce: string, frameIndex: number): string {
     var k = '__captureRecorder_' + ${JSON.stringify(nonce)};
     var host = window[k];
     if (host && host.stashRectElements) host.stashRectElements(${JSON.stringify(frameIndex)}, els);
-    return out;
+    var viewport = window.visualViewport;
+    return {
+      elements: out,
+      viewport: {
+        width: viewport ? viewport.width : window.innerWidth,
+        height: viewport ? viewport.height : window.innerHeight,
+        devicePixelRatio: window.devicePixelRatio,
+      },
+    };
   })()`;
+}
+
+function framePngDimensions(base64: string): { width: number; height: number } | null {
+  try {
+    const header = Buffer.from(base64, 'base64').subarray(0, 24);
+    if (header.length < 24 || header.toString('ascii', 12, 16) !== 'IHDR') return null;
+    return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) };
+  } catch {
+    return null;
+  }
+}
+
+function cssToDeviceTransform(viewport: unknown, raster: { width: number; height: number } | null): FrameCssToDeviceTransform | null {
+  if (!viewport || typeof viewport !== 'object' || !raster) return null;
+  const record = viewport as Record<string, unknown>;
+  const width = record.width;
+  const height = record.height;
+  const devicePixelRatio = record.devicePixelRatio;
+  if (typeof width !== 'number' || !Number.isFinite(width) || width <= 0
+    || typeof height !== 'number' || !Number.isFinite(height) || height <= 0
+    || typeof devicePixelRatio !== 'number' || !Number.isFinite(devicePixelRatio) || devicePixelRatio <= 0) return null;
+  return { scaleX: raster.width / width, scaleY: raster.height / height, devicePixelRatio };
 }
 
 /** Drains this frame's rect-sampler element queue (stashed by `buildSampleRectsExpression`) as a

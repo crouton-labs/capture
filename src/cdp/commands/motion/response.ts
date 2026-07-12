@@ -1,7 +1,6 @@
 import { type ParsedArgs } from '../../types.js';
 import { emitResult, fact, line, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
 import { ArtifactResolutionError } from '../../../output/artifact.js';
-import { sanitizeString } from '../../measure/redaction.js';
 import { loadResponseTimeline, ResponseActionSelectionError, type ResponsePoint } from '../../motion/response.js';
 import { rejectUnsupportedGate } from '../gate-guard.js';
 
@@ -23,7 +22,7 @@ function emitError(parsed: ParsedArgs, status: string, message: string, sections
   const result: RenderableResult = {
     tag: 'error',
     attrs: { command: 'motion response', status },
-    summary: fact`${sanitizeString(message, { max: 500 })}`,
+    summary: fact`${message}`,
     sections,
   };
   emitResult(result, { json: parsed.json });

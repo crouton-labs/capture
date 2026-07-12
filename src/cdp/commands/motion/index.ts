@@ -21,7 +21,8 @@ intervening commands; every other leaf below is a cheap read over the
 finalized recording artifact.
 
 Leaves:
-  rec [url] --do <action> [--duration <ms>]   One-shot: drive one action, record it
+  rec [url] --do <action> [--duration <seconds>]
+                                               One-shot: drive one action, record it
   rec --start                                 Composed: arm the recorder (needs an active session)
   rec --stop                                  Composed: finalize the recorder
 

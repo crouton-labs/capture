@@ -82,9 +82,9 @@ test('motion mask writes a private time-colored PNG and reports region area, dis
     writeBinaryPrivate(path.join(framesDir, 'frame-000001.png'), png(10, 10, { x: 2, y: 2, width: 2, height: 2 }));
     writeBinaryPrivate(path.join(framesDir, 'frame-000002.png'), png(10, 10, { x: 4, y: 2, width: 2, height: 2 }));
     writeNdjsonPrivate(path.join(recDir, 'rects.jsonl'), [
-      { frame: 0, file: 'frame-000000.png', screencastTimestamp: 10, elements: [{ tag: 'button', id: 'send', classes: 'primary', backendNodeId: 7, x: 2, y: 2, width: 2, height: 2 }] },
-      { frame: 1, file: 'frame-000001.png', screencastTimestamp: 10.1, elements: [{ tag: 'button', id: 'send', classes: 'primary', backendNodeId: 7, x: 2, y: 2, width: 2, height: 2 }] },
-      { frame: 2, file: 'frame-000002.png', screencastTimestamp: 10.2, elements: [{ tag: 'button', id: 'send', classes: 'primary', backendNodeId: 7, x: 4, y: 2, width: 2, height: 2 }] },
+      { frame: 0, file: 'frame-000000.png', screencastTimestamp: 10, cssToDevice: { scaleX: 1, scaleY: 1, devicePixelRatio: 1 }, elements: [{ tag: 'button', id: 'send', classes: 'primary', backendNodeId: 7, x: 2, y: 2, width: 2, height: 2 }] },
+      { frame: 1, file: 'frame-000001.png', screencastTimestamp: 10.1, cssToDevice: { scaleX: 1, scaleY: 1, devicePixelRatio: 1 }, elements: [{ tag: 'button', id: 'send', classes: 'primary', backendNodeId: 7, x: 2, y: 2, width: 2, height: 2 }] },
+      { frame: 2, file: 'frame-000002.png', screencastTimestamp: 10.2, cssToDevice: { scaleX: 1, scaleY: 1, devicePixelRatio: 1 }, elements: [{ tag: 'button', id: 'send', classes: 'primary', backendNodeId: 7, x: 4, y: 2, width: 2, height: 2 }] },
     ]);
     writeNdjsonPrivate(path.join(recDir, 'events.jsonl'), []);
 
@@ -107,6 +107,29 @@ test('motion mask writes a private time-colored PNG and reports region area, dis
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
+});
+
+test('motion mask transforms CSS rects into device pixels before attribution and distance', () => {
+  const sessionDir = path.join(CAPTURE_ROOT, `motion-mask-dpr-${process.pid}-${Date.now()}`);
+  const recDir = path.join(sessionDir, 'motion', 'recs', 'rec-dpr');
+  const framesDir = path.join(recDir, 'frames');
+  try {
+    ensurePrivateDir(framesDir);
+    writeJsonPrivate(path.join(recDir, 'meta.json'), { id: 'rec-dpr', action: 'click:#move', frames: 3, durationMs: 200, state: 'finalized' });
+    writeBinaryPrivate(path.join(framesDir, 'frame-000000.png'), png(20, 20));
+    writeBinaryPrivate(path.join(framesDir, 'frame-000001.png'), png(20, 20, { x: 10, y: 4, width: 4, height: 4 }));
+    writeBinaryPrivate(path.join(framesDir, 'frame-000002.png'), png(20, 20, { x: 14, y: 4, width: 4, height: 4 }));
+    const cssToDevice = { scaleX: 2, scaleY: 2, devicePixelRatio: 2 };
+    writeNdjsonPrivate(path.join(recDir, 'rects.jsonl'), [
+      { frame: 0, file: 'frame-000000.png', cssToDevice, elements: [{ tag: 'button', id: 'move', backendNodeId: 8, x: 5, y: 2, width: 2, height: 2 }] },
+      { frame: 1, file: 'frame-000001.png', cssToDevice, elements: [{ tag: 'button', id: 'move', backendNodeId: 8, x: 5, y: 2, width: 2, height: 2 }] },
+      { frame: 2, file: 'frame-000002.png', cssToDevice, elements: [{ tag: 'button', id: 'move', backendNodeId: 8, x: 7, y: 2, width: 2, height: 2 }] },
+    ]);
+    writeNdjsonPrivate(path.join(recDir, 'events.jsonl'), []);
+    const region = createMotionMask(resolveRecRef(recDir)).regions[0];
+    assert.equal(region.element?.backendNodeId, 8);
+    assert.equal(region.distancePx, 4, 'rect distance is measured in device pixels, not unscaled CSS pixels');
+  } finally { fs.rmSync(sessionDir, { recursive: true, force: true }); }
 });
 
 test('motion mask bounds large prose reports while --json retains every region row', async () => {
