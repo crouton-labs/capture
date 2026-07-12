@@ -72,7 +72,7 @@ export async function startBridge(
     if (Date.now() - start > timeoutMs) {
       throw new Error(
         `CDP bridge (pid ${pid}) did not come up within ${timeoutMs}ms. ` +
-          `Check that a browser is reachable on port ${port} (capture detect).`,
+          `Check that a browser is reachable on port ${port} (capture tab list --port ${port}).`,
       );
     }
     await new Promise((r) => setTimeout(r, 50));

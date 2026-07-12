@@ -99,7 +99,7 @@ export async function runBridgeServer(socketPath: string, port?: number): Promis
     // requiring the full 32-char target id here.
     const tab = await findTabById(resolvedPort, targetId);
     if (!tab) {
-      throw new Error(`No target found for "${targetId}" on port ${resolvedPort}. Run "capture list" to see available tabs.`);
+      throw new Error(`No target found for "${targetId}" on port ${resolvedPort}. Run "capture tab list" to see available tabs.`);
     }
     const result = (await client.send('Target.attachToTarget', { targetId: tab.id, flatten: true })) as {
       sessionId: string;

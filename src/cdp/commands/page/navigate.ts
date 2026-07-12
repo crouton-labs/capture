@@ -172,7 +172,7 @@ function isRecorderRoutable(session: ActiveSessionState, parsed: ParsedArgs): bo
 export async function tryNavigateViaActiveRecorder(
   parsed: ParsedArgs,
   url: string,
-): Promise<{ entryCount: number; harPath: undefined; tabUrl: string; timedOut: boolean } | null> {
+): Promise<{ entryCount: number; tabUrl: string; timedOut: boolean } | null> {
   const session = getActiveSession();
   if (!session || !isRecorderRoutable(session, parsed)) return null;
 
@@ -211,7 +211,7 @@ export async function tryNavigateViaActiveRecorder(
     console.error('Navigate timeout (60s)');
   }
 
-  return { entryCount: 0, harPath: undefined, tabUrl: url, timedOut };
+  return { entryCount: 0, tabUrl: url, timedOut };
 }
 
 interface NavigatedFacts {
@@ -293,7 +293,6 @@ export async function cmdPageNavigate(parsed: ParsedArgs, _args: string[]): Prom
       port: parsed.port,
       url,
       targetId: parsed.target,
-      harOutPath: undefined,
       settle,
     });
 

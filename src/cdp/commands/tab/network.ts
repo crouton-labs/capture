@@ -5,6 +5,7 @@
  * offline (restoring connectivity) is the block's `follow_up`.
  */
 import { withConnection } from '../../connection.js';
+import { getActiveSession, setActiveNetworkOffline } from '../../../session-context.js';
 import { type ParsedArgs } from '../../types.js';
 import {
   emitResult,
@@ -62,7 +63,7 @@ export async function cmdTabNetwork(parsed: ParsedArgs, _args: string[]): Promis
   try {
     await withConnection(
       parsed,
-      async (client) => {
+      async (client, tab) => {
         await client.send('Network.enable');
         await client.send('Network.emulateNetworkConditions', {
           offline,
@@ -70,6 +71,9 @@ export async function cmdTabNetwork(parsed: ParsedArgs, _args: string[]): Promis
           downloadThroughput: offline ? 0 : -1,
           uploadThroughput: offline ? 0 : -1,
         });
+        // Only a command aimed at the active session's own tab changes the
+        // state later independent command connections must inherit.
+        if (getActiveSession()?.targetId === tab.id) setActiveNetworkOffline(offline);
       },
       { settle: 0 },
     );

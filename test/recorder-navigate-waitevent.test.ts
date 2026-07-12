@@ -234,7 +234,6 @@ test('F2: tryNavigateViaActiveRecorder bounces through about:blank and re-naviga
 
     assert.deepEqual(routed, {
       entryCount: 0,
-      harPath: undefined,
       tabUrl: 'https://example.com/dest#frag',
       timedOut: false,
     });
@@ -288,7 +287,6 @@ test('F2: tryNavigateViaActiveRecorder tolerates a failed/timed-out load-event w
       routed,
       {
         entryCount: 0,
-        harPath: undefined,
         tabUrl: 'https://example.com/dest#frag',
         timedOut: false,
       },
@@ -372,7 +370,6 @@ test('F2 (Major fix): tryNavigateViaActiveRecorder awaits Page.loadEventFired bu
 
     assert.deepEqual(routed, {
       entryCount: 0,
-      harPath: undefined,
       tabUrl: 'https://example.com/dest',
       timedOut: false,
     });
@@ -418,7 +415,7 @@ test('F2 (Major fix): tryNavigateViaActiveRecorder tolerates a failed/timed-out 
 
     assert.deepEqual(
       routed,
-      { entryCount: 0, harPath: undefined, tabUrl: 'https://example.com/dest', timedOut: false },
+      { entryCount: 0, tabUrl: 'https://example.com/dest', timedOut: false },
       'a failed load-event wait must not fail the whole navigate — same tolerance as the non-routed path\'s own 10s inner timer',
     );
 

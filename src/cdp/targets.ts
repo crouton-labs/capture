@@ -25,7 +25,7 @@ export async function getBrowserClient(
     throw new Error(
       `Port ${port} answers CDP's /json/version but has no browser-level WebSocket debugger URL — ` +
         `it's not a real browser (e.g. a Node/workerd inspector), so it can't host tabs. ` +
-        `Run "capture detect" to find a real browser endpoint, or pass --port explicitly.`,
+        `Run "capture tab list" to find a real browser endpoint, or pass --port explicitly.`,
     );
   }
   const client = new CDPClient(version.webSocketDebuggerUrl);

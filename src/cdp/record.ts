@@ -9,77 +9,14 @@ import {
   type CDPTarget,
 } from './targets.js';
 import { HARRecorder } from './har-recorder.js';
-import { writeHarAndPrintSummary } from './har-output.js';
 import { type HAREntry } from '../har-manager.js';
-
-export interface RecordOptions {
-  port?: number;
-  targetId?: string;
-  duration?: number;
-  harOutPath?: string;
-}
-
-export interface RecordResult {
-  harPath: string | undefined;
-  entryCount: number;
-  har: { log: { entries: HAREntry[] } };
-}
-
-export async function recordTraffic(
-  options: RecordOptions,
-): Promise<RecordResult> {
-  let port = options.port ?? 0;
-  const duration = options.duration ?? 10;
-
-  if (!options.targetId) {
-    throw new Error('Use --target <tabId> to target a tab. Run "capture list" to see available tabs.');
-  }
-
-  const resolved = await findTabByIdAcrossEndpoints(options.targetId, options.port);
-  const tab = resolved?.tab ?? null;
-  if (resolved) {
-    port = resolved.port;
-  }
-  if (!tab) {
-    throw new Error(
-      `No tab found for target "${options.targetId}". Run "capture list" to see available tabs.`,
-    );
-  }
-
-  if (!tab.webSocketDebuggerUrl) {
-    throw new Error('Tab has no WebSocket debugger URL');
-  }
-
-  const client = new CDPClient(tab.webSocketDebuggerUrl);
-  await client.waitReady();
-
-  console.error(
-    `Using target ${tab.id.slice(0, 8)} on port ${port} (${tab.url})`,
-  );
-
-  const recorder = new HARRecorder(client);
-  await recorder.start();
-
-  console.error(
-    `Recording traffic on target ${tab.id.slice(0, 8)} on port ${port} (${tab.url}) for ${duration}s... (click around in the browser)`,
-  );
-
-  await new Promise((r) => setTimeout(r, duration * 1000));
-
-  const har = await recorder.finish();
-  const harPath = writeHarAndPrintSummary(har, options.harOutPath);
-
-  client.close();
-
-  return { harPath, entryCount: har.log.entries.length, har };
-}
 
 /**
  * Navigates `client`'s tab to `url`, bouncing through `about:blank` and
  * re-navigating when Chrome reports a same-document (fragment-only) nav —
  * shared by `navigateAndRecord()` (below) and F2's recorder-routed path
- * (`../commands/traffic.ts`'s `cmdNavigate`), which calls this same helper
- * over a `RecorderHeldClient` instead of a fresh `CDPClient`.
+ * (`../commands/page/navigate.ts`'s `cmdPageNavigate`), which calls this
+ * same helper over a `RecorderHeldClient` instead of a fresh `CDPClient`.
  *
  * A fragment-only change against the current document is a same-document
  * navigation: Chrome updates location.hash but does NOT reload the page, so
@@ -109,7 +46,7 @@ export interface WaitAndSettleResult {
 /**
  * Shared wait/settle/overall-timeout semantics for a post-navigate pause —
  * factored out of `navigateAndRecord()` (below) so F2's recorder-routed path
- * (`../commands/traffic.ts`'s `tryNavigateViaActiveRecorder()`) can honor the
+ * (`../commands/page/navigate.ts`'s `tryNavigateViaActiveRecorder()`) can honor the
  * SAME `--settle`/timeout behavior as the non-routed path instead of
  * returning immediately after `Page.navigate` resolves. `waitForLoadEvent`
  * is caller-supplied so each path can wait on its own transport (a plain
@@ -172,12 +109,10 @@ export interface NavigateAndRecordOptions {
   port?: number;
   url: string;
   targetId?: string;
-  harOutPath?: string;
   settle?: number;
 }
 
 export interface NavigateAndRecordResult {
-  harPath: string | undefined;
   entryCount: number;
   har: { log: { entries: HAREntry[] } };
   tab: CDPTarget;
@@ -278,14 +213,12 @@ export async function navigateAndRecord(
     har = recorder.finishPartial();
   }
 
-  const harPath = writeHarAndPrintSummary(har, options.harOutPath);
-
   client.close();
 
   // Refresh target info
   const updatedTab = (await findTab(port, options.url)) ?? tab;
 
-  return { harPath, entryCount: har.log.entries.length, har, tab: updatedTab, timedOut };
+  return { entryCount: har.log.entries.length, har, tab: updatedTab, timedOut };
 }
 
 export async function navigateAndWait(

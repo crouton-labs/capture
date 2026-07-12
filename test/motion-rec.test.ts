@@ -8,7 +8,7 @@ import { closeChrome, spawnHeadlessChrome } from './fixtures/chrome.js';
 import { CAPTURE_ROOT, ensurePrivateDir, writeJsonPrivate, writeNdjsonPrivate, writeBinaryPrivate } from '../src/session/artifacts.js';
 import { setActiveSession, clearActiveSession } from '../src/session-context.js';
 import { startComposedRecorder } from '../src/cdp/motion/recorder.js';
-import { cmdType } from '../src/cdp/commands/ui.js';
+import { cmdPageType } from '../src/cdp/commands/page/type.js';
 
 async function spawnTestRecorderBridge(socketPath: string, port: number, targetId: string, recDir: string): Promise<{ socketPath: string; pid: number }> {
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/capture.ts', '__bridge-serve', '--socket', socketPath, '--port', String(port), '--target', targetId, 'recorder', recDir], { cwd: process.cwd(), detached: true, stdio: 'ignore' });
@@ -288,12 +288,12 @@ test('motion rec composed lifecycle records a real Chrome routed type action bet
   });
   try {
     await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], start: true }, []));
-    await cmdType({ command: 'type', positional: ['hello'], into: 'Message', role: 'textbox', port: chrome.port, noScreenshot: true }, []);
+    await cmdPageType({ command: 'page', positional: ['hello'], into: 'ax:Message', port: chrome.port, noScreenshot: true }, []);
     await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], stop: true }, []));
     const recDir = path.join(root, 'motion', 'recs', fs.readdirSync(path.join(root, 'motion', 'recs'))[0]);
     const events = fs.readFileSync(path.join(recDir, 'events.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    assert.equal(events.filter((event) => event.action === 'type:Message').length, 1, 'the routed command preserves one coherent original action identity');
-    assert.match(events.find((event) => event.action === 'type:Message').mark, /^mark-[a-f0-9]{64}$/, 'the internal structural mark is distinct');
+    assert.equal(events.filter((event) => event.action === 'type:ax:Message').length, 1, 'the routed command preserves one coherent original action identity');
+    assert.match(events.find((event) => event.action === 'type:ax:Message').mark, /^mark-[a-f0-9]{64}$/, 'the internal structural mark is distinct');
   } finally {
     restore();
     clearActiveSession();

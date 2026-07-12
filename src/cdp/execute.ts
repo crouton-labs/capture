@@ -28,14 +28,14 @@ export async function executeInBrowser(
   options: ExecuteOptions = {},
 ): Promise<ExecuteResult> {
   if (!options.targetId) {
-    throw new Error('Use --target <tabId> to target a tab. Run "capture list" to see available tabs.');
+    throw new Error('Use --target <tabId> to target a tab. Run "capture tab list" to see available tabs.');
   }
 
   const resolved = await findTabByIdAcrossEndpoints(options.targetId, options.port);
   const tab = resolved?.tab ?? null;
   if (!tab) {
     throw new Error(
-      `No tab found for target "${options.targetId}". Run "capture list" to see available tabs.`,
+      `No tab found for target "${options.targetId}". Run "capture tab list" to see available tabs.`,
     );
   }
 

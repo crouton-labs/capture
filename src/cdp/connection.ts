@@ -125,7 +125,7 @@ export async function connectForCommand(
   }
 
   if (!parsed.target && !parsed.url) {
-    throw new Error('Use --target <tabId> or --url <pattern> to target a tab. Run "capture list" to see available tabs.');
+    throw new Error('Use --target <tabId> or --url <pattern> to target a tab. Run "capture tab list" to see available tabs.');
   }
 
   const resolved = parsed.target
@@ -136,7 +136,7 @@ export async function connectForCommand(
   if (!tab) {
     const query = parsed.target ?? parsed.url;
     throw new Error(
-      `No tab found for ${parsed.target ? 'target' : 'URL pattern'} "${query}". Run "capture list" to see available tabs.`,
+      `No tab found for ${parsed.target ? 'target' : 'URL pattern'} "${query}". Run "capture tab list" to see available tabs.`,
     );
   }
 
