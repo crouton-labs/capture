@@ -1,13 +1,10 @@
 /**
- * vault/bundle — the import-driven exec engine.
+ * vault/bundle — the import-driven `page exec` engine.
  *
- * Ports the bundling mechanism of northlight's
- * `apps/core/src/tool-registry/lib/bundle-agent-code.ts`, DROPPING the telemetry
- * envelope (no `__vallumStartCall`, no `__snapshot`, no `borgEnabled`). When
- * `capture exec` is handed code containing leading static imports, this turns it
- * into a single self-contained IIFE: the user's `libs/<name>` imports are
- * resolved to the forked vault source, esbuild bundles the whole tree on the
- * fly, and the result is a string the exec path evals over CDP.
+ * When `capture page exec` receives code containing leading static imports,
+ * this turns it into a single self-contained IIFE: the user's `libs/<name>`
+ * imports are resolved to the forked vault source, esbuild bundles the whole
+ * tree on the fly, and the result is a string the exec path evaluates over CDP.
  *
  * No top-level `esbuild` import — it is loaded lazily via `loadEsbuild()` so the
  * published package (no esbuild) never crashes at startup.

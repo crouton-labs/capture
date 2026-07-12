@@ -87,7 +87,7 @@ export interface ParsedArgs {
   from?: string;
   /** `sweep --to <val>` — raw string; axis units vary (px/dpr/zoom). */
   to?: string;
-  /** `sweep --viewport-height <val>` — raw string, distinct from `--height`. */
+  /** `sweep --viewport-height <val>` — raw string for the viewport-height sweep axis. */
   viewportHeight?: string;
   /** `motion rec --stop --rec-id <id>` — explicit recording id override. */
   recId?: string;

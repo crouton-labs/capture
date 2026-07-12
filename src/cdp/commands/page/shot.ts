@@ -7,8 +7,8 @@
  * only when explicitly asked (`--viewport <WxH>` / `--full-page`), applied
  * as a transient `Emulation.setDeviceMetricsOverride` (+ ~150ms re-layout)
  * and cleared after — two page-observable resizes, declared as the leaf's
- * effect in `-h` (I-1/I-2 posture). The viewport presets and `--height` are
- * gone: `WxH` is the one viewport grammar (D10).
+ * effect in `-h` (I-1/I-2 posture). Explicit viewport emulation uses the
+ * single `WxH` grammar (D10).
  *
  * Destination: `--out <path>` wins; otherwise the active session's `shots/`
  * sequence; sessionless with no `--out` → a fresh `oneshot-{id}/page` dir

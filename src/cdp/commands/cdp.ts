@@ -311,8 +311,9 @@ export async function runPageScope(
       // (`.send()` then `.waitEvent()`) risks the action firing the event
       // before the wait-only request even reaches the bridge. This command has
       // no fragment-nav-style multi-call logic and already throws on an
-      // event-wait timeout, so bundling here is a pure simplification with no
-      // tradeoff (contrast `../commands/traffic.ts`'s `navigateAtomicWithFragmentFix`).
+      // event-wait timeout, so one combined request preserves the complete
+      // result contract (contrast `page/navigate.ts`'s multi-call
+      // `navigateAtomicWithFragmentFix`).
       if (method) {
         const combined = await client.dispatch(method, params ?? {}, parsed.waitEvent, timeoutMs);
         result = combined.result;

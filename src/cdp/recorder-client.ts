@@ -104,13 +104,11 @@ export async function requestRecStop(socketPath: string): Promise<RecStopRespons
  * `Input.dispatch*` method (mouse/key/touch) is covered by the prefix;
  * `Input.insertText` is NOT a `dispatch*` method but IS the actual mutator
  * `../../interact.ts`'s `typeText()`/`focusAndType()` issue for `capture
- * type` (see `Input.insertText` at `../../interact.ts`), so it's listed
- * explicitly — without it, a routed `type` lands no input landmark in
- * `events.jsonl` and `motion response` cannot anchor it. `Page.navigate` is
- * F2's action landmark: an intervening `capture navigate` mid-recording
- * (`../record.ts`'s `navigateWithFragmentFix`, routed via `../commands/
- * traffic.ts`'s `cmdNavigate`) is a landmark-worthy action same as a click
- * or type, not incidental navigation resolution. */
+ * page type`, so it is listed explicitly: routed typing needs one input
+ * landmark in `events.jsonl` for `motion response` to anchor. `Page.navigate`
+ * is likewise the action landmark for `capture page navigate`; the
+ * recorder-routed path in `../commands/page/navigate.ts` sends it through
+ * this client just like click and type. */
 const MARKABLE_EXACT_METHODS = new Set(['Input.insertText', 'Page.navigate']);
 
 function isMarkableActionMethod(method: string, params: Record<string, unknown>): boolean {
@@ -129,8 +127,8 @@ export interface RecorderHeldClientOptions {
   socketPath: string;
   /** Label attached to every marked (`Input.dispatch*`) call from this
    * client instance — one per routed capture command invocation, e.g.
-   * `click:Send` or `type:another message`, matching the design's
-   * "labeled input landmark" shape in `events.jsonl`. */
+   * `click:Send` or `type:ax:Message`, matching the labeled input landmark
+   * shape in `events.jsonl` without recording typed content. */
   actionLabel: string;
   timeoutMs?: number;
 }
@@ -221,7 +219,7 @@ export class RecorderHeldClient {
    * needs to dispatch a method and observe an event it may itself trigger
    * should call this directly instead.
    *
-   * NOTE (`../commands/traffic.ts`'s `navigateAtomicWithFragmentFix`): if
+   * NOTE (`../commands/page/navigate.ts`'s `navigateAtomicWithFragmentFix`): if
    * `waitEvent` is set and the bridge's wait rejects (times out), the
    * bridge's `handleRecorderRequest` catch turns the ENTIRE response into
    * `ok:false` — `result` (e.g. `Page.navigate`'s `loaderId`) is silently

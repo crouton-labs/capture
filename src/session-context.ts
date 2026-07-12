@@ -1,6 +1,6 @@
 /**
- * Session Context — persists active session state so CDP commands
- * can auto-fill --target, --har, and --out without manual threading.
+ * Session Context — persists active session state so CDP commands can target
+ * the session tab and write session-owned artifacts without manual threading.
  *
  * State is written to /tmp/capture-sessions/.active-<scope> (JSON), where
  * <scope> isolates concurrent callers (see activeScopeKey() below) so one
