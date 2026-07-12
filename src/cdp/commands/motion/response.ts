@@ -2,16 +2,15 @@ import { type ParsedArgs } from '../../types.js';
 import { emitResult, fact, line, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
 import { ArtifactResolutionError } from '../../../output/artifact.js';
 import { loadResponseTimeline, ResponseActionSelectionError, type ResponsePoint } from '../../motion/response.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
 
-const USAGE = `Usage: capture motion response <rec> [--action <action>] [--occurrence <n>]
+const USAGE = `capture motion response <rec> — input-to-settled response timeline over a finalized recording
 
-Input-to-settled response timeline over a finalized recording:
-input -> mutation -> layout -> paint -> network -> settle.
-
-Options:
-  --action <action>    Narrow to one recorded action
-  --occurrence <n>     Select the nth (1-based) occurrence of a repeated action label`;
+input:
+  <rec>                recording id in the active session or an absolute recording path (required; the recording must be finalized)
+  --action <action>    narrow to one recorded action
+  --occurrence <n>     select the nth (1-based) occurrence of a repeated action label
+output: <response …> — the input → mutation → layout → paint → network → settle timeline for the selected action; --json mirrors
+effects: read-only — reads the finalized recording artifact, never drives the browser`;
 
 function formatPoint(point: ResponsePoint): FactLine {
   const uncertainty = point.precision === 'frame' ? text` (±1 frame)` : text``;
@@ -34,7 +33,6 @@ export async function cmdMotionResponse(parsed: ParsedArgs, _args: string[]): Pr
     console.log(USAGE);
     return;
   }
-  if (rejectUnsupportedGate(parsed, 'motion response')) return;
   if (parsed.positional.length !== 1) {
     return emitError(parsed, 'invalid_input', 'motion response requires exactly one recording id or absolute recording path. Create one with `capture motion rec`.');
   }

@@ -8,7 +8,6 @@
  * branch.
  */
 import { type ParsedArgs } from '../../types.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
 import { cmdMeasureSnap } from './snap.js';
 import { cmdMeasureCheck } from './check.js';
 import { cmdMeasureDiff } from './diff.js';
@@ -23,7 +22,7 @@ import { cmdMeasureMapAx } from './map-ax.js';
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="measure">
 static facts over a settled snapshot — \`snap\` writes the substrate, every other leaf is a read-only query over it
-use when measuring layout/content/targetability facts, diffing snapshots, or reading one facet (focus, scroll, layers) of the substrate
+use when measuring layout/content/targetability facts, diffing snapshots, or reading one facet (focus, scroll, layers, ax) of the substrate
   snap · check · diff · census · explain · sweep · map — \`capture measure -h\`
 </command>`;
 
@@ -31,49 +30,31 @@ export const MEASURE_USAGE = `capture measure — enriched snapshot substrate + 
 
 \`snap\` drives the page (or a base snapshot) and writes one settled artifact
 directory; every other leaf below is a cheap read over that artifact and
-never re-drives the browser unless it explicitly accepts a URL target.
+never re-drives the browser unless its target is a URL (which snaps first).
+Every leaf defaults to rendered prose; --json mirrors the same result.
+Findings exit 0 — a report, not a failure.
+\`--gate\` (exit 2 on findings/changes) is accepted only by check and diff.
 
-Leaves:
-  snap [url|snap]                          Drive + write a settled snapshot substrate
-    [--freeze-animations] [--settle-timeout <ms>] [--capture-unsettled]
-    [--pixels] [--state <state[:selector]>]...
+<subcommand name="snap" args="[url|snap] [--freeze-animations] [--settle-timeout <ms>] [--capture-unsettled] [--pixels] [--state <state[:selector]>]... [--viewport <WxH>]..." whenToUse="drive + write the settled snapshot substrate every other leaf reads"/>
+<subcommand name="check" args="[url|snap] [--for <checks>] [--gate]" whenToUse="read threshold/fact measurements from one snapshot"/>
+<subcommand name="diff" args="--before <snap> --after <snap> [--pixels] [--full] [--gate]" whenToUse="structured before/after delta between two snapshots"/>
+<subcommand name="census" args="[--snap <id>]... [--url <url>]... [--set-file <path>] --axis <axis>" whenToUse="value distributions across one or more snapshots"/>
+<subcommand name="explain" args="<snap> --selector <sel> [--size] [--text] [--form]" whenToUse="per-element cascade/stacking/clipping/size/text/form explanation"/>
+<subcommand name="sweep" args="[url] --axis <axis> [--from <val>] [--to <val>] [--viewport-height <val>]" whenToUse="responsive/environment sampling across an axis"/>
+<subcommand name="map" args="focus|scroll|layers|ax [url|snap]" whenToUse="read one facet of a snapshot's substrate — capture measure map -h"/>
 
-  check [url|snap] [--for <checks>] [--viewport <WxH>]... [--gate]
-                                            Threshold/fact checks over a snapshot
-
-  diff --before <snap> --after <snap> [--pixels] [--full] [--gate]
-                                            Structured before/after snapshot diff
-
-  census [--snap <id>]... [--url <url>]... [--set-file <path>] --axis <axis>
-                                            Value distributions across one or more snapshots
-                                            (--snap/--url repeatable)
-
-  explain <snap> --selector <sel> [--size] [--text] [--form]
-                                            Per-element cascade/stacking/clipping/size/text/form explanation
-
-  sweep [url] --axis <axis> [--from <val>] [--to <val>] [--viewport-height <val>]
-                                            Responsive/environment sampling
-
-  map focus|scroll|layers|ax [url|snap]    Read one facet of a snapshot's substrate
-                                            (see \`capture measure map --help\`)
-
-Every leaf defaults to rendered prose; --json mirrors the same result as JSON.
-Exit codes: 0 by default — findings are a report, not a failure.
---gate exits 2 on findings/changes; only \`check\` and \`diff\` accept it.
-
-capture measure <leaf> --help    Per-leaf usage`;
+capture measure <leaf> -h    Per-leaf usage`;
 
 export const MEASURE_MAP_USAGE = `capture measure map — read one facet of a snapshot's substrate (no browser re-drive).
 
-Leaves:
-  focus  [url|snap]      Keyboard traversal order (focus.json)
-  scroll [url|snap]      Scroll-container topology (scroll.json)
-  layers [url|snap]      Paint/compositor layer map (layers.json)
-  ax     [url|snap]      AX-tree ↔ layout map (ax.json + geometry.json)
-
 A URL target first creates a snap; a snap target reads its existing artifact.
 
-capture measure map <leaf> --help    Per-leaf usage`;
+<subcommand name="focus" args="[url|snap]" whenToUse="keyboard traversal order (focus.json)"/>
+<subcommand name="scroll" args="[url|snap]" whenToUse="scroll-container topology (scroll.json)"/>
+<subcommand name="layers" args="[url|snap]" whenToUse="paint/compositor layer map (layers.json)"/>
+<subcommand name="ax" args="[url|snap]" whenToUse="AX-tree ↔ layout map (ax.json + geometry.json)"/>
+
+capture measure map <leaf> -h    Per-leaf usage`;
 
 export async function measureMain(parsed: ParsedArgs, args: string[]): Promise<void> {
   const leaf = parsed.positional[0];
@@ -95,7 +76,6 @@ export async function measureMain(parsed: ParsedArgs, args: string[]): Promise<v
     case 'map':
       return measureMapMain(rest, args);
     case undefined:
-      if (rejectUnsupportedGate(parsed, 'measure')) return;
       console.log(MEASURE_USAGE);
       return;
     default:
@@ -118,7 +98,6 @@ async function measureMapMain(parsed: ParsedArgs, args: string[]): Promise<void>
     case 'ax':
       return cmdMeasureMapAx(rest, args);
     case undefined:
-      if (rejectUnsupportedGate(parsed, 'measure map')) return;
       console.log(MEASURE_MAP_USAGE);
       return;
     default:

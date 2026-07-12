@@ -8,7 +8,6 @@ import { captureSnapshotSubstrate } from '../../measure/snapshot.js';
 import { createOneshotSession } from '../../../session/commands.js';
 import { getActiveSession } from '../../../session-context.js';
 import { emitResult, fact, line, lineList, renderResult, text, type FactLine, type RenderableResult } from '../../../output/render.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
 import {
   SWEEP_AXES,
   analyzeSweepSamples,
@@ -27,20 +26,16 @@ import {
   writeSweepRecoveryArtifact,
 } from '../../measure/sweep.js';
 
-const USAGE = `Usage: capture measure sweep [url] --axis <width|dpr|zoom|color-scheme|reduced-motion> [--from <val>] [--to <val>] [--viewport-height <val>]
+const USAGE = `capture measure sweep [url] --axis <axis> — responsive/environment sampling with recursive bracketing of observed state changes
 
-Responsive/environment sampling: applies CDP Emulation settings, captures the
-settled snapshot substrate at sampled points, and recursively brackets observed
-state changes across numeric axes.
-
-Options:
-  --axis <axis>             width|dpr|zoom|color-scheme|reduced-motion
-  --from <val>              Numeric range start; color-scheme/reduced-motion value
-  --to <val>                Numeric range end; color-scheme/reduced-motion value
-  --viewport-height <val>   Fixed viewport height for width/dpr sweeps
-
-A URL outside a session writes snapshots and sweep.json under one private
-one-shot measure directory. Each sampled snapshot path is printed in the result.`;
+input:
+  [url]                     page to sweep; outside a session, snapshots and sweep.json are written under one private one-shot measure directory
+  --axis <axis>             width|dpr|zoom|color-scheme|reduced-motion (required)
+  --from <val>              numeric range start, or a color-scheme/reduced-motion value
+  --to <val>                numeric range end, or a color-scheme/reduced-motion value
+  --viewport-height <val>   fixed viewport height for width/dpr sweeps
+output: <sweep axis=… samples=… transitions=…> — observed state facts per sampled point, each sampled snapshot path included; --json mirrors
+effects: drives the page repeatedly under CDP Emulation settings; writes one snapshot substrate per sampled point plus sweep.json`;
 
 const SAMPLE_LIMIT = 96;
 
@@ -134,7 +129,6 @@ export async function runMeasureSweep(parsed: ParsedArgs, _args: string[], overr
     console.log(USAGE);
     return;
   }
-  if (rejectUnsupportedGate(parsed, 'measure sweep')) return;
   if (parsed.positional.length > 1) {
     dependencies.emitResult({ tag: 'error', attrs: { command: 'measure sweep', status: 'invalid_input' }, summary: text`Measure sweep accepts at most one positional URL.` }, { json: parsed.json });
     process.exitCode = 1;

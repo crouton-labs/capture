@@ -7,7 +7,6 @@
  * command does.
  */
 import { type ParsedArgs } from '../../types.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
 import { cmdMotionRec } from './rec.js';
 import { cmdMotionMask } from './mask.js';
 import { cmdMotionTimeline } from './timeline.js';
@@ -25,28 +24,17 @@ export const MOTION_USAGE = `capture motion — recorder lifecycle + read-only q
 
 \`rec\` drives (and records) the browser, one-shot or composed across
 intervening commands; every other leaf below is a cheap read over the
-finalized recording artifact.
+finalized recording artifact. Every leaf defaults to rendered prose; --json
+mirrors the same result. Findings exit 0 — a report, not a failure;
+input/precondition errors exit 1. No leaf accepts --gate.
 
-Leaves:
-  rec [url] --do <action> [--duration <seconds>]
-                                               One-shot: drive one action, record it
-  rec --start                                 Composed: arm the recorder (needs an active session)
-  rec --stop                                  Composed: finalize the recorder
+<subcommand name="rec" args="[url] --do <action> [--duration <ms>] | --start | --stop" whenToUse="record an interaction — one-shot action, or composed across commands with --start/--stop (needs an active session)"/>
+<subcommand name="mask" args="<rec> [--limit <N>]" whenToUse="motion-diff composite image + per-region facts"/>
+<subcommand name="timeline" args="<rec> --element <sel> [--prop <prop>]" whenToUse="per-frame geometry/scroll/property timeline for one element"/>
+<subcommand name="jank" args="<rec>" whenToUse="dropped-frame/long-task/layout-shift facts"/>
+<subcommand name="response" args="<rec> [--action <action>] [--occurrence <n>]" whenToUse="input-to-settled response timeline"/>
 
-  mask <rec> [--limit <N>]                    Motion-diff composite image + per-region facts
-  timeline <rec> --element <sel> [--prop <prop>]
-                                               Per-frame geometry/scroll/property timeline
-  jank <rec>                                  Dropped-frame/long-task/layout-shift facts
-  response <rec> [--action <action>]          Input-to-settled response timeline
-
-Every leaf defaults to rendered prose; --json mirrors the same result as JSON.
-\`mask\` is the one exception: default prose caps region rows (\`--limit\`, default
-20) while \`--json\` always carries every region.
-Exit codes: findings exit 0 — a report, not a failure. Input/precondition
-errors — a bad or missing recording target, an unfinalized recording, an
-unusable artifact — exit 1. No leaf accepts --gate.
-
-capture motion <leaf> --help    Per-leaf usage`;
+capture motion <leaf> -h    Per-leaf usage`;
 
 export async function motionMain(parsed: ParsedArgs, args: string[]): Promise<void> {
   const leaf = parsed.positional[0];
@@ -64,7 +52,6 @@ export async function motionMain(parsed: ParsedArgs, args: string[]): Promise<vo
     case 'response':
       return cmdMotionResponse(rest, args);
     case undefined:
-      if (rejectUnsupportedGate(parsed, 'motion')) return;
       console.log(MOTION_USAGE);
       return;
     default:

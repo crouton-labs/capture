@@ -3,17 +3,13 @@ import { captureMeasureSnap } from './snap.js';
 import { buildMeasureMapLayersResult } from '../../measure/map-layers.js';
 import { resolveSnapRef } from '../../../output/artifact.js';
 import { emitResult, fact, text, type RenderableResult } from '../../../output/render.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
 
-const USAGE = `Usage: capture measure map layers [url|snap]
+const USAGE = `capture measure map layers [url|snap] — paint/compositor facts recorded in a snapshot's layers.json
 
-Render paint/compositor facts recorded in a snapshot's layers.json: layer
-bounds, compositing reasons, DOMSnapshot paint order, per-node membership,
-and available source provenance for layer-affecting declarations. A URL target
-creates a snapshot first.
-
-The command reads existing snapshot artifacts and does not re-drive the page
-unless its target is a URL.`;
+input:
+  [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id or absolute path is read without re-driving the browser
+output: <layer-map …> — layer bounds, compositing reasons, DOMSnapshot paint order, per-node membership, and available source provenance for layer-affecting declarations; --json mirrors
+effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot first`;
 
 function errorResult(err: unknown): RenderableResult {
   const detail = err instanceof Error ? err.message : String(err);
@@ -30,7 +26,6 @@ export async function cmdMeasureMapLayers(parsed: ParsedArgs, _args: string[]): 
     console.log(USAGE);
     return;
   }
-  if (rejectUnsupportedGate(parsed, 'measure map layers')) return;
   if (parsed.positional.length > 1) {
     emitResult({
       tag: 'error',

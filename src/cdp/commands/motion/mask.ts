@@ -2,27 +2,22 @@ import { type ParsedArgs } from '../../types.js';
 import { createMotionMask } from '../../motion/mask.js';
 import { readMeta, resolveRecRef } from '../../../output/artifact.js';
 import { emitResult, fact, formatArtifactList, line, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
 
 const DEFAULT_REGION_LIMIT = 20;
 
-const USAGE = `Usage: capture motion mask <rec> [--limit <N>]
+const USAGE = `capture motion mask <rec> — motion-diff composite image plus per-region facts over a finalized recording
 
-Motion-diff composite image over a finalized recording, plus per-region
-area, distance, velocity, and element attribution where recorded rects overlap.
-
-<rec> is a recording id in the active session or an absolute recording path.
-
-Options:
-  --limit <N>  Render at most N size-sorted region rows (default: ${DEFAULT_REGION_LIMIT}).
-               --json always contains every region row.`;
+input:
+  <rec>          recording id in the active session or an absolute recording path (required; the recording must be finalized)
+  --limit <N>    render at most N size-sorted region rows (default: ${DEFAULT_REGION_LIMIT}); --json always contains every region row
+output: <motion-mask …> — the composite image path plus per-region area, distance, velocity, and element attribution where recorded rects overlap; frame-derived times carry ±1-frame uncertainty; --json mirrors
+effects: reads the finalized recording artifact, never drives the browser; writes motion-mask.png inside the recording directory`;
 
 export async function cmdMotionMask(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
     console.log(USAGE);
     return;
   }
-  if (rejectUnsupportedGate(parsed, 'motion mask')) return;
   if (parsed.positional.length !== 1) {
     return emitCommandError(parsed, 'invalid_target', 'motion mask requires exactly one recording id or absolute recording path. Create one with `capture motion rec`.');
   }

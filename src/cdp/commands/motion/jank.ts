@@ -2,20 +2,19 @@ import { type ParsedArgs } from '../../types.js';
 import { resolveRecRef } from '../../../output/artifact.js';
 import { emitResult, fact, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
 import { readMotionJank, type ArtifactLossFact, type LayoutShiftFact, type LayoutShiftRectFact, type LongTaskFact } from '../../motion/jank.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
 
-const USAGE = `Usage: capture motion jank <rec>
+const USAGE = `capture motion jank <rec> — dropped-frame, long-task-record, and layout-shift facts over a finalized recording
 
-Dropped-frame, long-task-record, and layout-shift facts over a finalized recording.
-Observer and screencast timing is recorder-relative performance.now(); trace timing
-is recorder-relative only when an explicit trace/performance baseline was retained.`;
+input:
+  <rec>   recording id in the active session or an absolute recording path (required; the recording must be finalized)
+output: <jank …> — dropped-frame, long-task-record, and layout-shift facts; observer and screencast timing is recorder-relative performance.now(), trace timing recorder-relative only when an explicit trace/performance baseline was retained; --json mirrors
+effects: read-only — reads the finalized recording artifact, never drives the browser`;
 
 export async function cmdMotionJank(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
     console.log(USAGE);
     return;
   }
-  if (rejectUnsupportedGate(parsed, 'motion jank')) return;
   if (parsed.positional.length !== 1 || !parsed.positional[0]) {
     return emitCommandError(parsed, 'invalid_target', 'motion jank requires exactly one recording id or absolute recording path.', 'Record one with `capture motion rec <url> --do <action>` .');
   }

@@ -3,18 +3,16 @@ import { resolveSnapRef, ArtifactResolutionError } from '../../../output/artifac
 import { diffSnapshots, type ElementDiff } from '../../measure/diff.js';
 import { emitResult, fact, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
 
-const USAGE = `Usage: capture measure diff --before <snap> --after <snap> [--pixels] [--full] [--gate]
+const USAGE = `capture measure diff — structured before/after diff over two settled snapshots
 
-Structured before/after diff over two settled snapshots: style, geometry, text,
-form, and media deltas, cascade provenance, and geometry movement/size facts.
-No positional target — both snapshots must already exist.
-
-Options:
-  --before <snap>   Earlier snapshot id/path (required)
-  --after <snap>    Later snapshot id/path (required)
-  --pixels          Write and report a full-raster PNG diff
-  --full            Include state-matrix and unchanged per-element records
-  --gate            Exit 2 if a measured delta exists (default: exit 0)`;
+input:
+  --before <snap>   earlier snapshot id or absolute path (required; no positional target — both snapshots must already exist)
+  --after <snap>    later snapshot id or absolute path (required)
+  --pixels          write and report a full-raster PNG diff
+  --full            include state-matrix and unchanged per-element records
+  --gate            exit 2 if a measured delta exists (default: exit 0)
+output: <diff …> — style, geometry, text, form, and media deltas, cascade provenance, and geometry movement/size facts; --json mirrors
+effects: read-only over the two snapshot artifacts; --pixels additionally writes the reported raster-diff PNG`;
 
 function caveatLine(caveats: readonly { regionId: string; selector?: string; reason?: string; snapshot: 'before' | 'after' }[]): FactLine | undefined {
   if (!caveats.length) return undefined;

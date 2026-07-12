@@ -18,30 +18,21 @@ import {
   type FactLine,
   type RenderableResult,
 } from '../../../output/render.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
 
-const USAGE = `Usage: capture motion timeline <rec> --element <sel> [--prop <prop>]
+const USAGE = `capture motion timeline <rec> --element <sel> — per-frame geometry/scroll/property timeline for one element across a finalized recording
 
-Per-frame bounding-box geometry, sampled scroll offsets, and optional sampled
-property values for one element across a finalized recording.
-
-Options:
-  --element <sel>   Element selector to track (required). Supported: a tag, #id,
-                    .class, or their simple combination (e.g. div.toast). Not
-                    supported: descendant/child/sibling combinators, pseudo-classes,
-                    or attribute selectors — the recording retains no DOM tree, so
-                    the selector is matched against sampled bounding boxes only.
-  --prop <prop>     Report one sampled geometry, scroll, or recorded property per frame
-
-The recorder samples bounding boxes, not DOM quads. Frame-derived timestamps
-have ±1-frame uncertainty.`;
+input:
+  <rec>             recording id in the active session or an absolute recording path (required; the recording must be finalized)
+  --element <sel>   element selector to track (required): a tag, #id, .class, or their simple combination; descendant/child/sibling combinators, pseudo-classes, and attribute selectors are not supported — the recording retains no DOM tree, so the selector is matched against sampled bounding boxes only
+  --prop <prop>     report one sampled geometry, scroll, or recorded property per frame
+output: <timeline …> — per-frame bounding-box geometry, sampled scroll offsets, and optional sampled property values; the recorder samples bounding boxes, not DOM quads, and frame-derived timestamps carry ±1-frame uncertainty; --json mirrors
+effects: read-only — reads the finalized recording artifact, never drives the browser`;
 
 export async function cmdMotionTimeline(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
     console.log(USAGE);
     return;
   }
-  if (rejectUnsupportedGate(parsed, 'motion timeline')) return;
 
   const recArg = parsed.positional[0];
   if (!recArg || parsed.positional.length !== 1 || !parsed.element?.trim()) {

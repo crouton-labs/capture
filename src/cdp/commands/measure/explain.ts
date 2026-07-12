@@ -2,20 +2,17 @@ import { type ParsedArgs } from '../../types.js';
 import { explainSnapshot, type ExplainMissingSelector } from '../../measure/explain.js';
 import { ArtifactResolutionError, resolveSnapRef } from '../../../output/artifact.js';
 import { data, emitResult, fact, line, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
 
-const USAGE = `Usage: capture measure explain <snap> --selector <sel> [--size] [--text] [--form]
+const USAGE = `capture measure explain <snap> --selector <sel> — per-element cascade/stacking/clipping explanation over one snapshot
 
-Per-element cascade/stacking/clipping explanation over one snapshot, plus
-optional detail sections.
-
-Options:
-  --selector <sel>   Element selector (required); CSS, backend:<id>, axid:<id>, ax:<name>, or text:<text>
-  --size             Include size/layout provenance (box/flex/grid/constraints)
-  --text             Include text line/baseline/font/wrap metrics
-  --form             Include form geometry/caret/selection/autofill facts (values withheld)
-
-With no detail flag, returns the standard compact element explanation.`;
+input:
+  <snap>             snapshot id in the active session or absolute artifact path (required)
+  --selector <sel>   element selector (required): CSS, backend:<id>, axid:<id>, ax:<name>, or text:<text>
+  --size             include size/layout provenance (box/flex/grid/constraints)
+  --text             include text line/baseline/font/wrap metrics
+  --form             include form geometry/caret/selection/autofill facts (values withheld)
+output: <explain selector=… matches=…> — the compact element explanation, plus one section per requested detail flag; --json mirrors
+effects: read-only — reads existing snapshot artifacts, never drives the browser`;
 
 function attestation(ref: { id: string; dir: string }, meta: { settled?: boolean; settleMs?: number }) {
   return {
@@ -73,7 +70,6 @@ export async function cmdMeasureExplain(parsed: ParsedArgs, _args: string[]): Pr
     console.log(USAGE);
     return;
   }
-  if (rejectUnsupportedGate(parsed, 'measure explain')) return;
   if (parsed.positional.length !== 1) {
     emitResult(invalidInput(fact`Expected exactly one snapshot target; received ${parsed.positional.length}.`), { json: parsed.json });
     process.exitCode = 1;

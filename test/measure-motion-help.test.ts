@@ -64,70 +64,37 @@ async function withCapture(fn: () => Promise<void>): Promise<{
   return { logs: logs.join('\n'), stdout, exitCode };
 }
 
-test('`measure` with no leaf prints branch usage listing every leaf', async () => {
+test('`measure` with no leaf prints the D6 branch help: model prose + one <subcommand> row per leaf', async () => {
   const { logs, exitCode } = await withCapture(() => measureMain(parseCliArgs(['measure']), []));
 
   assert.equal(exitCode, undefined);
-  assert.match(logs, /\bsnap\b/);
-  assert.match(logs, /\bcheck\b/);
-  assert.match(logs, /\bdiff\b/);
-  assert.match(logs, /\bcensus\b/);
-  assert.match(logs, /\bexplain\b/);
-  assert.match(logs, /\bsweep\b/);
-  assert.match(logs, /map focus\|scroll\|layers/);
+  for (const leaf of ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map']) {
+    assert.match(logs, new RegExp(`<subcommand name="${leaf}"`), `missing <subcommand name="${leaf}">`);
+  }
+  assert.match(logs, /whenToUse="/);
+  assert.match(logs, /focus\|scroll\|layers\|ax/);
+  // D6: branch help carries no example invocations or tutorials.
+  assert.doesNotMatch(logs, /Examples?:/i);
 });
 
-test('`measure --gate` (no leaf) rejects --gate instead of printing branch usage', async () => {
-  const { stdout, logs, exitCode } = await withCapture(() => measureMain(parseCliArgs(['measure', '--gate']), []));
-
-  assert.equal(exitCode, 1);
-  assert.match(stdout, /<error /);
-  assert.match(stdout, /status="unsupported_flag"/);
-  assert.match(stdout, /command="measure"/);
-  // The rejection fires instead of the usage listing, not alongside it.
-  assert.doesNotMatch(logs, /Leaves:/);
-});
-
-test('`measure map` with no sub-leaf prints its own usage listing focus/scroll/layers', async () => {
+test('`measure map` with no sub-leaf prints its own D6 branch help listing focus/scroll/layers/ax', async () => {
   const { logs, exitCode } = await withCapture(() => measureMain(parseCliArgs(['measure', 'map']), []));
 
   assert.equal(exitCode, undefined);
-  assert.match(logs, /\bfocus\b/);
-  assert.match(logs, /\bscroll\b/);
-  assert.match(logs, /\blayers\b/);
+  for (const leaf of ['focus', 'scroll', 'layers', 'ax']) {
+    assert.match(logs, new RegExp(`<subcommand name="${leaf}"`), `missing <subcommand name="${leaf}">`);
+  }
 });
 
-test('`measure map --gate` (no sub-leaf) rejects --gate instead of printing branch usage', async () => {
-  const { stdout, logs, exitCode } = await withCapture(() =>
-    measureMain(parseCliArgs(['measure', 'map', '--gate']), []),
-  );
-
-  assert.equal(exitCode, 1);
-  assert.match(stdout, /<error /);
-  assert.match(stdout, /status="unsupported_flag"/);
-  assert.match(stdout, /command="measure map"/);
-  assert.doesNotMatch(logs, /Leaves:/);
-});
-
-test('`motion` with no leaf prints branch usage listing every leaf', async () => {
+test('`motion` with no leaf prints the D6 branch help: model prose + one <subcommand> row per leaf', async () => {
   const { logs, exitCode } = await withCapture(() => motionMain(parseCliArgs(['motion']), []));
 
   assert.equal(exitCode, undefined);
-  assert.match(logs, /\brec\b/);
-  assert.match(logs, /\bmask\b/);
-  assert.match(logs, /\btimeline\b/);
-  assert.match(logs, /\bjank\b/);
-  assert.match(logs, /\bresponse\b/);
-});
-
-test('`motion --gate` (no leaf) rejects --gate instead of printing branch usage', async () => {
-  const { stdout, logs, exitCode } = await withCapture(() => motionMain(parseCliArgs(['motion', '--gate']), []));
-
-  assert.equal(exitCode, 1);
-  assert.match(stdout, /<error /);
-  assert.match(stdout, /status="unsupported_flag"/);
-  assert.match(stdout, /command="motion"/);
-  assert.doesNotMatch(logs, /Leaves:/);
+  for (const leaf of ['rec', 'mask', 'timeline', 'jank', 'response']) {
+    assert.match(logs, new RegExp(`<subcommand name="${leaf}"`), `missing <subcommand name="${leaf}">`);
+  }
+  assert.match(logs, /whenToUse="/);
+  assert.doesNotMatch(logs, /Examples?:/i);
 });
 
 interface LeafCase {
@@ -147,6 +114,7 @@ const measureLeafCases: LeafCase[] = [
   { name: 'measure map focus', argv: ['measure', 'map', 'focus', 'snap-a3f2'], command: 'measure map focus', main: measureMain },
   { name: 'measure map scroll', argv: ['measure', 'map', 'scroll', 'snap-a3f2'], command: 'measure map scroll', main: measureMain },
   { name: 'measure map layers', argv: ['measure', 'map', 'layers', 'snap-a3f2'], command: 'measure map layers', main: measureMain },
+  { name: 'measure map ax', argv: ['measure', 'map', 'ax', 'snap-a3f2'], command: 'measure map ax', main: measureMain },
 ];
 
 const motionLeafCases: LeafCase[] = [
@@ -199,23 +167,12 @@ test('motion leaves also honor --json', async () => {
 });
 
 // --- I-8: --gate is scoped to `measure check`/`measure diff` only ---------
+// (The REJECTION on every other leaf lives at the shared dispatch layer, not
+// in these branch mains — test/measure-gate-rejection-invariants.test.ts
+// proves it there for a sample from every branch. Here we prove only that
+// the two allowed leaves still accept the flag when a branch main runs.)
 
 const gateAllowedCommands = new Set(['measure check', 'measure diff']);
-
-for (const { name, argv, command, main } of [...measureLeafCases, ...motionLeafCases]) {
-  if (gateAllowedCommands.has(command)) continue;
-
-  test(`${name} rejects --gate with a structured error instead of silently accepting it`, async () => {
-    const { stdout, exitCode } = await withCapture(() => main(parseCliArgs([...argv, '--gate']), []));
-
-    assert.equal(exitCode, 1);
-    assert.match(stdout, /<error /);
-    assert.match(stdout, /status="unsupported_flag"/);
-    assert.match(stdout, new RegExp(`command="${command.replace(/ /g, '\\s')}"`));
-    // Rejection fires before the leaf's own not_implemented path runs.
-    assert.doesNotMatch(stdout, /not_implemented/);
-  });
-}
 
 for (const { name, argv, command, main } of [...measureLeafCases, ...motionLeafCases]) {
   if (!gateAllowedCommands.has(command)) continue;
@@ -233,15 +190,15 @@ for (const { name, argv, command, main } of [...measureLeafCases, ...motionLeafC
   });
 }
 
-test('measure branch usage advertises --gate only on the check and diff leaf lines', () => {
+test('measure branch usage advertises --gate only on the check and diff rows', () => {
   const gateLines = MEASURE_USAGE.split('\n').filter((l) => l.includes('--gate'));
 
-  // Exactly the check line, the diff line, and the one summary sentence
+  // Exactly the check row, the diff row, and the one summary sentence
   // scoping --gate to those two leaves — never a per-leaf mention on any
   // other line.
   assert.equal(gateLines.length, 3);
-  assert.ok(gateLines.some((l) => l.includes('check') && l.includes('[--gate]')));
-  assert.ok(gateLines.some((l) => l.includes('diff') && l.includes('[--gate]')));
+  assert.ok(gateLines.some((l) => l.includes('name="check"') && l.includes('[--gate]')));
+  assert.ok(gateLines.some((l) => l.includes('name="diff"') && l.includes('[--gate]')));
   assert.ok(gateLines.some((l) => l.includes('only') && l.includes('check') && l.includes('diff')));
 });
 
@@ -253,6 +210,22 @@ test('motion branch usage documents that no motion leaf accepts --gate, and neve
   assert.match(MOTION_USAGE, /No leaf accepts --gate/);
   assert.doesNotMatch(MOTION_USAGE, /\[--gate\]/);
 });
+
+for (const { name, argv, main } of [...measureLeafCases, ...motionLeafCases]) {
+  test(`${name} -h prints the D6 leaf shape: one-line summary + input/output/effects schemas, no examples`, async () => {
+    const { logs, exitCode } = await withCapture(() => main(parseCliArgs([...argv, '-h']), []));
+
+    // Most leaves return after printing help; motion rec explicitly exits 0.
+    // Either way, -h must never produce a failing exit code.
+    assert.ok(exitCode === undefined || exitCode === 0, `${name} -h must print help and exit cleanly, got exit ${exitCode}`);
+    assert.match(logs, /^capture (measure|motion) /, 'help opens with the leaf’s own invocation + one-line summary');
+    assert.match(logs, /^input:$/im);
+    assert.match(logs, /^output:/im);
+    assert.match(logs, /^effects:/im);
+    assert.doesNotMatch(logs, /^Usage:/m);
+    assert.doesNotMatch(logs, /examples?/i);
+  });
+}
 
 for (const { name, argv, command } of [...measureLeafCases, ...motionLeafCases]) {
   if (gateAllowedCommands.has(command)) continue;
@@ -287,6 +260,7 @@ test('no leaf/args source introduces --expect (posture invariant: no grade/predi
     'src/cdp/commands/measure/map-focus.ts',
     'src/cdp/commands/measure/map-scroll.ts',
     'src/cdp/commands/measure/map-layers.ts',
+    'src/cdp/commands/measure/map-ax.ts',
     'src/cdp/commands/motion/index.ts',
     'src/cdp/commands/motion/rec.ts',
     'src/cdp/commands/motion/mask.ts',

@@ -22,29 +22,18 @@ import {
   type ArtifactEntry,
   type RenderableResult,
 } from '../../../output/render.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
+const USAGE = `capture measure snap [url|snap] — drive the page and write one settled snapshot substrate directory
 
-const USAGE = `Usage: capture measure snap [url|snap] [--freeze-animations] [--settle-timeout <ms>] [--capture-unsettled] [--pixels] [--state <state[:selector]>]... [--viewport <WxH>]
-
-Drive the page (or re-capture states over a base snapshot) and write one
-settled snapshot substrate directory: geometry, styles, hit-test, text,
-forms, animation, ax, queries, focus, scroll, layers, and (with --pixels)
-per-element crops. Every other measure/motion query leaf reads this
-artifact instead of re-driving the browser.
-
-Options:
-  --freeze-animations         Pause CSS/WAAPI animation before capture
-  --settle-timeout <ms>       Override the default 5000ms settle wait
-  --capture-unsettled         Write full substrate despite non-settlement,
-                               marking unstable regions
-  --pixels                    Also write per-element raster crops
-  --state <state[:selector]>  Force a pseudo-state or real control state
-                               (repeatable)
-  --viewport <WxH>            Temporarily capture at a CSS-pixel viewport (repeatable)
-
-A URL outside a session writes under a private one-shot session. With an
-active session, snapshots are written under that session and later resolve
-by their snap id.`;
+input:
+  [url|snap]                  a URL drives the page fresh; a snap id or absolute path re-captures states over that base snapshot. Outside a session a URL writes under a private one-shot session; with an active session, snapshots are written under it and later resolve by snap id
+  --freeze-animations         pause CSS/WAAPI animation before capture
+  --settle-timeout <ms>       override the default 5000ms settle wait
+  --capture-unsettled         write the full substrate despite non-settlement, marking unstable regions
+  --pixels                    also write per-element raster crops
+  --state <state[:selector]>  force a pseudo-state or real control state (repeatable)
+  --viewport <WxH>            temporarily capture at a CSS-pixel viewport (repeatable)
+output: <snapshot id=… path=…> — the settled artifact directory (geometry, styles, hit-test, text, forms, animation, ax, queries, focus, scroll, layers; per-element crops with --pixels) every other measure/motion query leaf reads instead of re-driving the browser; --json mirrors
+effects: drives the target page to capture; writes one snapshot artifact directory under the active (or a private one-shot) session`;
 
 interface SnapshotMetaForBase {
   readonly url?: string | null;
@@ -366,7 +355,6 @@ export async function cmdMeasureSnap(parsed: ParsedArgs, _args: string[]): Promi
     console.log(USAGE);
     return;
   }
-  if (rejectUnsupportedGate(parsed, 'measure snap')) return;
 
   const captures: MeasureSnapCapture[] = [];
   try {

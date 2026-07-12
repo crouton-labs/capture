@@ -3,17 +3,13 @@ import { captureMeasureSnap } from './snap.js';
 import { mapFocus } from '../../measure/map-focus.js';
 import { ArtifactResolutionError, resolveSnapRef } from '../../../output/artifact.js';
 import { emitResult, fact, type RenderableResult } from '../../../output/render.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
 
-const USAGE = `Usage: capture measure map focus [url|snap]
+const USAGE = `capture measure map focus [url|snap] — keyboard traversal facts recorded in a snapshot's focus.json
 
-Render keyboard traversal facts recorded in a snapshot's focus.json: forward
-and reverse Tab sequences, top-viewport rects, scroll jumps, focus-visible
-style facts, and unreached focusable elements. A URL target creates a settled
-snapshot first; a snapshot id or absolute path is read without re-driving the
-browser.
-
-A snapshot target is required. Use capture measure snap <url> to create one.`;
+input:
+  [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id or absolute path is read without re-driving the browser
+output: <focus-map …> — forward and reverse Tab sequences, top-viewport rects, scroll jumps, focus-visible style facts, and unreached focusable elements; --json mirrors
+effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot first`;
 
 function recoveryResult(err: unknown): RenderableResult {
   const detail = err instanceof ArtifactResolutionError || err instanceof Error
@@ -32,7 +28,6 @@ export async function cmdMeasureMapFocus(parsed: ParsedArgs, _args: string[]): P
     console.log(USAGE);
     return;
   }
-  if (rejectUnsupportedGate(parsed, 'measure map focus')) return;
   if (parsed.positional.length !== 1) {
     emitResult({
       tag: 'error',

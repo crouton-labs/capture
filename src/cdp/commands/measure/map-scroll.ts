@@ -3,16 +3,13 @@ import { captureMeasureSnap } from './snap.js';
 import { ArtifactResolutionError, resolveSnapRef, type SnapUrlResult } from '../../../output/artifact.js';
 import { emitResult, fact, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
 import { measureMapScroll } from '../../measure/map-scroll.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
 
-const USAGE = `Usage: capture measure map scroll [url|snap]
+const USAGE = `capture measure map scroll [url|snap] — scroll-container topology recorded in a snapshot's scroll.json
 
-Read scroll-container topology recorded in a snapshot's scroll.json: containers,
-ranges, current/max offsets, sticky/fixed occupancy, snap points, visual/layout
-viewport facts, and reachable-content samples. A URL target creates a snap first.
-
-Pass a snapshot id from the active session or an absolute snapshot artifact path.
-No target is required only when --url supplies the URL target.`;
+input:
+  [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id from the active session or an absolute snapshot artifact path is read without re-driving the browser
+output: <scroll-map …> — containers, ranges, current/max offsets, sticky/fixed occupancy, snap points, visual/layout viewport facts, and reachable-content samples; --json mirrors
+effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot first`;
 
 type CaptureSnap = (parsed: ParsedArgs, target: string) => Promise<SnapUrlResult>;
 type Emit = typeof emitResult;
@@ -40,7 +37,6 @@ export async function runMeasureMapScroll(parsed: ParsedArgs, deps: MapScrollDep
     console.log(USAGE);
     return;
   }
-  if (rejectUnsupportedGate(parsed, 'measure map scroll')) return;
 
   if (parsed.positional.length > 1) {
     const result: RenderableResult = {

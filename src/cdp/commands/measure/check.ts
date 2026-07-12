@@ -4,21 +4,15 @@ import { emitResult, fact, line, text, formatFindings, type FindingInput, type R
 import { captureMeasureSnap } from './snap.js';
 import { checkSnapshot, parseChecks, writeFindingCrop } from '../../measure/check.js';
 
-const USAGE = `Usage: capture measure check [url|snap] [--for <checks>] [--limit <n>] [--gate]
+const USAGE = `capture measure check [url|snap] — read threshold/fact measurements from a settled snapshot
 
-Read threshold/fact measurements from a settled snapshot. A URL target creates
-one one-shot snapshot first; snap ids and absolute paths are read without
-re-driving the browser.
-
-Options:
-  --for <checks>  geometry|content|targetability|forms|animation|all, or
-                  comma-separated overlap,offscreen,overflow,tap-targets,
-                  contrast,hit-test,truncation,forms,media,animation
-  --limit <n>     Render at most n representative findings in prose (default: 20; --json retains all findings)
-  --gate          Exit 2 when the report contains findings (default: exit 0)
-
-Findings report coordinates and collection provenance; they are measurements,
-not a pass/fail judgment.`;
+input:
+  [url|snap]      a URL creates one one-shot snapshot first; a snap id or absolute path is read without re-driving the browser
+  --for <checks>  geometry|content|targetability|forms|animation|all, or comma-separated overlap,offscreen,overflow,tap-targets,contrast,hit-test,truncation,forms,media,animation
+  --limit <n>     render at most n representative findings in prose (default: 20; --json retains all findings)
+  --gate          exit 2 when the report contains findings (default: exit 0)
+output: <checks result=… findings=…> — findings with coordinates and collection provenance; measurements, not a pass/fail judgment; --json mirrors
+effects: read-only over an existing snapshot artifact; a URL target writes one one-shot snapshot first`;
 
 const DEFAULT_FINDING_LIMIT = 20;
 

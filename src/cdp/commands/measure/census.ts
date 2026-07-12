@@ -4,22 +4,17 @@ import { type ParsedArgs } from '../../types.js';
 import { captureMeasureSnap } from './snap.js';
 import { ArtifactResolutionError, resolveSnapRef, type SnapRef } from '../../../output/artifact.js';
 import { emitResult, fact, formatArtifactList, text, type RenderableResult } from '../../../output/render.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
 import { buildCensus, CENSUS_AXES, censusResultLines, type CensusAxis } from '../../measure/census.js';
 
-const USAGE = `Usage: capture measure census [--snap <id>]... [--url <url>]... [--set-file <path>] --axis <axis>
+const USAGE = `capture measure census --axis <axis> — value distributions and token-audit facts across one or more settled snapshots
 
-Value distributions and token-audit facts across one or more settled snapshots.
-Each --snap/--url is repeatable. A --url creates a one-shot snapshot first.
-
-Options:
-  --snap <id|path>    Existing snapshot id or absolute artifact path (repeatable)
+input:
+  --axis <axis>       color|font|spacing|radius|shadow|animation|geometry|media|queries (required)
+  --snap <id|path>    existing snapshot id or absolute artifact path (repeatable)
   --url <url>         URL to snap first (repeatable)
-  --set-file <path>   One snapshot id/path or URL per line
-  --axis <axis>       color|font|spacing|radius|shadow|animation|geometry|media|queries
-
-The report contains distributions, provenance where recorded, and per-region
-nondeterminism caveats for facts touching an unsettled capture.`;
+  --set-file <path>   file listing one snapshot id/path or URL per line
+output: <census axis=… snapshots=… distinct=…> — distributions with provenance where recorded, and per-region nondeterminism caveats for facts touching an unsettled capture; --json mirrors
+effects: read-only over existing snapshot artifacts; each --url writes one one-shot snapshot first`;
 
 function targetsFromFile(filePath: string): string[] {
   const raw = fs.readFileSync(filePath, 'utf8');
@@ -61,7 +56,6 @@ export async function cmdMeasureCensus(parsed: ParsedArgs, _args: string[]): Pro
     console.log(USAGE);
     return;
   }
-  if (rejectUnsupportedGate(parsed, 'measure census')) return;
   if (parsed.positional.length) {
     emitResult(errorResult('this leaf takes targets only through repeatable --snap and --url flags.', 'invalid_input'), { json: parsed.json });
     process.exitCode = 1;
