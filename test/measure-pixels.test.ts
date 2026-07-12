@@ -1135,6 +1135,12 @@ const D5_FIXTURE_HTML = `<!DOCTYPE html><html><body style="margin:0;background:r
 <div id="clipUrlParent" style="position:absolute;top:980px;left:40px;width:100px;height:100px;clip-path:url('#circle(20px at 50px 50px)');">
   <div id="clipUrlChild" style="position:absolute;top:0;left:0;width:100px;height:100px;background:rgb(255,0,120);"></div>
 </div>
+<div id="clipEdgeOrderParent" style="position:absolute;top:1100px;left:40px;width:100px;height:100px;clip-path:circle(20px at bottom 30px right 30px);">
+  <div id="clipEdgeOrderChild" style="position:absolute;top:0;left:0;width:100px;height:100px;background:rgb(0,120,255);"></div>
+</div>
+<div id="clipCalcOffsetParent" style="position:absolute;top:1220px;left:40px;width:100px;height:100px;clip-path:ellipse(20px 10px at left calc(10px + 20px) top calc(10px + 20px));">
+  <div id="clipCalcOffsetChild" style="position:absolute;top:0;left:0;width:100px;height:100px;background:rgb(0,120,255);"></div>
+</div>
 <div id="marker"></div>
 </body></html>`;
 
@@ -1204,14 +1210,14 @@ before(async () => {
   d5Client = new CDPClient(wsUrl);
   await d5Client.waitReady();
   await enableDomainsForSnap(d5Client);
-  // Real 2x device-pixel-ratio: a 400x1100 CSS viewport rasterized into an
-  // 800x2200 screenshot (tall enough to keep the last fixture element,
-  // `#clipUrlParent` at top:980/height:100, fully in the visible capture).
+  // Real 2x device-pixel-ratio: a 400x1500 CSS viewport rasterized into an
+  // 800x3000 screenshot (tall enough to keep the last fixture element,
+  // `#clipCalcOffsetParent` at top:1220/height:100, fully visible).
   // `collectPixels` reads window.innerWidth (400 CSS) and divides the
   // screenshot width by it, so scaleX/scaleY resolve to 2.
   await d5Client.send('Emulation.setDeviceMetricsOverride', {
     width: 400,
-    height: 1100,
+    height: 1500,
     deviceScaleFactor: D5_DPR,
     mobile: false,
   });
@@ -1224,7 +1230,7 @@ before(async () => {
     dir: '/tmp/px-d5-real-chrome-unused',
     snapId: D5_SNAP_ID,
     url: D5_FIXTURE_URL,
-    viewport: '400x1100',
+    viewport: '400x1500',
     settled: true,
     freezeAnimations: false,
     captureUnsettled: false,
@@ -1460,12 +1466,11 @@ test('D5 real-Chrome: path() ancestor clip-path is flagged honest/approximate in
   );
 });
 
-test('D5 real-Chrome: edge-offset circle() ancestor clip resolves the computed calc() position exactly (not approximate)', () => {
+test('D5 real-Chrome: four-value edge-offset circle() ancestor clip resolves exactly (not approximate)', () => {
   // `#clipCalcParent` is authored `clip-path: circle(20px at right 30px
-  // bottom 30px)`. Real Chrome's `getComputedStyle` never preserves that
-  // authored edge-offset syntax -- it resolves to
-  // `circle(20px at calc(100% - 30px) calc(100% - 30px))`, exactly the
-  // computed form the gate report reproduced for `right 10px bottom 10px`.
+  // bottom 30px)`. Chrome preserves this valid four-value CSS <position>
+  // form in computed style. The parser must resolve each edge/offset pair,
+  // not discard the vertical pair and invent a two-value position.
   // The 100x100 box places the circle's center at (70,70) -- 20px radius is
   // strictly inside all four edges (min distance 30px), so this is a real,
   // resolvable, non-approximate exact-shape clip whose bbox actually
@@ -1478,11 +1483,12 @@ test('D5 real-Chrome: edge-offset circle() ancestor clip resolves the computed c
   assert.equal(
     record.ancestorClipApproximate,
     false,
-    'a computed calc() edge-offset position IS resolvable by the calc()-aware evaluator -- this must be exact, not approximate',
+    'a four-value edge-offset position is resolvable exactly, not approximate',
   );
 
-  // The circle's bbox is 2*r = 40px square, centered on (70,70) inside the
-  // 100x100 box -- strictly smaller than the full box on every side.
+  // The circle's bbox is 2*r = 40px square, centered on viewport (110,930).
+  assert.ok(Math.abs(el!.rect.x - 90) <= 2, `rect x should be ~90, got ${el!.rect.x}`);
+  assert.ok(Math.abs(el!.rect.y - 910) <= 2, `rect y should be ~910, got ${el!.rect.y}`);
   assert.ok(Math.abs(el!.rect.width - 40) <= 2, `rect width should shrink to the circle's ~40px bbox, got ${el!.rect.width}`);
   assert.ok(Math.abs(el!.rect.height - 40) <= 2, `rect height should shrink to the circle's ~40px bbox, got ${el!.rect.height}`);
 
@@ -1494,6 +1500,89 @@ test('D5 real-Chrome: edge-offset circle() ancestor clip resolves the computed c
   assert.ok(el!.avgColor.r < 40, `on-mask red channel should be near-zero (no white bleed), got ${JSON.stringify(el!.avgColor)}`);
   assert.ok(el!.avgColor.b > 200, `on-mask blue channel should stay near 255 (no white bleed), got ${JSON.stringify(el!.avgColor)}`);
   assert.ok(el!.alphaFraction > 0.9, `on-mask alpha should be ~1 (only the painted disc counted), got ${el!.alphaFraction}`);
+});
+
+test('D5 real-Chrome: vertical-first four-value edge offsets resolve exactly', () => {
+  const el = d5Pixels.elements.find((e) => e.selector === 'div#clipEdgeOrderChild');
+  assert.ok(el, 'clipEdgeOrderChild element present');
+  const record = el as unknown as { ancestorClipApproximate: boolean };
+  assert.equal(record.ancestorClipApproximate, false, 'bottom/right edge-offset pair order is exact');
+  assert.ok(Math.abs(el!.rect.x - 90) <= 2, `rect x should be ~90, got ${el!.rect.x}`);
+  assert.ok(Math.abs(el!.rect.y - 1150) <= 2, `rect y should be ~1150, got ${el!.rect.y}`);
+  assert.ok(Math.abs(el!.rect.width - 40) <= 2, `rect width should be ~40, got ${el!.rect.width}`);
+  assert.ok(Math.abs(el!.rect.height - 40) <= 2, `rect height should be ~40, got ${el!.rect.height}`);
+});
+
+test('D5 real-Chrome: calc() edge offsets resolve exactly', () => {
+  const el = d5Pixels.elements.find((e) => e.selector === 'div#clipCalcOffsetChild');
+  assert.ok(el, 'clipCalcOffsetChild element present');
+  const record = el as unknown as { ancestorClipApproximate: boolean };
+  assert.equal(record.ancestorClipApproximate, false, 'calc() offsets are exact');
+  assert.ok(Math.abs(el!.rect.x - 50) <= 2, `rect x should be ~50, got ${el!.rect.x}`);
+  assert.ok(Math.abs(el!.rect.y - 1240) <= 2, `rect y should be ~1240, got ${el!.rect.y}`);
+  assert.ok(Math.abs(el!.rect.width - 40) <= 2, `rect width should be ~40, got ${el!.rect.width}`);
+  assert.ok(Math.abs(el!.rect.height - 20) <= 2, `rect height should be ~20, got ${el!.rect.height}`);
+});
+
+test('D5 real-Chrome: malformed three-token positions are approximate, never guessed exact', async () => {
+  // Browsers reject malformed CSS before it reaches computed style. Feed the
+  // page-side collector the malformed value through a narrowly scoped
+  // computed-style proxy so this regression proves its defensive parser path.
+  await d5Client.send('Runtime.evaluate', {
+    expression: `(() => {
+      const malformed = [
+        ['clipMalformedTokenChild', 'circle(20px at right 30px bottom)'],
+        ['clipMalformedNumberChild', 'circle(20px at right 1..2px bottom 20px)'],
+        ['clipMalformedCalcChild', 'circle(20px at right calc(10px +) bottom 20px)'],
+      ];
+      const clipPaths = new Map();
+      for (const [childId, clipPath] of malformed) {
+        const parent = document.createElement('div');
+        parent.style.cssText = 'position:absolute;top:1340px;left:40px;width:100px;height:100px';
+        const child = document.createElement('div');
+        child.id = childId;
+        child.style.cssText = 'position:absolute;inset:0;background:rgb(0,120,255)';
+        parent.append(child);
+        document.body.append(parent);
+        clipPaths.set(parent, clipPath);
+      }
+      const nativeGetComputedStyle = window.getComputedStyle;
+      window.getComputedStyle = function(node) {
+        const style = nativeGetComputedStyle.call(window, node);
+        const clipPath = clipPaths.get(node);
+        if (!clipPath) return style;
+        return new Proxy(style, { get(target, property) {
+          return property === 'clipPath' ? clipPath : Reflect.get(target, property);
+        }});
+      };
+    })()`,
+    returnByValue: true,
+  });
+  const store: Record<string, unknown> = {};
+  await collectPixels({
+    client: d5Client,
+    dir: '/tmp/px-d5-malformed-position-unused',
+    snapId: D5_SNAP_ID,
+    url: D5_FIXTURE_URL,
+    viewport: '400x1500',
+    settled: true,
+    freezeAnimations: false,
+    captureUnsettled: false,
+    pixels: true,
+    state: [],
+    unstableRegions: [],
+    write: makeInMemoryWriter(store),
+  });
+  const pixels = store['pixels.json'] as PixelsJson;
+  for (const selector of ['div#clipMalformedTokenChild', 'div#clipMalformedNumberChild', 'div#clipMalformedCalcChild']) {
+    const el = pixels.elements.find((e) => e.selector === selector);
+    assert.ok(el, `${selector} element present`);
+    const record = el as unknown as { ancestorClipped: boolean; ancestorClipApproximate: boolean };
+    assert.equal(record.ancestorClipped, true, `${selector}: malformed clip remains reported`);
+    assert.equal(record.ancestorClipApproximate, true, `${selector}: malformed position never becomes invented exact geometry`);
+    assert.ok(Math.abs(el!.rect.width - 100) <= 2, `${selector}: conservative width should remain ~100, got ${el!.rect.width}`);
+    assert.ok(Math.abs(el!.rect.height - 100) <= 2, `${selector}: conservative height should remain ~100, got ${el!.rect.height}`);
+  }
 });
 
 test('D5 real-Chrome: url() clip-path whose fragment merely resembles a circle() call is flagged approximate, never treated as an exact shape', () => {

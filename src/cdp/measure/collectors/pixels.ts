@@ -62,11 +62,9 @@
  *   - Every length/percentage token fed into the shape math above — `inset()`
  *     edges, `circle()`/`ellipse()` radii and center positions, `polygon()`
  *     vertices — is resolved through a single `calc()`-aware evaluator
- *     (`resolveLength`/`evalCalcExpr`), because computed style does not
- *     preserve authored edge-offset keywords: e.g. authored
- *     `circle(20px at right 10px bottom 10px)` computes to
- *     `circle(20px at calc(100% - 10px) calc(100% - 10px))`, and only a
- *     `calc()`-aware parse resolves that back to exact geometry.
+ *     (`resolveLength`/`evalCalcExpr`). Computed style can preserve CSS
+ *     four-value edge-offset positions (e.g. `right 10px bottom 10px`) or
+ *     serialize them as two `calc()` values; both exact forms are parsed.
  *   - `clip-path: path(...)` / `url(...)` (any other clip-path form this
  *     collector doesn't recognize), OR a recognized `inset()`/`circle()`/
  *     `ellipse()`/`polygon()` whose arguments contain a token the evaluator
@@ -707,12 +705,21 @@ const ANCESTOR_CLIP_FUNCTION = `function () {
     if (/^calc\\(/.test(token) && token.charAt(token.length - 1) === ')') {
       return evalCalcExpr(token.slice(5, -1), refPx);
     }
-    var pctMatch = /^(-?[\\d.]+)%$/.exec(token);
-    if (pctMatch) return (parseFloat(pctMatch[1]) / 100) * refPx;
-    var pxMatch = /^(-?[\\d.]+)px$/.exec(token);
-    if (pxMatch) return parseFloat(pxMatch[1]);
-    var numMatch = /^(-?[\\d.]+)$/.exec(token);
-    if (numMatch) return parseFloat(numMatch[1]);
+    var pctMatch = /^(-?(?:\\d+(?:\\.\\d*)?|\\.\\d+))%$/.exec(token);
+    if (pctMatch) {
+      var pct = parseFloat(pctMatch[1]);
+      return Number.isFinite(pct) ? (pct / 100) * refPx : null;
+    }
+    var pxMatch = /^(-?(?:\\d+(?:\\.\\d*)?|\\.\\d+))px$/.exec(token);
+    if (pxMatch) {
+      var px = parseFloat(pxMatch[1]);
+      return Number.isFinite(px) ? px : null;
+    }
+    var numMatch = /^(-?(?:\\d+(?:\\.\\d*)?|\\.\\d+))$/.exec(token);
+    if (numMatch) {
+      var num = parseFloat(numMatch[1]);
+      return Number.isFinite(num) ? num : null;
+    }
     return null;
   }
 
@@ -745,20 +752,25 @@ const ANCESTOR_CLIP_FUNCTION = `function () {
       }
     }
     if (current.trim() !== '') tokens.push(current.trim());
-    if (tokens.length === 0) return null;
+    if (tokens.length === 0 || depth !== 0) return null;
     var result = 0;
     var op = '+';
+    var expectsTerm = true;
     for (var t = 0; t < tokens.length; t += 1) {
       var tok = tokens[t];
       if (tok === '+' || tok === '-') {
+        if (expectsTerm) return null;
         op = tok;
+        expectsTerm = true;
         continue;
       }
+      if (!expectsTerm) return null;
       var val = resolveLength(tok, refPx);
-      if (val === null) return null;
+      if (val === null || !Number.isFinite(val)) return null;
       result += op === '-' ? -val : val;
+      expectsTerm = false;
     }
-    return result;
+    return expectsTerm || !Number.isFinite(result) ? null : result;
   }
   // \`argsStr\` is the already-extracted, paren-balanced inset() argument
   // list (see \`extractFunctionArgs\` below) — this does NOT re-match against
@@ -845,14 +857,12 @@ const ANCESTOR_CLIP_FUNCTION = `function () {
     };
   }
 
-  // CSS <position> (2-value subset: keywords/lengths/percentages/calc(),
-  // standard left-then-top order, with "top left"/"bottom right"
-  // keyword-order swap handled). Does NOT itself tokenize the AUTHORED
-  // 4-value edge-offset syntax ("right 10px bottom 20px") — but computed
-  // style never preserves that syntax anyway: the browser always resolves
-  // it to this 2-value \`calc(100% - 10px)\`-style form first, which
-  // \`resolveLength\`'s calc() support DOES parse exactly. Returns \`null\`
-  // (never a guessed center) the moment either axis token is unresolvable.
+  // CSS <position> subset: one/two-value keywords/lengths/percentages/calc()
+  // (including the top-left keyword-order swap), plus four-value horizontal
+  // and vertical edge-offset pairs in either axis order. Computed style may
+  // preserve \`right 10px bottom 20px\` rather than serializing it as calc().
+  // Unsupported, malformed, or ambiguous token sequences return \`null\`
+  // (never guessed coordinates), making the ancestor clip approximate.
   function parsePosition(str, w, h) {
     str = (str || '').trim();
     if (!str) return { x: w / 2, y: h / 2 };
@@ -874,18 +884,37 @@ const ANCESTOR_CLIP_FUNCTION = `function () {
       var xOnly = axisValue(t, w, true);
       return xOnly === null ? null : { x: xOnly, y: h / 2 };
     }
-    var first = tokens[0];
-    var second = tokens[1];
-    var x, y;
-    if (first === 'top' || first === 'bottom') {
-      x = axisValue(second, w, true);
-      y = axisValue(first, h, false);
-    } else {
-      x = axisValue(first, w, true);
-      y = axisValue(second, h, false);
+    if (tokens.length === 2) {
+      var first = tokens[0];
+      var second = tokens[1];
+      var x, y;
+      if (first === 'top' || first === 'bottom') {
+        x = axisValue(second, w, true);
+        y = axisValue(first, h, false);
+      } else {
+        x = axisValue(first, w, true);
+        y = axisValue(second, h, false);
+      }
+      if (x === null || y === null) return null;
+      return { x: x, y: y };
     }
-    if (x === null || y === null) return null;
-    return { x: x, y: y };
+    if (tokens.length !== 4) return null;
+
+    function edgeOffset(edge, offset) {
+      var horizontal = edge === 'left' || edge === 'right';
+      var vertical = edge === 'top' || edge === 'bottom';
+      if (!horizontal && !vertical) return null;
+      var dim = horizontal ? w : h;
+      var value = resolveLength(offset, dim);
+      if (value === null) return null;
+      return { axis: horizontal ? 'x' : 'y', value: edge === 'right' || edge === 'bottom' ? dim - value : value };
+    }
+    var firstPair = edgeOffset(tokens[0], tokens[1]);
+    var secondPair = edgeOffset(tokens[2], tokens[3]);
+    if (!firstPair || !secondPair || firstPair.axis === secondPair.axis) return null;
+    return firstPair.axis === 'x'
+      ? { x: firstPair.value, y: secondPair.value }
+      : { x: secondPair.value, y: firstPair.value };
   }
 
   // Single-axis radius: closest-side/farthest-side (distances to the two
