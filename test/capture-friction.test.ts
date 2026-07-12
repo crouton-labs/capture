@@ -56,6 +56,7 @@ test('HAR recording emits WebSocket handshakes and frames as filterable entries'
   client.emit('Network.webSocketCreated', { requestId: 'ws-1', url: 'wss://echo.example/socket' });
   client.emit('Network.webSocketWillSendHandshakeRequest', {
     requestId: 'ws-1',
+    timestamp: 12,
     wallTime: 1_700_000_000,
     request: { headers: { Upgrade: 'websocket' } },
   });
@@ -75,8 +76,8 @@ test('HAR recording emits WebSocket handshakes and frames as filterable entries'
   assert.equal(entry.response.status, 101);
   assert.equal(entry._resourceType, 'websocket');
   assert.deepEqual(entry._webSocketMessages, [
-    { type: 'send', time: 12.5, opcode: 1, data: 'ping' },
-    { type: 'receive', time: 12.6, opcode: 1, data: 'pong' },
+    { type: 'send', time: 1_700_000_000.5, opcode: 1, data: 'ping' },
+    { type: 'receive', time: 1_700_000_000.6, opcode: 1, data: 'pong' },
   ]);
 });
 

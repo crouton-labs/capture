@@ -23,6 +23,7 @@ interface WebSocketConnection {
   requestId: string;
   url: string;
   wallTime?: number;
+  monotonicTime?: number;
   requestHeaders: Record<string, string>;
   status?: number;
   responseHeaders: Record<string, string>;
@@ -39,6 +40,14 @@ const SKIP_DOMAINS =
 const MAX_BODY_SIZE = 256 * 1024; // 256KB per response body in HAR
 const MAX_WS_FRAMES = 200; // per socket; further frames are counted, not stored
 const MAX_WS_FRAME_SIZE = 4 * 1024; // 4KB per frame payload in HAR
+
+function truncateWebSocketData(data: string): string {
+  const size = Buffer.byteLength(data, 'utf8');
+  if (size <= MAX_WS_FRAME_SIZE) return data;
+  let end = Math.min(data.length, MAX_WS_FRAME_SIZE);
+  while (end > 0 && Buffer.byteLength(data.slice(0, end), 'utf8') > MAX_WS_FRAME_SIZE) end--;
+  return data.slice(0, end) + `…[truncated: ${size} bytes]`;
+}
 
 function shouldRecordRequest(url: string): boolean {
   if (SKIP_EXTENSIONS.test(url)) return false;
@@ -121,12 +130,14 @@ export class HARRecorder {
     this.client.on('Network.webSocketWillSendHandshakeRequest', (params: unknown) => {
       const p = params as {
         requestId: string;
+        timestamp: number;
         wallTime: number;
         request: { headers: Record<string, string> };
       };
       const ws = this.webSockets.get(p.requestId);
       if (!ws) return;
       ws.wallTime = p.wallTime;
+      ws.monotonicTime = p.timestamp;
       ws.requestHeaders = p.request.headers;
     });
 
@@ -153,14 +164,14 @@ export class HARRecorder {
         ws.droppedFrames++;
         return;
       }
-      const data = p.response.payloadData;
+      const time = ws.wallTime !== undefined && ws.monotonicTime !== undefined
+        ? ws.wallTime + (p.timestamp - ws.monotonicTime)
+        : p.timestamp;
       ws.messages.push({
         type,
-        time: p.timestamp,
+        time,
         opcode: p.response.opcode,
-        data: data.length > MAX_WS_FRAME_SIZE
-          ? data.slice(0, MAX_WS_FRAME_SIZE) + `…[truncated: ${data.length} bytes]`
-          : data,
+        data: truncateWebSocketData(p.response.payloadData),
       });
     };
     this.client.on('Network.webSocketFrameSent', recordFrame('send'));
