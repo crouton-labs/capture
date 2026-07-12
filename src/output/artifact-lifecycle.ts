@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 import { CAPTURE_ROOT, DIR_MODE, ensurePrivateDir, writeJsonPrivate } from '../session/artifacts.js';
+import { SnapshotMetaV2, SourceArtifactManifest, validateSnapshotMetaV2 } from '../contracts/snapshot.js';
 
 export const SNAPSHOT_ID_PATTERN = /^snap_[0-9a-z]{26}$/;
 export const SESSION_ID_PATTERN = /^ses_[0-9a-z]{26}$/;
@@ -271,16 +272,40 @@ export function allocateSnapshotStaging(artifactRoot = CAPTURE_ROOT): SnapshotSt
   }, artifactRoot);
 }
 
-/** Writes final meta only after collectors have completed; publication remains impossible until the index rename. */
-export function finalizeSnapshotManifest(staging: SnapshotStaging, manifest: Record<string, unknown>): void {
+/** Removes only an allocation-owned staging tree. The durable allocation tombstone remains reserved. */
+export function cleanupSnapshotStaging(staging: SnapshotStaging, artifactRoot = CAPTURE_ROOT): void {
+  const root = rootFor(artifactRoot);
+  requireSnapshotId(staging.snapshotId); requireOperationId(staging.publicationOperationId);
+  const expected = path.join(stagingDir(root), `${staging.snapshotId}-${staging.publicationOperationId}`);
+  if (path.resolve(staging.directory) !== expected || staging.finalDirectory !== path.join(snapshotsDir(root), staging.snapshotId)) throw new ArtifactLifecycleError('snapshot_publication_invalid', 'staging cleanup refused an unowned directory');
+  fs.rmSync(staging.directory, { recursive: true, force: true });
+  if (fs.existsSync(staging.directory)) throw new ArtifactLifecycleError('snapshot_publication_invalid', `could not remove staging directory ${staging.directory}`);
+}
+
+/** Direct reads expose one root plus trusted source keys, never plural or truncated paths. */
+export interface DirectSourceAccess { readonly root: string; readonly manifest: 'meta.json'; readonly keys: readonly string[]; }
+export function validateDirectSourceAccess(value: unknown): DirectSourceAccess {
+  if (!value || typeof value !== 'object') throw new ArtifactLifecycleError('snapshot_publication_invalid', 'direct source access must be an object');
+  const v = value as Partial<DirectSourceAccess>;
+  if (typeof v.root !== 'string' || validateArtifactLocator(v.root) !== v.root || v.manifest !== 'meta.json' || !Array.isArray(v.keys) || v.keys.length < 1 || v.keys.length > 16 || v.keys.some(key => typeof key !== 'string' || !key || Buffer.byteLength(key, 'utf8') > 64) || new Set(v.keys).size !== v.keys.length) throw new ArtifactLifecycleError('snapshot_publication_invalid', 'direct source access is invalid');
+  return { root: v.root, manifest: 'meta.json', keys: [...v.keys] };
+}
+
+/** Writes final v2 meta only after collectors have completed; publication remains impossible until the index rename. */
+export function finalizeSnapshotManifest(staging: SnapshotStaging, manifest: Omit<SnapshotMetaV2, 'snapshotId'>): void {
   const finalDirectory = validateArtifactLocator(staging.finalDirectory);
   const metaPath = path.join(staging.directory, 'meta.json');
   if (fs.existsSync(metaPath)) throw new ArtifactLifecycleError('snapshot_publication_invalid', 'snapshot staging manifest is already finalized');
-  const publication: PublicationMarker = {
-    state: 'unpublished-final', snapshotId: staging.snapshotId, publicationOperationId: staging.publicationOperationId,
-    ownerPid: process.pid, ownerProcessStartIdentity: currentProcessStartIdentity(), finalDirectory,
-  };
-  writeJsonPrivate(metaPath, { ...manifest, snapshotId: staging.snapshotId, sourceArtifactInventory: buildSourceArtifactInventory(staging.directory), publication });
+  if (Object.prototype.hasOwnProperty.call(manifest, 'publication') || Object.prototype.hasOwnProperty.call(manifest, 'sourceArtifactInventory')) throw new ArtifactLifecycleError('snapshot_publication_invalid', 'collectors cannot supply lifecycle fields');
+  const inventory = buildSourceArtifactInventory(staging.directory);
+  const source = manifest.source_artifact_manifest as SourceArtifactManifest;
+  const inventoryPaths = inventory.artifacts.map(item => item.path).join('\0');
+  const declaredPaths = source?.artifacts?.map(item => item.path).join('\0');
+  const candidate = { ...manifest, snapshotId: staging.snapshotId } as SnapshotMetaV2;
+  const validation = validateSnapshotMetaV2(candidate);
+  if (!validation.valid || inventoryPaths !== declaredPaths || source.artifacts.some((item, index) => item.bytes !== inventory.artifacts[index]?.bytes || item.sha256 !== inventory.artifacts[index]?.sha256)) throw new ArtifactLifecycleError('snapshot_publication_invalid', `invalid v2 snapshot manifest: ${validation.errors.join('; ') || 'source manifest does not match finalized files'}`);
+  const publication: PublicationMarker = { state: 'unpublished-final', snapshotId: staging.snapshotId, publicationOperationId: staging.publicationOperationId, ownerPid: process.pid, ownerProcessStartIdentity: currentProcessStartIdentity(), finalDirectory };
+  writeJsonPrivate(metaPath, { ...candidate, sourceArtifactInventory: inventory, publication });
 }
 
 /** Two-rename publication: final tree first, global ID index second (the linearization point). */

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "snapshotId": "diff-left",
   "request": {
     "url": "https://fixture.invalid/diff-left",

@@ -1,24 +1,91 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "snapshotId": "full-v2",
-  "request": { "url": "https://fixture.invalid/full", "viewport": "1200x953", "pixels": false },
+  "request": {
+    "url": "https://fixture.invalid/full",
+    "viewport": "1200x953",
+    "pixels": false
+  },
   "settled": true,
-  "timing": { "capturedAt": "2026-07-12T00:00:00.000Z" },
+  "timing": {
+    "capturedAt": "2026-07-12T00:00:00.000Z"
+  },
   "coordinateAuthority": {
-    "cssVisualViewport": { "available": true, "value": { "clientWidth": 1200, "clientHeight": 953 } },
-    "cssLayoutViewport": { "available": true, "value": { "clientWidth": 1280, "clientHeight": 960 } },
-    "cssContentSize": { "available": true, "value": { "x": 0, "y": 0, "width": 1200, "height": 3515 } },
-    "raster": { "available": true, "value": { "space": "screenshot/device-px", "width": 2400, "height": 1906, "devicePixelRatio": 2, "cssToDeviceScaleX": 2, "cssToDeviceScaleY": 2 } }
+    "cssVisualViewport": {
+      "available": true,
+      "value": {
+        "clientWidth": 1200,
+        "clientHeight": 953
+      }
+    },
+    "cssLayoutViewport": {
+      "available": true,
+      "value": {
+        "clientWidth": 1280,
+        "clientHeight": 960
+      }
+    },
+    "cssContentSize": {
+      "available": true,
+      "value": {
+        "x": 0,
+        "y": 0,
+        "width": 1200,
+        "height": 3515
+      }
+    },
+    "raster": {
+      "available": true,
+      "value": {
+        "space": "screenshot/device-px",
+        "width": 2400,
+        "height": 1906,
+        "devicePixelRatio": 2,
+        "cssToDeviceScaleX": 2,
+        "cssToDeviceScaleY": 2
+      }
+    }
   },
   "contentInputs": {
-    "documentScrollWidth": { "available": true, "value": 1200 },
-    "documentScrollHeight": { "available": true, "value": 3600 }
+    "documentScrollWidth": {
+      "available": true,
+      "value": 1200
+    },
+    "documentScrollHeight": {
+      "available": true,
+      "value": 3600
+    }
   },
-  "facets": [{
-    "name": "geometry", "path": "geometry.json", "schemaVersion": 2,
-    "availability": { "available": true, "value": null }, "scope": "reachable body descendants in preorder",
-    "population": { "sourceTotal": 2, "kept": 2, "dropped": 0, "exclusions": ["non-content-tags"] },
-    "caps": [{ "name": "records", "limit": 1200, "kind": "truncation-proof", "reached": false }]
-  }],
-  "sourcePixelCoverage": { "requested": false, "available": false }
+  "facets": [
+    {
+      "name": "geometry",
+      "path": "geometry.json",
+      "schemaVersion": 2,
+      "availability": {
+        "available": true,
+        "value": null
+      },
+      "scope": "reachable body descendants in preorder",
+      "population": {
+        "sourceTotal": 2,
+        "kept": 2,
+        "dropped": 0,
+        "exclusions": [
+          "non-content-tags"
+        ]
+      },
+      "caps": [
+        {
+          "name": "records",
+          "limit": 1200,
+          "kind": "truncation-proof",
+          "reached": false
+        }
+      ]
+    }
+  ],
+  "sourcePixelCoverage": {
+    "requested": false,
+    "available": false
+  }
 }

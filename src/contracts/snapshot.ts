@@ -1,270 +1,92 @@
-/**
- * Frozen immutable snapshot manifest contract (U1). `meta.json` is the SOLE
- * immutable snapshot manifest and the only marker a snapshot ref resolves. A
- * source facet with no `schemaVersion` is legacy source schema 1; new
- * acquisition writes source schema 2. Readers never rewrite old artifacts and
- * never infer a newly-required v2 fact from a legacy approximation — an
- * unavailable fact narrows the claim.
- *
- * `manifest.json` is reserved for DERIVED reads (see `neutral.ts`), never a
- * snapshot. Session aggregation uses `bundle.json` and discovers snapshots only
- * through `meta.json`.
- *
- * This module is type/interface + pure validators only.
- */
+/** Immutable source snapshot contracts. V2 is the only acquisition schema; V1 is read-only legacy evidence. */
+import { OK, ValidationResult, combine, fail, isObject } from './primitives.js';
 
-import {
-  Availability,
-  OK,
-  ValidationResult,
-  combine,
-  contextualize,
-  fail,
-  isFiniteNumber,
-  isObject,
-} from './primitives.js';
-
-/** Integer source schema version. Absent on a facet/object == legacy 1. */
 export type SchemaVersion = 1 | 2;
+export const SNAPSHOT_FACET_NAMES = ['viewport', 'geometry', 'styles', 'hit-testing', 'text', 'forms', 'media', 'animation', 'accessibility', 'queries', 'focus', 'scroll', 'layers', 'states', 'pixels', 'screenshot', 'dom-html'] as const;
+export type SnapshotFacetName = (typeof SNAPSHOT_FACET_NAMES)[number];
+/** @deprecated Legacy source facets are read-only; new snapshots use SNAPSHOT_FACET_NAMES. */
+export const FACET_NAMES = SNAPSHOT_FACET_NAMES;
+export type FacetName = SnapshotFacetName;
 
-/** The canonical source facet file names (design coverage table). */
-export const FACET_NAMES = [
-  'geometry',
-  'styles',
-  'hittest',
-  'ax',
-  'text',
-  'forms',
-  'media',
-  'animation',
-  'focus',
-  'scroll',
-  'layers',
-  'queries',
-  'states',
-  'pixels',
-  'churn',
-  'authored-ids',
-] as const;
-export type FacetName = (typeof FACET_NAMES)[number];
-
-/**
- * Whether reaching a declared cap proves truncation, only possibly truncated,
- * or is merely a bounded auxiliary-enrichment cap that never implies dropped
- * population. Every declared cap says which.
- */
-export type CapKind = 'truncation-proof' | 'possible-truncation' | 'bounded-auxiliary';
-
-export interface CapSpec {
-  readonly name: string;
-  readonly limit: number;
-  readonly kind: CapKind;
-  /** True once the cap was actually reached in this acquisition. */
-  readonly reached: boolean;
-}
-
-/**
- * Retained-population accounting for one facet. `dropped` is exact when known;
- * otherwise `droppedUnknown` is true. `sourceTotal` is present only when the
- * source total was actually measured.
- */
-export interface FacetPopulation {
-  readonly sourceTotal?: number;
-  readonly kept: number;
-  readonly dropped?: number;
-  readonly droppedUnknown?: boolean;
-  /** Named, machine-stable exclusion reasons applied during collection. */
-  readonly exclusions: readonly string[];
-}
-
-/** One facet's manifest entry: path, schema, availability, scope, population, caps. */
-export interface FacetManifest {
-  readonly name: FacetName;
-  /** Relative path within the snapshot dir, e.g. `geometry.json`. */
-  readonly path: string;
-  readonly schemaVersion: SchemaVersion;
-  /** Availability of the facet itself (a v2 facet whose attestation disagrees is unavailable). */
-  readonly availability: Availability<null>;
-  /** Human/machine scope description of the retained population. */
-  readonly scope: string;
-  readonly population: FacetPopulation;
-  readonly caps: readonly CapSpec[];
-}
-
-/** Screenshot raster dimensions are device pixels, NOT CSS viewport dimensions. */
-export interface RasterAuthority {
-  readonly space: 'screenshot/device-px';
-  readonly width: number;
-  readonly height: number;
-  readonly devicePixelRatio: number;
-  /** Explicit CSS-to-device transform (scale factors), never assumed 1. */
-  readonly cssToDeviceScaleX: number;
-  readonly cssToDeviceScaleY: number;
-}
-
-/**
- * Coordinate/layout authority recorded on the manifest. Each metric is
- * independently available. The authoritative visual viewport is at origin
- * {0,0}; layout viewport and DOM scroll extent are separate evidence and never
- * substitute for a missing authority.
- */
-export interface CoordinateAuthority {
-  readonly cssVisualViewport: Availability<{ readonly clientWidth: number; readonly clientHeight: number }>;
-  readonly cssLayoutViewport: Availability<{ readonly clientWidth: number; readonly clientHeight: number }>;
-  readonly cssContentSize: Availability<{
-    readonly x: number;
-    readonly y: number;
-    readonly width: number;
-    readonly height: number;
-  }>;
-  readonly raster: Availability<RasterAuthority>;
-}
-
-/** Separately-named content inputs (never merged with a `max`). */
-export interface ContentInputs {
-  readonly documentScrollWidth: Availability<number>;
-  readonly documentScrollHeight: Availability<number>;
-}
-
-/** The enriched immutable snapshot manifest. */
+export type CollectorCoverage = {
+  readonly retained_count: number;
+  readonly availability: 'available' | { readonly state: 'unavailable'; readonly reason: string };
+  readonly truncation: { readonly state: 'none' } | { readonly state: 'exact'; readonly dropped_count: number } | { readonly state: 'lower_bound'; readonly dropped_count_lower_bound: number } | { readonly state: 'unknown' };
+  readonly source_total: { readonly state: 'exact'; readonly count: number } | { readonly state: 'lower_bound'; readonly count_lower_bound: number } | { readonly state: 'unavailable'; readonly reason: string };
+};
+export type SnapshotFacet = { readonly status: 'available' | 'unavailable' | 'not-requested'; readonly primary_population: { readonly name: string; readonly coverage: CollectorCoverage }; readonly subpopulations: Readonly<Record<string, CollectorCoverage>>; readonly unavailable_reason: string | null };
+export interface CdpEndpoint { readonly host: '127.0.0.1'; readonly port: number; }
+export interface SnapshotTargetAttestation { readonly mode: 'fresh-url' | 'session' | 'explicit-target'; readonly session_id: string | null; readonly session_source: 'active' | 'explicit' | null; readonly target_id: string; readonly endpoint: CdpEndpoint; readonly observed_url: string; }
+export interface SourceManifestArtifact { readonly key: string; readonly path: string; readonly bytes: number; readonly sha256: string; readonly media_type: string; readonly retained_arrays: readonly { readonly key: string; readonly json_pointer: string; readonly retained_count: number }[]; }
+export interface SourceArtifactManifest { readonly schemaVersion: 2; readonly artifacts: readonly SourceManifestArtifact[]; }
 export interface SnapshotMetaV2 {
   readonly schemaVersion: 2;
-  /** Snapshot identity (container-id grammar). */
   readonly snapshotId: string;
-  /** The request that produced it (url, viewport, flags) — preserved verbatim. */
   readonly request: Record<string, unknown>;
-  /** Settledness/timing facts. */
   readonly settled: boolean;
   readonly timing: Record<string, unknown>;
-  readonly coordinateAuthority: CoordinateAuthority;
-  readonly contentInputs: ContentInputs;
-  readonly facets: readonly FacetManifest[];
-  /** Source-pixel coverage summary. */
+  readonly coordinateAuthority: Record<string, unknown>;
+  readonly contentInputs: Record<string, unknown>;
+  readonly target: SnapshotTargetAttestation;
+  readonly facets: { readonly [K in SnapshotFacetName]: SnapshotFacet };
+  readonly source_artifact_manifest: SourceArtifactManifest;
   readonly sourcePixelCoverage: unknown;
 }
-
-/**
- * A legacy (schema 1) snapshot manifest: physically retained facts only. New
- * ancestry completeness, AX join coverage, content authority, cap attestation,
- * authored-ID uniqueness, and layer-transform facts are unavailable where
- * absent, never backfilled.
- */
-export interface SnapshotMetaV1 {
-  readonly schemaVersion?: 1;
-  readonly snapshotId: string;
-  readonly request?: Record<string, unknown>;
-  readonly facets: readonly { readonly name: string; readonly path: string }[];
-}
-
+export interface SnapshotMetaV1 { readonly schemaVersion?: 1; readonly snapshotId: string; readonly request?: Record<string, unknown>; readonly facets: readonly { readonly name: string; readonly path: string }[]; }
 export type SnapshotMeta = SnapshotMetaV1 | SnapshotMetaV2;
+export function isV2Meta(meta: SnapshotMeta): meta is SnapshotMetaV2 { return (meta as { schemaVersion?: number }).schemaVersion === 2; }
+export function effectiveSchemaVersion(obj: unknown): SchemaVersion | 'unknown' { if (!isObject(obj)) return 'unknown'; return obj.schemaVersion === undefined || obj.schemaVersion === 1 ? 1 : obj.schemaVersion === 2 ? 2 : 'unknown'; }
 
-// ---------------------------------------------------------------------------
-// Validators.
-// ---------------------------------------------------------------------------
-
-export function isV2Meta(meta: SnapshotMeta): meta is SnapshotMetaV2 {
-  return (meta as { schemaVersion?: number }).schemaVersion === 2;
+const safe = (n: unknown): n is number => Number.isSafeInteger(n) && n >= 0;
+const reason = (x: unknown): x is string => typeof x === 'string' && x.length > 0 && x.length <= 512;
+const keys = (x: object): string[] => Object.keys(x);
+const SUBPOPULATIONS: Record<SnapshotFacetName, readonly string[]> = { viewport: [], geometry: [], styles: [], 'hit-testing': [], text: [], forms: [], media: [], animation: [], accessibility: [], queries: ['media-queries', 'container-queries'], focus: ['forward', 'reverse'], scroll: ['snap-descendants', 'sticky-fixed-descendants', 'sampled-visible-children'], layers: [], states: [], pixels: [], screenshot: [], 'dom-html': [] };
+function normalizedPath(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && value.length <= 512 && !value.includes('\\') && !value.startsWith('/') && !value.split('/').some(p => !p || p === '.' || p === '..'); }
+function coverage(value: unknown): ValidationResult {
+  if (!isObject(value)) return fail('coverage must be an object');
+  const v = value as Partial<CollectorCoverage>;
+  const errors: ValidationResult[] = [];
+  if (!safe(v.retained_count)) errors.push(fail('retained_count must be a nonnegative safe integer'));
+  const unavailable = isObject(v.availability) && v.availability.state === 'unavailable' && reason(v.availability.reason);
+  if (v.availability !== 'available' && !unavailable) errors.push(fail('coverage availability is invalid'));
+  if (!isObject(v.truncation) || !['none', 'exact', 'lower_bound', 'unknown'].includes(String(v.truncation.state))) errors.push(fail('coverage truncation is invalid'));
+  else if (v.truncation.state === 'exact' && !safe(v.truncation.dropped_count)) errors.push(fail('exact truncation needs dropped_count'));
+  else if (v.truncation.state === 'lower_bound' && !safe(v.truncation.dropped_count_lower_bound)) errors.push(fail('lower_bound truncation needs dropped_count_lower_bound'));
+  if (!isObject(v.source_total) || !['exact', 'lower_bound', 'unavailable'].includes(String(v.source_total.state))) errors.push(fail('coverage source_total is invalid'));
+  else if (v.source_total.state === 'exact' && !safe(v.source_total.count)) errors.push(fail('exact source_total needs count'));
+  else if (v.source_total.state === 'lower_bound' && !safe(v.source_total.count_lower_bound)) errors.push(fail('lower_bound source_total needs count_lower_bound'));
+  else if (v.source_total.state === 'unavailable' && !reason(v.source_total.reason)) errors.push(fail('unavailable source_total needs reason'));
+  if (unavailable && (v.retained_count !== 0 || v.truncation?.state !== 'unknown' || v.source_total?.state !== 'unavailable')) errors.push(fail('unavailable coverage cannot represent zero evidence'));
+  if (v.source_total?.state === 'exact' && v.truncation?.state === 'exact' && v.source_total.count !== (v.retained_count ?? 0) + v.truncation.dropped_count) errors.push(fail('exact coverage totals disagree'));
+  return combine(...errors);
 }
-
-/** Effective source schema version of any object: 2 if explicit, else legacy 1. Unknown versions are invalid. */
-export function effectiveSchemaVersion(obj: unknown): SchemaVersion | 'unknown' {
-  if (!isObject(obj)) return 'unknown';
-  const v = obj.schemaVersion;
-  if (v === undefined) return 1;
-  if (v === 1 || v === 2) return v;
-  return 'unknown';
+export function validateCollectorCoverage(value: unknown): ValidationResult { return coverage(value); }
+function facet(name: SnapshotFacetName, value: unknown): ValidationResult {
+  if (!isObject(value)) return fail(`facet ${name} must be an object`);
+  const v = value as Partial<SnapshotFacet>; const errors = [coverage(v.primary_population?.coverage)];
+  if (!v.primary_population || !reason(v.primary_population.name)) errors.push(fail(`facet ${name} primary population is invalid`));
+  const expected = SUBPOPULATIONS[name];
+  if (!isObject(v.subpopulations) || keys(v.subpopulations).join('\0') !== expected.join('\0')) errors.push(fail(`facet ${name} subpopulations are invalid`));
+  else for (const item of expected) errors.push(coverage(v.subpopulations[item]));
+  if (!['available', 'unavailable', 'not-requested'].includes(String(v.status))) errors.push(fail(`facet ${name} status is invalid`));
+  if (v.status === 'unavailable' && !reason(v.unavailable_reason)) errors.push(fail(`facet ${name} unavailable without reason`));
+  if (v.status !== 'unavailable' && v.unavailable_reason !== null) errors.push(fail(`facet ${name} has inconsistent unavailable reason`));
+  if (v.status === 'not-requested' && name !== 'states' && name !== 'pixels') errors.push(fail(`facet ${name} cannot be not-requested`));
+  return combine(...errors);
 }
-
-function validateCap(cap: CapSpec): ValidationResult {
-  const valid: CapKind[] = ['truncation-proof', 'possible-truncation', 'bounded-auxiliary'];
-  if (!valid.includes(cap.kind)) return fail(`cap ${cap.name} has invalid kind ${cap.kind}`);
-  if (!(cap.limit >= 0)) return fail(`cap ${cap.name} has invalid limit`);
-  return OK;
+function validateSourceManifest(value: unknown): ValidationResult {
+  if (!isObject(value) || value.schemaVersion !== 2 || !Array.isArray(value.artifacts)) return fail('source_artifact_manifest is invalid');
+  const artifactKeys = new Set<string>(); const paths = new Set<string>(); const arrayKeys = new Set<string>(); const errors: ValidationResult[] = [];
+  for (const a of value.artifacts) { if (!isObject(a) || !reason(a.key) || !normalizedPath(a.path) || !safe(a.bytes) || typeof a.media_type !== 'string' || !/^[a-f0-9]{64}$/.test(String(a.sha256)) || !Array.isArray(a.retained_arrays)) { errors.push(fail('source artifact is invalid')); continue; } if (artifactKeys.has(a.key) || paths.has(a.path)) errors.push(fail('duplicate source artifact key or path')); artifactKeys.add(a.key); paths.add(a.path); for (const r of a.retained_arrays) { if (!isObject(r) || !reason(r.key) || typeof r.json_pointer !== 'string' || (!r.json_pointer.startsWith('/') && r.json_pointer !== '') || !safe(r.retained_count) || arrayKeys.has(r.key)) errors.push(fail('source retained array is invalid')); else arrayKeys.add(r.key); } }
+  return combine(...errors);
 }
-
-function validatePopulation(pop: FacetPopulation): ValidationResult {
-  const errs: ValidationResult[] = [];
-  if (!(pop.kept >= 0)) errs.push(fail('kept must be >= 0'));
-  const hasExactDrop = pop.dropped !== undefined;
-  const hasUnknownDrop = pop.droppedUnknown === true;
-  if (hasExactDrop && hasUnknownDrop) {
-    errs.push(fail('facet declares both exact dropped and droppedUnknown'));
-  }
-  if (pop.sourceTotal !== undefined && hasExactDrop) {
-    if (pop.sourceTotal !== pop.kept + (pop.dropped as number)) {
-      errs.push(fail(`sourceTotal(${pop.sourceTotal}) != kept(${pop.kept}) + dropped(${pop.dropped})`));
-    }
-  }
-  if (!Array.isArray(pop.exclusions)) errs.push(fail('exclusions must be an array'));
-  return combine(...errs);
-}
-
-export function validateFacetManifest(facet: FacetManifest): ValidationResult {
-  const errs: ValidationResult[] = [];
-  if (!(FACET_NAMES as readonly string[]).includes(facet.name)) {
-    errs.push(fail(`unknown facet name: ${facet.name}`));
-  }
-  if (!facet.path) errs.push(fail(`facet ${facet.name} missing path`));
-  if (facet.schemaVersion !== 1 && facet.schemaVersion !== 2) {
-    errs.push(fail(`facet ${facet.name} has unsupported schemaVersion ${facet.schemaVersion}`));
-  }
-  errs.push(contextualize(`facet ${facet.name} population`, validatePopulation(facet.population)));
-  for (const cap of facet.caps) errs.push(contextualize(`facet ${facet.name}`, validateCap(cap)));
-  return combine(...errs);
-}
-
-function validateAvailabilityNumber(a: Availability<unknown>, label: string): ValidationResult {
-  if (!isObject(a)) return fail(`${label} must be an availability object`);
-  if (a.available === false) {
-    return typeof a.reason === 'string' && a.reason.length > 0
-      ? OK
-      : fail(`${label} unavailable without a reason`);
-  }
-  if (a.available !== true) return fail(`${label} missing available flag`);
-  return OK;
-}
-
-/** Validate a v2 snapshot manifest structurally (not the on-disk facet bytes). */
 export function validateSnapshotMetaV2(meta: SnapshotMetaV2): ValidationResult {
-  const errs: ValidationResult[] = [];
-  if (meta.schemaVersion !== 2) errs.push(fail('v2 meta must declare schemaVersion 2'));
-  if (!meta.snapshotId) errs.push(fail('missing snapshotId'));
-  if (!isObject(meta.coordinateAuthority)) {
-    errs.push(fail('missing coordinateAuthority'));
-  } else {
-    const ca = meta.coordinateAuthority;
-    errs.push(validateAvailabilityNumber(ca.cssVisualViewport, 'cssVisualViewport'));
-    errs.push(validateAvailabilityNumber(ca.cssLayoutViewport, 'cssLayoutViewport'));
-    errs.push(validateAvailabilityNumber(ca.cssContentSize, 'cssContentSize'));
-    errs.push(validateAvailabilityNumber(ca.raster, 'raster'));
-    // If raster available, DPR must be a finite positive number.
-    if (isObject(ca.raster) && ca.raster.available === true && (!isObject(ca.raster.value) || !(isFiniteNumber(ca.raster.value.devicePixelRatio) && ca.raster.value.devicePixelRatio > 0))) {
-      errs.push(fail('raster authority available but devicePixelRatio is not a finite positive number'));
-    }
-  }
-  if (!isObject(meta.contentInputs)) {
-    errs.push(fail('missing contentInputs'));
-  } else {
-    errs.push(validateAvailabilityNumber(meta.contentInputs.documentScrollWidth, 'documentScrollWidth'));
-    errs.push(validateAvailabilityNumber(meta.contentInputs.documentScrollHeight, 'documentScrollHeight'));
-  }
-  if (!Array.isArray(meta.facets) || meta.facets.length === 0) {
-    errs.push(fail('v2 meta must declare at least one facet'));
-  } else {
-    for (const f of meta.facets) errs.push(validateFacetManifest(f));
-  }
-  return combine(...errs);
+  const errors: ValidationResult[] = [];
+  if (!isObject(meta) || meta.schemaVersion !== 2 || typeof meta.snapshotId !== 'string' || !meta.snapshotId) errors.push(fail('invalid v2 identity'));
+  if (!isObject(meta.request) || !isObject(meta.timing) || !isObject(meta.coordinateAuthority) || !isObject(meta.contentInputs)) errors.push(fail('v2 request/timing/authority fields must be objects'));
+  if (!isObject(meta.facets) || keys(meta.facets).join('\0') !== SNAPSHOT_FACET_NAMES.join('\0')) errors.push(fail('v2 facets must use fixed ordered keys')); else for (const n of SNAPSHOT_FACET_NAMES) errors.push(facet(n, meta.facets[n]));
+  const t = meta.target; if (!isObject(t) || !['fresh-url', 'session', 'explicit-target'].includes(String(t.mode)) || typeof t.target_id !== 'string' || !t.target_id || !isObject(t.endpoint) || t.endpoint.host !== '127.0.0.1' || !Number.isSafeInteger(t.endpoint.port) || t.endpoint.port < 1 || t.endpoint.port > 65535 || typeof t.observed_url !== 'string') errors.push(fail('invalid target attestation')); else if (t.mode === 'session' ? !(typeof t.session_id === 'string' && /^ses_[0-9a-z]{26}$/.test(t.session_id) && (t.session_source === 'active' || t.session_source === 'explicit')) : t.session_id !== null || t.session_source !== null) errors.push(fail('target attestation session fields disagree with mode'));
+  errors.push(validateSourceManifest(meta.source_artifact_manifest));
+  return combine(...errors);
 }
-
-/** Validate any snapshot manifest: accepts v1 and v2, rejects unknown versions. */
-export function validateSnapshotMeta(meta: unknown): ValidationResult {
-  const version = effectiveSchemaVersion(meta);
-  if (version === 'unknown') return fail('unsupported snapshot schemaVersion');
-  if (!isObject(meta)) return fail('snapshot meta must be an object');
-  if (version === 2) return validateSnapshotMetaV2(meta as unknown as SnapshotMetaV2);
-  // Legacy v1: physically-retained facts only.
-  const errs: ValidationResult[] = [];
-  if (typeof meta.snapshotId !== 'string' || !meta.snapshotId) errs.push(fail('legacy meta missing snapshotId'));
-  if (!Array.isArray(meta.facets)) errs.push(fail('legacy meta missing facets array'));
-  return combine(...errs);
-}
+export function validateSnapshotMeta(meta: unknown): ValidationResult { const version = effectiveSchemaVersion(meta); if (version === 'unknown' || !isObject(meta)) return fail('unsupported snapshot schemaVersion'); if (version === 2) return validateSnapshotMetaV2(meta as SnapshotMetaV2); return typeof meta.snapshotId === 'string' && Array.isArray(meta.facets) ? OK : fail('legacy meta is invalid'); }
