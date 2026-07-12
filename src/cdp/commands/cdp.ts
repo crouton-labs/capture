@@ -9,6 +9,12 @@
  * per-CLIENT and reverts the instant its websocket disconnects, so a plain
  * one-shot call here only lasts for that single command \u2014 running inside a
  * held session is what keeps it alive across commands.
+ *
+ * Output: one `<cdp-result>` block via `src/output/render.ts` \u2014 the protocol
+ * result/event as a capped inline data payload, mirrored at full fidelity
+ * under `--json` (D11). Params stay inline `--params <json>`, a documented
+ * spec deviation: raw CDP params are small protocol-defined objects and this
+ * leaf is the diagnostic escape hatch, so file indirection buys nothing.
  */
 
 import * as fs from 'fs';
@@ -17,11 +23,24 @@ import { connectForCommand } from '../connection.js';
 import { getBrowserClient, findTabById } from '../targets.js';
 import { detectCdpPort } from '../detect.js';
 import { sendBridgeRequest } from '../bridge/client.js';
-import { type CDPClient } from '../client.js';
 import { isRecorderHeldClient } from '../recorder-client.js';
 import { type ParsedArgs } from '../types.js';
+import {
+  capped,
+  data,
+  emitResult,
+  fact,
+  line,
+  text,
+  type FactLine,
+} from '../../output/render.js';
 
 const DEFAULT_TIMEOUT_MS = 10000;
+
+/** Generous inline cap for the protocol result/event payload (D11): big
+ * enough for typical protocol objects, still bounded in the prose block.
+ * `--json` carries the payload uncapped (full fidelity). */
+const GENEROUS_RESULT_CAP = 4000;
 
 /** Root-help representation of this leaf, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="cdp">
@@ -30,57 +49,112 @@ use when no other capture command covers the protocol surface you need (Browser.
   cdp [<Domain.method>] [--params <json>] [--browser] [--wait-event <name>] — \`capture cdp -h\`
 </command>`;
 
-function printHelp(): void {
-  console.log(
-    `Usage: capture cdp <Domain.method> [--params '<json>'] [--browser] [--target <id>] [--wait-event <Domain.event>] [--timeout <ms>]
+const HELP = `capture cdp — send a raw CDP protocol method and/or wait for a protocol event: the escape hatch for domains no other capture command wraps (Browser.*, ServiceWorker.*, Target.*, ...).
 
-Send a raw CDP command \u2014 the escape hatch for domains no other capture
-command wraps (Browser.grantPermissions, ServiceWorker.*, Target.*, ...).
+Input:
+  <Domain.method>              protocol method to send. At least one of <Domain.method> / --wait-event is required.
+  --params <json>              JSON-encoded params object for the method. Spec deviation: params stay inline JSON (no file indirection) — raw CDP params are small protocol-defined objects.
+  --wait-event <Domain.event>  wait for (and return) the next occurrence of a protocol event; combinable with a method (the method is sent first) or usable alone.
+  --browser                    route through the held connection (session start --hold) instead of a one-shot page websocket. Connection-scoped state (permission grants, domain enables) reverts the instant its connection closes — it survives across commands only inside a held session.
+  --target <id>                with --browser: attach a flattened CDP session on the held connection to this target (for target-scoped domains); without --browser: the page target to run against. 8-char id prefix accepted.
+  --timeout <ms>               event-wait timeout (default ${DEFAULT_TIMEOUT_MS}ms).
 
-  --browser           Route through the held connection (session --hold)
-                       instead of a fresh page/tab websocket. Required for
-                       state that must survive across separate commands.
-  --target <id>       With --browser: attach to this target (a flattened CDP
-                       session on the SAME held connection) for target-scoped
-                       domains, e.g. ServiceWorker.enable / .deliverPushMessage.
-                       Without --browser: the page target to run against, as
-                       with every other capture command.
-  --params '<json>'   JSON-encoded params object for the method.
-  --wait-event <name> Wait for (and return) the next occurrence of a CDP
-                       event, e.g. ServiceWorker.workerRegistrationUpdated.
-                       Can be combined with a method (sent first) or alone.
-  --timeout <ms>      Wait timeout (default: ${DEFAULT_TIMEOUT_MS}ms).
+Output:
+  <cdp-result method=… wait-event=… scope=…> — the protocol result and/or awaited event as an escaped, length-capped JSON payload. --json mirrors the same block with the payload at full fidelity.
 
-Browser-level and target-enablement state reverts the instant its connection
-disconnects \u2014 a one-shot call here only lasts for that single command. Run
-inside a held session to keep it alive across commands:
+Effects:
+  Sends the method verbatim to the browser — whatever browser/page state the protocol call mutates, it mutates. Writes no artifacts.`;
 
-  capture session start --url http://localhost:3000 --hold
-  capture cdp Browser.grantPermissions --browser \\
-    --params '{"origin":"http://localhost:3000","permissions":["notifications"]}'
-  capture cdp ServiceWorker.enable --browser --target <pageTabId>
-  capture cdp --browser --target <pageTabId> --wait-event ServiceWorker.workerRegistrationUpdated
-  capture cdp ServiceWorker.deliverPushMessage --browser --target <pageTabId> \\
-    --params '{"origin":"...","registrationId":"...","data":"..."}'
-  capture session stop <session-id>
+/**
+ * The minimal client surface both scopes drive. Satisfied structurally by
+ * `CDPClient`, `RecorderHeldClient`, and test stubs \u2014 the injectable
+ * `connect` parameter on `runPageScope` exists so tests can exercise the
+ * command wiring against a stub without a live browser.
+ */
+export interface CdpScopeClient {
+  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  on(event: string, handler: (params: unknown) => void): void;
+  close(): void;
+}
 
-Without --browser, the method runs against the current page target (session
-context or --target), like any other capture command \u2014 e.g. DOM.* or
-Accessibility.* calls beyond what \`capture a11y\` exposes.`,
+export interface CdpResultOptions {
+  method?: string;
+  waitEvent?: string;
+  scope: 'browser' | 'page';
+  target?: string;
+  result?: unknown;
+  event?: unknown;
+  json?: boolean;
+}
+
+/**
+ * Emit the `<cdp-result>` block. The protocol result/event is embedded as a
+ * JSON-stringified data payload: capped at `GENEROUS_RESULT_CAP` in prose,
+ * uncapped (full fidelity) under `--json`. Exported for `test/cdp-command.test.ts`.
+ */
+export function emitCdpResult(opts: CdpResultOptions): void {
+  const sections: FactLine[] = [];
+  const payloadCap = (payload: string): number => (opts.json ? payload.length : GENEROUS_RESULT_CAP);
+  if (opts.method) {
+    const payload = JSON.stringify(opts.result) ?? 'undefined';
+    sections.push(line(text`result: `, data(capped(payload, payloadCap(payload)))));
+  }
+  if (opts.waitEvent) {
+    const payload = JSON.stringify(opts.event) ?? 'undefined';
+    sections.push(line(text`event: `, data(capped(payload, payloadCap(payload)))));
+  }
+  emitResult(
+    {
+      tag: 'cdp-result',
+      attrs: {
+        method: opts.method,
+        'wait-event': opts.waitEvent,
+        scope: opts.scope,
+        target: opts.target,
+      },
+      sections,
+    },
+    { json: opts.json },
   );
 }
 
+function emitCdpError(opts: {
+  code: string;
+  summary: FactLine;
+  followUp?: FactLine;
+  json?: boolean;
+}): never {
+  emitResult(
+    {
+      tag: 'error',
+      attrs: { command: 'cdp', code: opts.code },
+      summary: opts.summary,
+      followUp: opts.followUp,
+    },
+    { json: opts.json },
+  );
+  process.exit(1);
+}
+
+/** Recovery line for a rejected bare (target-less) protocol call: many CDP
+ * domains are tab-scoped, and Chrome often rejects them with only "Internal
+ * error" when sent on the bare browser connection. */
+const TAB_SCOPE_RECOVERY = text`Many CDP domains (Storage.*, Page.*, DOM.*, Emulation.*, ...) are tab-scoped, not connection-scoped — re-run with --target <tabId> (\`capture tab list\` shows available tabs).`;
+
 export async function cmdCdp(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
-    printHelp();
+    console.log(HELP);
     process.exit(0);
   }
 
   const method = parsed.positional[0];
   if (!method && !parsed.waitEvent) {
-    console.error('ERROR: Provide a CDP method (e.g. Browser.grantPermissions) or --wait-event.\n');
-    printHelp();
-    process.exit(1);
+    emitCdpError({
+      code: 'missing_method_and_event',
+      summary: text`received: neither a <Domain.method> positional nor --wait-event; expected: at least one of the two.`,
+      followUp: text`Run \`capture cdp -h\` for the input schema.`,
+      json: parsed.json,
+    });
   }
 
   let params: Record<string, unknown> | undefined;
@@ -88,8 +162,11 @@ export async function cmdCdp(parsed: ParsedArgs, _args: string[]): Promise<void>
     try {
       params = JSON.parse(parsed.params);
     } catch (err) {
-      console.error(`ERROR: --params is not valid JSON: ${err instanceof Error ? err.message : err}`);
-      process.exit(1);
+      emitCdpError({
+        code: 'invalid_params_json',
+        summary: fact`received: --params that is not valid JSON (${err instanceof Error ? err.message : String(err)}); expected: a JSON-encoded params object.`,
+        json: parsed.json,
+      });
     }
   }
 
@@ -100,7 +177,19 @@ export async function cmdCdp(parsed: ParsedArgs, _args: string[]): Promise<void>
     return;
   }
 
-  await runPageScope(method, params, parsed, timeoutMs);
+  try {
+    await runPageScope(method, params, parsed, timeoutMs);
+  } catch (err) {
+    emitCdpError({
+      code: 'cdp_failed',
+      summary: fact`\`${invocationLabel(method, parsed.waitEvent)}\` failed on the page connection: ${err instanceof Error ? err.message : String(err)}`,
+      json: parsed.json,
+    });
+  }
+}
+
+function invocationLabel(method: string | undefined, waitEvent: string | undefined): string {
+  return method ?? `--wait-event ${waitEvent}`;
 }
 
 async function runBrowserScope(
@@ -119,25 +208,29 @@ async function runBrowserScope(
       timeoutMs,
     });
     if (!resp.ok) {
-      console.error(`ERROR: ${resp.error}`);
-      if (!parsed.target) {
-        console.error(
-          '\nMany CDP domains (Storage.*, Page.*, DOM.*, Emulation.*, ...) are scoped to a specific ' +
-            'tab, not the browser connection as a whole \u2014 sent bare like this, Chrome often rejects them ' +
-            'with just "Internal error" and no further detail. Pass --target <tabId> to attach to the tab ' +
-            'the call should apply to (run "capture list" to find one).',
-        );
-      }
-      process.exit(1);
+      emitCdpError({
+        code: 'cdp_failed',
+        summary: fact`\`${invocationLabel(method, parsed.waitEvent)}\` failed over the held connection: ${resp.error ?? 'unknown bridge error'}`,
+        followUp: parsed.target ? undefined : TAB_SCOPE_RECOVERY,
+        json: parsed.json,
+      });
     }
-    console.log(JSON.stringify({ result: resp.result, event: resp.event }, null, 2));
+    emitCdpResult({
+      method,
+      waitEvent: parsed.waitEvent,
+      scope: 'browser',
+      target: parsed.target,
+      result: resp.result,
+      event: resp.event,
+      json: parsed.json,
+    });
     return;
   }
 
+  // In-flight diagnostic (stderr): the one-shot connection semantics fact.
   console.error(
-    'No held session bridge active \u2014 this connection closes when the command exits, ' +
-      'so any browser-level grant or target enablement made here reverts immediately after.\n' +
-      'For state that must survive multiple commands: capture session start --hold\n',
+    'No held session bridge active \u2014 this one-shot connection closes when the command exits, ' +
+      'so any browser-level grant or target enablement made here reverts immediately after.',
   );
 
   const port = parsed.port ?? (await detectCdpPort());
@@ -146,12 +239,16 @@ async function runBrowserScope(
     let sessionId: string | undefined;
     if (parsed.target) {
       // Accept the same 8-char-prefix targeting every other capture command
-      // promises (see the top-level --help TARGETING section) instead of
+      // promises (see the root help's targeting contract) instead of
       // requiring the full 32-char target id here.
       const tab = await findTabById(port, parsed.target);
       if (!tab) {
-        console.error(`ERROR: No target found for "${parsed.target}" on port ${port}. Run "capture list" to see available tabs.`);
-        process.exit(1);
+        emitCdpError({
+          code: 'target_not_found',
+          summary: fact`received: --target ${parsed.target} with no matching target on port ${port}; expected: an existing target id (8-char prefix accepted).`,
+          followUp: text`\`capture tab list\` shows available targets.`,
+          json: parsed.json,
+        });
       }
       const attached = (await client.send('Target.attachToTarget', {
         targetId: tab.id,
@@ -162,36 +259,43 @@ async function runBrowserScope(
     const eventPromise = parsed.waitEvent ? waitForEventOnce(client, parsed.waitEvent, timeoutMs) : undefined;
     const result = method ? await client.send(method, params ?? {}, 60000, sessionId) : undefined;
     const event = eventPromise ? await eventPromise : undefined;
-    console.log(JSON.stringify({ result, event }, null, 2));
+    emitCdpResult({
+      method,
+      waitEvent: parsed.waitEvent,
+      scope: 'browser',
+      target: parsed.target,
+      result,
+      event,
+      json: parsed.json,
+    });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`ERROR: ${message}`);
-    if (!parsed.target) {
-      console.error(
-        '\nMany CDP domains (Storage.*, Page.*, DOM.*, Emulation.*, ...) are scoped to a specific ' +
-          'tab, not the browser connection as a whole \u2014 sent bare like this, Chrome often rejects them ' +
-          'with just "Internal error" and no further detail. Pass --target <tabId> to attach to the tab ' +
-          `the call should apply to (run "capture list" to find one${method ? `, e.g. capture cdp ${method} --browser --target <tabId> ...` : ''}).`,
-      );
-    }
-    process.exit(1);
+    emitCdpError({
+      code: 'cdp_failed',
+      summary: fact`\`${invocationLabel(method, parsed.waitEvent)}\` failed on the one-shot browser connection: ${err instanceof Error ? err.message : String(err)}`,
+      followUp: parsed.target ? undefined : TAB_SCOPE_RECOVERY,
+      json: parsed.json,
+    });
   } finally {
     client.close();
   }
 }
 
 /**
- * Exported for testing (`test/recorder-navigate-waitevent.test.ts`): the
- * recorder-held branch below (`isRecorderHeldClient(client)`) is the actual
- * command wiring `capture cdp --wait-event` runs under an active recording.
+ * Exported for testing (`test/recorder-navigate-waitevent.test.ts`,
+ * `test/cdp-command.test.ts`): the recorder-held branch below
+ * (`isRecorderHeldClient(client)`) is the actual command wiring
+ * `capture cdp --wait-event` runs under an active recording, and the
+ * injectable `connect` lets `test/cdp-command.test.ts` drive the non-held
+ * branch against a stub client.
  */
 export async function runPageScope(
   method: string | undefined,
   params: Record<string, unknown> | undefined,
   parsed: ParsedArgs,
   timeoutMs: number,
+  connect: (parsed: ParsedArgs) => Promise<{ client: CdpScopeClient }> = connectForCommand,
 ): Promise<void> {
-  const { client } = await connectForCommand(parsed);
+  const { client } = await connect(parsed);
   try {
     let result: unknown;
     let event: unknown;
@@ -221,13 +325,21 @@ export async function runPageScope(
       result = method ? await client.send(method, params ?? {}) : undefined;
       event = eventPromise ? await eventPromise : undefined;
     }
-    console.log(JSON.stringify({ result, event }, null, 2));
+    emitCdpResult({
+      method,
+      waitEvent: parsed.waitEvent,
+      scope: 'page',
+      target: parsed.target,
+      result,
+      event,
+      json: parsed.json,
+    });
   } finally {
     client.close();
   }
 }
 
-function waitForEventOnce(client: CDPClient, eventName: string, timeoutMs: number): Promise<unknown> {
+function waitForEventOnce(client: CdpScopeClient, eventName: string, timeoutMs: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error(`Timed out after ${timeoutMs}ms waiting for event "${eventName}"`)),
