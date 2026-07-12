@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 2,
+  "scope": "top-document-light-dom",
+  "complete": true,
+  "occurrences": [
+    {
+      "value": "duplicate",
+      "backendNodeId": 1
+    },
+    {
+      "value": "duplicate",
+      "backendNodeId": 2
+    }
+  ],
+  "duplicateGroups": [
+    "duplicate"
+  ]
+}

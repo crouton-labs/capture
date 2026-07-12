@@ -1,0 +1,747 @@
+{
+  "schemaVersion": 1,
+  "snapshotIds": [
+    "full-v2"
+  ],
+  "familyOrder": [
+    "native-interactive-box-size"
+  ],
+  "families": [
+    {
+      "family": "native-interactive-box-size",
+      "coverage": {
+        "populationDefinition": "every positive-area retained native interactive element",
+        "schemaVersion": 1,
+        "sources": [
+          "geometry"
+        ],
+        "availability": {
+          "available": true,
+          "value": null
+        },
+        "populationCount": 25,
+        "measuredCount": 25,
+        "unavailableCount": 0,
+        "kept": 25,
+        "caps": [],
+        "exclusions": [],
+        "unavailableReasons": {}
+      },
+      "numericSummaries": {
+        "width": {
+          "count": 25,
+          "unavailableCount": 0,
+          "min": 20,
+          "p25": 20,
+          "p50": 20,
+          "p75": 20,
+          "max": 99
+        }
+      },
+      "categoricalMaps": {},
+      "facts": [
+        {
+          "id": "late-1",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-1"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/0"
+          }
+        },
+        {
+          "id": "late-2",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-2"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/1"
+          }
+        },
+        {
+          "id": "late-3",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-3"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/2"
+          }
+        },
+        {
+          "id": "late-4",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-4"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/3"
+          }
+        },
+        {
+          "id": "late-5",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-5"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/4"
+          }
+        },
+        {
+          "id": "late-6",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-6"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/5"
+          }
+        },
+        {
+          "id": "late-7",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-7"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/6"
+          }
+        },
+        {
+          "id": "late-8",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-8"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/7"
+          }
+        },
+        {
+          "id": "late-9",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-9"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/8"
+          }
+        },
+        {
+          "id": "late-10",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-10"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/9"
+          }
+        },
+        {
+          "id": "late-11",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-11"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/10"
+          }
+        },
+        {
+          "id": "late-12",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-12"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/11"
+          }
+        },
+        {
+          "id": "late-13",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-13"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/12"
+          }
+        },
+        {
+          "id": "late-14",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-14"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/13"
+          }
+        },
+        {
+          "id": "late-15",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-15"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/14"
+          }
+        },
+        {
+          "id": "late-16",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-16"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/15"
+          }
+        },
+        {
+          "id": "late-17",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-17"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/16"
+          }
+        },
+        {
+          "id": "late-18",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-18"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/17"
+          }
+        },
+        {
+          "id": "late-19",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-19"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/18"
+          }
+        },
+        {
+          "id": "late-20",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-20"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/19"
+          }
+        },
+        {
+          "id": "late-21",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-21"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/20"
+          }
+        },
+        {
+          "id": "late-22",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-22"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/21"
+          }
+        },
+        {
+          "id": "late-23",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-23"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/22"
+          }
+        },
+        {
+          "id": "late-24",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-24"
+          ],
+          "values": {
+            "width": 20,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/23"
+          }
+        },
+        {
+          "id": "late-25",
+          "family": "native-interactive-box-size",
+          "schemaVersion": 1,
+          "subjects": [
+            "button-25"
+          ],
+          "values": {
+            "width": 99,
+            "height": 20
+          },
+          "units": {
+            "width": "css-px",
+            "height": "css-px"
+          },
+          "availability": {
+            "available": true,
+            "value": null
+          },
+          "provenance": {
+            "snapshotId": "full-v2",
+            "sources": [
+              "geometry"
+            ],
+            "artifactPath": "/fixture/facts.json",
+            "jsonPointer": "/families/0/facts/24"
+          }
+        }
+      ]
+    }
+  ],
+  "completeWithinRetainedCoverage": true
+}

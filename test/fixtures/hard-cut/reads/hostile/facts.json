@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "snapshotIds": ["full-v2"],
+  "familyOrder": ["text-inline-extent"],
+  "families": [{ "family": "text-inline-extent", "coverage": { "populationDefinition": "verbatim hostile evidence", "schemaVersion": 1, "sources": ["text"], "availability": { "available": true, "value": null }, "populationCount": 1, "measuredCount": 1, "unavailableCount": 0, "kept": 1, "caps": [], "exclusions": [], "unavailableReasons": {} }, "numericSummaries": {}, "categoricalMaps": {}, "facts": [{ "id": "hostile-1", "family": "text-inline-extent", "schemaVersion": 1, "subjects": ["subject-1"], "values": { "text": "line\nseparator and-control\u0001 token=abc123" }, "units": {}, "availability": { "available": true, "value": null }, "provenance": { "snapshotId": "full-v2", "sources": ["text"], "artifactPath": "/fixture/facts.json", "jsonPointer": "/families/0/facts/0" } }] }],
+  "completeWithinRetainedCoverage": true
+}

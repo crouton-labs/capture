@@ -1,0 +1,5 @@
+{
+  "snapshotId": "legacy-v1",
+  "request": { "url": "https://fixture.invalid/legacy" },
+  "facets": [{ "name": "geometry", "path": "geometry.json" }]
+}

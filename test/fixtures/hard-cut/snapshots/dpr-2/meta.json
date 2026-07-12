@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 2,
+  "snapshotId": "dpr-2",
+  "request": {},
+  "settled": true,
+  "timing": {},
+  "coordinateAuthority": {
+    "cssVisualViewport": {
+      "available": true,
+      "value": {
+        "clientWidth": 10,
+        "clientHeight": 10
+      }
+    },
+    "cssLayoutViewport": {
+      "available": false,
+      "reason": "not-recorded"
+    },
+    "cssContentSize": {
+      "available": false,
+      "reason": "not-recorded"
+    },
+    "raster": {
+      "available": true,
+      "value": {
+        "space": "screenshot/device-px",
+        "width": 20,
+        "height": 20,
+        "devicePixelRatio": 2,
+        "cssToDeviceScaleX": 2,
+        "cssToDeviceScaleY": 2
+      }
+    }
+  },
+  "contentInputs": {
+    "documentScrollWidth": {
+      "available": false,
+      "reason": "not-recorded"
+    },
+    "documentScrollHeight": {
+      "available": false,
+      "reason": "not-recorded"
+    }
+  },
+  "facets": [
+    {
+      "name": "pixels",
+      "path": "pixels.json",
+      "schemaVersion": 2,
+      "availability": {
+        "available": true,
+        "value": null
+      },
+      "scope": "fixture",
+      "population": {
+        "kept": 0,
+        "exclusions": []
+      },
+      "caps": []
+    }
+  ],
+  "sourcePixelCoverage": {
+    "requested": true
+  }
+}

@@ -1,0 +1,1 @@
+{"envelope":"recorded-har-projection","coverage":{"bodyCapDecodedBytes":262144,"recordedBytes":262144,"truncatedBytes":12,"encoding":"base64"},"entries":[{"url":"https://fixture.invalid/body","body":"AAECAw=="}]}

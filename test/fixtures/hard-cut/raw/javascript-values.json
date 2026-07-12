@@ -1,0 +1,1 @@
+{"envelope":"javascript-evaluation-envelope","response":{"result":{"type":"number","unserializableValue":"NaN"},"variants":[{"type":"undefined"},{"type":"bigint","unserializableValue":"1n"},{"type":"symbol","description":"Symbol(x)"},{"type":"function","description":"function f(){}"},{"type":"object","objectId":"remote-1"}]}}
