@@ -1,6 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
+import { closeChrome, spawnHeadlessChrome, type ChromeFixture } from './fixtures/chrome.js';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
@@ -10,10 +11,9 @@ import { clearActiveSession, setActiveSession } from '../src/session-context.js'
 import { resolveSnapRef } from '../src/output/artifact.js';
 import { withAppliedViewport } from '../src/cdp/commands/measure/snap.js';
 
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const scope = `measure-snap-test-${process.pid}-${Date.now()}`;
 const secret = 'hunter2-should-not-appear';
-let chrome: ChildProcess | undefined;
+let chrome: ChromeFixture | undefined;
 let server: http.Server | undefined;
 let cdpPort = 0;
 let pageUrl = '';
@@ -49,12 +49,8 @@ async function startFixtureServer(): Promise<number> {
 }
 
 async function startChrome(): Promise<void> {
-  cdpPort = 22000 + Math.floor(Math.random() * 1000);
-  chrome = spawn(CHROME, [
-    '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-    `--remote-debugging-port=${cdpPort}`, 'about:blank',
-  ], { stdio: 'ignore' });
-  await waitFor(`http://localhost:${cdpPort}/json/version`);
+  chrome = await spawnHeadlessChrome();
+  cdpPort = chrome.port;
 }
 
 async function openFixturePage(): Promise<void> {
@@ -112,13 +108,13 @@ before(async () => {
   await openFixturePage();
 });
 
-after(() => {
+after(async () => {
   clearActiveSession();
   delete process.env.CRTR_NODE_ID;
   for (const root of cleanupRoots) {
     fs.rmSync(root, { recursive: true, force: true });
   }
-  try { chrome?.kill('SIGKILL'); } catch { /* already stopped */ }
+  await chrome?.close();
   server?.close();
 });
 

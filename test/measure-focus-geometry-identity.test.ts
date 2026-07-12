@@ -12,6 +12,7 @@
 import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { closeChrome, spawnHeadlessChrome } from './fixtures/chrome.js';
 
 import { CDPClient } from '../src/cdp/client.js';
 import { enableDomainsForSnap } from '../src/cdp/domains.js';
@@ -19,7 +20,6 @@ import { collectFocus, type FocusReport } from '../src/cdp/measure/collectors/fo
 import { collectGeometry, type GeometryElementRecord } from '../src/cdp/measure/collectors/geometry.js';
 import type { SnapshotContext, SnapshotWriter } from '../src/cdp/measure/types.js';
 
-const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 interface GeometryJson {
   elements: GeometryElementRecord[];
@@ -43,45 +43,6 @@ const FIXTURE_URL = `data:text/html,${encodeURIComponent(FIXTURE_HTML)}`;
 // ============================================================================
 // Chrome process harness — self-contained, mirrors measure-geometry-hittest.test.ts.
 // ============================================================================
-
-async function waitForHttpOk(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr: unknown;
-  while (Date.now() < deadline) {
-    try {
-      const resp = await fetch(url);
-      if (resp.ok) return;
-    } catch (err) {
-      lastErr = err;
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error(`timed out waiting for ${url}: ${String(lastErr)}`);
-}
-
-async function spawnHeadlessChrome(): Promise<{ proc: ChildProcess; port: number }> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const port = 19900 + Math.floor(Math.random() * 700) + attempt * 137;
-    const proc = spawn(
-      CHROME_PATH,
-      ['--headless=new', '--disable-gpu', `--remote-debugging-port=${port}`, '--no-first-run', '--no-default-browser-check', 'about:blank'],
-      { stdio: 'ignore' },
-    );
-    try {
-      await waitForHttpOk(`http://localhost:${port}/json/version`, 8000);
-      return { proc, port };
-    } catch (err) {
-      lastErr = err;
-      try {
-        proc.kill('SIGKILL');
-      } catch {
-        // already dead
-      }
-    }
-  }
-  throw new Error(`failed to spawn headless Chrome after 3 attempts: ${String(lastErr)}`);
-}
 
 async function newPageTarget(port: number): Promise<string> {
   const resp = await fetch(`http://localhost:${port}/json/new?about:blank`, { method: 'PUT' });
@@ -119,6 +80,7 @@ let client: CDPClient | undefined;
 let focus: FocusReport;
 let geometry: GeometryJson;
 
+describe('real Chrome integration', () => {
 before(async () => {
   const { proc, port } = await spawnHeadlessChrome();
   chromeProc = proc;
@@ -163,7 +125,7 @@ after(async () => {
     // already closed
   }
   try {
-    chromeProc?.kill('SIGKILL');
+    await closeChrome(chromeProc);
   } catch {
     // already dead
   }
@@ -302,7 +264,7 @@ describe('focus.json: per-record identity honesty when DOM.describeNode fails (C
       // already closed
     }
     try {
-      idFailChromeProc?.kill('SIGKILL');
+      await closeChrome(idFailChromeProc);
     } catch {
       // already dead
     }
@@ -414,7 +376,7 @@ describe('focus.json: an UNTAGGED but real focus stop is still element-bearing (
       // already closed
     }
     try {
-      untaggedChromeProc?.kill('SIGKILL');
+      await closeChrome(untaggedChromeProc);
     } catch {
       // already dead
     }
@@ -527,7 +489,7 @@ describe('focus.json: traversal unavailable when the init evaluate resolves with
 
   after(async () => {
     try { initFailClient?.close(); } catch { /* already closed */ }
-    try { initFailProc?.kill('SIGKILL'); } catch { /* already dead */ }
+    await closeChrome(initFailProc);
   });
 
   test('report.available is false with unavailableReason "init-unavailable", NOT a fabricated 0-candidate success shape', () => {
@@ -565,7 +527,7 @@ describe('focus.json: traversal unavailable when the forward-walk sample evaluat
 
   after(async () => {
     try { walkFailClient?.close(); } catch { /* already closed */ }
-    try { walkFailProc?.kill('SIGKILL'); } catch { /* already dead */ }
+    await closeChrome(walkFailProc);
   });
 
   test('report.available is false with unavailableReason "forward-walk-threw", NOT a fabricated empty/non-truncated walk-complete shape', () => {
@@ -595,7 +557,7 @@ describe('focus.json: a genuinely empty page (no focusable candidates) still rep
 
   after(async () => {
     try { emptyClient?.close(); } catch { /* already closed */ }
-    try { emptyProc?.kill('SIGKILL'); } catch { /* already dead */ }
+    await closeChrome(emptyProc);
   });
 
   test('genuine successful-observation shape is preserved: available:true, no unavailableReason, real forward/reverse stops, real candidateCount', () => {
@@ -642,7 +604,7 @@ describe('focus.json: traversal unavailable when the ORIGIN evaluate resolves wi
 
   after(async () => {
     try { originFailClient?.close(); } catch { /* already closed */ }
-    try { originFailProc?.kill('SIGKILL'); } catch { /* already dead */ }
+    await closeChrome(originFailProc);
   });
 
   test('report.available is false with unavailableReason "origin-read-threw", not a silent degraded-but-successful traversal', () => {
@@ -701,7 +663,7 @@ describe('focus.json: clickable scan reports cursorReadUnavailable (not silent o
 
   after(async () => {
     try { cursorFailClient?.close(); } catch { /* already closed */ }
-    try { cursorFailProc?.kill('SIGKILL'); } catch { /* already dead */ }
+    await closeChrome(cursorFailProc);
   });
 
   test('div#poison (cursor read failed) is emitted with cursorReadUnavailable:true, never silently dropped as "not clickable"', () => {
@@ -780,7 +742,7 @@ describe('focus.json: clickableUnfocusableTruncationUnavailable marks a well-for
 
   after(async () => {
     try { truncFailClient?.close(); } catch { /* already closed */ }
-    try { truncFailProc?.kill('SIGKILL'); } catch { /* already dead */ }
+    await closeChrome(truncFailProc);
   });
 
   test('report stays available:true (init genuinely returned a value) with real, non-empty candidates and clickableUnfocusable', () => {
@@ -845,7 +807,7 @@ describe('focus.json: traversal unavailable when the reverse-walk RESTORE/RE-INI
 
   after(async () => {
     try { reverseSetupFailClient?.close(); } catch { /* already closed */ }
-    try { reverseSetupFailProc?.kill('SIGKILL'); } catch { /* already dead */ }
+    await closeChrome(reverseSetupFailProc);
   });
 
   test('report.available is false with unavailableReason "reverse-walk-threw", despite a genuinely successful forward walk', () => {
@@ -853,4 +815,5 @@ describe('focus.json: traversal unavailable when the reverse-walk RESTORE/RE-INI
     assert.equal(reverseSetupFailFocus.available, false, `expected available:false when the reverse-walk re-init never resolved a value, got ${JSON.stringify({ available: reverseSetupFailFocus.available, reverse: reverseSetupFailFocus.reverse })}`);
     assert.equal(reverseSetupFailFocus.unavailableReason, 'reverse-walk-threw');
   });
+});
 });

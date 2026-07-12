@@ -11,10 +11,11 @@
  * the real-Chrome section of `test/measure-layers-styles.test.ts`.
  */
 
-import { test, before, after } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { closeChrome, spawnHeadlessChrome } from './fixtures/chrome.js';
 
 import { CDPClient } from '../src/cdp/client.js';
 import { enableDomainsForSnap } from '../src/cdp/domains.js';
@@ -344,54 +345,6 @@ test('collectLayers: propagates styleSheetHeaders.available=false to layers.json
 // and the real-Chrome section of test/measure-layers-styles.test.ts.
 // ============================================================================
 
-const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-
-async function waitForHttpOk(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr: unknown;
-  while (Date.now() < deadline) {
-    try {
-      const resp = await fetch(url);
-      if (resp.ok) return;
-    } catch (err) {
-      lastErr = err;
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error(`timed out waiting for ${url}: ${String(lastErr)}`);
-}
-
-async function spawnHeadlessChrome(): Promise<{ proc: ChildProcess; port: number }> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const port = 21900 + Math.floor(Math.random() * 700) + attempt * 151;
-    const proc = spawn(
-      CHROME_PATH,
-      ['--headless=new', '--disable-gpu', `--remote-debugging-port=${port}`, '--no-first-run', '--no-default-browser-check', 'about:blank'],
-      { stdio: 'ignore' },
-    );
-    try {
-      await waitForHttpOk(`http://localhost:${port}/json/version`, 8000);
-      return { proc, port };
-    } catch (err) {
-      lastErr = err;
-      try {
-        proc.kill('SIGKILL');
-      } catch {
-        // already dead
-      }
-    }
-  }
-  throw new Error(`failed to spawn headless Chrome after 3 attempts: ${String(lastErr)}`);
-}
-
-/** Creates a page target already navigating to `url`, before this test's WebSocket even attaches — mirrors `test/measure-layers-styles.test.ts`'s real-Chrome harness so stylesheet parsing races nothing this test does. */
-async function newPageTarget(port: number, url: string): Promise<string> {
-  const resp = await fetch(`http://localhost:${port}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' });
-  const json = (await resp.json()) as { webSocketDebuggerUrl?: string };
-  if (!json.webSocketDebuggerUrl) throw new Error('no webSocketDebuggerUrl in /json/new response');
-  return json.webSocketDebuggerUrl;
-}
 
 async function waitForReady(client: CDPClient, timeoutMs = 10000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -436,6 +389,7 @@ function makeRealCtx(client: CDPClient, url: string): { ctx: SnapshotContext; wr
 let chromeProc: ChildProcess | undefined;
 let chromePort: number;
 
+describe('real Chrome integration', () => {
 before(async () => {
   const { proc, port } = await spawnHeadlessChrome();
   chromeProc = proc;
@@ -444,7 +398,7 @@ before(async () => {
 
 after(async () => {
   try {
-    chromeProc?.kill('SIGKILL');
+    await closeChrome(chromeProc);
   } catch {
     // already dead
   }
@@ -722,3 +676,4 @@ test('real-chrome (D1): a layer\'s owning backendNodeId, and a member backendNod
     client.close();
   }
 }, { timeout: 20000 });
+});

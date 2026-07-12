@@ -12,6 +12,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { closeChrome, spawnHeadlessChrome } from './fixtures/chrome.js';
 
 import { CDPClient } from '../src/cdp/client.js';
 import { enableDomainsForSnap } from '../src/cdp/domains.js';
@@ -20,7 +21,6 @@ import { collectGeometry } from '../src/cdp/measure/collectors/geometry.js';
 import type { GeometryElementRecord } from '../src/cdp/measure/collectors/geometry.js';
 import type { SnapshotContext, SnapshotWriter } from '../src/cdp/measure/types.js';
 
-const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 // A page with TWO independently animated, uniquely id'd elements -- a
 // single-target fixture can't catch a "first-handle" or "every-record"
@@ -41,52 +41,6 @@ const FIXTURE_HTML = `<!DOCTYPE html><html><head><style>
 </body></html>`;
 
 const FIXTURE_URL = `data:text/html,${encodeURIComponent(FIXTURE_HTML)}`;
-
-async function waitForHttpOk(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr: unknown;
-  while (Date.now() < deadline) {
-    try {
-      const resp = await fetch(url);
-      if (resp.ok) return;
-    } catch (err) {
-      lastErr = err;
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error(`timed out waiting for ${url}: ${String(lastErr)}`);
-}
-
-async function spawnHeadlessChrome(): Promise<{ proc: ChildProcess; port: number }> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const port = 19900 + Math.floor(Math.random() * 700) + attempt * 137;
-    const proc = spawn(
-      CHROME_PATH,
-      [
-        '--headless=new',
-        '--disable-gpu',
-        `--remote-debugging-port=${port}`,
-        '--no-first-run',
-        '--no-default-browser-check',
-        'about:blank',
-      ],
-      { stdio: 'ignore' },
-    );
-    try {
-      await waitForHttpOk(`http://localhost:${port}/json/version`, 8000);
-      return { proc, port };
-    } catch (err) {
-      lastErr = err;
-      try {
-        proc.kill('SIGKILL');
-      } catch {
-        // already dead
-      }
-    }
-  }
-  throw new Error(`failed to spawn headless Chrome after 3 attempts: ${String(lastErr)}`);
-}
 
 async function newPageTarget(port: number): Promise<string> {
   const resp = await fetch(`http://localhost:${port}/json/new?about:blank`, { method: 'PUT' });
@@ -124,6 +78,7 @@ let client: CDPClient | undefined;
 let animation: AnimationReport;
 let geometry: { elements: GeometryElementRecord[] };
 
+describe('real Chrome integration', () => {
 before(async () => {
   const { proc, port } = await spawnHeadlessChrome();
   chromeProc = proc;
@@ -169,7 +124,7 @@ after(async () => {
     // already closed
   }
   try {
-    chromeProc?.kill('SIGKILL');
+    await closeChrome(chromeProc);
   } catch {
     // already dead
   }
@@ -328,7 +283,7 @@ describe('D9 real-Chrome: baseline collectAnimation never triggers a page-define
       // already closed
     }
     try {
-      setterChromeProc?.kill('SIGKILL');
+      await closeChrome(setterChromeProc);
     } catch {
       // already dead
     }
@@ -832,7 +787,7 @@ describe('real-Chrome page-side catch-branch regressions (review findings A/B)',
       // already closed
     }
     try {
-      failChromeProc?.kill('SIGKILL');
+      await closeChrome(failChromeProc);
     } catch {
       // already dead
     }
@@ -977,4 +932,5 @@ test('collectAnimation: freezeRequested is true when ctx.freezeAnimations is tru
   await collectAnimation(ctx);
   const report = written.get('animation.json') as AnimationReport;
   assert.equal(report.freezeRequested, true);
+});
 });

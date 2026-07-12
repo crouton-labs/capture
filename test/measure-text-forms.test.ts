@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { closeChrome, spawnHeadlessChrome } from './fixtures/chrome.js';
 
 import { CAPTURE_ROOT, ensurePrivateDir, writeJsonPrivate } from '../src/session/artifacts.js';
 import { CDPClient } from '../src/cdp/client.js';
@@ -1329,54 +1330,7 @@ test('collectForms: an over-length selectionRects array is capped with a factual
 // helpers are defined once and reused by both D6 and D7.
 // ============================================================================
 
-const RC_CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const RC_PASSWORD = 'hunter2super'; // 12 chars
-
-async function rcWaitForHttpOk(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr: unknown;
-  while (Date.now() < deadline) {
-    try {
-      const resp = await fetch(url);
-      if (resp.ok) return;
-    } catch (err) {
-      lastErr = err;
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error(`timed out waiting for ${url}: ${String(lastErr)}`);
-}
-
-async function rcSpawnHeadlessChrome(): Promise<{ proc: ChildProcess; port: number }> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const port = 19900 + Math.floor(Math.random() * 700) + attempt * 137;
-    const proc = spawn(
-      RC_CHROME_PATH,
-      [
-        '--headless=new',
-        '--disable-gpu',
-        `--remote-debugging-port=${port}`,
-        '--no-first-run',
-        '--no-default-browser-check',
-        'about:blank',
-      ],
-      { stdio: 'ignore' },
-    );
-    try {
-      await rcWaitForHttpOk(`http://localhost:${port}/json/version`, 8000);
-      return { proc, port };
-    } catch (err) {
-      lastErr = err;
-      try {
-        proc.kill('SIGKILL');
-      } catch {
-        // already dead
-      }
-    }
-  }
-  throw new Error(`failed to spawn headless Chrome after 3 attempts: ${String(lastErr)}`);
-}
 
 async function rcNewPageTarget(port: number): Promise<string> {
   const resp = await fetch(`http://localhost:${port}/json/new?about:blank`, { method: 'PUT' });
@@ -1435,7 +1389,7 @@ describe('D6 real-Chrome: type=password geometry is skipped by the canvas measur
   let forms: any;
 
   before(async () => {
-    const { proc, port } = await rcSpawnHeadlessChrome();
+    const { proc, port } = await spawnHeadlessChrome();
     chromeProc = proc;
     const wsUrl = await rcNewPageTarget(port);
     client = new CDPClient(wsUrl);
@@ -1484,7 +1438,7 @@ describe('D6 real-Chrome: type=password geometry is skipped by the canvas measur
       // already closed
     }
     try {
-      chromeProc?.kill('SIGKILL');
+      await closeChrome(chromeProc);
     } catch {
       // already dead
     }
@@ -1605,7 +1559,7 @@ describe('D7 real-Chrome: baseline collectText/collectForms never mutate the DOM
   let client: CDPClient | undefined;
 
   before(async () => {
-    const { proc, port } = await rcSpawnHeadlessChrome();
+    const { proc, port } = await spawnHeadlessChrome();
     chromeProc = proc;
     const wsUrl = await rcNewPageTarget(port);
     client = new CDPClient(wsUrl);
@@ -1622,7 +1576,7 @@ describe('D7 real-Chrome: baseline collectText/collectForms never mutate the DOM
       // already closed
     }
     try {
-      chromeProc?.kill('SIGKILL');
+      await closeChrome(chromeProc);
     } catch {
       // already dead
     }
@@ -1771,7 +1725,7 @@ describe('D8 real-Chrome: baseline collectText/collectForms never trigger a page
   let client: CDPClient | undefined;
 
   before(async () => {
-    const { proc, port } = await rcSpawnHeadlessChrome();
+    const { proc, port } = await spawnHeadlessChrome();
     chromeProc = proc;
     const wsUrl = await rcNewPageTarget(port);
     client = new CDPClient(wsUrl);
@@ -1788,7 +1742,7 @@ describe('D8 real-Chrome: baseline collectText/collectForms never trigger a page
       // already closed
     }
     try {
-      chromeProc?.kill('SIGKILL');
+      await closeChrome(chromeProc);
     } catch {
       // already dead
     }
@@ -1925,7 +1879,7 @@ describe('D9 real-Chrome: collectForms never mutates document.body (childList or
   let client: CDPClient | undefined;
 
   before(async () => {
-    const { proc, port } = await rcSpawnHeadlessChrome();
+    const { proc, port } = await spawnHeadlessChrome();
     chromeProc = proc;
     const wsUrl = await rcNewPageTarget(port);
     client = new CDPClient(wsUrl);
@@ -1942,7 +1896,7 @@ describe('D9 real-Chrome: collectForms never mutates document.body (childList or
       // already closed
     }
     try {
-      chromeProc?.kill('SIGKILL');
+      await closeChrome(chromeProc);
     } catch {
       // already dead
     }
@@ -2096,7 +2050,7 @@ describe('D10 real-Chrome: collectForms never fires an invalid control\'s `inval
   let client: CDPClient | undefined;
 
   before(async () => {
-    const { proc, port } = await rcSpawnHeadlessChrome();
+    const { proc, port } = await spawnHeadlessChrome();
     chromeProc = proc;
     const wsUrl = await rcNewPageTarget(port);
     client = new CDPClient(wsUrl);
@@ -2113,7 +2067,7 @@ describe('D10 real-Chrome: collectForms never fires an invalid control\'s `inval
       // already closed
     }
     try {
-      chromeProc?.kill('SIGKILL');
+      await closeChrome(chromeProc);
     } catch {
       // already dead
     }

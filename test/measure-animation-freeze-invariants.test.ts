@@ -27,6 +27,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { closeChrome, spawnHeadlessChrome } from './fixtures/chrome.js';
 
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
 import { CDPClient } from '../src/cdp/client.js';
@@ -1014,7 +1015,7 @@ describe('Class C item 3 real-Chrome: collectAnimationEvidence against a live pa
       // already closed
     }
     try {
-      evidenceChromeProc?.kill('SIGKILL');
+      await closeChrome(evidenceChromeProc);
     } catch {
       // already dead
     }
@@ -1395,7 +1396,7 @@ describe('#5 real-Chrome: buildDomSettleSampler against a live page whose docume
       // already closed
     }
     try {
-      sampleChromeProc?.kill('SIGKILL');
+      await closeChrome(sampleChromeProc);
     } catch {
       // already dead
     }
@@ -1781,7 +1782,6 @@ test('injectChurnObservers: a thrown BOOTSTRAP_SCRIPT (exceptionDetails present)
 // self-contained pattern already duplicated across this test suite.
 // ============================================================================
 
-const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 const FIXTURE_HTML = `<!DOCTYPE html><html><head><style>
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
@@ -1791,45 +1791,6 @@ const FIXTURE_HTML = `<!DOCTYPE html><html><head><style>
 </body></html>`;
 
 const FIXTURE_URL = `data:text/html,${encodeURIComponent(FIXTURE_HTML)}`;
-
-async function waitForHttpOk(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr: unknown;
-  while (Date.now() < deadline) {
-    try {
-      const resp = await fetch(url);
-      if (resp.ok) return;
-    } catch (err) {
-      lastErr = err;
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error(`timed out waiting for ${url}: ${String(lastErr)}`);
-}
-
-async function spawnHeadlessChrome(): Promise<{ proc: ChildProcess; port: number }> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const port = 19900 + Math.floor(Math.random() * 700) + attempt * 137;
-    const proc = spawn(
-      CHROME_PATH,
-      ['--headless=new', '--disable-gpu', `--remote-debugging-port=${port}`, '--no-first-run', '--no-default-browser-check', 'about:blank'],
-      { stdio: 'ignore' },
-    );
-    try {
-      await waitForHttpOk(`http://localhost:${port}/json/version`, 8000);
-      return { proc, port };
-    } catch (err) {
-      lastErr = err;
-      try {
-        proc.kill('SIGKILL');
-      } catch {
-        // already dead
-      }
-    }
-  }
-  throw new Error(`failed to spawn headless Chrome after 3 attempts: ${String(lastErr)}`);
-}
 
 async function newPageTarget(port: number): Promise<string> {
   const resp = await fetch(`http://localhost:${port}/json/new?about:blank`, { method: 'PUT' });
@@ -1912,7 +1873,7 @@ describe('Finding D real-Chrome: collectAnimation and collectGeometry resolve th
       // already closed
     }
     try {
-      chromeProc?.kill('SIGKILL');
+      await closeChrome(chromeProc);
     } catch {
       // already dead
     }

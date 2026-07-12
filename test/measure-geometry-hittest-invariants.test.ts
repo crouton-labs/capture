@@ -18,6 +18,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { closeChrome, spawnHeadlessChrome } from './fixtures/chrome.js';
 
 import { CDPClient } from '../src/cdp/client.js';
 import { enableDomainsForSnap } from '../src/cdp/domains.js';
@@ -25,7 +26,6 @@ import { collectGeometry, type GeometryElementRecord } from '../src/cdp/measure/
 import { collectHittest, type HittestJson } from '../src/cdp/measure/collectors/hittest.js';
 import type { SnapshotContext, SnapshotWriter } from '../src/cdp/measure/types.js';
 
-const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 interface GeometryJson {
   elements: GeometryElementRecord[];
@@ -39,45 +39,6 @@ interface GeometryJson {
 // Chrome-launch/readiness helpers (kept self-contained here since this file
 // must not import from or modify that one).
 // ============================================================================
-
-async function waitForHttpOk(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr: unknown;
-  while (Date.now() < deadline) {
-    try {
-      const resp = await fetch(url);
-      if (resp.ok) return;
-    } catch (err) {
-      lastErr = err;
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error(`timed out waiting for ${url}: ${String(lastErr)}`);
-}
-
-async function spawnHeadlessChrome(): Promise<{ proc: ChildProcess; port: number }> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const port = 19900 + Math.floor(Math.random() * 700) + attempt * 137;
-    const proc = spawn(
-      CHROME_PATH,
-      ['--headless=new', '--disable-gpu', `--remote-debugging-port=${port}`, '--no-first-run', '--no-default-browser-check', 'about:blank'],
-      { stdio: 'ignore' },
-    );
-    try {
-      await waitForHttpOk(`http://localhost:${port}/json/version`, 8000);
-      return { proc, port };
-    } catch (err) {
-      lastErr = err;
-      try {
-        proc.kill('SIGKILL');
-      } catch {
-        // already dead
-      }
-    }
-  }
-  throw new Error(`failed to spawn headless Chrome after 3 attempts: ${String(lastErr)}`);
-}
 
 async function newPageTarget(port: number): Promise<string> {
   const resp = await fetch(`http://localhost:${port}/json/new?about:blank`, { method: 'PUT' });
@@ -141,15 +102,16 @@ function baseCtx(client: CDPClient, snapId: string, write: SnapshotWriter): Snap
 let chromeProc: ChildProcess | undefined;
 let chromePort = 0;
 
+describe('real Chrome integration', () => {
 before(async () => {
   const { proc, port } = await spawnHeadlessChrome();
   chromeProc = proc;
   chromePort = port;
 }, { timeout: 20000 });
 
-after(() => {
+after(async () => {
   try {
-    chromeProc?.kill('SIGKILL');
+    await closeChrome(chromeProc);
   } catch {
     // already dead
   }
@@ -186,7 +148,7 @@ describe('geometry.json: MAX_ELEMENTS + grid-track slice caps emit exact truncat
     geometry = store['geometry.json'] as GeometryJson;
   }, { timeout: 30000 });
 
-  after(() => {
+  after(async () => {
     try {
       client.close();
     } catch {
@@ -273,7 +235,7 @@ describe('hittest.json: candidate/lattice/bridge caps emit exact truncation fact
     hittest = store['hittest.json'] as HittestJson;
   }, { timeout: 90000 });
 
-  after(() => {
+  after(async () => {
     try {
       client.close();
     } catch {
@@ -1350,7 +1312,7 @@ describe('geometry.json: a same-origin iframe whose contentDocument read THROWS 
     geometry = store['geometry.json'] as GeometryJson;
   }, { timeout: 20000 });
 
-  after(() => {
+  after(async () => {
     try {
       client.close();
     } catch {
@@ -1613,4 +1575,5 @@ describe('hittest.json: a same-origin iframe whose contentDocument read THROWS d
       client.close();
     }
   }, { timeout: 20000 });
+});
 });

@@ -3,13 +3,12 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { closeChrome, spawnHeadlessChrome } from './fixtures/chrome.js';
 
 import { CAPTURE_ROOT, ensurePrivateDir, writeJsonPrivate, writeNdjsonPrivate, writeBinaryPrivate } from '../src/session/artifacts.js';
 import { setActiveSession, clearActiveSession } from '../src/session-context.js';
 import { startComposedRecorder } from '../src/cdp/motion/recorder.js';
 import { cmdType } from '../src/cdp/commands/ui.js';
-
-const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 async function spawnTestRecorderBridge(socketPath: string, port: number, targetId: string, recDir: string): Promise<{ socketPath: string; pid: number }> {
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/capture.ts', '__bridge-serve', '--socket', socketPath, '--port', String(port), '--target', targetId, 'recorder', recDir], { cwd: process.cwd(), detached: true, stdio: 'ignore' });
@@ -23,19 +22,6 @@ async function spawnTestRecorderBridge(socketPath: string, port: number, targetI
   return { socketPath, pid: child.pid };
 }
 
-async function spawnRealChrome(): Promise<{ process: ChildProcess; port: number }> {
-  const port = 22000 + Math.floor(Math.random() * 1000);
-  const process = spawn(CHROME_PATH, ['--headless=new', '--disable-gpu', `--remote-debugging-port=${port}`, '--no-first-run', '--no-default-browser-check', 'about:blank'], { stdio: 'ignore' });
-  const deadline = Date.now() + 8000;
-  while (Date.now() < deadline) {
-    try {
-      if ((await fetch(`http://localhost:${port}/json/version`)).ok) return { process, port };
-    } catch { /* Chrome is still starting. */ }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  process.kill('SIGKILL');
-  throw new Error('headless Chrome did not become reachable');
-}
 import {
   __setMotionRecDepsForTest,
   cmdMotionRec,
@@ -260,7 +246,7 @@ test('one-shot restores a viewport when set may have reached Chrome but its resp
 
 test('motion rec one-shot records a real Chrome action through the real CDP client and RecorderSession', async () => {
   const root = makeRoot('real-chrome-oneshot');
-  const chrome = await spawnRealChrome();
+  const chrome = await spawnHeadlessChrome();
   const restore = __setMotionRecDepsForTest({
     createOneshotSession: () => ({ id: 'oneshot-real', dir: root, kind: 'motion', artifactsDir: path.join(root, 'motion', 'recs') }),
     getActiveSession: () => null,
@@ -276,14 +262,14 @@ test('motion rec one-shot records a real Chrome action through the real CDP clie
     assert.equal(meta.action, 'click:#go', 'the real action is retained as recording provenance');
   } finally {
     restore();
-    chrome.process.kill('SIGKILL');
+    await closeChrome(chrome.proc);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
 test('motion rec composed lifecycle records a real Chrome routed type action between start and stop', async () => {
   const root = makeRoot('real-chrome-composed');
-  const chrome = await spawnRealChrome();
+  const chrome = await spawnHeadlessChrome();
   const target = await (await fetch(`http://localhost:${chrome.port}/json/new?${encodeURIComponent(`data:text/html,${encodeURIComponent('<input aria-label="Message">')}`)}`, { method: 'PUT' })).json() as { id: string };
   setActiveSession({ sessionId: 'real-composed', dir: root, harId: null, targetId: target.id, stepCount: 0 });
   const restore = __setMotionRecDepsForTest({
@@ -302,7 +288,7 @@ test('motion rec composed lifecycle records a real Chrome routed type action bet
   } finally {
     restore();
     clearActiveSession();
-    chrome.process.kill('SIGKILL');
+    await closeChrome(chrome.proc);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
