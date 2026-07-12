@@ -66,10 +66,6 @@ export async function cmdScreenshot(parsed: ParsedArgs, _args: string[]): Promis
     console.error(`Unknown viewport "${viewportName}". Options: ${Object.keys(VIEWPORTS).join(', ')}`);
     process.exit(1);
   }
-  // Allow --height to override the viewport preset height
-  if (parsed.height) {
-    viewport.height = parsed.height;
-  }
   const result = await withConnection(
     parsed,
     async (client) => {
@@ -103,7 +99,7 @@ export async function cmdClick(parsed: ParsedArgs, _args: string[]): Promise<voi
   const result = await withConnection(
     parsed,
     async (client) => {
-      const clickResult = await clickByName(client, name, parsed.role);
+      const clickResult = await clickByName(client, name);
       const screenshot = await autoScreenshot(client, 'click', name, parsed.noScreenshot);
       return { ...clickResult, screenshot };
     },
@@ -131,7 +127,7 @@ export async function cmdType(parsed: ParsedArgs, _args: string[]): Promise<void
     async (client) => {
       let field: string | null = null;
       if (parsed.into) {
-        await focusAndType(client, parsed.into, text, parsed.role);
+        await focusAndType(client, parsed.into, text);
         field = parsed.into;
       } else {
         await typeText(client, text);
@@ -166,9 +162,7 @@ export async function cmdA11y(parsed: ParsedArgs, _args: string[]): Promise<void
       }
 
       // Flat text output
-      const lines = flattenA11yTree(tree, {
-        interactive: parsed.interactive,
-      });
+      const lines = flattenA11yTree(tree, {});
       return lines.join('\n');
     },
     { settle: 0 },
@@ -186,17 +180,10 @@ export async function cmdA11y(parsed: ParsedArgs, _args: string[]): Promise<void
     if (lineCount === 0) {
       console.error(
         '\nNo elements found.' +
-        (parsed.interactive ? ' Try without --interactive to see all nodes.' : '') +
         '\n\nIf this page is part of your project, consider adding ARIA attributes:\n' +
         '  - role="button|link|textbox" on interactive elements\n' +
         '  - aria-label="..." on elements without visible text\n' +
         '  - Semantic HTML (<button>, <input>, <nav>) provides roles automatically',
-      );
-    } else if (parsed.interactive && lineCount < 5) {
-      console.error(
-        `\nOnly ${lineCount} interactive element${lineCount === 1 ? '' : 's'} found. ` +
-        'If this seems low, the page may lack ARIA markup.\n' +
-        'Consider adding role and aria-label attributes to interactive elements in your frontend code.',
       );
     }
   }

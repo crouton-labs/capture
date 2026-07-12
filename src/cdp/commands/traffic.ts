@@ -113,7 +113,7 @@ export async function cmdRecord(parsed: ParsedArgs, _args: string[]): Promise<vo
     port: parsed.port,
     targetId: parsed.target,
     duration: parsed.duration,
-    harOutPath: parsed.harOut,
+    harOutPath: undefined,
   });
   console.log(
     JSON.stringify(
@@ -152,7 +152,7 @@ export async function cmdNavigate(parsed: ParsedArgs, _args: string[]): Promise<
     port: parsed.port,
     url,
     targetId: parsed.target,
-    harOutPath: parsed.har ? undefined : parsed.harOut,
+    harOutPath: undefined,
     settle: parsed.settle,
   });
 

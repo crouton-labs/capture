@@ -212,10 +212,36 @@ test('parseCliArgs itself still tokenizes --gate anywhere it appears (leaf-level
 });
 
 test('an existing single-value flag combo still parses correctly post-change', () => {
-  const parsed = parseCliArgs(['click', 'Sign in', '--role', 'button', '--target', 'tab-1']);
+  const parsed = parseCliArgs(['click', 'Sign in', '--target', 'tab-1']);
 
   assert.equal(parsed.command, 'click');
   assert.deepEqual(parsed.positional, ['Sign in']);
-  assert.equal(parsed.role, 'button');
   assert.equal(parsed.target, 'tab-1');
+});
+
+test('deleted flags are rejected as unknown', () => {
+  for (const flag of ['--role', '--har', '--har-out', '--record', '--height', '--interactive', '--nested', '--help']) {
+    const argv = ['click', 'Sign in', flag];
+    // Give value-taking flags a value token so rejection is about the flag
+    // itself, not a missing argument.
+    if (['--role', '--har', '--har-out', '--height'].includes(flag)) argv.push('x');
+    const { threw, errors } = withExitTrap(() => parseCliArgs(argv));
+
+    assert.ok(threw instanceof Error, `${flag} should be rejected`);
+    assert.match((threw as Error).message, /process\.exit\(1\)/);
+    assert.ok(errors.some((e) => e.includes(`Unknown flag: ${flag}`)), `${flag} should surface as unknown`);
+  }
+});
+
+test('-h sets parsed.help', () => {
+  const parsed = parseCliArgs(['click', '-h']);
+
+  assert.equal(parsed.help, true);
+});
+
+test('--all and --session parse', () => {
+  const parsed = parseCliArgs(['session', 'stop', '--all', '--session', 'sess-42']);
+
+  assert.equal(parsed.all, true);
+  assert.equal(parsed.session, 'sess-42');
 });

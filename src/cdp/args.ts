@@ -37,13 +37,6 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
       i++;
     } else if (arg === '--json') {
       parsed.json = true;
-    } else if (arg === '--interactive') {
-      parsed.interactive = true;
-    } else if (arg === '--har-out' && next) {
-      parsed.harOut = next;
-      i++;
-    } else if (arg === '--record') {
-      parsed.record = true;
     } else if (arg === '--duration' && next) {
       parsed.duration = parseInt(next, 10);
       i++;
@@ -52,11 +45,6 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
       i++;
     } else if (arg === '--file' && next) {
       parsed.file = next;
-      i++;
-    } else if (arg === '--nested') {
-      parsed.nested = true;
-    } else if (arg === '--har' && next) {
-      parsed.har = next;
       i++;
     } else if (arg === '--new') {
       parsed.new = true;
@@ -69,9 +57,6 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
       // the flag repeated for a multi-page set without disturbing that.
       parsed.url = next;
       (parsed.urls ??= []).push(next);
-      i++;
-    } else if (arg === '--role' && next) {
-      parsed.role = next;
       i++;
     } else if (arg === '--into' && next) {
       parsed.into = next;
@@ -88,8 +73,10 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
       i++;
     } else if (arg === '--full-page') {
       parsed.fullPage = true;
-    } else if (arg === '--height' && next) {
-      parsed.height = parseInt(next, 10);
+    } else if (arg === '--all') {
+      parsed.all = true;
+    } else if (arg === '--session' && next) {
+      parsed.session = next;
       i++;
     } else if (arg === '--filter-url' && next) {
       parsed.filterUrl = next;
@@ -199,7 +186,7 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
       }
       parsed.occurrence = occurrence;
       i++;
-    } else if (arg === '--help' || arg === '-h') {
+    } else if (arg === '-h') {
       parsed.help = true;
     } else if (arg.startsWith('--')) {
       console.error(`Unknown flag: ${arg}`);
@@ -211,13 +198,15 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
 
   // Fill gaps from the active session first. A session is an explicit,
   // scoped choice the caller made (`capture session start`), so its
-  // target/har must win over ambient CDP_PORT/CDP_TARGET/CDP_HAR_ID env vars
-  // — those are meant for orchestrators only when NOT in a session (see
-  // `capture --help` TARGETING section). Letting a stale/inherited env var
-  // outrank an active session is how a command silently ends up on the
-  // wrong tab instead of the session's own.
+  // target must win over ambient CDP_PORT/CDP_TARGET env vars — those are
+  // meant for orchestrators only when NOT in a session. Letting a
+  // stale/inherited env var outrank an active session is how a command
+  // silently ends up on the wrong tab instead of the session's own.
   const session = getActiveSession();
   if (session) {
+    // `parsed.har` is a session-filled internal slot: it is NOT CLI-settable
+    // (there is no --har flag and no env var) — it only ever carries the
+    // active session's HAR id so withConnection() can auto-append traffic.
     if (!parsed.har && session.harId) parsed.har = session.harId;
     // A session target is inseparable from the endpoint that created it.
     // Prefer that endpoint over ambient CDP_PORT, but retain an explicit
@@ -240,9 +229,6 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
   }
   if (!parsed.target && !parsed.url && process.env.CDP_TARGET) {
     parsed.target = process.env.CDP_TARGET;
-  }
-  if (!parsed.har && process.env.CDP_HAR_ID) {
-    parsed.har = process.env.CDP_HAR_ID;
   }
 
   return parsed as ParsedArgs;

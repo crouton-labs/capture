@@ -6,9 +6,9 @@ import * as path from 'node:path';
 
 // Regression coverage for the multi-agent session-targeting bug: a
 // `capture session start` in one concurrent caller must never hijack
-// another caller's "active session" auto-fill, and an ambient
-// CDP_TARGET/CDP_HAR_ID env var must never outrank an active session's own
-// target/har.
+// another caller's "active session" auto-fill, and an ambient CDP_TARGET
+// env var must never outrank an active session's own target. `parsed.har`
+// is a session-filled internal slot: no flag and no env var can set it.
 
 test('active session pointer is isolated per CRTR_NODE_ID scope', async () => {
   const { getActiveSession, setActiveSession, clearActiveSession } = await import('../src/session-context.js');
@@ -49,13 +49,12 @@ test('active session pointer is isolated per CRTR_NODE_ID scope', async () => {
   }
 });
 
-test('active session target, HAR, and endpoint win over stale environment values while explicit --port still overrides', async () => {
+test('active session target, har, and endpoint win over stale environment values while explicit --port still overrides', async () => {
   const { setActiveSession, clearActiveSession } = await import('../src/session-context.js');
   const { parseCliArgs } = await import('../src/cdp/args.js');
 
   const prevNodeId = process.env.CRTR_NODE_ID;
   const prevTarget = process.env.CDP_TARGET;
-  const prevHar = process.env.CDP_HAR_ID;
   const prevPort = process.env.CDP_PORT;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-test-precedence-'));
 
@@ -64,7 +63,6 @@ test('active session target, HAR, and endpoint win over stale environment values
     setActiveSession({ sessionId: 'sess-p', dir, harId: 'session-har', targetId: 'session-target', cdpPort: 52621, stepCount: 0 });
     // Simulates leaked/inherited values from an unrelated orchestrator.
     process.env.CDP_TARGET = 'stale-env-target';
-    process.env.CDP_HAR_ID = 'stale-env-har';
     process.env.CDP_PORT = '53451';
 
     const parsed = parseCliArgs(['click', 'Create applet']);
@@ -78,8 +76,6 @@ test('active session target, HAR, and endpoint win over stale environment values
     else process.env.CRTR_NODE_ID = prevNodeId;
     if (prevTarget === undefined) delete process.env.CDP_TARGET;
     else process.env.CDP_TARGET = prevTarget;
-    if (prevHar === undefined) delete process.env.CDP_HAR_ID;
-    else process.env.CDP_HAR_ID = prevHar;
     if (prevPort === undefined) delete process.env.CDP_PORT;
     else process.env.CDP_PORT = prevPort;
     fs.rmSync(dir, { recursive: true, force: true });
@@ -131,25 +127,31 @@ test('active session network emulation is retained and reapplied only to its tar
   }
 });
 
-test('CDP_TARGET env var still fills the target when no session is active', async () => {
+test('CDP_TARGET env var still fills the target when no session is active; CDP_HAR_ID never fills har', async () => {
   const { clearActiveSession } = await import('../src/session-context.js');
   const { parseCliArgs } = await import('../src/cdp/args.js');
 
   const prevNodeId = process.env.CRTR_NODE_ID;
   const prevTarget = process.env.CDP_TARGET;
+  const prevHar = process.env.CDP_HAR_ID;
 
   try {
     process.env.CRTR_NODE_ID = 'test-node-no-session';
     clearActiveSession();
     process.env.CDP_TARGET = 'env-target';
+    // CDP_HAR_ID is dead: har is a session-filled internal slot only.
+    process.env.CDP_HAR_ID = 'env-har';
 
     const parsed = parseCliArgs(['click', 'Sign in']);
     assert.equal(parsed.target, 'env-target');
+    assert.equal(parsed.har, undefined);
   } finally {
     if (prevNodeId === undefined) delete process.env.CRTR_NODE_ID;
     else process.env.CRTR_NODE_ID = prevNodeId;
     if (prevTarget === undefined) delete process.env.CDP_TARGET;
     else process.env.CDP_TARGET = prevTarget;
+    if (prevHar === undefined) delete process.env.CDP_HAR_ID;
+    else process.env.CDP_HAR_ID = prevHar;
   }
 });
 

@@ -257,19 +257,19 @@ test('motion branch usage documents that no motion leaf accepts --gate, and neve
 for (const { name, argv, command } of [...measureLeafCases, ...motionLeafCases]) {
   if (gateAllowedCommands.has(command)) continue;
 
-  test(`${name} --help never advertises --gate`, async () => {
+  test(`${name} -h never advertises --gate`, async () => {
     const main = [...measureLeafCases, ...motionLeafCases].find((c) => c.command === command)!.main;
-    const { logs } = await withCapture(() => main(parseCliArgs([...argv, '--help']), []));
+    const { logs } = await withCapture(() => main(parseCliArgs([...argv, '-h']), []));
 
     assert.doesNotMatch(logs, /--gate/);
   });
 }
 
-test('measure check --help and measure diff --help still advertise --gate', async () => {
-  const check = await withCapture(() => measureMain(parseCliArgs(['measure', 'check', '--help']), []));
+test('measure check -h and measure diff -h still advertise --gate', async () => {
+  const check = await withCapture(() => measureMain(parseCliArgs(['measure', 'check', '-h']), []));
   assert.match(check.logs, /--gate/);
 
-  const diff = await withCapture(() => measureMain(parseCliArgs(['measure', 'diff', '--help']), []));
+  const diff = await withCapture(() => measureMain(parseCliArgs(['measure', 'diff', '-h']), []));
   assert.match(diff.logs, /--gate/);
 });
 

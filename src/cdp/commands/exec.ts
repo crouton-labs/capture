@@ -1,8 +1,6 @@
 import * as fs from 'fs';
 import { withConnection } from '../connection.js';
 import { buildExecExpression } from '../exec-expression.js';
-import { HARRecorder } from '../har-recorder.js';
-import { writeHarAndPrintSummary } from '../har-output.js';
 import { type ParsedArgs } from '../types.js';
 import { hasImports, bundleExec } from '../../vault/bundle.js';
 
@@ -63,13 +61,6 @@ export async function cmdExec(parsed: ParsedArgs, _args: string[]): Promise<void
     async (client) => {
       await client.send('Emulation.setFocusEmulationEnabled', { enabled: true });
 
-      // Standalone HAR recording (--record flag writes its own file)
-      let standaloneRecorder: HARRecorder | undefined;
-      if (parsed.record) {
-        standaloneRecorder = new HARRecorder(client);
-        await standaloneRecorder.start();
-      }
-
       // A prebuilt bundle is already a complete IIFE returning the user's
       // promise. Otherwise fall back to the exec expression wrapper: bare
       // expressions run directly, while snippets containing top-level `return`
@@ -84,11 +75,6 @@ export async function cmdExec(parsed: ParsedArgs, _args: string[]): Promise<void
         result?: { value?: unknown };
         exceptionDetails?: { exception?: { description?: string } };
       };
-
-      if (standaloneRecorder) {
-        const har = await standaloneRecorder.finish();
-        writeHarAndPrintSummary(har, parsed.harOut);
-      }
 
       if (evalResult.exceptionDetails) {
         console.error(

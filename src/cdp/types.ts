@@ -12,24 +12,25 @@ export interface ParsedArgs {
   port?: number;
   out?: string;
   json?: boolean;
-  interactive?: boolean;
-  harOut?: string;
-  record?: boolean;
   duration?: number;
   settle?: number;
   file?: string;
-  nested?: boolean;
+  /** Session-filled internal slot: NOT CLI-settable (no --har flag, no env
+   * var). Auto-filled from the active session's harId so withConnection()
+   * can auto-append recorded traffic to the session HAR. */
   har?: string;
   new?: boolean;
   target?: string;
   url?: string;
-  role?: string;
   into?: string;
   noScreenshot?: boolean;
   viewport?: string;
   fullPage?: boolean;
-  height?: number;
   help?: boolean;
+  /** `--all` — boolean scope-widener (per-leaf semantics). */
+  all?: boolean;
+  /** `--session <id>` — explicit session id override (per-leaf semantics). */
+  session?: string;
   filterUrl?: string;
   filterStatus?: string;
   filterMethod?: string;
