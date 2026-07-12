@@ -24,7 +24,13 @@ import {
   type StartRecorderResult,
   type FinalizedRecording,
 } from '../../motion/recorder.js';
-import { rejectUnsupportedGate } from '../gate-guard.js';
+import {
+  resolveLiveTarget,
+  scrollResolved,
+  type LiveClient,
+  type ResolvedTarget,
+  type ResolutionFailure,
+} from '../../../interact.js';
 
 interface RecCommandDeps {
   detectCdpPort: typeof detectCdpPort;
@@ -58,30 +64,31 @@ export function __setMotionRecDepsForTest(overrides: Partial<RecCommandDeps>): (
   return () => { deps = previous; };
 }
 
-const USAGE = `Usage: capture motion rec [url] --do <action> [--duration <seconds>]
-       capture motion rec --start
-       capture motion rec --stop [--rec-id <id>]
+const USAGE = `capture motion rec — record the page over time: composed (whatever the active session does between --start and --stop) or one-shot (one scripted action on a URL or the active session tab).
 
-One-shot: records one scripted action on <url>, or on the active session tab when <url> is omitted, and finalizes an artifact.
-Supported actions: click:<css-selector>; scroll:<css-selector>,to=<top|bottom|px>.
+Input:
+  [url] --do <action>       one-shot: open <url> (or record the active session tab when <url> is omitted), record one action, finalize
+    action                  click:<target> | scroll:<target>,to=<top|bottom|px>
+    target                  css selector (bare string) | ax:<name> (case-insensitive substring) | axid:<id> | backend:<id>
+                            must resolve to exactly one live element; text: is not accepted by driving actions
+    --duration <seconds>    keep recording after the action (default: 0)
+    --viewport <WxH>        emulate a viewport for the recording window (restored after)
+  --start                   arm the composed recorder on the active session tab (requires \`capture session start\`)
+    --viewport <WxH>        as above; restored on --stop
+  --stop                    finalize the composed recording
+    --rec-id <id>           explicit recording id (default: the session's active recording)
 
-Composed (\`--start\` ... intervening commands ... \`--stop\`): records
-whatever the active session does across multiple independent commands.
-Requires an active session (\`capture session start\`).
+Output:
+  <recording> block — frames, fps, duration, state, event-records, video status, artifact list; --json mirrors.
 
-Options:
-  --do <action>      One-shot scripted action (uses the active session tab when URL is omitted)
-  --duration <secs>  Continue recording after the action (default: 0)
-  --start            Arm the composed recorder (requires an active session)
-  --stop             Finalize the composed recorder
-  --rec-id <id>      Explicit recording id (default: the session's active recording)`;
+Effects:
+  One-shot on a URL opens a new tab and writes a private one-shot artifact dir; with <url> omitted it records the active session tab and writes under the session. Composed writes under the active session. Scripted actions dispatch real input, marked as labeled landmarks in events.jsonl. Video encodes via ffmpeg when available.`;
 
 export async function cmdMotionRec(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
     console.log(USAGE);
     process.exit(0);
   }
-  if (rejectUnsupportedGate(parsed, 'motion rec')) return;
 
   const lifecycleError = validateLifecycleInputs(parsed);
   if (lifecycleError) return emitCommandError(parsed, lifecycleError.status, lifecycleError.message);
@@ -122,6 +129,7 @@ async function handleOneShot(parsed: ParsedArgs): Promise<void> {
   let client: CDPClient | undefined;
   let viewportMayHaveApplied = false;
   let failure: string | null = null;
+  let failureStatus = 'oneshot_failed';
   try {
     const port = parsed.port ?? await deps.detectCdpPort();
     // The shared parser fills the active session's targetId into parsed.target,
@@ -155,6 +163,7 @@ async function handleOneShot(parsed: ParsedArgs): Promise<void> {
     emitFinalizedResult(parsed, finalized);
   } catch (err) {
     failure = err instanceof Error ? err.message : String(err);
+    if (err instanceof DoActionError) failureStatus = err.status;
   } finally {
     let restored: boolean | null = null;
     if (client && viewportMayHaveApplied) restored = await restoreSessionViewportForClient(client);
@@ -162,56 +171,105 @@ async function handleOneShot(parsed: ParsedArgs): Promise<void> {
     if (failure !== null) {
       // A failed action is not a completed measurement. Keep the private partial
       // artifact for inspection, but never invent a finalized meta.json.
-      emitCommandError(parsed, 'oneshot_failed', failure, restored === null ? undefined : { 'viewport-restored': restored });
+      emitCommandError(parsed, failureStatus, failure, restored === null ? undefined : { 'viewport-restored': restored });
     }
   }
 }
 
-/** Drive the deliberately narrow one-shot action grammar. Selectors are
- * passed as JSON data into Runtime.evaluate, never concatenated as code. */
-export async function driveOneShotAction(recorder: Pick<RecorderSession, 'handleCdp'>, action: string): Promise<void> {
-  if (action.startsWith('click:')) {
-    const selector = action.slice('click:'.length);
-    if (!selector) throw new Error('Invalid --do action: click requires a CSS selector.');
-    const result = await recorder.handleCdp({
-      method: 'Runtime.evaluate',
-      params: {
-        expression: `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return { error: 'selector_not_found' }; const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`,
-        returnByValue: true,
-      },
-    });
-    assertRuntimeEvaluateSucceeded(result, `One-shot click target lookup failed for selector: ${selector}`);
-    const value = (result.result as { result?: { value?: { x?: unknown; y?: unknown; error?: unknown } } } | undefined)?.result?.value;
-    if (!value || value.error || typeof value.x !== 'number' || typeof value.y !== 'number') {
-      throw new Error(`One-shot click target was not found: ${selector}`);
-    }
-    await recorder.handleCdp({ method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: value.x, y: value.y, button: 'left', clickCount: 1 }, mark: action });
-    await recorder.handleCdp({ method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x: value.x, y: value.y, button: 'left', clickCount: 1 } });
-    return;
+/** A one-shot `--do` failure carrying a precise status for the `<error>` block. */
+export class DoActionError extends Error {
+  constructor(message: string, readonly status: string) {
+    super(message);
   }
+}
 
+type DoAction =
+  | { verb: 'click'; target: string }
+  | { verb: 'scroll'; target: string; to: string };
+
+/** Parses the deliberately narrow one-shot action grammar; targets use the
+ * unified driving-verb target grammar (no `text:`). */
+function parseDoAction(action: string): DoAction {
+  if (action.startsWith('click:')) {
+    const target = action.slice('click:'.length);
+    if (!target) throw new DoActionError('Invalid --do action: click requires a target — a css selector, ax:<name>, axid:<id>, or backend:<id>.', 'invalid_do_action');
+    return { verb: 'click', target };
+  }
   if (action.startsWith('scroll:')) {
     const spec = action.slice('scroll:'.length);
     const comma = spec.lastIndexOf(',to=');
-    if (comma <= 0) throw new Error('Invalid --do action: scroll requires `scroll:<css-selector>,to=<top|bottom|px>`.');
-    const selector = spec.slice(0, comma);
-    const destination = spec.slice(comma + ',to='.length);
-    const result = await recorder.handleCdp({
-      method: 'Runtime.evaluate',
-      params: {
-        expression: `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return { error: 'selector_not_found' }; const to = ${JSON.stringify(destination)}; const n = to === 'top' ? 0 : to === 'bottom' ? el.scrollHeight : Number(to); if (!Number.isFinite(n)) return { error: 'invalid_destination' }; el.scrollTop = n; return { scrollTop: el.scrollTop }; })()`,
-        returnByValue: true,
-      },
-      mark: action,
-    });
-    assertRuntimeEvaluateSucceeded(result, `One-shot scroll failed for selector: ${selector}`);
-    const value = (result.result as { result?: { value?: { error?: unknown; scrollTop?: unknown } } } | undefined)?.result?.value;
-    if (!value || value.error) throw new Error(`One-shot scroll could not run: ${String(value?.error ?? 'missing_result')}.`);
-    if (typeof value.scrollTop !== 'number') throw new Error('One-shot scroll did not return a valid scrollTop payload.');
+    if (comma <= 0) throw new DoActionError('Invalid --do action: scroll requires `scroll:<target>,to=<top|bottom|px>`.', 'invalid_do_action');
+    return { verb: 'scroll', target: spec.slice(0, comma), to: spec.slice(comma + ',to='.length) };
+  }
+  throw new DoActionError('Unsupported --do action. Supported actions: click:<target>; scroll:<target>,to=<top|bottom|px> — target is a css selector, ax:<name>, axid:<id>, or backend:<id>.', 'invalid_do_action');
+}
+
+/** Adapts `RecorderSession.handleCdp` onto interact.ts's `LiveClient` so
+ * live target resolution and scroll dispatch route through the recorder —
+ * `sendMarked` carries the labeled input landmark into `events.jsonl`. */
+function recorderLiveClient(recorder: Pick<RecorderSession, 'handleCdp'>): LiveClient {
+  return {
+    async send(method, params) {
+      return (await recorder.handleCdp({ method, params: params ?? {} })).result;
+    },
+    async sendMarked(method, params, mark) {
+      return (await recorder.handleCdp({ method, params, mark })).result;
+    },
+  };
+}
+
+function resolutionError(failure: ResolutionFailure): DoActionError {
+  if (failure.code === 'unsupported-prefix') {
+    return new DoActionError(
+      `Unsupported --do target prefix in "${failure.input}": text: is query-leaf-only. Accepted prefixes: bare css selector, ax:<name>, axid:<id>, backend:<id>.`,
+      'unsupported_target_prefix',
+    );
+  }
+  if (failure.code === 'no-match') {
+    return new DoActionError(`--do target matched no live element: ${failure.input}.`, 'target_resolution_failed');
+  }
+  const candidates = failure.candidates
+    .map((c) => `${c.role ?? 'unknown'} "${c.name ?? ''}" backend:${c.backendNodeId}`)
+    .join('; ');
+  return new DoActionError(
+    `--do target is ambiguous: ${failure.input} matched ${failure.matchCount} live elements. Candidates: ${candidates}. Retry with backend:<id>.`,
+    'target_resolution_failed',
+  );
+}
+
+/** Drives the one-shot action: resolves the target via the unified live
+ * grammar (exactly one match), then dispatches through the recorder so the
+ * initiating input carries its labeled landmark. */
+export async function driveOneShotAction(recorder: Pick<RecorderSession, 'handleCdp'>, action: string): Promise<void> {
+  const parsedAction = parseDoAction(action);
+  const live = recorderLiveClient(recorder);
+  const resolved = await resolveLiveTarget(live, parsedAction.target);
+  if (!resolved.ok) throw resolutionError(resolved);
+  if (parsedAction.verb === 'click') {
+    await clickResolvedMarked(recorder, resolved, action);
     return;
   }
+  // Scroll drives through the shared helper so the landmark behavior is
+  // identical to `page scroll` (the adapter's sendMarked carries the label).
+  await scrollResolved(live, resolved, parsedAction.to, { mark: action });
+}
 
-  throw new Error('Unsupported --do action. Supported actions: click:<css-selector>; scroll:<css-selector>,to=<top|bottom|px>.');
+/** Click dispatch with the one-shot's labeled landmark on the initiating
+ * press — the same mechanics as interact.ts's `clickResolved` (scroll into
+ * view → box model → center press/release), routed through the recorder so
+ * the mark lands in `events.jsonl`. */
+async function clickResolvedMarked(recorder: Pick<RecorderSession, 'handleCdp'>, resolved: ResolvedTarget, mark: string): Promise<void> {
+  const { backendNodeId } = resolved;
+  await recorder.handleCdp({ method: 'DOM.scrollIntoViewIfNeeded', params: { backendNodeId } });
+  const box = (await recorder.handleCdp({ method: 'DOM.getBoxModel', params: { backendNodeId } })).result as { model?: { content?: number[] } } | undefined;
+  const quad = box?.model?.content;
+  if (!quad || quad.length < 8) {
+    throw new DoActionError(`Resolved target backend:${backendNodeId} has no box model to click.`, 'target_not_clickable');
+  }
+  const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
+  const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
+  await recorder.handleCdp({ method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }, mark });
+  await recorder.handleCdp({ method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 } });
 }
 
 /** Exported for the focused artifact-layout test. This is the one-shot
@@ -325,13 +383,6 @@ async function waitForPageReady(client: Pick<CDPClient, 'send'>, timeoutMs = 500
     await sleep(50);
   }
   throw new Error(`Timed out waiting for page readiness before recording one-shot action (last state: ${lastState}).`);
-}
-
-function assertRuntimeEvaluateSucceeded(result: unknown, prefix: string): void {
-  const response = result as { result?: { exceptionDetails?: unknown }; exceptionDetails?: unknown } | undefined;
-  if (response?.exceptionDetails || response?.result?.exceptionDetails) {
-    throw new Error(`${prefix}: Runtime.evaluate reported a JavaScript exception.`);
-  }
 }
 
 export type VideoEncoding = { status: 'encoded' | 'unavailable' | 'failed'; reason?: string };

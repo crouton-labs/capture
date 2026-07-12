@@ -26,6 +26,7 @@ import {
   __setMotionRecDepsForTest,
   cmdMotionRec,
   driveOneShotAction,
+  DoActionError,
   finalizeOneShotRecording,
   encodeVideoIfAvailable,
   encodeTimeoutMs,
@@ -46,13 +47,14 @@ class FakeClient {
       if (expression.includes('document.readyState')) {
         return { result: { value: { readyState: 'complete', href: 'https://fixture.test/' } } };
       }
-      if (expression.includes('getBoundingClientRect')) {
-        return { result: { value: { x: 12, y: 34 } } };
-      }
-      if (expression.includes('scrollTop')) {
-        return { result: { value: { scrollTop: 120 } } };
-      }
     }
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+    if (method === 'DOM.querySelectorAll') return { nodeIds: [101] };
+    if (method === 'DOM.describeNode') return { node: { backendNodeId: 201 } };
+    if (method === 'Accessibility.getPartialAXTree') {
+      return { nodes: [{ nodeId: 'ax-201', backendDOMNodeId: 201, role: { value: 'button' }, name: { value: 'Send' } }] };
+    }
+    if (method === 'DOM.getBoxModel') return { model: { content: [10, 20, 30, 20, 30, 40, 10, 40] } };
     return {};
   }
   on(): void {}
@@ -141,10 +143,16 @@ test('cmdMotionRec one-shot waits for readiness, applies/restores viewport, reco
     assert.ok(runtimeIndex >= 0 && mouseIndex > runtimeIndex, 'readiness is checked before the input dispatch');
     assert.deepEqual(recorder!.marks, ['click:button.send'], 'one coherent input landmark is emitted for one click');
     assert.deepEqual(recorder!.cdp.map((c) => [c.method, c.mark ?? null]), [
-      ['Runtime.evaluate', null],
+      ['DOM.enable', null],
+      ['DOM.getDocument', null],
+      ['DOM.querySelectorAll', null],
+      ['DOM.describeNode', null],
+      ['Accessibility.getPartialAXTree', null],
+      ['DOM.scrollIntoViewIfNeeded', null],
+      ['DOM.getBoxModel', null],
       ['Input.dispatchMouseEvent', 'click:button.send'],
       ['Input.dispatchMouseEvent', null],
-    ]);
+    ], 'the target resolves through the unified live grammar before the marked dispatch');
 
     const recRoot = path.join(root, 'motion', 'recs');
     const recDir = path.join(recRoot, fs.readdirSync(recRoot)[0]);
@@ -294,15 +302,129 @@ test('motion rec composed lifecycle records a real Chrome routed type action bet
   }
 });
 
-test('one-shot scroll rejects JavaScript exceptions and missing scroll payloads', async () => {
+/** Scripted stand-in for RecorderSession.handleCdp — answers each CDP method
+ * from `handlers`, recording the dispatched methods and marks. */
+function stubRecorder(handlers: Record<string, (params?: Record<string, unknown>) => unknown>) {
+  const calls: Array<{ method: string; mark: string | null }> = [];
+  return {
+    calls,
+    handleCdp: async (req: { method?: string; params?: Record<string, unknown>; mark?: string }) => {
+      calls.push({ method: req.method ?? '', mark: req.mark ?? null });
+      const handler = handlers[req.method ?? ''];
+      return { result: handler ? handler(req.params) : {} };
+    },
+  };
+}
+
+const SINGLE_PANE_RESOLUTION = {
+  'DOM.getDocument': () => ({ root: { nodeId: 1 } }),
+  'DOM.querySelectorAll': () => ({ nodeIds: [101] }),
+  'DOM.describeNode': () => ({ node: { backendNodeId: 201 } }),
+  'Accessibility.getPartialAXTree': () => ({ nodes: [{ nodeId: 'ax-201', backendDOMNodeId: 201, role: { value: 'generic' }, name: { value: 'pane' } }] }),
+  'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
+};
+
+test('one-shot scroll drives the shared scrollResolved helper and carries the action landmark', async () => {
+  const recorder = stubRecorder({
+    ...SINGLE_PANE_RESOLUTION,
+    'Runtime.callFunctionOn': () => ({ result: { value: 240 } }),
+  });
+  await driveOneShotAction(recorder as never, 'scroll:.pane,to=bottom');
+  const scrollCall = recorder.calls.find((c) => c.method === 'Runtime.callFunctionOn');
+  assert.ok(scrollCall, 'scroll dispatches through Runtime.callFunctionOn on the resolved node');
+  assert.equal(scrollCall!.mark, 'scroll:.pane,to=bottom', 'the one mutating call carries the action landmark');
+});
+
+test('one-shot scroll rejects in-page exceptions and missing scroll payloads', async () => {
   await assert.rejects(
-    () => driveOneShotAction({ handleCdp: async () => ({ result: { exceptionDetails: { text: 'bad selector' } } }) } as never, 'scroll:%,to=bottom'),
-    /Runtime\.evaluate reported a JavaScript exception/,
+    () => driveOneShotAction(stubRecorder({
+      ...SINGLE_PANE_RESOLUTION,
+      'Runtime.callFunctionOn': () => ({ exceptionDetails: { text: 'bad target' } }),
+    }) as never, 'scroll:.pane,to=bottom'),
+    /threw in-page/,
   );
   await assert.rejects(
-    () => driveOneShotAction({ handleCdp: async () => ({ result: { result: { value: {} } } }) } as never, 'scroll:.pane,to=bottom'),
+    () => driveOneShotAction(stubRecorder({
+      ...SINGLE_PANE_RESOLUTION,
+      'Runtime.callFunctionOn': () => ({ result: { value: 'nope' } }),
+    }) as never, 'scroll:.pane,to=bottom'),
     /valid scrollTop payload/,
   );
+});
+
+test('one-shot click:ax:<name> resolves by case-insensitive substring over live AX names', async () => {
+  const recorder = stubRecorder({
+    'Accessibility.getFullAXTree': () => ({
+      nodes: [
+        { nodeId: '1', backendDOMNodeId: 11, role: { value: 'button' }, name: { value: 'Send message' } },
+        { nodeId: '2', backendDOMNodeId: 12, role: { value: 'button' }, name: { value: 'Cancel' } },
+      ],
+    }),
+    'DOM.getBoxModel': () => ({ model: { content: [0, 0, 10, 0, 10, 10, 0, 10] } }),
+  });
+  await driveOneShotAction(recorder as never, 'click:ax:send');
+  const boxCall = recorder.calls.find((c) => c.method === 'DOM.getBoxModel');
+  assert.ok(boxCall, 'the resolved element is clicked via its box model');
+  const press = recorder.calls.find((c) => c.method === 'Input.dispatchMouseEvent');
+  assert.equal(press?.mark, 'click:ax:send', 'the initiating press carries the action landmark');
+});
+
+test('one-shot click with an ambiguous target rejects with the candidate list', async () => {
+  const recorder = stubRecorder({
+    'Accessibility.getFullAXTree': () => ({
+      nodes: [
+        { nodeId: '1', backendDOMNodeId: 11, role: { value: 'button' }, name: { value: 'Send' } },
+        { nodeId: '2', backendDOMNodeId: 12, role: { value: 'button' }, name: { value: 'Send later' } },
+      ],
+    }),
+  });
+  await assert.rejects(
+    () => driveOneShotAction(recorder as never, 'click:ax:Send'),
+    (err: unknown) => {
+      assert.ok(err instanceof DoActionError);
+      assert.equal(err.status, 'target_resolution_failed');
+      assert.match(err.message, /matched 2 live elements/);
+      assert.match(err.message, /backend:11/);
+      assert.match(err.message, /backend:12/);
+      assert.match(err.message, /Send later/);
+      return true;
+    },
+  );
+  assert.equal(recorder.calls.filter((c) => c.method === 'Input.dispatchMouseEvent').length, 0, 'no input is dispatched on an ambiguous target');
+});
+
+test('one-shot click rejects a text: target naming the accepted prefixes', async () => {
+  const recorder = stubRecorder({});
+  await assert.rejects(
+    () => driveOneShotAction(recorder as never, 'click:text:x'),
+    (err: unknown) => {
+      assert.ok(err instanceof DoActionError);
+      assert.equal(err.status, 'unsupported_target_prefix');
+      assert.match(err.message, /css selector/);
+      assert.match(err.message, /ax:<name>/);
+      assert.match(err.message, /axid:<id>/);
+      assert.match(err.message, /backend:<id>/);
+      return true;
+    },
+  );
+  assert.equal(recorder.calls.length, 0, 'a rejected prefix never reaches the page');
+});
+
+test('one-shot click with a no-match target rejects without dispatching input', async () => {
+  const recorder = stubRecorder({
+    'DOM.getDocument': () => ({ root: { nodeId: 1 } }),
+    'DOM.querySelectorAll': () => ({ nodeIds: [] }),
+  });
+  await assert.rejects(
+    () => driveOneShotAction(recorder as never, 'click:.missing'),
+    (err: unknown) => {
+      assert.ok(err instanceof DoActionError);
+      assert.equal(err.status, 'target_resolution_failed');
+      assert.match(err.message, /matched no live element/);
+      return true;
+    },
+  );
+  assert.equal(recorder.calls.filter((c) => c.method === 'Input.dispatchMouseEvent').length, 0);
 });
 
 test('cmdMotionRec rejects incompatible lifecycle inputs before touching the recorder', async () => {
