@@ -1113,6 +1113,47 @@ test('an untrusted/unknown tag is rejected rather than rendered', () => {
   assert.throws(() => renderResult(forged));
 });
 
+test('every new/ported result tag is trusted and renders as its own block, in prose and --json', () => {
+  const newTags = [
+    'session',
+    'session-stopped',
+    'sessions',
+    'session-har',
+    'log-tail',
+    'clicked',
+    'typed',
+    'scrolled',
+    'navigated',
+    'exec-result',
+    'elements',
+    'screenshot',
+    'tabs',
+    'tab-opened',
+    'tab-reset',
+    'network',
+    'cdp-result',
+    'libs',
+    'lib',
+    'ax-map',
+  ] as const;
+  for (const tag of newTags) {
+    const result: RenderableResult = { tag, summary: fact`ok for ${tag}` };
+    const out = renderResult(result);
+    assert.match(out, new RegExp(`^<${tag}>\n`));
+    assert.match(out, new RegExp(`\n</${tag}>$`));
+    const jsonOut = toJsonResult(result);
+    assert.equal(jsonOut.tag, tag);
+  }
+});
+
+test('a non-enum tag that merely RESEMBLES a valid tag is still rejected', () => {
+  for (const bogus of ['session2', 'Session', 'ax-maps', 'clicked ', 'tab', '']) {
+    const forged = { tag: bogus } as unknown as RenderableResult;
+    assert.throws(() => renderResult(forged), /untrusted tag/);
+    assert.throws(() => toJsonResult(forged), /untrusted tag/);
+  }
+});
+
 test('an invalid attribute key is rejected by --json exactly as it is by prose', () => {
   // Prose (renderAttrs) and --json (toJsonResult) must share the same
   // ATTR_KEY_PATTERN policy — a key the prose path refuses must not sneak
