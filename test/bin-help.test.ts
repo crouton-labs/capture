@@ -88,12 +88,12 @@ test('`capture --version` prints a version; `-v` and the `version` word are unkn
   });
 });
 
-test('page branch leaves are routed: a stub leaf emits a structured not_implemented error', () => {
+test('page branch leaves are routed: click reaches the real leaf and emits its structured input error', () => {
   withTempRoot((tempRoot) => {
-    const result = run(['page', 'click', 'x'], tempRoot);
+    const result = run(['page', 'click'], tempRoot);
     assert.equal(result.status, 1);
-    assert.ok(result.stdout.includes('not_implemented'), result.stdout);
-    assert.ok(result.stdout.includes('page click'), result.stdout);
+    assert.ok(result.stdout.includes('<error command="page click" code="invalid_input">'), result.stdout);
+    assert.ok(!result.stdout.includes('not_implemented'), result.stdout);
   });
 });
 
