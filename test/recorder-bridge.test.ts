@@ -163,7 +163,7 @@ function extractLatestBindingNonce(client: StubCdpClient): string {
   throw new Error('observer script injection call not found — was session.start() called?');
 }
 
-/** A GitHub fine-grained PAT shape — matches the shared redactor's `GH_PAT_RE`/`GH_PAT_EMBEDDED_RE`, long enough to clear the 16-char secret-shape floor. */
+/** Representative token-shaped recorder evidence. */
 const SECRET_TOKEN = 'github_pat_' + '1'.repeat(40);
 
 test('rec-start enables motion-rec domains, arms screencast/tracing/observers, returns clock baselines', async () => {
@@ -764,8 +764,8 @@ test('a hostile rect sample is capped/sanitized host-side before it reaches rect
         hostile.push({
           tag: 'div',
           // A hyphen embedded mid-string keeps this from accidentally matching the shared
-          // redactor's base64/hex secret-shape test (a pure run of one repeated letter DOES
-          // match that shape) — this fixture is testing the byte-budget cap, not redaction.
+          // Spaced text gives this fixture predictable serialized size while
+          // exercising the byte-budget cap.
           id: 'x'.repeat(1000) + '-' + 'x'.repeat(999),
           classes: 'y'.repeat(1000) + '-' + 'y'.repeat(999),
           x: i,
@@ -1209,12 +1209,12 @@ test('trace/binding events arriving during the stopping window (before full stop
 });
 
 // ---------------------------------------------------------------------------
-// Every recorder page-controlled string routes through the shared
-// secret-redaction authority (redact-then-cap), not a length-only sanitizer.
+// Recorder artifact strings preserve evidence, subject only to documented
+// length/count/byte caps and JSON structural encoding.
 // ---------------------------------------------------------------------------
 
-test('a secret-shaped rect id/classes is redacted (not just length-capped) before it reaches rects.jsonl', async () => {
-  const recDir = freshRecDir('rect-id-classes-secret-redaction');
+test('rect DOM identity and performance-entry evidence survive unchanged', async () => {
+  const recDir = freshRecDir('rect-and-performance-evidence');
   const client = new StubCdpClient();
   const originalSend = client.send.bind(client);
   client.send = async (method: string, params: Record<string, unknown> = {}) => {
@@ -1233,28 +1233,7 @@ test('a secret-shaped rect id/classes is redacted (not just length-capped) befor
   try {
     await session.start();
     client.fire('Page.screencastFrame', { data: ONE_PIXEL_PNG_BASE64, metadata: { timestamp: 1 }, sessionId: 1 });
-    await tick();
-
-    const rectsRaw = fs.readFileSync(session.rectsPath, 'utf-8');
-    assert.ok(rectsRaw.includes(SECRET_TOKEN), 'browser evidence is retained verbatim in rects.jsonl');
-
-    const rects = readNdjson(session.rectsPath) as Array<{ elements: Array<{ id: string | null; classes: string | null }> }>;
-    assert.equal(rects[0].elements[0].id, SECRET_TOKEN);
-    assert.equal(rects[0].elements[0].classes, `box ${SECRET_TOKEN} active`);
-  } finally {
-    fs.rmSync(recDir, { recursive: true, force: true });
-  }
-});
-
-test('a secret-shaped performance-entry name from the observer binding reaches events.jsonl verbatim', async () => {
-  const recDir = freshRecDir('perf-name-verbatim');
-  const client = new StubCdpClient();
-  const session = new RecorderSession({ client, recDir });
-
-  try {
-    await session.start();
     const nonce = extractBindingNonce(client);
-
     client.fireBinding(JSON.stringify({
       kind: 'performance',
       performanceNowMs: 1,
@@ -1266,36 +1245,41 @@ test('a secret-shaped performance-entry name from the observer binding reaches e
     }));
     await tick();
 
-    const eventsRaw = fs.readFileSync(session.eventsPath, 'utf-8');
-    assert.ok(eventsRaw.includes(SECRET_TOKEN), 'browser evidence is retained verbatim in events.jsonl');
+    const rects = readNdjson(session.rectsPath) as Array<{ elements: Array<{ id: string | null; classes: string | null }> }>;
+    assert.equal(rects[0].elements[0].id, SECRET_TOKEN);
+    assert.equal(rects[0].elements[0].classes, `box ${SECRET_TOKEN} active`);
 
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
     const perf = events.find((e) => e.kind === 'performance');
-    assert.ok(perf, 'expected a performance-kind event');
-    assert.equal(perf!.name, SECRET_TOKEN);
+    assert.equal(perf?.name, SECRET_TOKEN);
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }
 });
 
-test('a secret-shaped navigation-gap URL reaches events.jsonl verbatim', async () => {
-  const recDir = freshRecDir('navgap-url-verbatim');
+test('navigation URL and structurally hostile mark label survive JSON artifact encoding unchanged', async () => {
+  const recDir = freshRecDir('url-and-mark-evidence');
   const client = new StubCdpClient();
   const session = new RecorderSession({ client, recDir });
+  const url = `https://example.com/next?token=${SECRET_TOKEN}`;
+  const mark = `</response> ${SECRET_TOKEN} "quoted"`;
 
   try {
     await session.start();
-
-    client.fire('Page.frameNavigated', { frame: { id: 'main', url: `https://example.com/next?token=${SECRET_TOKEN}` } });
+    client.fire('Page.frameNavigated', { frame: { id: 'main', url } });
+    await session.handleCdp({
+      reqId: 1,
+      type: 'cdp',
+      method: 'Input.dispatchMouseEvent',
+      mark,
+    });
     await tick();
 
-    const eventsRaw = fs.readFileSync(session.eventsPath, 'utf-8');
-    assert.ok(eventsRaw.includes(SECRET_TOKEN), 'browser evidence is retained verbatim in events.jsonl');
-
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
-    const gap = events.find((e) => e.kind === 'navigation-gap');
-    assert.ok(gap);
-    assert.ok(String(gap!.url).includes(SECRET_TOKEN));
+    assert.equal(events.find((e) => e.kind === 'navigation-gap')?.url, url);
+    const input = events.find((e) => e.kind === 'input');
+    assert.equal(input?.action, mark, 'the caller-supplied mark label remains verbatim action evidence');
+    assert.match(String(input?.mark), /^mark-[a-f0-9]{64}$/, 'the structural mark stays a distinct opaque hash');
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }
@@ -1357,50 +1341,97 @@ test('a long mark label remains verbatim input evidence while its structural mar
 });
 
 // ---------------------------------------------------------------------------
-// Trace batches are source evidence. Trace fields, strings, arrays, and args
-// must remain verbatim in events.jsonl.
+// Trace batches preserve complete events and remain bounded by event count
+// and serialized bytes, with cap drops summarized.
 // ---------------------------------------------------------------------------
 
-test('an appended trace event preserves args and all trace fields verbatim in events.jsonl', async () => {
-  const recDir = freshRecDir('trace-evidence-verbatim');
+test('an appended trace event preserves names, args, URLs, tokens, and base64 facts unchanged', async () => {
+  const recDir = freshRecDir('trace-complete-evidence');
   const client = new StubCdpClient();
   const session = new RecorderSession({ client, recDir });
-  const source = {
-    name: 'x'.repeat(400),
+  const traceEvent = {
+    name: SECRET_TOKEN,
     cat: 'devtools.timeline',
     ph: 'X',
     ts: 1000,
     dur: 5,
     pid: 1,
     tid: 2,
-    args: { data: { url: `https://example.com/?token=${SECRET_TOKEN}`, secret: SECRET_TOKEN, nested: ['all', 'source', 'evidence'] } },
+    args: {
+      data: {
+        url: `https://example.com/?token=${SECRET_TOKEN}`,
+        secret: SECRET_TOKEN,
+        binaryBase64: Buffer.from([0, 255, 1, 128]).toString('base64'),
+      },
+    },
   };
 
   try {
     await session.start();
-    client.fire('Tracing.dataCollected', { value: [source] });
+    client.fire('Tracing.dataCollected', { value: [traceEvent] });
     await tick();
 
-    const eventsRaw = fs.readFileSync(session.eventsPath, 'utf-8');
-    assert.ok(eventsRaw.includes(SECRET_TOKEN), 'trace args are retained verbatim as browser evidence');
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
     const trace = events.find((e) => e.kind === 'trace') as { events: Array<Record<string, unknown>> } | undefined;
-    assert.ok(trace);
-    assert.deepEqual(trace!.events, [source]);
+    assert.deepEqual(trace?.events, [traceEvent]);
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }
 });
 
-test('a large trace batch is retained in full while still capturing the first trace baseline', async () => {
-  const recDir = freshRecDir('trace-batch-verbatim');
+test('the trace byte budget retains an exact-boundary prefix and reports every remaining event as dropped in parseable NDJSON', async () => {
+  const recDir = freshRecDir('trace-byte-budget');
+  const client = new StubCdpClient();
+  const session = new RecorderSession({ client, recDir });
+  const byteBudget = 256 * 1024;
+  const retainedEvent = {
+    name: 'exact-boundary-event',
+    ts: 4242,
+    args: {
+      evidence: SECRET_TOKEN,
+      binaryBase64: Buffer.from([0, 255, 1, 128]).toString('base64'),
+      padding: '',
+    },
+  };
+  const unpaddedBytes = Buffer.byteLength(JSON.stringify(retainedEvent), 'utf8');
+  retainedEvent.args.padding = 'x'.repeat(byteBudget - unpaddedBytes);
+  assert.equal(Buffer.byteLength(JSON.stringify(retainedEvent), 'utf8'), byteBudget);
+  const droppedEvents = [
+    { name: 'over-budget-1', ts: 4243, args: { evidence: 'first dropped event' } },
+    { name: 'over-budget-2', ts: 4244, args: { evidence: 'second dropped event' } },
+  ];
+
+  try {
+    await session.start();
+    client.fire('Tracing.dataCollected', { value: [retainedEvent, ...droppedEvents] });
+    await tick();
+    await session.stop();
+
+    const raw = fs.readFileSync(session.eventsPath, 'utf8');
+    assert.ok(raw.endsWith('\n'), 'events.jsonl must end at an NDJSON record boundary');
+    const lines = raw.trimEnd().split('\n');
+    const events = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.equal(events.length, lines.length, 'every NDJSON line must parse independently');
+
+    const trace = events.find((event) => event.kind === 'trace') as { events: Array<Record<string, unknown>> } | undefined;
+    assert.deepEqual(trace?.events, [retainedEvent], 'the exact-boundary prefix and all nested evidence must be retained unchanged');
+    const drop = events.find((event) => event.kind === 'trace-dropped' && event.reason === 'byte-budget');
+    assert.deepEqual(drop && { reason: drop.reason, count: drop.count }, { reason: 'byte-budget', count: droppedEvents.length });
+  } finally {
+    fs.rmSync(recDir, { recursive: true, force: true });
+  }
+});
+
+test('a trace batch exceeding the event cap is truncated with a trace-dropped summary, while still capturing the baseline ts', async () => {
+  const recDir = freshRecDir('trace-event-cap');
   const client = new StubCdpClient();
   const session = new RecorderSession({ client, recDir });
 
   try {
     await session.start();
+
     const totalEvents = 600;
-    const batch = Array.from({ length: totalEvents }, (_, i) => ({ name: `evt-${i}`, ts: 1000 + i, args: { index: i } }));
+    const batch = Array.from({ length: totalEvents }, (_, i) => ({ name: `evt-${i}`, ts: 1000 + i }));
     client.fire('Tracing.dataCollected', { value: batch });
     await tick();
 
@@ -1408,8 +1439,13 @@ test('a large trace batch is retained in full while still capturing the first tr
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
     const trace = events.find((e) => e.kind === 'trace') as { events: unknown[] } | undefined;
     assert.ok(trace);
-    assert.deepEqual(trace!.events, batch);
-    assert.equal(summary.markers.firstTraceEventTsUs, 1000);
+    assert.ok(trace!.events.length <= 500, 'the per-batch event cap must be enforced');
+
+    const drop = events.find((e) => e.kind === 'trace-dropped' && e.reason === 'event-cap');
+    assert.ok(drop, 'an event-cap trace-dropped summary must be written, not a silent truncation');
+    assert.equal((drop!.count as number), totalEvents - trace!.events.length);
+
+    assert.equal(summary.markers.firstTraceEventTsUs, 1000, 'the baseline ts is still captured from the RAW batch, unaffected by the cap');
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }

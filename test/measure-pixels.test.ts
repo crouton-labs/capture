@@ -1033,54 +1033,37 @@ test('collectPixels marks viewportScale available (no unavailableReason) when th
   }
 });
 
-test('collectPixels redacts id- AND class-planted secrets while keeping the non-secret page-derived crop-filename components', async () => {
-  const dir = makeSnapDir('redaction');
+test('collectPixels preserves page-controlled IDs/classes in selectors and applies only filename safety to crop slugs', async () => {
+  const dir = makeSnapDir('identity-evidence');
   try {
-    // Two distinct secrets: one in `id` (feeds `#id` in the selector), one in
-    // `class` (feeds a `.class` segment) — both must be redacted. A non-secret
-    // class token (`swatch`) must SURVIVE into the crop filename, so the test
-    // fails if filenames drop page-derived slugs wholesale instead of
-    // redacting only the secret runs.
-    const ID_SECRET = 'sk-abcdefghijklmnop1234';
-    const CLASS_SECRET = 'sk-zyxwvutsrqponml9876';
+    const id = 'sk-abcdefghijklmnop1234';
+    const className = `safe_token-${'z'.repeat(100)}`;
     const client = new StubCdpClient({
       nodeIds: [3],
       nodes: {
         3: {
           nodeName: 'DIV',
           backendNodeId: 33,
-          attributes: ['id', ID_SECRET, 'class', `swatch ${CLASS_SECRET}`],
+          attributes: ['id', id, 'class', `swatch ${className}`],
         },
       },
     });
 
     await collectPixels(makeCtx(dir, client as unknown as CDPClient));
 
-    const raw = fs.readFileSync(path.join(dir, 'pixels.json'), 'utf8');
-    assert.equal(raw.includes(ID_SECRET), false, 'id secret redacted out of pixels.json');
-    assert.equal(raw.includes(CLASS_SECRET), false, 'class secret redacted out of pixels.json');
-
-    const pixelsJson = JSON.parse(raw) as PixelsJson;
+    const pixelsJson = JSON.parse(fs.readFileSync(path.join(dir, 'pixels.json'), 'utf8')) as PixelsJson;
     const el = pixelsJson.elements[0];
-    // Both secret runs replaced; the non-secret `swatch` class survives.
-    assert.equal(el.selector, 'div#[REDACTED].swatch.[REDACTED]', 'both secrets redacted, swatch kept, via the shared redactor');
+    assert.equal(el.selector, `div#${id}.swatch.${className}`);
 
-    // The crop path/filename keeps the non-secret page-derived component
-    // (`swatch`) AND the redaction marker, while carrying neither raw secret.
+    // The slug replaces selector punctuation only; alphanumeric, underscore, and dash token characters survive verbatim before its structural cap.
     const cropName = path.basename(el.crop);
-    assert.ok(cropName.includes('swatch'), `expected sanitized page-derived component in crop filename: ${cropName}`);
-    assert.ok(/redacted/i.test(cropName), `expected redaction marker in crop filename: ${cropName}`);
-    assert.equal(cropName.includes(ID_SECRET), false, 'id secret must not reach the crop filename');
-    assert.equal(cropName.includes(CLASS_SECRET), false, 'class secret must not reach the crop filename');
+    const expectedSlug = `div-${id}-swatch-${className}`.slice(0, 80);
+    const expectedCropName = `0-33-${expectedSlug}.png`;
+    assert.equal(cropName, expectedCropName);
+    assert.equal(expectedSlug.length, 80, 'the fixture activates the filename slug cap');
 
-    // The on-disk crop file matches: non-secret component present, no raw secret.
     const cropFiles = fs.readdirSync(path.join(dir, 'crops'));
-    assert.equal(cropFiles.length, 1);
-    for (const name of cropFiles) {
-      assert.ok(name.includes('swatch'), `crop filename should keep the non-secret component: ${name}`);
-      assert.equal(name.includes(ID_SECRET), false, `crop filename must not leak the id secret: ${name}`);
-      assert.equal(name.includes(CLASS_SECRET), false, `crop filename must not leak the class secret: ${name}`);
-    }
+    assert.deepEqual(cropFiles, [expectedCropName]);
   } finally {
     removeArtifactTree(dir);
   }

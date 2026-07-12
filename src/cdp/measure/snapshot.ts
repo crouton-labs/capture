@@ -28,7 +28,7 @@ import {
   groupChurnEvidence,
 } from './settle.js';
 import type { AnimationFreezeHandle } from './settle.js';
-import { sanitizeDomHtml, sanitizeString } from './redaction.js';
+import { sanitizeString } from './redaction.js';
 import type {
   CaptureSnapshotOptions,
   CaptureSnapshotResult,
@@ -114,11 +114,6 @@ function makeWriter(dir: string, artifacts: string[]): SnapshotWriter {
   };
 }
 
-// dom.html sanitization is `redaction.ts`'s `sanitizeDomHtml` (imported
-// above for internal use) — re-exported here so `measure snap` callers and
-// the settledness suite keep importing it from this module.
-export { sanitizeDomHtml };
-
 // ============================================================================
 // Orchestrator
 // ============================================================================
@@ -142,9 +137,8 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
   const pixels = options.pixels ?? false;
   const state = options.state ?? [];
   const viewport = options.viewport ?? null;
-  // Route the page URL through the shared sanitizer once at the source so
-  // query/fragment secret tokens can't reach meta.json, the result, or any
-  // collector that reads ctx.url.
+  // Apply the shared artifact-string cap once at the source. URL contents
+  // otherwise survive unchanged in meta.json, the result, and collector context.
   const url = options.url ? sanitizeString(options.url) : null;
 
   await enableDomainsForSnap(client);
@@ -309,7 +303,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
       if (domHtmlValue === undefined) {
         domHtmlFact = { available: false, unavailableReason: domHtmlUnavailableReason };
       } else {
-        writePrivateFile(path.join(dir, 'dom.html'), sanitizeDomHtml(domHtmlValue));
+        writePrivateFile(path.join(dir, 'dom.html'), domHtmlValue);
         artifacts.push('dom.html');
         domHtmlFact = { available: true };
       }

@@ -82,7 +82,7 @@ class LayersEventStubCdpClient extends EventEmitter {
       case 'DOMSnapshot.captureSnapshot':
         return this.opts.domSnapshot ? DOM_SNAPSHOT_CANNED : {};
       case 'DOM.describeNode':
-        // A page-controlled id shaped like an sk- secret — must be redacted out of the selector.
+        // Page-controlled selector evidence is retained exactly, subject only to string caps.
         return { node: { nodeName: 'DIV', attributes: ['id', 'sk-1234567890abcdefghij'] } };
       case 'DOM.pushNodesByBackendIdsToFrontend':
         return { nodeIds: [100] };
@@ -94,9 +94,7 @@ class LayersEventStubCdpClient extends EventEmitter {
                 selectorList: { selectors: [{ text: '.promo-sk-abcdefghijklmnop123456' }], text: '.promo-sk-abcdefghijklmnop123456' },
                 origin: 'regular',
                 style: { cssProperties: [{ name: 'transform', value: 'scale(1.05)' }] },
-                // A third secret, planted in a field a selector-only/declaredValue-only redaction
-                // check would never inspect — so the redaction test below depends on whole-artifact
-                // scanning of layers.json, not narrow-field selector/declaredValue checks.
+                // Page-controlled media evidence is retained exactly, subject only to string caps.
                 media: [{ text: 'screen and (min-width: 1px) sk-mediaquerysecretabcdefghij' }],
               },
               matchingSelectors: [0],
@@ -344,7 +342,7 @@ test('collectLayers: membership.available=false with a reason when the layer tre
   assert.deepEqual(layers.layers, []);
 });
 
-test('collectLayers: page-controlled selector + style-provenance strings are secret-sanitized everywhere in the emitted artifact, not just in the fields a narrow check would think to look at', async () => {
+test('collectLayers preserves exact page-controlled selector and style-provenance evidence', async () => {
   const client = new LayersEventStubCdpClient({ emitEvent: true, domSnapshot: true });
   const { ctx, written } = makeCtx(client);
 
@@ -353,21 +351,11 @@ test('collectLayers: page-controlled selector + style-provenance strings are sec
   const layers = written.get('layers.json') as any;
   const layer = layers.layers[0];
 
-  // Whole-artifact search (JSON.stringify the entire layers.json, not just `layer.selector` /
-  // `layer.styleProvenance.selector`): catches a leak in ANY field, including a field a
-  // narrower, field-by-field check would never think to inspect — the stub also plants a third
-  // secret in `styleProvenance.mediaQuery` (via `rule.media`), so this assertion depends on the
-  // whole-artifact scope, not on `mediaQuery` happening to already be covered by a named field
-  // check. A selector/declaredValue-only check would stay green and miss this leak entirely.
-  const serialized = JSON.stringify(layers);
-  assert.ok(!serialized.includes('sk-1234567890abcdefghij'), 'sk- secret in the page-controlled node id must not survive anywhere in layers.json');
-  assert.ok(!serialized.includes('sk-abcdefghijklmnop123456'), 'sk- secret in the rule selector must not survive anywhere in layers.json');
-  assert.ok(!serialized.includes('sk-mediaquerysecretabcdefghij'), "sk- secret in the rule's media query must not survive anywhere in layers.json");
-
-  assert.ok(layer.selector.includes('[REDACTED]'));
+  assert.equal(layer.selector, 'div#sk-1234567890abcdefghij');
+  assert.equal(layer.styleProvenance.selector, '.promo-sk-abcdefghijklmnop123456');
   assert.equal(layer.styleProvenance.property, 'transform');
   assert.equal(layer.styleProvenance.declaredValue, 'scale(1.05)', 'the winning declaration carries its declared value, not just property/selector');
-  assert.ok(layer.styleProvenance.mediaQuery?.includes('[REDACTED]'), 'the media query field is emitted (redacted), not silently dropped');
+  assert.equal(layer.styleProvenance.mediaQuery, 'screen and (min-width: 1px) sk-mediaquerysecretabcdefghij');
 });
 
 // ============================================================================
@@ -1008,13 +996,10 @@ test('collectStyles: styles.json emits an explicit top-document / light-DOM-only
   assert.equal(styles.coverage.shadowRootsNotWalked, 1, 'reports shadow-root count the light-DOM enumeration did not pierce');
 });
 
-test('collectStyles: a secret in the stylesheet sourceURL is redacted in the emitted provenance', async () => {
-  // Plant a github_pat_ token in the page-controlled stylesheet URL. It must be redacted
-  // everywhere it is emitted (sourceStyleSheetUrl AND the generated fallback location),
-  // via the shared sanitizeString authority — never written raw to styles.json (D1).
-  const SECRET = 'github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV';
-  const secretUrl = `https://example.test/app.css?token=${SECRET}`;
-  const client = new StylesStubCdpClient('.card{padding-top:12px}', secretUrl);
+test('collectStyles preserves an exact page-controlled stylesheet sourceURL in emitted provenance', async () => {
+  const token = 'github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV';
+  const sourceUrl = `https://example.test/app.css?token=${token}`;
+  const client = new StylesStubCdpClient('.card{padding-top:12px}', sourceUrl);
   const { ctx, written } = makeCtx(client);
 
   await collectStyles(ctx);
@@ -1022,10 +1007,8 @@ test('collectStyles: a secret in the stylesheet sourceURL is redacted in the emi
   const styles = written.get('styles.json') as any;
   const paddingTop = styles.elements[0].winningDeclarations.find((d: any) => d.property === 'padding-top');
   assert.ok(paddingTop, 'expected a padding-top winning declaration');
-  assert.ok(!JSON.stringify(styles).includes(SECRET), 'the raw secret token must not appear anywhere in styles.json');
-  assert.ok(!String(paddingTop.sourceStyleSheetUrl).includes(SECRET), 'sourceStyleSheetUrl must be sanitized');
-  assert.ok(paddingTop.sourceStyleSheetUrl.includes('[REDACTED]'), 'the redaction marker replaces the secret in sourceStyleSheetUrl');
-  assert.ok(!String(paddingTop.generated?.sourceURL ?? '').includes(SECRET), 'the generated fallback sourceURL must be sanitized too');
+  assert.equal(paddingTop.sourceStyleSheetUrl, sourceUrl);
+  assert.equal(paddingTop.generated?.sourceURL, sourceUrl);
 });
 
 test('collectStyles: authored result also carries the generated (pre-map) location', async () => {

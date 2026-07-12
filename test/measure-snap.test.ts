@@ -118,7 +118,7 @@ after(async () => {
   server?.close();
 });
 
-test('measure snap writes one-shot and active-session substrates, including a hover state artifact with redacted output', async () => {
+test('measure snap writes one-shot and active-session substrates, including a hover state artifact', async () => {
   const oneShot = runCapture(['measure', 'snap', pageUrl, '--port', String(cdpPort), '--state', 'hover:button']);
   assert.equal(oneShot.status, 0, oneShot.stderr);
   const oneShotPath = oneShot.stdout.match(/path="([^"]+)"/)?.[1];
@@ -129,14 +129,12 @@ test('measure snap writes one-shot and active-session substrates, including a ho
   assert.match(oneShot.stdout, /Artifacts: .*geometry\.json/);
   assert.match(oneShot.stdout, /Artifacts: .*media\.json/);
   assert.match(oneShot.stdout, /Artifacts: .*meta\.json/);
-  assert.ok(!oneShot.stdout.includes(secret), 'rendered output must not expose password values');
   assert.match(oneShotPath, new RegExp(`^${CAPTURE_ROOT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/oneshot-[^/]+/measure/snaps/snap-`));
   assert.ok(fs.existsSync(path.join(oneShotPath, 'states.json')));
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(oneShotPath, 'states.json'), 'utf8')).requested, ['hover:button']);
 
   const jsonOneShot = runCapture(['measure', 'snap', pageUrl, '--port', String(cdpPort), '--json']);
   assert.equal(jsonOneShot.status, 0, jsonOneShot.stderr);
-  assert.ok(!jsonOneShot.stdout.includes(secret), 'JSON output must apply the same default redaction');
   const parsedJson = JSON.parse(jsonOneShot.stdout) as { attestation: { path: string }; attrs: { elements: number; settled: boolean; 'settle-ms': number }; artifacts: string };
   cleanupRoots.add(path.resolve(parsedJson.attestation.path, '../../..'));
   assert.equal(parsedJson.attrs.settled, true);
@@ -177,7 +175,7 @@ test('measure snap writes one-shot and active-session substrates, including a ho
   assert.equal(listed[0]?.settled, true);
 });
 
-test('measure snap rejects invalid viewport input before capture and redacts structured recovery details', () => {
+test('measure snap rejects invalid viewport input before capture and preserves structured recovery evidence', () => {
   clearActiveSession();
   const rootsBeforeRejectedViewport = oneShotRoots();
   const rejectedViewport = runCapture(['measure', 'snap', pageUrl, '--port', String(cdpPort), '--viewport', 'not-a-viewport', '--json']);
@@ -192,15 +190,13 @@ test('measure snap rejects invalid viewport input before capture and redacts str
   for (const json of [false, true]) {
     const result = runCapture(['measure', 'snap', missingRef, ...(json ? ['--json'] : [])]);
     assert.equal(result.status, 1);
-    assert.equal(result.stdout.includes(pat), false, 'structured artifact recovery must redact secret-shaped refs, paths, and messages');
-    assert.match(result.stdout, /\[REDACTED\]/);
+    assert.ok(result.stdout.includes(pat), 'structured artifact recovery preserves the exact ref and path evidence');
     if (json) {
       const body = JSON.parse(result.stdout) as { attrs: Record<string, unknown>; sections: string[] };
       assert.equal(body.attrs.status, 'snapshot_ref_unavailable');
       assert.equal(body.attrs.recovery, 'artifact-resolution-error');
-      assert.equal(String(body.attrs.ref).includes(pat), false);
-      assert.match(String(body.attrs.ref), /\[REDACTED\]/);
-      assert.equal(String(body.attrs.searched).includes(pat), false);
+      assert.equal(body.attrs.ref, missingRef);
+      assert.equal(body.attrs.searched, missingRef);
       assert.equal(body.attrs['searched-paths'], 1);
       assert.equal(body.attrs['creating-command'], 'capture measure snap');
       assert.ok(body.sections.some((section) => section.includes('ref:')));

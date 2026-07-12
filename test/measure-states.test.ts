@@ -1023,8 +1023,8 @@ test('a force-read failure (Runtime.evaluate returns a malformed value for the I
   }
 });
 
-test('D9: a secret-shaped token planted in a page element\'s id is redacted out of the describeNode-derived selector', async () => {
-  const dir = makeSnapDir('redaction-sentinel');
+test('D9: a token planted in a page element\'s id is preserved in the describeNode-derived selector', async () => {
+  const dir = makeSnapDir('evidence-sentinel');
   try {
     // The token is page-controlled: it rides in the DOM node's `id` attribute,
     // which the collector reads via DOM.describeNode and turns into the emitted
@@ -1044,24 +1044,21 @@ test('D9: a secret-shaped token planted in a page element\'s id is redacted out 
     await collectStates(ctx);
 
     const raw = fs.readFileSync(path.join(dir, 'states.json'), 'utf-8');
-    assert.ok(!raw.includes(secret), 'the page-planted secret token must not appear anywhere in states.json');
+    assert.ok(raw.includes(secret), 'the page-controlled selector evidence is retained in states.json');
     const el = readStatesJson(dir).elements[0];
-    assert.ok(!(el.selector ?? '').includes(secret));
-    assert.match(el.selector ?? '', /\[REDACTED\]/, 'the token in the derived selector is replaced by the redaction marker');
+    assert.equal(el.selector, `button#${secret}.go`);
   } finally {
     removeArtifactTree(dir);
   }
 });
 
-test('R1: a secret-shaped token planted in a computed-style value (cursor url) is redacted out of both style branches', async () => {
-  const dir = makeSnapDir('redaction-style-value');
+test('R1: a token planted in a computed-style value (cursor url) is preserved in both style branches', async () => {
+  const dir = makeSnapDir('evidence-style-value');
   try {
     // The token is page-controlled: it rides inside an author-set
     // `cursor: url(...)` computed-style value, which the collector copies
-    // verbatim into states.json's before/after style objects. Property
-    // NAMES come from the fixed STYLE_PROPS list and are never redacted;
-    // only the VALUES must be. Requesting both `normal` (normal emit
-    // branch) and `hover` (forced emit branch) exercises BOTH sites.
+    // verbatim into states.json's before/after style objects. Requesting both
+    // `normal` (normal emit branch) and `hover` (forced emit branch) exercises both sites.
     const secret = 'github_pat_11ABCDE0000ABCDE0000abcdefghijklmnop';
     const cursed: FixtureElement = {
       nodeId: 70,
@@ -1077,20 +1074,19 @@ test('R1: a secret-shaped token planted in a computed-style value (cursor url) i
 
     await collectStates(ctx);
 
+    const cursor = `url("https://cdn.example.com/c.svg?t=${secret}"), auto`;
     const raw = fs.readFileSync(path.join(dir, 'states.json'), 'utf-8');
-    assert.ok(!raw.includes(secret), 'the page-planted token must not appear anywhere in states.json');
+    assert.ok(raw.includes(secret), 'the page-controlled style evidence is retained in states.json');
     const json = readStatesJson(dir);
     const normalEl = json.elements.find((e) => e.state === 'normal')!;
     const hoverEl = json.elements.find((e) => e.state === 'hover')!;
-    // Normal emit branch: before === after, both redacted.
-    assert.ok(!(normalEl.style?.before.cursor ?? '').includes(secret));
-    assert.match(normalEl.style?.before.cursor ?? '', /\[REDACTED\]/);
-    assert.match(normalEl.style?.after.cursor ?? '', /\[REDACTED\]/);
-    // Forced emit branch: before/after style values both redacted.
-    assert.ok(!(hoverEl.style?.before.cursor ?? '').includes(secret));
-    assert.match(hoverEl.style?.before.cursor ?? '', /\[REDACTED\]/);
-    assert.match(hoverEl.style?.after.cursor ?? '', /\[REDACTED\]/);
-    // The non-secret property NAME survives and the color delta is still measured.
+    // Normal emit branch: before === after, both preserve the source value.
+    assert.equal(normalEl.style?.before.cursor, cursor);
+    assert.equal(normalEl.style?.after.cursor, cursor);
+    // Forced emit branch: before/after style values preserve the source value.
+    assert.equal(hoverEl.style?.before.cursor, cursor);
+    assert.equal(hoverEl.style?.after.cursor, cursor);
+    // The non-secret property name survives and the color delta is still measured.
     assert.deepEqual(hoverEl.style?.changed, ['color']);
   } finally {
     removeArtifactTree(dir);

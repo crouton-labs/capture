@@ -45,22 +45,13 @@ interface GeometryJson {
 // a data-URI cursor image, used to prove `cursor` is capped (Fix 2).
 const LONG_CURSOR_BASE64 = 'A'.repeat(400);
 
-// A secret-shaped sentinel planted in BOTH an element id (-> selector) and
-// its visible text. redaction.ts flags it (`sk-` token), so it must appear
-// as `[REDACTED]` in geometry.json AND hittest.json, never raw -- the same
-// string text.json/forms.json redact.
+// A token-shaped sentinel planted in BOTH an element id (-> selector) and
+// its visible text. It must be preserved exactly in geometry.json and
+// hittest.json, as it is in text.json/forms.json.
 const SK_SENTINEL = 'sk-SENTINELabcdefghij0123456789';
 
-// A boundary-STRADDLING secret sentinel for the geometry `text` field's
-// 200-char per-field cap. `STRADDLE_PAD` is ~188 chars of short,
-// non-secret-shaped runs; the `sk-` token then starts at ~char 190 and
-// runs 40 chars, so it CROSSES the 200-char boundary. Under the old
-// in-page pre-cap (slice-then-redact) the token was sliced to an ~11-char
-// partial (`sk-BOUNDARY`) that is too short for redaction to recognize --
-// it leaked. With the single node-side authority (redact-then-cap) the
-// whole token is replaced by `[REDACTED]` before the cap runs, and the
-// `sk-` prefix never appears. `STRADDLE_TOKEN` deliberately has >=13
-// post-`sk-` chars so the embedded-secret matcher recognizes it whole.
+// A token-shaped sentinel straddles the geometry `text` field's 200-char
+// per-field cap. It must preserve the exact 200-character source prefix.
 const STRADDLE_PAD = 'wd '.repeat(63).trim();
 const STRADDLE_TOKEN = 'sk-BOUNDARYSTRADDLE' + 'z'.repeat(21);
 
@@ -475,52 +466,30 @@ test('composed identity: #send joins across geometry.json and hittest.json by an
 });
 
 // ============================================================================
-// 9. Secret redaction (D8b/D1) — a secret-shaped token planted in an
-// element id (-> selector) and its visible text must be redacted in BOTH
-// geometry.json and hittest.json, exactly as text.json/forms.json would.
+// 9. Token-shaped evidence in selectors and visible text must be preserved
+// exactly in geometry.json and hittest.json.
 // ============================================================================
 
-test('geometry.json + hittest.json: a planted sk- token in an id-derived selector and visible text is secret-redacted, never written raw', () => {
-  const geoJson = JSON.stringify(geometry);
-  const hitJson = JSON.stringify(hittest);
-  assert.ok(!geoJson.includes(SK_SENTINEL), 'sk- sentinel leaked raw into geometry.json');
-  assert.ok(!hitJson.includes(SK_SENTINEL), 'sk- sentinel leaked raw into hittest.json');
-
-  // Prove the sweep is meaningful: the sentinel element IS present in both
-  // artifacts, with its selector redacted to `#[REDACTED]` (not simply
-  // absent, which would make the negative sweep pass vacuously).
-  const geoRedacted = geometry.elements.find((e) => e.selector === '#[REDACTED]');
-  assert.ok(geoRedacted, 'expected the sentinel element present in geometry.json with a redacted selector');
-  const hitRedacted = hittest.elements.find((e) => e.selector === '#[REDACTED]');
-  assert.ok(hitRedacted, 'expected the sentinel element present in hittest.json with a redacted selector');
-  assert.ok(hitRedacted!.text?.includes('[REDACTED]'), 'expected the sentinel visible text redacted in hittest.json');
+test('geometry.json + hittest.json: a planted sk- token in an id-derived selector and visible text is preserved exactly', () => {
+  const expectedSelector = `#${SK_SENTINEL}`;
+  const expectedText = `leak ${SK_SENTINEL} x`;
+  const geoElement = geometry.elements.find((e) => e.selector === expectedSelector);
+  assert.ok(geoElement, 'expected the token-shaped selector in geometry.json');
+  assert.equal(geoElement!.text, expectedText);
+  const hitElement = hittest.elements.find((e) => e.selector === expectedSelector);
+  assert.ok(hitElement, 'expected the token-shaped selector in hittest.json');
+  assert.equal(hitElement!.text, expectedText);
 });
 
 // ============================================================================
-// 9b. Boundary-straddle redaction (verdict finding A / judgment call (b)) --
-// a secret that CROSSES the geometry `text` field's 200-char per-field cap
-// must be fully redacted node-side. The old geometry-local sanitizer
-// pre-capped IN-PAGE (`__capStr`) before node-side redaction ran, so a
-// token straddling the boundary was sliced into a sub-16-char partial that
-// redaction could no longer match -- and the `sk-` prefix leaked. With the
-// single redaction.ts `sanitizeString({ max })` authority (redact-then-
-// cap) the whole token becomes `[REDACTED]` before the cap applies.
+// 9b. A token crossing the geometry `text` field's 200-character cap keeps
+// the exact source prefix through the cap.
 // ============================================================================
 
-test('geometry.json: a secret straddling the 200-char text cap is fully redacted (redact-then-cap), never sliced into a leaking partial', () => {
+test('geometry.json: a token straddling the 200-char text cap preserves the exact 200-character prefix', () => {
   const el = geometry.elements.find((e) => e.selector === '#straddle');
   assert.ok(el, 'expected a geometry record for #straddle');
-  assert.equal(typeof el!.text, 'string');
-  assert.ok(el!.text!.length > 0, 'expected non-empty straddle text');
-  // No `sk-` prefix survives -- if a reintroduced in-page pre-cap sliced
-  // the token, the leaked partial would still start with `sk-`.
-  assert.ok(
-    !el!.text!.includes('sk-'),
-    `boundary-straddling sk- token leaked (whole or as a sliced partial) into geometry.json text: ${el!.text}`,
-  );
-  assert.ok(el!.text!.includes('[REDACTED]'), 'expected the straddling token replaced by [REDACTED] in geometry.json text');
-  // Whole-artifact sweep: the distinctive token core never appears raw anywhere.
-  assert.ok(!JSON.stringify(geometry).includes('BOUNDARYSTRADDLE'), 'straddle token core leaked raw into geometry.json');
+  assert.equal(el!.text, `${STRADDLE_PAD} ${STRADDLE_TOKEN}`.slice(0, 200));
 });
 
 test('geometry.json: an oversized grid-template-columns list is capped to a bounded array, not left unbounded', () => {

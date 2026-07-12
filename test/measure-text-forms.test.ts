@@ -12,17 +12,13 @@ import type { SnapshotContext, SnapshotWriter } from '../src/cdp/measure/types.j
 import { collectText } from '../src/cdp/measure/collectors/text.js';
 import { collectForms } from '../src/cdp/measure/collectors/forms.js';
 
-// A fake JWT-shaped token — three dot-separated segments, each >=10 chars
-// of `[A-Za-z0-9_-]`. Used to prove a PLAIN (non-form, non-password) text
-// element carrying a secret-shaped run gets redacted in `text.json`.
+// Representative JWT-shaped text evidence.
 const FAKE_JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
 const RAW_PASSWORD = 'hunter2super';
 
 // ============================================================================
-// Adversarial sentinels — three distinct secret shapes, planted (mid-prose
-// AND punctuation-delimited) into every page-controlled output field this
-// module owns. Distinct from FAKE_JWT above so a failing assertion here
-// can't be masked by a coincidental match against the happy-path fixtures.
+// Representative token shapes planted mid-prose and punctuation-delimited
+// across page-controlled output fields.
 // ============================================================================
 const SK_SENTINEL = 'sk-ADVSK1111aaaaBBBBccccDDDDeeeeFFFF';
 const JWT_SENTINEL = 'eyJhbGciOiJBRFYiLCJ0eXAiOiJKV1QifQ.eyJhZHZlcnNhcmlhbCI6InNlbnRpbmVsIn0.QURWX0pXVF9TSUdOQVRVUkVfU0VOVElORUw';
@@ -364,7 +360,7 @@ test('collectText: truncated text facts (truncated, truncationStyle, scroll/clie
   }
 });
 
-test('collectText: a JWT-shaped run on a PLAIN text element is redacted and the raw token never appears in text.json', async () => {
+test('collectText: a JWT-shaped run survives unchanged in text.json', async () => {
   const dir = freshSnapDir('text-token');
   ensurePrivateDir(dir);
   try {
@@ -377,13 +373,13 @@ test('collectText: a JWT-shaped run on a PLAIN text element is redacted and the 
     const written = readJson(dir, 'text.json');
     const token = written.elements.find((e: any) => e.id === 'txt-2');
     assert.ok(token);
-    assert.equal(token.redacted, true);
-    assert.equal(token.redactionReason, 'secret-shaped-value');
-    assert.equal(token.text, undefined);
+    assert.equal(token.text, FAKE_JWT);
     assert.equal(token.textLength, FAKE_JWT.length);
+    assert.equal('redacted' in token, false);
+    assert.equal('redactionReason' in token, false);
 
     const rawFileText = rawJson(dir, 'text.json');
-    assert.ok(!rawFileText.includes(FAKE_JWT), 'raw JWT-shaped token must never appear in text.json');
+    assert.ok(rawFileText.includes(FAKE_JWT));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -411,9 +407,8 @@ test('collectText: an unresolved object-id bridge does not crash and honestly ma
 });
 
 // ============================================================================
-// collectText — adversarial: internal-delimiter embeddings across text and
-// page-controlled strings, plus writingMode/direction allowlist normalization
-// and platform-font family-name sanitization.
+// collectText — token-shaped evidence across text and page-controlled
+// strings, plus writingMode/direction allowlist normalization and caps.
 // ============================================================================
 
 const TEXT_LEAK_RECORD = {
@@ -475,7 +470,7 @@ const TEXT_LEAK_PAREN_RECORD = {
   lineHeight: '20px',
 };
 
-test('collectText: sentinels embedded across text/selector/font/writingMode/direction never appear raw in text.json', async () => {
+test('collectText: token-shaped text/selector/font evidence survives while enums remain normalized', async () => {
   const dir = freshSnapDir('text-leak');
   ensurePrivateDir(dir);
   try {
@@ -495,37 +490,33 @@ test('collectText: sentinels embedded across text/selector/font/writingMode/dire
     const written = readJson(dir, 'text.json');
     const eq = written.elements.find((e: any) => e.id === 'txt-leak-eq');
     assert.ok(eq);
-    assert.equal(eq.redacted, false);
-    assert.equal(eq.text, 'token=[REDACTED]');
+    assert.equal(eq.text, `token=${SK_SENTINEL}`);
+    assert.equal('redacted' in eq, false);
 
     const colon = written.elements.find((e: any) => e.id === 'txt-leak-colon');
     assert.ok(colon);
-    assert.equal(colon.redacted, false);
-    assert.equal(colon.text, 'token:[REDACTED]');
+    assert.equal(colon.text, `token:${SK_SENTINEL}`);
 
     const paren = written.elements.find((e: any) => e.id === 'txt-leak-paren');
     assert.ok(paren);
-    assert.equal(paren.redacted, false);
-    assert.equal(paren.text, 'key([REDACTED])');
+    assert.equal(paren.text, `key(${SK_SENTINEL})`);
 
     const query = written.elements.find((e: any) => e.id === 'txt-leak-query');
     assert.ok(query);
-    assert.equal(query.redacted, false);
-    assert.equal(query.text, '?token=[REDACTED]&x=1');
-    assert.equal(query.selector, '#[REDACTED]');
+    assert.equal(query.text, TEXT_LEAK_RECORD.text);
+    assert.equal(query.selector, TEXT_LEAK_RECORD.selector);
     assert.equal(query.writingMode, 'unknown');
     assert.equal(query.direction, 'unknown');
-    assert.equal(query.font.family, 'WebFont-[REDACTED], sans-serif');
-    assert.equal(query.font.size, '[REDACTED]');
-    assert.ok(query.font.weight.includes('[REDACTED]'));
-    assert.ok(query.font.weight.length <= 2000);
-    assert.equal(query.font.lineHeight, '20px [REDACTED]:');
-    assert.deepEqual(query.platformFonts, [{ familyName: 'WebFont-[REDACTED]', isCustomFont: false }]);
+    assert.equal(query.font.family, TEXT_LEAK_RECORD.fontFamily);
+    assert.equal(query.font.size, TEXT_LEAK_RECORD.fontSize);
+    assert.equal(query.font.weight, TEXT_LEAK_RECORD.fontWeight.slice(0, 2000));
+    assert.equal(query.font.lineHeight, TEXT_LEAK_RECORD.lineHeight);
+    assert.deepEqual(query.platformFonts, [{ familyName: `WebFont-${GH_PAT_SENTINEL}`, isCustomFont: false }]);
 
     const raw = rawJson(dir, 'text.json');
-    assert.ok(!raw.includes(SK_SENTINEL), 'sk- sentinel must never appear raw in text.json');
-    assert.ok(!raw.includes(JWT_SENTINEL), 'JWT sentinel must never appear raw in text.json');
-    assert.ok(!raw.includes(GH_PAT_SENTINEL), 'github_pat_ sentinel must never appear raw in text.json');
+    assert.ok(raw.includes(SK_SENTINEL));
+    assert.ok(raw.includes(JWT_SENTINEL));
+    assert.ok(raw.includes(GH_PAT_SENTINEL));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -553,7 +544,7 @@ test('collectText: an over-length selector and font.family are bounded at MAX_VA
   ensurePrivateDir(dir);
   try {
     const longSelector = '.' + 'a'.repeat(2500);
-    const longFamily = 'Font-' + 'b '.repeat(1200); // spaced so it isn't treated as one secret-shaped run
+    const longFamily = 'Font-' + 'b '.repeat(1200);
     const record = {
       ...TEXT_LEAK_RECORD,
       markId: 'txt-long',
@@ -738,7 +729,7 @@ const FORMS_RESOLVES_INDEX_0 = {
   describeNodeByObjectId: { 'obj-0': { backendNodeId: 9101 } },
 };
 
-test('collectForms: password field — the load-bearing redaction assertion', async () => {
+test('collectForms: password value survives unchanged with its length fact', async () => {
   const dir = freshSnapDir('forms-password');
   ensurePrivateDir(dir);
   try {
@@ -751,25 +742,23 @@ test('collectForms: password field — the load-bearing redaction assertion', as
     const written = readJson(dir, 'forms.json');
     const pw = written.controls.find((c: any) => c.id === 'form-0');
     assert.ok(pw);
-    assert.equal(pw.value, undefined);
-    assert.equal(pw.text, undefined);
+    assert.equal(pw.value, RAW_PASSWORD);
+    assert.equal(pw.text, RAW_PASSWORD);
     assert.equal(pw.valueLength, RAW_PASSWORD.length);
     assert.equal(pw.valueLength, 12);
-    assert.equal(pw.redacted, true);
-    assert.equal(pw.redactionReason, 'password-field');
+    assert.equal('redacted' in pw, false);
+    assert.equal('redactionReason' in pw, false);
     assert.equal(pw.backendNodeId, 9101);
-    // validity message survives (it's not itself the secret) but is
-    // still run through redactSecretSubstrings/capString.
     assert.equal(pw.validity.message, 'Password too short');
 
     const rawFileText = rawJson(dir, 'forms.json');
-    assert.ok(!rawFileText.includes(RAW_PASSWORD), 'raw password must never appear anywhere in forms.json');
+    assert.ok(rawFileText.includes(RAW_PASSWORD));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('collectForms: an autofilled non-password value is redacted with reason autofilled, raw absent', async () => {
+test('collectForms: an autofilled non-password value survives alongside its autofill fact', async () => {
   const dir = freshSnapDir('forms-autofill');
   ensurePrivateDir(dir);
   try {
@@ -782,11 +771,11 @@ test('collectForms: an autofilled non-password value is redacted with reason aut
     const written = readJson(dir, 'forms.json');
     const addr = written.controls.find((c: any) => c.id === 'form-1');
     assert.ok(addr);
-    assert.equal(addr.redacted, true);
-    assert.equal(addr.redactionReason, 'autofilled');
-    assert.equal(addr.value, undefined);
-    assert.equal(addr.text, undefined);
+    assert.equal(addr.value, '123 Main Street');
+    assert.equal(addr.text, '123 Main Street');
     assert.equal(addr.valueLength, '123 Main Street'.length);
+    assert.equal('redacted' in addr, false);
+    assert.equal('redactionReason' in addr, false);
 
     // pseudoState passes through unchanged.
     assert.deepEqual(addr.pseudoState, AUTOFILLED_ADDRESS_RECORD.pseudoState);
@@ -796,13 +785,13 @@ test('collectForms: an autofilled non-password value is redacted with reason aut
     assert.deepEqual(addr.nativePartDimensions, {});
 
     const rawFileText = rawJson(dir, 'forms.json');
-    assert.ok(!rawFileText.includes('123 Main Street'), 'raw autofilled value must never appear in forms.json');
+    assert.ok(rawFileText.includes('123 Main Street'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('collectForms: selection/caret data and dimensions pass through for a non-redacted control', async () => {
+test('collectForms: selection/caret data, dimensions, and value pass through', async () => {
   const dir = freshSnapDir('forms-caret');
   ensurePrivateDir(dir);
   try {
@@ -815,7 +804,7 @@ test('collectForms: selection/caret data and dimensions pass through for a non-r
     const written = readJson(dir, 'forms.json');
     const search = written.controls.find((c: any) => c.id === 'form-2');
     assert.ok(search);
-    assert.equal(search.redacted, false);
+    assert.equal('redacted' in search, false);
     assert.equal(search.value, 'search term');
     assert.equal(search.selectionStart, 5);
     assert.equal(search.selectionEnd, 5);
@@ -851,8 +840,8 @@ test('collectForms: an unresolved object-id bridge does not crash and honestly m
 });
 
 // ============================================================================
-// collectForms — adversarial: internal-delimiter embeddings across value and
-// page-controlled strings, plus visibleSubstring gating and type normalization.
+// collectForms — token-shaped evidence across values and page-controlled
+// strings, plus visibleSubstring preservation and type normalization.
 // ============================================================================
 
 const FORMS_LEAK_RECORD = {
@@ -956,7 +945,7 @@ const FORMS_LEAK_PAREN_RECORD = {
   id: 'notes-paren',
 };
 
-test('collectForms: sentinels embedded across value/placeholder/label/validity/selector/pattern never appear raw in forms.json', async () => {
+test('collectForms: token-shaped value/placeholder/label/validity/selector/pattern evidence survives unchanged', async () => {
   const dir = freshSnapDir('forms-leak');
   ensurePrivateDir(dir);
   try {
@@ -973,47 +962,38 @@ test('collectForms: sentinels embedded across value/placeholder/label/validity/s
     assert.ok(paren);
     assert.ok(query);
 
-    assert.equal(eq.redacted, true);
-    assert.equal(eq.redactionReason, 'embedded-secret-value');
-    assert.equal(eq.value, undefined);
-    assert.equal(eq.text, undefined);
+    assert.equal(eq.value, `token=${SK_SENTINEL}`);
+    assert.equal(eq.text, `token=${SK_SENTINEL}`);
     assert.equal(eq.valueLength, `token=${SK_SENTINEL}`.length);
 
-    assert.equal(colon.redacted, true);
-    assert.equal(colon.redactionReason, 'embedded-secret-value');
-    assert.equal(colon.value, undefined);
-    assert.equal(colon.text, undefined);
+    assert.equal(colon.value, `token:${SK_SENTINEL}`);
+    assert.equal(colon.text, `token:${SK_SENTINEL}`);
     assert.equal(colon.valueLength, `token:${SK_SENTINEL}`.length);
 
-    assert.equal(paren.redacted, true);
-    assert.equal(paren.redactionReason, 'embedded-secret-value');
-    assert.equal(paren.value, undefined);
-    assert.equal(paren.text, undefined);
+    assert.equal(paren.value, `key(${SK_SENTINEL})`);
+    assert.equal(paren.text, `key(${SK_SENTINEL})`);
     assert.equal(paren.valueLength, `key(${SK_SENTINEL})`.length);
 
-    // Query-string style value: the char-range facts survive, but the
-    // visible substring text is withheld because the whole value was redacted.
-    assert.equal(query.redacted, true);
-    assert.equal(query.redactionReason, 'embedded-secret-value');
-    assert.equal(query.value, undefined);
-    assert.equal(query.text, undefined);
+    assert.equal(query.value, FORMS_LEAK_RECORD.value);
+    assert.equal(query.text, FORMS_LEAK_RECORD.value);
     assert.equal(query.valueLength, FORMS_LEAK_RECORD.value.length);
     assert.ok(query.visibleSubstring);
     assert.equal(query.visibleSubstring.start, FORMS_LEAK_RECORD.visibleRange.start);
     assert.equal(query.visibleSubstring.end, FORMS_LEAK_RECORD.visibleRange.end);
-    assert.ok(!('text' in query.visibleSubstring), 'visibleSubstring.text must be absent when the value is redacted');
+    assert.equal(query.visibleSubstring.text, FORMS_LEAK_RECORD.value);
 
-    // Placeholder, label, validity message, selector, and pattern are each sanitized.
-    assert.equal(query.placeholder.text, 'Enter your [REDACTED] here');
-    assert.equal(query.label.text, 'API Key ([REDACTED]):');
-    assert.equal(query.validity.message, 'Value must match [REDACTED],');
-    assert.equal(query.selector, '#[REDACTED]');
-    assert.equal(query.pattern, '^[REDACTED]$');
+    assert.equal(query.placeholder.text, FORMS_LEAK_RECORD.valuePlaceholder);
+    assert.equal(query.label.text, FORMS_LEAK_RECORD.label.text);
+    assert.equal(query.validity.message, FORMS_LEAK_RECORD.validity.message);
+    assert.equal(query.selector, FORMS_LEAK_RECORD.selector);
+    assert.equal(query.pattern, FORMS_LEAK_RECORD.pattern);
+    assert.equal('redacted' in query, false);
+    assert.equal('redactionReason' in query, false);
 
     const raw = rawJson(dir, 'forms.json');
-    assert.ok(!raw.includes(SK_SENTINEL), 'sk- sentinel must never appear raw in forms.json');
-    assert.ok(!raw.includes(JWT_SENTINEL), 'JWT sentinel must never appear raw in forms.json');
-    assert.ok(!raw.includes(GH_PAT_SENTINEL), 'github_pat_ sentinel must never appear raw in forms.json');
+    assert.ok(raw.includes(SK_SENTINEL));
+    assert.ok(raw.includes(JWT_SENTINEL));
+    assert.ok(raw.includes(GH_PAT_SENTINEL));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -1040,9 +1020,7 @@ test('collectForms: over-length placeholder/label/validity-message/pattern are b
   const dir = freshSnapDir('forms-long-fields');
   ensurePrivateDir(dir);
   try {
-    // Spaced repeats — no individual run is secret-shaped (per the capping
-    // gotcha: a single-repeated-char run WOULD get redacted, not capped),
-    // so this exercises capString's cap in isolation from redaction.
+    // Spaced repeats exercise the structural cap with readable content.
     const longPlaceholder = 'Placeholder ' + 'lorem ipsum '.repeat(200);
     const longLabelText = 'Label text ' + 'foo bar baz '.repeat(200);
     const longValidityMessage = 'Validity message ' + 'alpha beta gamma '.repeat(150);
@@ -1247,7 +1225,7 @@ test('collectText: an over-length lines array is capped with a factual linesTrun
   }
 });
 
-test('collectForms: a custom-element tagName carrying a sentinel is sanitized in forms.json', async () => {
+test('collectForms: a custom-element tagName carrying a token-shaped sentinel is preserved in forms.json', async () => {
   const dir = freshSnapDir('forms-tagname');
   ensurePrivateDir(dir);
   try {
@@ -1256,19 +1234,19 @@ test('collectForms: a custom-element tagName carrying a sentinel is sanitized in
     await collectForms(buildContext(client, dir));
     const written = readJson(dir, 'forms.json');
     const rec = written.controls.find((c: any) => c.id === 'form-ce-tag');
-    assert.ok(rec.tagName.includes('[REDACTED]'));
+    assert.equal(rec.tagName, record.tagName);
     const raw = rawJson(dir, 'forms.json');
-    assert.ok(!raw.includes(SK_SENTINEL), 'sentinel in tagName must not appear raw');
+    assert.ok(raw.includes(SK_SENTINEL));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('collectForms: visibleSubstring.text on a long non-secret value is sanitized and capped at 2000', async () => {
+test('collectForms: visibleSubstring.text preserves the exact prefix up to its 2000-character cap', async () => {
   const dir = freshSnapDir('forms-visible-cap');
   ensurePrivateDir(dir);
   try {
-    const longValue = 'lorem ipsum dolor '.repeat(400); // >2000 chars, no secret-shaped run
+    const longValue = 'lorem ipsum dolor '.repeat(400); // >2000 chars
     const record = {
       ...CARET_SEARCH_RECORD,
       markId: 'form-visible-long',
@@ -1279,8 +1257,8 @@ test('collectForms: visibleSubstring.text on a long non-secret value is sanitize
     await collectForms(buildContext(client, dir));
     const written = readJson(dir, 'forms.json');
     const rec = written.controls.find((c: any) => c.id === 'form-visible-long');
-    assert.equal(rec.redacted, false);
-    assert.ok(rec.visibleSubstring.text.length <= 2000, `visibleSubstring.text length ${rec.visibleSubstring.text.length} must be bounded`);
+    assert.equal('redacted' in rec, false);
+    assert.equal(rec.visibleSubstring.text, longValue.slice(0, 2000));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -1453,18 +1431,18 @@ describe('D6 real-Chrome: type=password geometry is skipped by the canvas measur
     );
   });
 
-  test('the focused+selected password field has NO valueLineBoxes / caretRect / selectionRects / visibleSubstring.text, but keeps valueLength', () => {
+  test('the focused+selected password field preserves its value while omitting inapplicable value geometry', () => {
     const pw = forms.controls.find((c: any) => c.type === 'password');
     assert.ok(pw, 'password control must be present');
 
-    // The safe count survives — length is a fact, the characters are not.
+    assert.equal(pw.value, RC_PASSWORD);
+    assert.equal(pw.text, RC_PASSWORD);
     assert.equal(pw.valueLength, RC_PASSWORD.length);
     assert.equal(pw.valueLength, 12);
-    assert.equal(pw.redacted, true);
+    assert.equal('redacted' in pw, false);
 
-    // Value geometry — every field that would leak rendered-width / caret-x
-    // / selection geometry of the raw password characters — is ABSENT even
-    // though the field is focused with its whole value selected.
+    // Value geometry is absent because canvas measurement of the raw
+    // characters would not match the masking glyphs actually rendered.
     assert.ok(
       !Array.isArray(pw.valueLineBoxes) || pw.valueLineBoxes.length === 0,
       'password valueLineBoxes must be empty (value-geometry text lines skipped)',
@@ -1483,11 +1461,9 @@ describe('D6 real-Chrome: type=password geometry is skipped by the canvas measur
       );
     }
 
-    // Belt-and-suspenders: the raw password never appears anywhere in the
-    // serialized artifact.
     assert.ok(
-      !JSON.stringify(forms).includes(RC_PASSWORD),
-      'raw password must never appear anywhere in forms.json',
+      JSON.stringify(forms).includes(RC_PASSWORD),
+      'the exact password evidence must remain present in serialized forms.json',
     );
   });
 });
@@ -1957,10 +1933,9 @@ describe('D9 real-Chrome: collectForms never mutates document.body (childList or
     assert.ok(input, 'the single-line <input> control must be present');
     assert.ok(textarea, 'the <textarea> control must be present');
 
-    // Single-line input: identity + geometry facts still resolve, and
-    // redaction behaves correctly for a non-secret plain value.
+    // Single-line input: identity, value, and geometry facts all resolve.
     assert.equal(typeof input!.backendNodeId, 'number', 'input backendNodeId must resolve via the CDP identity bridge');
-    assert.equal(input!.redacted, false);
+    assert.equal('redacted' in input!, false);
     assert.equal(input!.value, 'hello mutation world');
     assert.ok(Array.isArray(input!.valueLineBoxes) && input!.valueLineBoxes.length > 0, 'input valueLineBoxes must be present');
     assert.ok(input!.caretRect || input!.selectionRects?.length, 'input caret/selection geometry must be present (focused with a non-empty selection)');
@@ -1973,7 +1948,7 @@ describe('D9 real-Chrome: collectForms never mutates document.body (childList or
     // Textarea: non-layout facts still resolve, and the wrapped-layout
     // facts are marked factually unavailable rather than approximated.
     assert.equal(typeof textarea!.backendNodeId, 'number', 'textarea backendNodeId must resolve via the CDP identity bridge');
-    assert.equal(textarea!.redacted, false);
+    assert.equal('redacted' in textarea!, false);
     assert.ok(typeof textarea!.value === 'string' && textarea!.value.length > 0);
     assert.equal(typeof textarea!.scroll?.left, 'number');
     assert.equal(typeof textarea!.scroll?.top, 'number');
@@ -2132,7 +2107,7 @@ describe('D10 real-Chrome: collectForms never fires an invalid control\'s `inval
     assert.equal(typeof control!.backendNodeId, 'number', 'control backendNodeId must resolve via the CDP identity bridge');
     assert.equal(control!.validity?.valid, false, 'validity.valid must be false for the invalid control');
     assert.equal(control!.validity?.typeMismatch, true, 'validity.typeMismatch must be true for a malformed email value');
-    assert.equal(control!.redacted, false);
+    assert.equal('redacted' in control!, false);
     assert.equal(control!.value, 'not-an-email');
   });
 });

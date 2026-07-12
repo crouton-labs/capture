@@ -288,7 +288,7 @@ test('collectFocus: the forward walk\'s first stop seeds scrollBefore from the T
   );
 });
 
-test('collectFocus: a mid-walk sample failure still restores in finally and records a sanitized restoration fact', async () => {
+test('collectFocus: a mid-walk sample failure still restores in finally and preserves its restoration fact', async () => {
   const client = new FocusStub({ failAtSample: 2 });
   const { ctx, written } = makeCtx(client);
 
@@ -300,15 +300,12 @@ test('collectFocus: a mid-walk sample failure still restores in finally and reco
   assert.ok(client.restoreCount >= 1, 'the finally restore ran despite the mid-walk throw');
   assert.equal(focus.restoration.markersCleared, true);
   assert.ok(typeof focus.restoration.error === 'string', 'the thrown error is recorded as a fact');
-  assert.ok(!focus.restoration.error.includes('sk-abcdefghij1234567890'), 'the secret-shaped token in the error is redacted');
-  assert.match(focus.restoration.error, /\[REDACTED\]/);
+  assert.equal(focus.restoration.error, 'injected sample failure token sk-abcdefghij1234567890');
 });
 
-test('R2: a secret-shaped token planted in a focus stop\'s role attribute is redacted out of focus.json', async () => {
-  // `role` is a free-form getAttribute string (author-controlled), so it
-  // belongs to the D1 uniform-redaction set alongside selector/name. The
-  // sample script reads it raw off document.activeElement; the decorate
-  // pass must route it through sanitizeOrNull before it reaches focus.json.
+test('R2: a token planted in a focus stop\'s role attribute is preserved in focus.json', async () => {
+  // `role` is a free-form getAttribute string (author-controlled). The sample
+  // script reads it raw off document.activeElement and records exact evidence.
   const secret = 'github_pat_11ABCDE0000ABCDE0000abcdefghijklmnop';
   const client = new FocusStub({ sampleRole: `role-${secret}` });
   const { ctx, written } = makeCtx(client);
@@ -318,13 +315,10 @@ test('R2: a secret-shaped token planted in a focus stop\'s role attribute is red
   const focus = written.get('focus.json') as any;
   assert.ok(focus, 'focus.json written');
   const raw = JSON.stringify(focus);
-  assert.ok(!raw.includes(secret), 'the page-planted token must not appear anywhere in focus.json');
+  assert.ok(raw.includes(secret), 'the page-controlled role evidence is retained in focus.json');
   const withRole = [...focus.forward, ...focus.reverse].filter((s: any) => typeof s.role === 'string' && s.role.length > 0);
   assert.ok(withRole.length >= 1, 'at least one stop carried the planted role');
-  for (const s of withRole) {
-    assert.ok(!s.role.includes(secret));
-    assert.match(s.role, /\[REDACTED\]/, 'the token in the role attribute is replaced by the redaction marker');
-  }
+  for (const s of withRole) assert.equal(s.role, `role-${secret}`);
 });
 
 test('collectFocus: restores the REAL original active element by its dedicated marker (threads hadOriginalFocus, not the dead originalFocusId)', async () => {
@@ -533,8 +527,7 @@ test('collectScroll: an in-page offset restoration failure is surfaced as a fact
   assert.equal(scroll.restoration.offsetsRestored, false, 'the in-page restoration failure is reported factually');
   assert.equal(scroll.restoration.markersCleared, true, 'markers are cleaned even though offset restore reported failure');
   assert.ok(client.cleanupRan, 'the marker cleanup eval ran');
-  assert.match(scroll.restoration.error, /\[REDACTED\]/);
-  assert.ok(!scroll.restoration.error.includes('sk-abcdefghij1234567890'));
+  assert.equal(scroll.restoration.error, 'sampling failed with token sk-abcdefghij1234567890');
   assert.deepEqual(scroll.scope, { root: 'top-document', shadowDom: 'light-only', iframesPresent: 3, shadowHostsPresent: 1 });
 });
 
@@ -591,7 +584,7 @@ class StatesStub {
       reorderPeersAfterForce?: boolean;
       /** Item 7.5 (fix #4) hardening: on the SECOND CDP `DOM.querySelectorAll` call for this selector (the post-force `identityStillMatches` recheck — the FIRST call is `collectStates`'s own initial resolution), return a DIFFERENT nodeId set, simulating a synchronous reorder/replace between the two resolutions. */
       secondQuerySelectorAllOverride?: { selector: string; nodeIds: number[] };
-      /** Item 7.2 (fix #2) hardening: short-circuits EVERY `__captureStateForce_*` call to a canned `{ supported: false, reason }` (bypassing all mutation) so a force-response `reason` string can be planted directly — proving the NODE-SIDE `sanitizeString(value.reason)` call in `captureOneElement`, not this stub, is what redacts it. */
+      /** Item 7.2 (fix #2) hardening: short-circuits EVERY `__captureStateForce_*` call to a canned `{ supported: false, reason }` (bypassing all mutation) so a force-response reason can be planted directly and preserved in the record. */
       forceRejectReason?: string;
     } = {},
   ) {
@@ -712,9 +705,8 @@ class StatesStub {
     }
 
     if (this.opts.forceRejectReason && expr.includes('__captureStateForce_')) {
-      // Bypasses ALL mutation — proves the sanitization under test happens
-      // NODE-SIDE (in captureOneElement's `reason = value?.reason ? sanitizeString(value.reason) : ...`),
-      // not by this stub scrubbing anything itself.
+      // Bypasses all mutation so this test isolates the force-response reason
+      // path rather than a page-side state transition.
       return { supported: false, reason: this.opts.forceRejectReason };
     }
 
@@ -1281,16 +1273,9 @@ test('collectStates: the REAL generated buildForceExpression/buildRestoreExpress
   assert.equal(r2.hasAttribute('data-capture-state-id'), false, "the forced element's primary marker is cleared");
 });
 
-test('collectStates: a force-response reason containing a secret-shaped token is sanitized before reaching states.json (fix #2 evidence, the force-response reason path, distinct from the outer capture-error path)', async () => {
-  // Pre-fix, `captureOneElement`'s non-pseudo force branch did
-  // `reason = value?.reason ?? 'unsupported'` — the in-page force/rollback
-  // `reason` string (page-controlled: it embeds a hostile setter's own
-  // `Error.message` via `rolledBackReason`) reached `states.json` RAW.
-  // Post-fix it is routed through `sanitizeString`. This is a NEW path from
-  // the existing `/capture error/` assertions elsewhere in this file (those
-  // cover the OUTER Node-side catch block's `captureErrorReason`, which was
-  // already sanitized before this fix) — this one exercises the force
-  // RESPONSE's own `reason` field specifically.
+test('collectStates: a force-response reason preserves exact evidence in states.json (fix #2 evidence, the force-response reason path, distinct from the outer capture-error path)', async () => {
+  // This exercises the force response's own page-controlled reason field,
+  // distinct from the outer capture-error path.
   const secret = 'sk-abcdefghij1234567890';
   const input: StateFixtureEl = { nodeId: 70, nodeName: 'INPUT', attributes: ['class', 'secret-input'], type: 'checkbox', checked: false };
   const client = new StatesStub([input], { 'input.secret-input': [70] }, {
@@ -1303,8 +1288,7 @@ test('collectStates: a force-response reason containing a secret-shaped token is
   const rec = (written.get('states.json') as any).elements[0];
   assert.equal(rec.supported, false);
   assert.doesNotMatch(rec.reason ?? '', /capture error/, 'this is the force-response reason path, not the outer capture-error catch-block path');
-  assert.match(rec.reason ?? '', /\[REDACTED\]/, 'the in-page force-response reason is routed through node-side sanitization');
-  assert.ok(!(rec.reason ?? '').includes(secret), 'the raw secret-shaped token never reaches states.json');
+  assert.equal(rec.reason, `force failed (rolled back): simulated hostile setter failure ${secret}`);
 });
 
 test('collectStates: a synchronous reorder between the initial resolution and the post-force identity recheck marks the record unsupported with delta fields absent, proven against the REAL executed __captureStateFacts/__captureStateForce_checked JS (not hand-simulated) (fix #4 evidence)', async () => {

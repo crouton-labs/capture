@@ -18,20 +18,16 @@ import {
   collectChurnEvidence,
   domSignaturesEqual,
 } from '../src/cdp/measure/settle.js';
-import { captureSnapshotSubstrate, sanitizeDomHtml } from '../src/cdp/measure/snapshot.js';
+import { captureSnapshotSubstrate } from '../src/cdp/measure/snapshot.js';
 
 // A 1x1 transparent PNG, base64-encoded — stands in for `Page.captureScreenshot`'s `data`.
 const ONE_PIXEL_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
-// A fake JWT-shaped token — three dot-separated segments, each >=10 chars
-// of `[A-Za-z0-9_-]`. Used to prove `sanitizeDomHtml` redacts JWT-shaped
-// attribute values.
+// Representative token-shaped DOM evidence.
 const FAKE_JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
 
-// A github_pat_-shaped fine-grained PAT (prefix + >=20 chars of [A-Za-z0-9_]).
-// Planted in the fixture DOM so the emitted-dom.html test proves end-to-end
-// redaction ran against the artifact, not just the sanitizeDomHtml unit.
+// Planted in the fixture DOM to prove end-to-end evidence preservation.
 const FAKE_GH_PAT = 'github_pat_' + '11ABCDEFGHIJKLMNOPQR0123456789abcdefghijklmnopqrstuvwxyz_9Q';
 
 const FIXTURE_HTML = `<!DOCTYPE html><html><body>
@@ -318,8 +314,9 @@ test('stable scenario writes the full settled substrate', async () => {
     assert.equal('unstableRegions' in geometry, false);
 
     const domHtml = fs.readFileSync(path.join(dir, 'dom.html'), 'utf-8');
-    assert.ok(!domHtml.includes('hunter2super'));
-    assert.ok(!domHtml.includes(FAKE_JWT));
+    assert.equal(domHtml, FIXTURE_HTML);
+    assert.ok(domHtml.includes('hunter2super'));
+    assert.ok(domHtml.includes(FAKE_JWT));
 
     assert.equal(fs.statSync(path.join(dir, 'meta.json')).mode & 0o777, FILE_MODE);
     assert.equal(fs.statSync(path.join(dir, 'dom.html')).mode & 0o777, FILE_MODE);
@@ -331,14 +328,11 @@ test('stable scenario writes the full settled substrate', async () => {
 });
 
 // ============================================================================
-// 2b. Emitted dom.html is redacted end-to-end (not just the sanitizeDomHtml
-// unit): a github_pat_ token planted in the page's outerHTML must be ABSENT
-// from the written artifact, while a non-secret sibling string survives
-// (proving redaction ran, not that content was wholesale dropped).
+// 2b. Emitted dom.html preserves page evidence end-to-end.
 // ============================================================================
 
-test('emitted dom.html redacts a github_pat_ token from the page while keeping non-secret content', async () => {
-  const dir = freshSnapDir('emitted-dom-redaction');
+test('emitted dom.html preserves password, token-shaped attribute, and DOM identity evidence', async () => {
+  const dir = freshSnapDir('emitted-dom-evidence');
   const client = new StubCdpClient('stable');
   try {
     await captureSnapshotSubstrate({
@@ -350,12 +344,12 @@ test('emitted dom.html redacts a github_pat_ token from the page while keeping n
     });
 
     const domHtml = fs.readFileSync(path.join(dir, 'dom.html'), 'utf-8');
-    assert.ok(!domHtml.includes(FAKE_GH_PAT), 'the raw github_pat_ token must not survive into the emitted dom.html');
-    assert.ok(domHtml.includes('[REDACTED]'), 'the token must be replaced by the redaction marker');
-    assert.ok(
-      domHtml.includes('pat-holder-sentinel'),
-      'a non-secret sibling string must survive — proves redaction ran end-to-end, not that content was dropped',
-    );
+    assert.equal(domHtml, FIXTURE_HTML);
+    assert.ok(domHtml.includes('hunter2super'));
+    assert.ok(domHtml.includes(FAKE_JWT));
+    assert.ok(domHtml.includes(FAKE_GH_PAT));
+    assert.ok(domHtml.includes('pat-holder-sentinel'));
+    assert.ok(!domHtml.includes('[REDACTED]'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -958,67 +952,6 @@ test('groupChurnEvidence coalesces same-backendNodeId mutations with different s
   assert.equal(report.regions.length, 1);
   assert.equal(report.regions[0]?.mutationCount, 2);
   assert.deepEqual(unstableRegions.map((region) => region.elementIds), [['7']]);
-});
-
-// ============================================================================
-// 8. sanitizeDomHtml — direct unit tests
-// ============================================================================
-
-test('sanitizeDomHtml redacts a password input value outright', () => {
-  const html = '<input type="password" name="pw" value="hunter2super">';
-  const sanitized = sanitizeDomHtml(html);
-  assert.ok(!sanitized.includes('hunter2super'));
-  assert.ok(sanitized.includes('[REDACTED]'));
-});
-
-test('sanitizeDomHtml redacts a JWT-shaped attribute value', () => {
-  const html = `<div data-token="${FAKE_JWT}"></div>`;
-  const sanitized = sanitizeDomHtml(html);
-  assert.ok(!sanitized.includes(FAKE_JWT));
-  assert.ok(sanitized.includes('[REDACTED]'));
-});
-
-test('sanitizeDomHtml leaves an ordinary long space-joined class list untouched', () => {
-  const classes = Array.from({ length: 6 }, (_, i) => `some-long-descriptive-class-name-${i}`).join(' ');
-  assert.ok(classes.length >= 40);
-  const html = `<div class="${classes}"></div>`;
-  assert.equal(sanitizeDomHtml(html), html);
-});
-
-test('sanitizeDomHtml leaves a normal short href/src value untouched', () => {
-  const html = '<a href="/about"><img src="logo.png"></a>';
-  assert.equal(sanitizeDomHtml(html), html);
-});
-
-test('sanitizeDomHtml leaves an ordinary long filename/path untouched', () => {
-  const longPath = 'assets/vendor/some-really-long-descriptive-library-name/dist/index.mjs';
-  assert.ok(longPath.length >= 40);
-  const html = `<script src="${longPath}"></script>`;
-  assert.equal(sanitizeDomHtml(html), html);
-});
-
-// dom.html now shares redaction.ts's secret detection, so `github_pat_`
-// tokens and secrets EMBEDDED inside a larger attribute value (not just a
-// whole-value match) are redacted — the two shapes the old local snapshot.ts
-// regex set missed.
-test('sanitizeDomHtml redacts a github_pat_ token', () => {
-  const pat = 'github_pat_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3';
-  const html = `<div data-token="${pat}"></div>`;
-  const sanitized = sanitizeDomHtml(html);
-  assert.ok(!sanitized.includes(pat), 'the github_pat_ token must not survive');
-  assert.ok(sanitized.includes('[REDACTED]'));
-});
-
-test('sanitizeDomHtml redacts a secret substring embedded in a larger attribute value', () => {
-  const token = 'sk-' + 'abcdefghijklmnopqrstuvwxyz012345';
-  const html = `<a href="/callback?token=${token}&next=/home"></a>`;
-  const sanitized = sanitizeDomHtml(html);
-  assert.ok(!sanitized.includes(token), 'the embedded sk- token must not survive');
-  assert.ok(sanitized.includes('[REDACTED]'));
-  // The non-secret parts of the value are preserved — only the token run is
-  // replaced, not the whole attribute.
-  assert.ok(sanitized.includes('/callback?token='));
-  assert.ok(sanitized.includes('&next=/home'));
 });
 
 // ============================================================================

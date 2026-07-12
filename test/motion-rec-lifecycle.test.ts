@@ -591,15 +591,15 @@ test('stopComposedRecorder best-effort finalizes an orphaned (dead-pid) recordin
 });
 
 // ---------------------------------------------------------------------------
-// Session URLs are browser evidence. The exact .session.json value must reach
-// recorder.json and the finalized meta.json without redaction or rewriting.
+// Fix 7 — the session URL enters recorder artifacts unchanged, so recorder
+// and finalized metadata retain the exact browser evidence.
 // ---------------------------------------------------------------------------
 
-test('a secret-shaped .session.json url is preserved verbatim in recorder.json.url and meta.json.url', async () => {
-  const sessionDir = freshSessionDir('url-redaction');
+test('Fix 7: a token-shaped .session.json url is preserved through recorder.json and meta.json', async () => {
+  const sessionDir = freshSessionDir('url-evidence');
   const secretUrl = 'https://example.com/?token=github_pat_' + '1'.repeat(40);
   fs.writeFileSync(path.join(sessionDir, '.session.json'), JSON.stringify({ url: secretUrl }));
-  setActiveSession({ sessionId: 's-url-redaction', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  setActiveSession({ sessionId: 's-url-evidence', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
   const placeholder = spawnPlaceholderChild();
 
   let fakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
@@ -617,12 +617,13 @@ test('a secret-shaped .session.json url is preserved verbatim in recorder.json.u
 
     const rj = readRecorderJson(result.recDir);
     assert.ok(rj);
-    assert.equal(rj!.url, secretUrl, 'the browser URL is source evidence in recorder.json.url');
+    assert.equal(rj!.url, secretUrl, 'recorder.json preserves the exact session URL');
 
     const stopResult = await stopComposedRecorder({ sessionDir, recId: result.recId });
     const metaRaw = fs.readFileSync(path.join(stopResult.recDir, 'meta.json'), 'utf-8');
+    assert.ok(metaRaw.includes(secretUrl), 'meta.json preserves the exact session URL');
     const meta = JSON.parse(metaRaw) as { url: string | null };
-    assert.equal(meta.url, secretUrl, 'the browser URL remains verbatim source evidence in meta.json.url');
+    assert.equal(meta.url, secretUrl);
   } finally {
     fakeServer?.close();
     placeholder.kill();

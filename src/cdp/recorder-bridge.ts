@@ -298,11 +298,13 @@ async function resolveCappedRectObjectIds(
 }
 
 // ---------------------------------------------------------------------------
-// Trace batches are source evidence. `Tracing.dataCollected.value` is written as received:
-// `args` and every other CDP field remain available for later inspection. JSONL is the only
-// structural encoding boundary; no field whitelist, string cap, array cap, or byte budget may
-// rewrite admitted trace evidence.
+// Trace-batch bounds — trace events are preserved as received. Their exact
+// JSON encoding sizes enforce event-count and serialized-byte caps without
+// deleting individual fields such as `args`, URLs, or names.
 // ---------------------------------------------------------------------------
+
+const MAX_TRACE_EVENTS_PER_BATCH = 500;
+const MAX_TRACE_SERIALIZED_BYTES = 256 * 1024;
 
 type BindingFieldSanitizer = (value: unknown) => unknown;
 
@@ -421,6 +423,8 @@ export class RecorderSession {
   private bindingWindowCount = 0;
   /** Tallies of rect-sample elements dropped/truncated by host-side sanitization, by reason — flushed as `rect-sample-dropped` summary events at stop(), same style as `bindingDropCounts`. */
   private rectDropCounts = new Map<string, number>();
+  /** Tallies of trace events dropped/truncated by host-side sanitization, by reason — flushed as `trace-dropped` summary events at stop(), same style as `rectDropCounts`. */
+  private traceDropCounts = new Map<string, number>();
   /** The main frame's CDP `frameId`, resolved once via `Page.getFrameTree` on the first
    * `injectObserverScript()` call, then kept current from `Page.frameNavigated`'s own `frame.id`
    * on every subsequent rearm — avoids one `Page.getFrameTree` round trip per navigation. */
@@ -654,6 +658,7 @@ export class RecorderSession {
 
     this.flushBindingDropSummary();
     this.flushRectDropSummary();
+    this.flushTraceDropSummary();
 
     this.state = 'stopped';
     return {
@@ -889,9 +894,58 @@ export class RecorderSession {
     if (this.state === 'stopped') return;
     // Capture the earliest event timestamp as the trace baseline before recording this batch.
     this.captureFirstTraceEventTs(params.value);
-    // `value` is CDP source evidence. Preserve its exact JSON structure, including `args`, in
-    // events.jsonl rather than selecting or truncating fields.
-    this.appendEvent({ kind: 'trace', events: Array.isArray(params.value) ? params.value : [] });
+    const events = this.sanitizeTraceEvents(Array.isArray(params.value) ? params.value : []);
+    this.appendEvent({ kind: 'trace', events });
+  }
+
+  /**
+   * Preserves each JSON-shaped `Tracing.dataCollected` event in full while
+   * enforcing batch event-count and serialized-byte caps. `JSON.stringify`
+   * measures the same encoding later written to NDJSON; the already-decoded
+   * CDP object itself is retained without a redundant parse clone.
+   */
+  private sanitizeTraceEvents(raw: unknown[]): Array<Record<string, unknown>> {
+    const events: Array<Record<string, unknown>> = [];
+    let serializedBytes = 0;
+    for (let i = 0; i < raw.length; i++) {
+      if (events.length >= MAX_TRACE_EVENTS_PER_BATCH) {
+        this.recordTraceDrop('event-cap', raw.length - i);
+        break;
+      }
+      const item = raw[i];
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        this.recordTraceDrop('invalid-shape');
+        continue;
+      }
+
+      let encoded: string;
+      try {
+        encoded = JSON.stringify(item);
+      } catch {
+        this.recordTraceDrop('invalid-shape');
+        continue;
+      }
+      const sizeBytes = Buffer.byteLength(encoded, 'utf-8');
+      if (serializedBytes + sizeBytes > MAX_TRACE_SERIALIZED_BYTES) {
+        this.recordTraceDrop('byte-budget', raw.length - i);
+        break;
+      }
+      serializedBytes += sizeBytes;
+      events.push(item as Record<string, unknown>);
+    }
+    return events;
+  }
+
+  private recordTraceDrop(reason: string, count = 1): void {
+    this.traceDropCounts.set(reason, (this.traceDropCounts.get(reason) ?? 0) + count);
+  }
+
+  /** Writes one summarizing `trace-dropped` event per drop reason instead of one per dropped/truncated trace event. */
+  private flushTraceDropSummary(): void {
+    for (const [reason, count] of this.traceDropCounts) {
+      this.appendEvent({ kind: 'trace-dropped', reason, count });
+    }
+    this.traceDropCounts.clear();
   }
 
   private captureFirstTraceEventTs(events: unknown[]): void {

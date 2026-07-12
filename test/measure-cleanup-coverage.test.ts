@@ -14,11 +14,10 @@ import { collectAx } from '../src/cdp/measure/collectors/ax.js';
 import { collectMedia, type MediaReport } from '../src/cdp/measure/collectors/media.js';
 import { collectQueries } from '../src/cdp/measure/collectors/queries.js';
 
-// Three distinct secret shapes, planted into every page-controlled string
+// Three distinct token shapes, planted into every page-controlled string
 // these three collectors emit (AX name/description, media currentSrc/poster/
 // iframe src, media query text / affected selectors / container name). Each
-// must be redacted before it lands in the artifact JSON — the shared
-// redaction authority applies here exactly as it does in text/forms.
+// must be preserved exactly in its artifact JSON.
 const SK_SENTINEL = 'sk-ADVSK1111aaaaBBBBccccDDDDeeeeFFFF';
 const JWT_SENTINEL = 'eyJhbGciOiJBRFYiLCJ0eXAiOiJKV1QifQ.eyJhZHZlcnNhcmlhbCI6InNlbnRpbmVsIn0.QURWX0pXVF9TSUdOQVRVUkVfU0VOVElORUw';
 const GH_PAT_SENTINEL = 'github_pat_ADVPATaaaa1111BBBBcccc2222DDDDeeee3333FFFFgggg4444';
@@ -76,8 +75,8 @@ class AxStub {
   }
 }
 
-test('collectAx: a secret-shaped aria-label/description is redacted and never appears raw in ax.json', async () => {
-  const dir = freshSnapDir('ax-redact');
+test('collectAx: a token-shaped aria-label/description is preserved exactly in ax.json', async () => {
+  const dir = freshSnapDir('ax-evidence');
   try {
     const stub = new AxStub([
       {
@@ -93,11 +92,8 @@ test('collectAx: a secret-shaped aria-label/description is redacted and never ap
 
     const file = path.join(dir, 'ax.json');
     const ax = readJson(file);
-    assert.equal(ax.nodes[0].axName, 'API token [REDACTED]');
-    assert.equal(ax.nodes[0].description, 'see [REDACTED] for details');
-    const raw = rawJson(file);
-    assert.ok(!raw.includes(SK_SENTINEL), 'sk- sentinel must not appear raw in ax.json');
-    assert.ok(!raw.includes(JWT_SENTINEL), 'JWT sentinel must not appear raw in ax.json');
+    assert.equal(ax.nodes[0].axName, `API token ${SK_SENTINEL}`);
+    assert.equal(ax.nodes[0].description, `see ${JWT_SENTINEL} for details`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -157,8 +153,8 @@ function mediaFact(overrides: Record<string, unknown>): Record<string, unknown> 
   };
 }
 
-test('collectMedia: secret-shaped currentSrc/poster/iframe-src are redacted and never appear raw in media.json', async () => {
-  const dir = freshSnapDir('media-redact');
+test('collectMedia: token-shaped currentSrc/poster/iframe-src are preserved exactly in media.json', async () => {
+  const dir = freshSnapDir('media-evidence');
   try {
     const facts = [
       mediaFact({ tag: 'img', currentSrc: `https://cdn.test/a.jpg?token=${SK_SENTINEL}` }),
@@ -169,13 +165,9 @@ test('collectMedia: secret-shaped currentSrc/poster/iframe-src are redacted and 
 
     const file = path.join(dir, 'media.json');
     const media = readJson(file);
-    assert.ok(media.elements[0].currentSrc.includes('[REDACTED]'));
-    assert.ok(media.elements[1].poster.includes('[REDACTED]'));
-    assert.ok(media.elements[2].src.includes('[REDACTED]'));
-    const raw = rawJson(file);
-    assert.ok(!raw.includes(SK_SENTINEL), 'sk- sentinel must not appear raw in media.json');
-    assert.ok(!raw.includes(JWT_SENTINEL), 'JWT sentinel must not appear raw in media.json');
-    assert.ok(!raw.includes(GH_PAT_SENTINEL), 'github_pat_ sentinel must not appear raw in media.json');
+    assert.equal(media.elements[0].currentSrc, `https://cdn.test/a.jpg?token=${SK_SENTINEL}`);
+    assert.equal(media.elements[1].poster, `https://cdn.test/p.jpg?k=${SK_SENTINEL}`);
+    assert.equal(media.elements[2].src, `https://embed.test/?auth=${GH_PAT_SENTINEL}`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -250,7 +242,7 @@ async function waitForRedactFixtureReady(client: CDPClient, timeoutMs = 15000): 
   throw new Error('media-redaction fixture page did not reach readyState=complete in time');
 }
 
-describe('collectMedia (real headless Chrome): secret-shaped src/poster/iframe-src planted in real DOM attributes are redacted', () => {
+describe('collectMedia (real headless Chrome): token-shaped src/poster/iframe-src planted in real DOM attributes are preserved', () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
   let dir: string;
@@ -291,38 +283,22 @@ describe('collectMedia (real headless Chrome): secret-shaped src/poster/iframe-s
     }
   });
 
-  test('the real-Chrome-executed MEDIA_SCRIPT captures the img currentSrc, and the collector redacts it', () => {
+  test('the real-Chrome-executed MEDIA_SCRIPT captures the img currentSrc exactly', () => {
     const img = media.elements.find((e) => e.tag === 'img');
     assert.ok(img, 'expected a media.json record for #redact-img');
-    assert.ok(
-      img!.currentSrc != null && img!.currentSrc.includes('[REDACTED]'),
-      `expected img.currentSrc to be captured (non-null) AND redacted, got ${JSON.stringify(img!.currentSrc)} -- ` +
-        'a stub-driven test cannot catch a MEDIA_SCRIPT regression that stops capturing currentSrc entirely, since the stub never executes MEDIA_SCRIPT',
-    );
+    assert.equal(img!.currentSrc, MEDIA_REDACT_IMG_SRC);
   });
 
-  test('the real-Chrome-executed MEDIA_SCRIPT captures the video poster, and the collector redacts it', () => {
+  test('the real-Chrome-executed MEDIA_SCRIPT captures the video poster exactly', () => {
     const video = media.elements.find((e) => e.tag === 'video');
     assert.ok(video, 'expected a media.json record for #redact-video');
-    assert.ok(
-      video!.poster != null && video!.poster.includes('[REDACTED]'),
-      `expected video.poster to be captured (non-null) AND redacted, got ${JSON.stringify(video!.poster)}`,
-    );
+    assert.equal(video!.poster, MEDIA_REDACT_POSTER);
   });
 
-  test('the real-Chrome-executed MEDIA_SCRIPT captures the iframe src, and the collector redacts it', () => {
+  test('the real-Chrome-executed MEDIA_SCRIPT captures the iframe src exactly', () => {
     const iframe = media.elements.find((e) => e.tag === 'iframe');
     assert.ok(iframe, 'expected a media.json record for #redact-iframe');
-    assert.ok(
-      iframe!.src != null && iframe!.src.includes('[REDACTED]'),
-      `expected iframe.src to be captured (non-null) AND redacted, got ${JSON.stringify(iframe!.src)}`,
-    );
-  });
-
-  test('none of the planted secrets survive raw in media.json', () => {
-    const raw = rawJson(path.join(dir, 'media.json'));
-    assert.ok(!raw.includes(SK_SENTINEL), 'sk- sentinel must not appear raw in media.json (real Chrome)');
-    assert.ok(!raw.includes(GH_PAT_SENTINEL), 'github_pat_ sentinel must not appear raw in media.json (real Chrome)');
+    assert.equal(iframe!.src, MEDIA_REDACT_IFRAME_SRC);
   });
 });
 
@@ -342,8 +318,8 @@ class QueriesStub {
   }
 }
 
-test('collectQueries: secret-shaped query text / selectors / container name are redacted, never raw in queries.json', async () => {
-  const dir = freshSnapDir('queries-redact');
+test('collectQueries: token-shaped query text / selectors / container name are preserved exactly in queries.json', async () => {
+  const dir = freshSnapDir('queries-evidence');
   try {
     const report = {
       environment: {
@@ -372,19 +348,13 @@ test('collectQueries: secret-shaped query text / selectors / container name are 
     };
     await collectQueries(makeCtx(new QueriesStub(report), dir));
 
-    const file = path.join(dir, 'queries.json');
-    const raw = rawJson(file);
-    assert.ok(!raw.includes(SK_SENTINEL), 'sk- sentinel must not appear raw in queries.json');
-    assert.ok(!raw.includes(JWT_SENTINEL), 'JWT sentinel must not appear raw in queries.json');
-    assert.ok(!raw.includes(GH_PAT_SENTINEL), 'github_pat_ sentinel must not appear raw in queries.json');
-
-    const q = readJson(file);
-    assert.ok(q.mediaQueries[0].query.includes('[REDACTED]'));
-    assert.ok(q.mediaQueries[0].affectedSelectors[0].includes('[REDACTED]'));
-    assert.ok(q.containerQueries[0].containerName.includes('[REDACTED]'));
-    assert.ok(q.containerQueries[0].containerSelector.includes('[REDACTED]'));
-    assert.ok(q.containerQueries[0].query.includes('[REDACTED]'));
-    assert.ok(q.containerQueries[0].affectedSelectors[0].includes('[REDACTED]'));
+    const q = readJson(path.join(dir, 'queries.json'));
+    assert.equal(q.mediaQueries[0].query, `(max-width: 640px) /* ${SK_SENTINEL} */`);
+    assert.equal(q.mediaQueries[0].affectedSelectors[0], `.a-${JWT_SENTINEL}`);
+    assert.equal(q.containerQueries[0].containerName, `main-${GH_PAT_SENTINEL}`);
+    assert.equal(q.containerQueries[0].containerSelector, `.container-${SK_SENTINEL}`);
+    assert.equal(q.containerQueries[0].query, `(min-width: 200px) ${JWT_SENTINEL}`);
+    assert.equal(q.containerQueries[0].affectedSelectors[0], `.card-${SK_SENTINEL}`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

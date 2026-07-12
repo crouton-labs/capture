@@ -149,7 +149,7 @@ export interface AxReport {
 // Helpers
 // ============================================================================
 
-/** Sanitizes an optional page-controlled AX string (name/description) through the shared redactor/capper, or returns `undefined` when absent. */
+/** Caps an optional page-controlled AX string, or returns `undefined` when absent. */
 function sanitizeOptional(value: string | null | undefined): string | undefined {
   if (value === null || value === undefined) return undefined;
   return sanitizeString(value);

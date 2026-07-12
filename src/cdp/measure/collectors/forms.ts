@@ -3,9 +3,8 @@
  * value/placeholder line boxes, caret/selection rects, scroll offsets,
  * visible-substring range, validity state/message, label association,
  * autofill state, pseudo-state facts, and (best-effort) native-part
- * dimensions. Raw values are redacted per `redaction.ts` (U09's
- * field-level redaction contract, a SEPARATE concern from `snapshot.ts`'s
- * whole-document `dom.html` sanitizer).
+ * dimensions. Page-provided strings and values are preserved up to their
+ * structural output caps.
  *
  * Measurement never touches a control's live `value`/`selectionStart`/
  * `selectionEnd`, and never mutates the DOM: native single-line controls
@@ -23,8 +22,8 @@
  * placeholder line boxes, caret, selection rects) are reported as
  * factually unavailable (`textLayout: { available: false, reason }`)
  * while every non-layout fact (scroll, dimensions, selection indices,
- * validity, label, redacted value/length, rect, pseudoState, autofill)
- * is still emitted. `contenteditable` regions are real DOM, so they use
+ * validity, label, value/length, rect, pseudoState, autofill) is still
+ * emitted. `contenteditable` regions are real DOM, so they use
  * the real `Selection`/`Range.getClientRects()` APIs directly.
  *
  * Control IDENTITY resolution (mapping each walked control to its stable
@@ -49,7 +48,7 @@
 
 import type { CDPClient } from '../../client.js';
 import type { Collector, ElementRecord } from '../types.js';
-import { redactFieldValue, sanitizeString, capArray } from '../redaction.js';
+import { capArray, capString, sanitizeString } from '../redaction.js';
 import { describeBackendNodeId } from './geometry.js';
 
 /** Hard cap on the rect-array facts (`valueLineBoxes`/`placeholderLines`/`selectionRects`) emitted per control — page-shaped arrays get a factual truncation count for parity with geometry's track cap. */
@@ -460,10 +459,10 @@ const FORMS_WALK_EXPRESSION = `(() => {
     const sel = isCheckable ? { start: null, end: null } : selectionOf(el);
 
     let valueLines = [], placeholderLines = [], caretRect = null, selectionRects = [], visibleRange = null, textLayoutUnavailable = null, lineHeightApproximate = null;
-    // type=password is EXCLUDED from measurement (D4): caret/visibleRange/
-    // valueLines would otherwise be computed over the raw password
-    // characters — rendered-width/caret-x geometry of a value the artifact
-    // refuses to print. Lengths are still reported (valueLength).
+    // type=password is excluded from canvas text-layout measurement because
+    // the control renders masking glyphs rather than the raw characters;
+    // measuring raw glyph widths would fabricate caret/line geometry. The
+    // value itself is still preserved in the emitted record.
     if (!isCheckable && type !== 'password' && type !== 'file' && type !== 'range' && type !== 'color') {
       if (multiline) {
         // Wrapped-line layout for a <textarea> is the browser's
@@ -778,20 +777,7 @@ export const collectForms: Collector = async (ctx) => {
       const rec = raw[i];
       const objectId = objectIds[i];
       const backendNodeId = objectId ? await describeBackendNodeId(ctx.client, objectId) : undefined;
-      const isPassword = rec.type === 'password';
-
-      const redactedValue = redactFieldValue({
-        value: rec.value,
-        isPassword,
-        isAutofilled: rec.autofilled,
-        isContentEditable: rec.isContentEditable,
-        fieldIdentity: { type: rec.type, name: rec.name, id: rec.id, autocomplete: rec.autocomplete },
-        // A control's value is a single fact a caller may show in full (see
-        // `visibleSubstring` below) — ANY secret-shaped run embedded anywhere
-        // in the value ("Bearer sk-...", "sk-...,") must withhold the WHOLE
-        // value, not just an exact whole-value match.
-        detectEmbeddedSecrets: true,
-      });
+      const cappedValue = capString(rec.value);
 
       const selector = sanitizeString(rec.selector);
       const placeholderSanitized = rec.valuePlaceholder !== null ? sanitizeString(rec.valuePlaceholder) : null;
@@ -828,19 +814,11 @@ export const collectForms: Collector = async (ctx) => {
       const { items: placeholderLines, truncated: placeholderLinesTruncated } = capArray(rec.placeholderLines, MAX_RECTS);
       const { items: selectionRects, truncated: selectionRectsTruncated } = capArray(rec.selectionRects, MAX_RECTS);
 
-      // "visible substring only when non-secret" — the char range (a
-      // position/length fact) is always reported; the actual substring TEXT
-      // is included only when the control's value itself was not redacted.
       const visibleSubstring = rec.visibleRange
         ? {
             start: rec.visibleRange.start,
             end: rec.visibleRange.end,
-            // Sanitize + cap the visible slice (D8b): even when the whole
-            // value cleared redaction, an embedded secret run and the raw
-            // uncapped length must not leak through this substring.
-            ...(redactedValue.redacted
-              ? {}
-              : { text: sanitizeString(rec.value.slice(rec.visibleRange.start, rec.visibleRange.end)) }),
+            text: sanitizeString(rec.value.slice(rec.visibleRange.start, rec.visibleRange.end)),
           }
         : undefined;
 
@@ -854,11 +832,10 @@ export const collectForms: Collector = async (ctx) => {
         ...resolvedIdentity(backendNodeId),
         type: normalizeControlType(rec.type),
         tagName: sanitizeString(rec.tagName),
-        valueLength: redactedValue.length,
-        ...(redactedValue.redacted ? {} : { text: redactedValue.value, value: redactedValue.value }),
-        redacted: redactedValue.redacted,
-        ...(redactedValue.redactionReason ? { redactionReason: redactedValue.redactionReason } : {}),
-        ...(redactedValue.capped ? { capped: true } : {}),
+        valueLength: rec.value.length,
+        text: cappedValue.value,
+        value: cappedValue.value,
+        ...(cappedValue.capped ? { capped: true } : {}),
         placeholder: placeholderSanitized !== null ? { text: placeholderSanitized, lines: placeholderLines } : undefined,
         ...(placeholderLinesTruncated ? { placeholderLinesTruncated } : {}),
         selectionStart: rec.selectionStart,

@@ -2,9 +2,8 @@
  * `text.json` collector — per-text-bearing-element line boxes (from
  * `Range.getClientRects`), binary-searched wrap points, baseline metrics,
  * writing-mode/bidi rect order, truncation facts, and platform font
- * fallback facts (`CSS.getPlatformFontsForNode`). Text content is redacted
- * per `redaction.ts` (U09's field-level redaction contract, a SEPARATE
- * concern from `snapshot.ts`'s whole-document `dom.html` sanitizer).
+ * fallback facts (`CSS.getPlatformFontsForNode`). Text content is preserved
+ * up to the shared structural output cap.
  *
  * All measurement happens inside one `Runtime.evaluate` walk of the live
  * page (line boxes via native `Range.getClientRects`, baselines
@@ -34,7 +33,7 @@
 
 import type { CDPClient } from '../../client.js';
 import type { Collector, ElementRecord } from '../types.js';
-import { redactFieldValue, sanitizeString, capArray } from '../redaction.js';
+import { capArray, capString, sanitizeString } from '../redaction.js';
 
 /** Hard cap on line boxes emitted per text element — `Range.getClientRects` is bounded by real layout, but the array is page-shaped, so this caps it for parity with geometry's track cap; the overflow is a factual `linesTruncated` count. */
 const MAX_TEXT_LINES = 500;
@@ -572,12 +571,11 @@ export const collectText: Collector = async (ctx) => {
 
       let backendNodeId: number | undefined;
       let platformFonts: PlatformFontFact[] = [];
-      // Raw (pre-sanitize) platform font family names, kept ONLY for the
-      // `fallbackUsed` comparison below — `sanitizeString` can alter a family
-      // name (secret-shape redaction, length capping), which would otherwise
+      // Raw (pre-cap) platform font family names, kept only for the
+      // `fallbackUsed` comparison below. A capped family name could otherwise
       // turn a real substring match against the raw CSS `fontFamily` into a
-      // false fallback report. Never written to an artifact; `platformFonts`
-      // (sanitized) is the only font-name fact that leaves this function.
+      // false fallback report. Only the bounded `platformFonts` facts leave
+      // this function.
       let rawPlatformFontFamilies: string[] = [];
       // I-4/I-5: `platformFontsAvailable` distinguishes "the platform-font
       // source was never actually read" (no bridged identity, `nodeId`
@@ -628,12 +626,12 @@ export const collectText: Collector = async (ctx) => {
         }
       }
 
-      const redacted = redactFieldValue({ value: rec.text, isContentEditable: rec.isContentEditable });
+      const cappedText = capString(rec.text);
       const selector = sanitizeString(rec.selector);
-      // Raw-to-raw: compares each UN-sanitized platform font family name
-      // against the raw CSS `fontFamily` string — never the sanitized
-      // `platformFonts` facts, so redaction/capping of a font name can never
-      // turn a real match into a false fallback report. `null` (never
+      // Raw-to-raw: compares each uncapped platform font family name
+      // against the raw CSS `fontFamily` string — never the bounded
+      // `platformFonts` facts, so capping a font name can never turn a real
+      // match into a false fallback report. `null` (never
       // `false`) when the platform-font source itself was never read —
       // otherwise a read failure is indistinguishable from a genuine
       // "no fallback font was used" observation (I-4/I-5).
@@ -653,17 +651,9 @@ export const collectText: Collector = async (ctx) => {
         // resolvedIdentity() turns either case into the same honest
         // `backendNodeId: null` + `identityUnresolved: true` shape (I-3/I-5).
         ...resolvedIdentity(backendNodeId),
-        // The text-node VALUE itself: `redactFieldValue` decides whether the
-        // WHOLE field is withheld (password-shaped equivalents, an entire
-        // contenteditable region that IS a secret) via `redacted.redacted`;
-        // when it isn't, the text still passes through `sanitizeString` so a
-        // token EMBEDDED mid-prose ("Token: sk-...") is stripped rather than
-        // written raw — `redactFieldValue` alone only tests the whole value.
-        ...(redacted.redacted ? {} : { text: sanitizeString(rec.text) }),
-        textLength: redacted.length,
-        redacted: redacted.redacted,
-        ...(redacted.redactionReason ? { redactionReason: redacted.redactionReason } : {}),
-        ...(redacted.capped ? { capped: true } : {}),
+        text: cappedText.value,
+        textLength: rec.text.length,
+        ...(cappedText.capped ? { capped: true } : {}),
         lines: cappedLines.map((line, index) => {
           const wrapOffset = rec.wrapOffsets[index];
           return {
