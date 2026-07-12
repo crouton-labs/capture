@@ -1,39 +1,23 @@
 ---
+# Gap: agents need a stable entry into capture without carrying a leaf-by-leaf manual that can drift from the binary.
 name: capture
-description: Browser automation and UI validation via the capture CLI. Interact with pages using accessibility-driven click, type, screenshot, a11y tree, JS exec, and HAR recording over CDP. Use when validating UI state, testing features in the browser, or manipulating a running web app.
+description: Browser automation and UI measurement through capture's session, page, tab, measure, motion, cdp, and lib branches. Use when observing a web app, driving its UI, collecting network evidence, or measuring rendered state over CDP.
 allowed-tools: Bash(capture:*), Read, Glob, Grep
 ---
 
-# Capture — Browser Automation Skill
+# Capture
 
-Browser automation via CDP for UI validation. For the full command reference, see [cli-reference.md](cli-reference.md).
+When browser evidence is needed, run `capture -h`, then the relevant branch and leaf `-h`, because built help is canonical for current inputs, outputs, effects, and targeting.
 
-## Session Basics
+Capture has exactly seven root nouns: `session`, `page`, `tab`, `measure`, `motion`, `cdp`, and `lib`. `page` contains `elements`, `click`, `type`, `shot`, `navigate`, `exec`, and `scroll`; `tab` contains `list`, `open`, `reset`, and `network`; traffic and external logs are read through `session har` and `session log`. For the compact tree, shared contracts, and a representative flow, read [cli-reference.md](cli-reference.md).
 
-1. `capture session start --url <url>` — open a tab and start recording
-2. Interact: `screenshot`, `click`, `type`, `a11y`, `exec`, `navigate`
-3. `capture session stop <id>` — bundle artifacts; `capture session view <id>` to inspect
+## Choose the evidence grain
 
-Session context auto-fills `--target` and `--har` — no manual flag threading needed.
+- Use `session` for scoped browser work so one tab, its traffic, and its artifacts stay together.
+- Use `page elements` to discover live target identities, the other `page` leaves to drive or look at the current tab, and `page shot` only for visual orientation.
+- Use `measure` when the criterion depends on settled static facts; its query leaves read a snapshot artifact rather than re-driving the browser.
+- Use `motion` when the criterion depends on change over time; its query leaves read a finalized recording.
+- Use `tab` for endpoint discovery, tab lifecycle, and connection-level network emulation.
+- Use `cdp` only when the wrapped branches do not expose the protocol fact you need. Use `lib` only to inspect development-checkout service-library schemas.
 
-## Validation Pattern
-
-When validating a UI feature:
-
-1. Start a session targeting the page under test
-2. Use `a11y --interactive` to understand what's on the page
-3. Interact via `click` and `type` using accessible names (not selectors)
-4. Take screenshots at key states
-5. Use `exec` to check DOM or JS state when a11y isn't sufficient
-6. Use `har read` to verify network requests if relevant (supports `--filter-url`, `--filter-status`, `--filter-method`, `--limit`; ID optional in an active session)
-7. Stop the session and report pass/fail with evidence
-
-**HAR caveat:** the session HAR is populated by the commands that run — most reliably `navigate`. `click`/`type` capture the traffic that fires inside their settle window, but cross-navigation traffic after the frame changes is lossy. For continuous "click around" capture, run `capture record --duration N` in parallel.
-
-## Interaction Tips
-
-- Always prefer `click "Name"` over `exec` with selectors — a11y names are stable
-- If `click` reports multiple matches, add `--role` to disambiguate
-- Run `a11y --interactive` before interacting to see available elements
-- `type --into "Field Name"` clicks the field first, then types — no separate click needed
-- After interactions, screenshot to capture the resulting state
+Capture reports measurements and factual provenance. Preserve result blocks and artifact paths as evidence, state collection limitations, and make any comparison with the user's criterion explicitly your own.

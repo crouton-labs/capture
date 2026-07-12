@@ -57,8 +57,8 @@ Disposition of measure observations M1–M4 below.
 
 ```
 node bin/capture motion rec --start
-node bin/capture type "…" --into "Message"
-node bin/capture click "Send message"
+node bin/capture page type "…" --into "ax:Message"
+node bin/capture page click "ax:Send message"
 node bin/capture motion rec --stop
 ```
 

@@ -12,17 +12,19 @@ origin:
 
 # capture
 
-`@crouton-kit/capture` — CDP browser automation / UI validation CLI (`capture` bin): session-based screenshots, HAR, a11y, interact, JS exec. Agents usually reach it as `crtr capture <args>` (verbatim forward).
+`@crouton-kit/capture` is a CDP browser automation and UI measurement CLI with exactly seven root nouns: `session`, `page`, `tab`, `measure`, `motion`, `cdp`, and `lib`. `page` contains `elements`, `click`, `type`, `shot`, `navigate`, `exec`, and `scroll`; `tab` contains `list`, `open`, `reset`, and `network`; traffic and external logs are read through `session har` and `session log`. Agents usually reach it as `crtr capture <args>` (verbatim forwarding).
+
+When operating the CLI, run `capture -h`, then the selected branch and leaf `-h`, because built help is the executable source of truth for each noun's model and each leaf's inputs, outputs, effects, and targeting.
 
 ## Dev loop
 
 - pnpm project (`pnpm-lock.yaml`) — install with `pnpm install`.
-- `npm run build` — esbuild bundles `src/capture.ts` into ONE self-contained CJS executable at `bin/capture`.
+- `npm run build` — esbuild bundles `src/capture.ts` into one self-contained CJS executable at `bin/capture`.
 - `npm test` — `node --import tsx --test test/*.test.ts`.
-- Publish on push to `main` (`.github/workflows/publish.yml`), conventional commits — never hand-bump the version.
+- Publish on push to `main` (`.github/workflows/publish.yml`), conventional commits — versioning is workflow-owned.
 
 ## Constraints
 
-- `bin/capture` must stay a single self-contained bundle — new runtime deps get bundled by esbuild, never left external for the consumer to install.
-- `vault/libs/` is forked SOURCE synced from a northlight-vault checkout via `vault/sync.sh` — never hand-edit those files here; fix upstream and re-sync.
-- Before changing any output surface (verdicts, checks, diffs, new verification commands), read the `taste/measuring-stick-not-coach` memory — the tool reports measurements, it never coaches.
+- `bin/capture` stays a single self-contained bundle; bundle runtime dependencies so consumers need no companion install.
+- When changing `vault/libs/`, fix the source in northlight-vault and run `vault/sync.sh`, because this directory is a synchronized source fork.
+- Before changing an output schema or measurement command, read `taste/measuring-stick-not-coach`, because capture reports measurements plus factual provenance and leaves interpretation to its caller.

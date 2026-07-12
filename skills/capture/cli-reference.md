@@ -1,52 +1,56 @@
-# CLI Reference
+# Capture CLI orientation
 
-Full command reference for the capture CLI. For validation methodology, see [SKILL.md](SKILL.md).
+The built binary owns command syntax. Run `capture -h`, `capture <noun> -h`, and `capture <noun> <leaf> -h` as you descend, because each leaf declares its current inputs, output schema, and page-observable effects.
 
-## CLI Quick Reference
+## Command tree
 
-```
-capture session start [--url <url>]    Start session (opens tab, sets context)
-capture session stop <session-id>      Finalize and bundle artifacts
-capture session view <id>              View bundle manifest
+Capture has exactly seven root nouns:
 
-capture detect                         Detect CDP port
-capture list                           List browser tabs
-capture open <url> [--new]             Open URL in browser
-capture navigate <url> [--settle <ms>] Navigate + record HAR
-capture screenshot [--out <path>]      Capture screenshot
-capture a11y [--interactive] [--json]  Get accessibility tree
-capture click "name" [--role role]     Click element by accessible name
-capture type "text" [--into "field"]   Type into focused element or named field
-capture exec <code>                    Execute JS in browser tab
-capture exec --file <path>             Execute JS from file
-capture record [--duration <secs>]     Passive HAR recording
-capture log <path> [--name label]      Tail a log file into the session
-capture network <offline|online>       Toggle network (simulate disconnect)
-capture har create|read|delete         Manage HAR recordings
+```text
+capture
+├─ session  start · stop · list · view · har · log
+├─ page     elements · click · type · shot · navigate · exec · scroll
+├─ tab      list · open · reset · network
+├─ measure  snap · check · diff · census · explain · sweep · map
+│  └─ map   focus · scroll · layers · ax
+├─ motion   rec · mask · timeline · jank · response
+├─ cdp
+└─ lib      list · search · show · read
 ```
 
-### HAR flags (`har read`)
+- `session` is the artifact container. An active session supplies its tab as the default target, accumulates recorded traffic, and finalizes shots, logs, snapshots, recordings, and HAR into one bundle.
+- `page` addresses live tab content. Its driving leaves resolve exactly one current element; `elements` supplies role, accessible name, and `backend:<id>` discriminators; `shot` captures visual orientation.
+- `tab` handles browser endpoint discovery, tab lifecycle, and connection-level network emulation. `capture tab list` is the browser probe.
+- `measure` writes one settled snapshot substrate with `snap`; its query leaves read static facts from that artifact. A URL target creates a snapshot before the query.
+- `motion` writes a recording with `rec`; its query leaves read facts from a finalized recording.
+- `cdp` sends raw protocol methods or waits for protocol events.
+- `lib` reads service-library summaries and schemas in a development checkout; execution goes through `capture page exec`.
 
-- `--filter-url <pattern>` — substring or regex match against request URL
-- `--filter-status <s>` — exact code (`404`), prefix (`4` → 4xx), or range (`400-499`)
-- `--filter-method <m>` — HTTP method (GET, POST, ...)
-- `--limit <N>` — return only the first N matching entries
-- ID is optional inside an active session — `capture har read` reads the session HAR.
+## Shared contracts
 
-## Session Workflow
+- Help is `-h`. Descend from root help rather than relying on an embedded flag catalog.
+- Rendered prose on stdout is the contract; `--json` mirrors the same result, while stderr carries in-flight diagnostics.
+- Exit 0 means the command completed, including empty lists and reported findings. Exit 1 is a structured invocation, precondition, or world error. Exit 2 is confined to `capture measure check --gate` and `capture measure diff --gate` when measured findings or changes exist.
+- Explicit targeting takes precedence over the active session, which takes precedence over `CDP_PORT` and `CDP_TARGET` environment pinning.
+- Live `page` target forms are bare CSS, `ax:<name>`, `axid:<id>`, and `backend:<id>` where leaf help declares a target. Driving leaves require exactly one match and return candidates when resolution is ambiguous.
+- `page click`, `page type`, and `page scroll` write a session shot after input unless `--no-screenshot` is set. Session traffic is read with `session har`.
+- Capture reports measurements and factual provenance. The caller owns interpretation against its criterion.
 
-1. `capture session start --url <url>` — opens tab, starts HAR, sets active session
-2. Interact: `screenshot`, `click`, `type`, `a11y`, `exec`, `navigate`
-3. `capture session stop <id>` — bundles screenshots + HAR + a11y snapshots
-4. `capture session view <id>` — inspect the bundle
+## Representative flow
 
-**Session context auto-fills `--target` and `--har`** after `session start`. No manual flag threading.
+```bash
+capture tab list
+capture session start --url http://localhost:3000
+capture page elements
+capture page click "ax:Open settings"
+capture page type "Ada" --into "ax:Name"
+capture page scroll "main" --to bottom
+capture page navigate http://localhost:3000/account
+capture page shot
+capture page exec 'document.title'
+capture session har --filter-url /api
+capture session stop "$SESSION_ID"
+capture session view "$SESSION_ID" --filter shots
+```
 
-## Key Behaviors
-
-- **Targeting**: `--target <id>` (preferred, parallel-safe) or `--url <pattern>` (fuzzy match). Target IDs support **prefix matching** — use the first 8 characters instead of the full ID (e.g. `--target 6d82f8c1`).
-- **Auto-screenshots**: `click` and `type` save numbered screenshots to the session automatically. Use `--no-screenshot` to skip.
-- **HAR recording**: Each session has its own HAR id; `navigate`/`exec`/`click`/`type` append traffic they observe during their settle window to the session HAR. `navigate` is the most reliable — it brackets the full page load. `click`/`type` capture traffic within their settle (~2.5s for click with HAR active); cross-page-navigation traffic after the listeners disconnect is lossy. For continuous click-around capture, run `capture record --duration N` in parallel. Override per-command with `--settle <ms>`.
-- **WebSockets in HAR**: sockets opened while a command is recording appear as entries with `_resourceType: "websocket"` and frames in `_webSocketMessages` (capped at 200 frames/socket, 4KB/frame). Sockets opened before recording started are not visible — `navigate` (which brackets the page load) is the reliable way to catch a socket the page opens on load.
-- **exec supports await**: `capture exec 'await fetch("/api/data").then(r => r.json())'`
-- **Any command supports `--help`**
+Set `SESSION_ID` to the id emitted by `session start` before the final two calls. Use `capture session har -h` for traffic filters, `capture measure -h` for static instruments, and `capture motion -h` for recording instruments.
