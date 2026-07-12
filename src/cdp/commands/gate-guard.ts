@@ -6,9 +6,9 @@
  * invokes this guard ONCE per invocation, via `isGateLeaf`, for every
  * command on the whole surface, so a caller that supplies `--gate`
  * anywhere else gets a structured rejection before any branch main runs
- * instead of the flag being silently accepted and ignored. (measure/motion
- * leaves additionally still call `rejectUnsupportedGate` directly; those
- * per-leaf calls are redundant with the dispatch-level guard.)
+ * instead of the flag being silently accepted and ignored. The dispatch
+ * guard is the ONLY caller of `rejectUnsupportedGate`; no leaf calls it
+ * directly.
  */
 import { type ParsedArgs } from '../types.js';
 import { emitResult, fact, type RenderableResult } from '../../output/render.js';
