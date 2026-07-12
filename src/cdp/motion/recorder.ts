@@ -462,6 +462,8 @@ export async function startComposedRecorder(
   opts: {
     sessionDir: string;
     targetId: string | null;
+    /** Session-bound endpoint (or explicit CLI override) for targetId. */
+    port?: number;
     viewport?: RecordingViewport;
   },
   deps: StartRecorderDeps = {},
@@ -500,7 +502,7 @@ export async function startComposedRecorder(
     let socketPath: string | null = null;
     try {
       viewportAttempted = await applyViewportOverride(recDir, opts.targetId, opts.viewport);
-      const port = await (deps.detectPort ?? detectCdpPort)();
+      const port = opts.port ?? await (deps.detectPort ?? detectCdpPort)();
       socketPath = recorderSocketPath(recDir);
       const spawnRecorderBridge = deps.spawnRecorderBridge ?? startRecorderBridge;
       ({ pid } = await spawnRecorderBridge(socketPath, port, opts.targetId, recDir));

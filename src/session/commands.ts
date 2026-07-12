@@ -36,6 +36,7 @@ interface Session {
   startedAt: string;
   url: string | null;
   targetId: string | null;
+  cdpPort: number | null;
   stepCount: number;
   logPids: LogPid[];
   /** Set when started with --hold: one CDP browser connection held open for the session. */
@@ -329,6 +330,7 @@ async function start(rawArgs: string[]): Promise<void> {
     startedAt: new Date().toISOString(),
     url,
     targetId,
+    cdpPort,
     stepCount: 0,
     logPids: [],
     bridgeSocket,
@@ -342,6 +344,7 @@ async function start(rawArgs: string[]): Promise<void> {
     dir,
     harId,
     targetId,
+    cdpPort,
     stepCount: 0,
     bridgeSocket,
   });
@@ -352,6 +355,7 @@ async function start(rawArgs: string[]): Promise<void> {
     bundleDir: dir,
     harId,
     targetId,
+    cdpPort,
     pageLoadTimedOut,
     shotsDir: path.join(dir, 'shots'),
     a11yDir: path.join(dir, 'a11y'),

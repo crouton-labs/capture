@@ -218,6 +218,10 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
   const session = getActiveSession();
   if (session) {
     if (!parsed.har && session.harId) parsed.har = session.harId;
+    // A session target is inseparable from the endpoint that created it.
+    // Prefer that endpoint over ambient CDP_PORT, but retain an explicit
+    // --port override for deliberate multi-browser work.
+    if (!parsed.port && session.cdpPort) parsed.port = session.cdpPort;
     // An explicit --url picks a different (parallel) tab than the session's
     // own — don't let the session's targetId clobber that choice.
     if (!parsed.target && !parsed.url && session.targetId) parsed.target = session.targetId;

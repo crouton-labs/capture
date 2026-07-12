@@ -122,11 +122,13 @@ test('startComposedRecorder writes recorder.json + frames/, arms activeRecId, re
 
   let fakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
   try {
+    let spawnedPort: number | null = null;
     const result = await startComposedRecorder(
-      { sessionDir, targetId: 'target-abc' },
+      { sessionDir, targetId: 'target-abc', port: 52621 },
       {
-        detectPort: async () => 9222,
-        spawnRecorderBridge: async (socketPath) => {
+        detectPort: async () => { throw new Error('session endpoint must bypass discovery'); },
+        spawnRecorderBridge: async (socketPath, port) => {
+          spawnedPort = port;
           fakeServer = await startFakeRecorderServer(socketPath);
           return { socketPath, pid: placeholder.pid };
         },
@@ -134,6 +136,7 @@ test('startComposedRecorder writes recorder.json + frames/, arms activeRecId, re
     );
 
     assert.equal(result.state, 'recording');
+    assert.equal(spawnedPort, 52621, 'the recorder bridge uses the session-bound endpoint');
     assert.equal(result.reapedStale, null);
     assert.ok(result.recId.startsWith('rec-'));
     assert.equal(result.recDir, recDirFor(sessionDir, result.recId));

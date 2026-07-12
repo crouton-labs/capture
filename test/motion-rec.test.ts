@@ -176,6 +176,57 @@ test('cmdMotionRec one-shot waits for readiness, applies/restores viewport, reco
   }
 });
 
+test('motion rec one-shot uses the active session tab when URL is omitted, while explicit URLs and no-session validation retain their contracts', async () => {
+  const root = makeRoot('active-session-target');
+  const client = new FakeClient();
+  const session = { sessionId: 'session-test', dir: root, harId: null, targetId: 'session-tab', stepCount: 0 };
+  let active: typeof session | null = session;
+  let opened = 0;
+  let resolved = 0;
+  let oneshots = 0;
+  const restore = __setMotionRecDepsForTest({
+    detectCdpPort: async () => 9222,
+    openTab: async () => {
+      opened++;
+      return { id: 'explicit-tab', title: '', url: 'https://explicit.test/', type: 'page', webSocketDebuggerUrl: 'ws://fixture' };
+    },
+    findTabById: async (_port, targetId) => {
+      resolved++;
+      assert.equal(targetId, 'session-tab');
+      return { id: targetId, title: '', url: 'https://session.test/current', type: 'page', webSocketDebuggerUrl: 'ws://fixture' };
+    },
+    createClient: () => client as never,
+    createRecorderSession: (opts) => new FakeRecorderSession(opts as never) as never,
+    createOneshotSession: () => {
+      oneshots++;
+      return { id: 'oneshot-test', dir: root, kind: 'motion', artifactsDir: path.join(root, 'motion', 'recs') };
+    },
+    getActiveSession: () => active,
+    encodeVideo: () => ({ status: 'unavailable', reason: 'test' }),
+  });
+
+  try {
+    const activeOutput = await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], do: 'click:button.send' }, []));
+    assert.equal(activeOutput.exitCode, undefined, activeOutput.stdout);
+    assert.equal(resolved, 1, 'missing URL resolves the active session tab');
+    assert.equal(opened, 0, 'missing URL does not open a new tab');
+    assert.equal(oneshots, 0, 'an active-session recording belongs to the session bundle');
+    assert.equal(fs.readdirSync(path.join(root, 'motion', 'recs')).length, 1);
+
+    active = null;
+    const explicitOutput = await captureCommand(() => cmdMotionRec({ command: 'motion', positional: ['https://explicit.test/'], do: 'click:button.send' }, []));
+    assert.equal(explicitOutput.exitCode, undefined, explicitOutput.stdout);
+    assert.equal(opened, 1, 'an explicit URL retains the new-tab one-shot behavior');
+    assert.equal(oneshots, 1, 'an explicit URL without a session uses private one-shot storage');
+
+    const missingOutput = await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], do: 'click:button.send' }, []));
+    assert.equal(missingOutput.exitCode, 1, 'without a session, a URL remains required');
+  } finally {
+    restore();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('one-shot restores a viewport when set may have reached Chrome but its response fails', async () => {
   const root = makeRoot('oneshot-viewport-response-failure');
   const client = new FakeClient();
@@ -298,9 +349,9 @@ test('cmdMotionRec rejects --rec-id outside --stop before touching any lifecycle
 test('cmdMotionRec composed start/stop applies viewport for the recording window and finalizes the same inventory', async () => {
   const root = makeRoot('composed');
   const recDir = path.join(root, 'motion', 'recs', 'rec-composed');
-  let startOpts: { sessionDir: string; targetId: string | null; viewport?: { width: number; height: number } } | null = null;
+  let startOpts: { sessionDir: string; targetId: string | null; port?: number; viewport?: { width: number; height: number } } | null = null;
   const restore = __setMotionRecDepsForTest({
-    getActiveSession: () => ({ sessionId: 'cap-test', dir: root, harId: null, targetId: 'target-1', stepCount: 0, activeRecId: 'rec-composed' }),
+    getActiveSession: () => ({ sessionId: 'cap-test', dir: root, harId: null, targetId: 'target-1', cdpPort: 52621, stepCount: 0, activeRecId: 'rec-composed' }),
     startComposedRecorder: async (opts) => {
       startOpts = opts;
       ensurePrivateDir(path.join(recDir, 'frames'));
@@ -317,8 +368,8 @@ test('cmdMotionRec composed start/stop applies viewport for the recording window
   });
 
   try {
-    await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], start: true, viewport: '390x844' }, []));
-    assert.deepEqual(startOpts, { sessionDir: root, targetId: 'target-1', viewport: { width: 390, height: 844 } }, 'the command passes viewport ownership into the lifecycle without mutating CDP itself');
+    await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], start: true, port: 52621, viewport: '390x844' }, []));
+    assert.deepEqual(startOpts, { sessionDir: root, targetId: 'target-1', port: 52621, viewport: { width: 390, height: 844 } }, 'the command passes endpoint and viewport ownership into the lifecycle');
 
     await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], stop: true }, []));
     // The recorder lifecycle owns restoration, including reaps/session-stop;

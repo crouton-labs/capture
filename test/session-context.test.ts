@@ -49,26 +49,29 @@ test('active session pointer is isolated per CRTR_NODE_ID scope', async () => {
   }
 });
 
-test('active session target/har win over a stale CDP_TARGET/CDP_HAR_ID env var', async () => {
+test('active session target, HAR, and endpoint win over stale environment values while explicit --port still overrides', async () => {
   const { setActiveSession, clearActiveSession } = await import('../src/session-context.js');
   const { parseCliArgs } = await import('../src/cdp/args.js');
 
   const prevNodeId = process.env.CRTR_NODE_ID;
   const prevTarget = process.env.CDP_TARGET;
   const prevHar = process.env.CDP_HAR_ID;
+  const prevPort = process.env.CDP_PORT;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-test-precedence-'));
 
   try {
     process.env.CRTR_NODE_ID = 'test-node-precedence';
-    setActiveSession({ sessionId: 'sess-p', dir, harId: 'session-har', targetId: 'session-target', stepCount: 0 });
-    // Simulates a leaked/inherited env var from an unrelated orchestrator
-    // or an earlier command in the same shell.
+    setActiveSession({ sessionId: 'sess-p', dir, harId: 'session-har', targetId: 'session-target', cdpPort: 52621, stepCount: 0 });
+    // Simulates leaked/inherited values from an unrelated orchestrator.
     process.env.CDP_TARGET = 'stale-env-target';
     process.env.CDP_HAR_ID = 'stale-env-har';
+    process.env.CDP_PORT = '53451';
 
     const parsed = parseCliArgs(['click', 'Create applet']);
     assert.equal(parsed.target, 'session-target');
     assert.equal(parsed.har, 'session-har');
+    assert.equal(parsed.port, 52621);
+    assert.equal(parseCliArgs(['click', 'Create applet', '--port', '9222']).port, 9222);
   } finally {
     clearActiveSession();
     if (prevNodeId === undefined) delete process.env.CRTR_NODE_ID;
@@ -77,6 +80,8 @@ test('active session target/har win over a stale CDP_TARGET/CDP_HAR_ID env var',
     else process.env.CDP_TARGET = prevTarget;
     if (prevHar === undefined) delete process.env.CDP_HAR_ID;
     else process.env.CDP_HAR_ID = prevHar;
+    if (prevPort === undefined) delete process.env.CDP_PORT;
+    else process.env.CDP_PORT = prevPort;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

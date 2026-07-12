@@ -35,6 +35,8 @@ export interface ActiveSessionState {
   dir: string;
   harId: string | null;
   targetId: string | null;
+  /** CDP endpoint that owns targetId; session commands must prefer it over discovery. */
+  cdpPort?: number | null;
   stepCount: number;
   /** Unix socket of the session's held CDP bridge (`session start --hold`), if any. */
   bridgeSocket?: string | null;

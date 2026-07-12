@@ -4,7 +4,7 @@ import * as crypto from 'crypto';
 import { spawnSync } from 'child_process';
 import { type ParsedArgs } from '../../types.js';
 import { CDPClient } from '../../client.js';
-import { openTab } from '../../targets.js';
+import { findTabById, openTab } from '../../targets.js';
 import { detectCdpPort } from '../../detect.js';
 import { RecorderSession } from '../../recorder-bridge.js';
 import {
@@ -30,6 +30,7 @@ import { rejectUnsupportedGate } from '../gate-guard.js';
 interface RecCommandDeps {
   detectCdpPort: typeof detectCdpPort;
   openTab: typeof openTab;
+  findTabById: typeof findTabById;
   createClient: (webSocketDebuggerUrl: string) => CDPClient;
   createRecorderSession: (opts: { client: CDPClient; recDir: string }) => RecorderSession;
   createOneshotSession: typeof createOneshotSession;
@@ -42,6 +43,7 @@ interface RecCommandDeps {
 let deps: RecCommandDeps = {
   detectCdpPort,
   openTab,
+  findTabById,
   createClient: (webSocketDebuggerUrl) => new CDPClient(webSocketDebuggerUrl),
   createRecorderSession: (opts) => new RecorderSession(opts),
   createOneshotSession,
@@ -57,11 +59,11 @@ export function __setMotionRecDepsForTest(overrides: Partial<RecCommandDeps>): (
   return () => { deps = previous; };
 }
 
-const USAGE = `Usage: capture motion rec <url> --do <action> [--duration <seconds>]
+const USAGE = `Usage: capture motion rec [url] --do <action> [--duration <seconds>]
        capture motion rec --start
        capture motion rec --stop [--rec-id <id>]
 
-One-shot: opens <url>, records one scripted action, and finalizes an artifact.
+One-shot: records one scripted action on <url>, or on the active session tab when <url> is omitted, and finalizes an artifact.
 Supported actions: click:<css-selector>; scroll:<css-selector>,to=<top|bottom|px>.
 
 Composed (\`--start\` ... intervening commands ... \`--stop\`): records
@@ -69,7 +71,7 @@ whatever the active session does across multiple independent commands.
 Requires an active session (\`capture session start\`).
 
 Options:
-  --do <action>      One-shot scripted action (requires a positional URL)
+  --do <action>      One-shot scripted action (uses the active session tab when URL is omitted)
   --duration <secs>  Continue recording after the action (default: 0)
   --start            Arm the composed recorder (requires an active session)
   --stop             Finalize the composed recorder
@@ -91,26 +93,30 @@ export async function cmdMotionRec(parsed: ParsedArgs, _args: string[]): Promise
 
 async function handleOneShot(parsed: ParsedArgs): Promise<void> {
   const url = parsed.positional[0];
-  if (!url || !parsed.do || parsed.positional.length !== 1) {
-    return emitCommandError(parsed, 'invalid_oneshot', 'One-shot recording requires exactly one URL and `--do <action>`.');
+  const active = deps.getActiveSession();
+  if (!parsed.do || parsed.positional.length > 1 || (!url && !active)) {
+    return emitCommandError(parsed, 'invalid_oneshot', 'One-shot recording requires a URL (or an active session tab) and `--do <action>`.');
   }
-  if (deps.getActiveSession()) {
-    return emitCommandError(parsed, 'oneshot_requires_no_session', 'One-shot recording is URL-scoped. In an active session, use `capture motion rec --start` and `capture motion rec --stop`.');
+  if (!active?.targetId && !url) {
+    return emitCommandError(parsed, 'no_session_target', 'Active capture session has no target tab to record.');
   }
   if (!Number.isFinite(parsed.duration ?? 0) || (parsed.duration ?? 0) < 0) {
     return emitCommandError(parsed, 'invalid_duration', '`--duration` must be a non-negative number of seconds.');
   }
 
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(url);
-  } catch {
-    return emitCommandError(parsed, 'invalid_url', `Invalid recording URL: ${url}`);
+  let parsedUrl: URL | undefined;
+  if (url) {
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      return emitCommandError(parsed, 'invalid_url', `Invalid recording URL: ${url}`);
+    }
   }
 
-  const oneshot = deps.createOneshotSession('motion');
+  const oneshot = active ? undefined : deps.createOneshotSession('motion');
+  const destination = active ? path.join(active.dir, 'motion', 'recs') : oneshot!.artifactsDir;
   const recId = `rec-${crypto.randomBytes(2).toString('hex')}`;
-  const recDir = path.join(oneshot.artifactsDir, recId);
+  const recDir = path.join(destination, recId);
   ensurePrivateDir(recDir);
   ensurePrivateDir(path.join(recDir, 'frames'));
 
@@ -119,8 +125,15 @@ async function handleOneShot(parsed: ParsedArgs): Promise<void> {
   let failure: string | null = null;
   try {
     const port = parsed.port ?? await deps.detectCdpPort();
-    const tab = await deps.openTab(port, parsedUrl.toString());
-    if (!tab.webSocketDebuggerUrl) throw new Error('Opened tab has no WebSocket debugger URL.');
+    // The shared parser fills the active session's targetId into parsed.target,
+    // but this leaf needs the target's live websocket and URL rather than a
+    // URL-pattern lookup. An explicit positional URL retains one-shot's
+    // existing new-tab behavior; omission means "the active session tab".
+    const tab = parsedUrl
+      ? await deps.openTab(port, parsedUrl.toString())
+      : await deps.findTabById(port, active!.targetId!);
+    if (!tab) throw new Error(`Active session target ${active!.targetId} is no longer available.`);
+    if (!tab.webSocketDebuggerUrl) throw new Error('Recording target has no WebSocket debugger URL.');
     client = deps.createClient(tab.webSocketDebuggerUrl);
     await client.waitReady();
     await client.send('Page.enable');
@@ -139,7 +152,7 @@ async function handleOneShot(parsed: ParsedArgs): Promise<void> {
       viewportRestored = await restoreSessionViewportForClient(client);
       viewportMayHaveApplied = false;
     }
-    const finalized = finalizeOneShotRecording(recDir, recId, parsedUrl.toString(), parsed.do, stopped, deps.encodeVideo, viewportRestored);
+    const finalized = finalizeOneShotRecording(recDir, recId, parsedUrl?.toString() ?? tab.url, parsed.do, stopped, deps.encodeVideo, viewportRestored);
     emitFinalizedResult(parsed, finalized);
   } catch (err) {
     failure = err instanceof Error ? err.message : String(err);
@@ -397,7 +410,12 @@ async function handleStart(parsed: ParsedArgs): Promise<void> {
 
   let started: StartRecorderResult;
   try {
-    started = await deps.startComposedRecorder({ sessionDir: session.dir, targetId: session.targetId, viewport });
+    started = await deps.startComposedRecorder({
+      sessionDir: session.dir,
+      targetId: session.targetId,
+      ...(parsed.port !== undefined ? { port: parsed.port } : {}),
+      viewport,
+    });
   } catch (err) {
     const viewportRestored = err instanceof StartRecorderError ? err.viewportRestored : null;
     return emitCommandError(
