@@ -1,7 +1,11 @@
 /**
- * HAR recording management — create, read, append, delete.
+ * HAR recording store — the SESSION-INTERNAL lane only.
  *
- * Extracted from cdp/index.ts for reuse by TabSession and other modules.
+ * A recording is created when a capture session starts, auto-appended by
+ * `withConnection()` while the session is active, read back by
+ * `session har`, and deleted when `session stop` bundles it into the
+ * session's `har.json`. There is no standalone CLI surface over these ids —
+ * HAR is session-owned (`capture session har`).
  */
 
 import * as fs from 'fs';

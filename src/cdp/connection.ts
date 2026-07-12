@@ -185,7 +185,7 @@ export async function withConnection<T>(
     const harPath = harFilePath(parsed.har);
     if (!fs.existsSync(harPath)) {
       console.error(
-        `ERROR: No HAR recording found for --har "${parsed.har}". Run 'har create' first.`,
+        `ERROR: the active session's HAR recording file ("${parsed.har}") is missing on disk — traffic cannot be appended.`,
       );
       process.exit(1);
     }

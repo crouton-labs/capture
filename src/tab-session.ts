@@ -6,7 +6,7 @@
  *
  * Usage:
  *   const session = await TabSession.create({ url: 'https://app.hubspot.com' });
- *   console.log(session.env());  // { CDP_TARGET: '...', CDP_HAR_ID: '...' }
+ *   console.log(session.env());  // { CDP_TARGET: '...' }
  *   await session.validate();     // throws if tab is gone
  *   await session.close();        // closes tab + deletes HAR
  */
@@ -28,7 +28,6 @@ export interface TabSessionOptions {
 
 export interface TabSessionEnv {
   CDP_TARGET: string;
-  CDP_HAR_ID?: string;
 }
 
 export class TabSession {
@@ -65,9 +64,7 @@ export class TabSession {
   }
 
   env(): TabSessionEnv {
-    const result: TabSessionEnv = { CDP_TARGET: this.tabTarget };
-    if (this.harId) result.CDP_HAR_ID = this.harId;
-    return result;
+    return { CDP_TARGET: this.tabTarget };
   }
 
   async close(): Promise<void> {

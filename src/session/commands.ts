@@ -5,13 +5,15 @@ import {
   createHarRecording,
   readHarRecording,
   deleteHarRecording,
+  harFilePath,
+  type HarFile,
+  type HAREntry,
 } from '../har-manager.js';
 import {
   getActiveSession,
   setActiveSession,
   clearActiveSession,
 } from '../session-context.js';
-import { expandEqualsFlags } from '../cdp/args.js';
 import { type ParsedArgs } from '../cdp/types.js';
 import { startBridge, stopBridge } from '../cdp/bridge/spawn.js';
 import { teardownAnyLiveRecorderAtSessionStop } from '../cdp/motion/recorder.js';
@@ -21,6 +23,8 @@ import {
   text,
   line,
   lineList,
+  data,
+  capped,
   type FactLine,
 } from '../output/render.js';
 import {
@@ -194,10 +198,6 @@ function generateId(): string {
   return `cap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function hasHelpFlag(args: string[]): boolean {
-  return args.some((arg) => arg === '-h' || arg === '--help');
-}
-
 export async function waitForPageLoad(
   client: { waitReady(): Promise<void>; send(method: string, params?: Record<string, unknown>): Promise<unknown>; on(event: string, handler: (params: unknown) => void): void; },
   timeoutMs: number,
@@ -231,12 +231,12 @@ export async function waitForPageLoad(
 export const COMMAND_BLOCK = `<command name="session">
 the artifact container — a session opens a tab, records HAR, and bundles every artifact; while active, every command auto-targets its tab
 use when starting scoped work against a page: start first, then every other capture command needs no --target/--port threading
-  start · stop · list · view — \`capture session -h\`
+  start · stop · list · view · har · log — \`capture session -h\`
 </command>`;
 
 const START_USAGE = `capture session start [--url <url>] [--hold] — open a tab, record HAR, and set the active capture context.
 
-Input:
+input:
   --url <url>    Absolute URL to open in a fresh tab. Omit to start a session
                  with no tab (HAR-only until a later command targets one).
   --hold         Hold one CDP browser connection open for the session's
@@ -249,14 +249,14 @@ Output:
   tab, HAR recording id, and held-bridge pid when applicable. --json mirrors
   the same fields.
 
-Effects:
+effects:
   Creates a private session dir with shots/, starts a HAR recording, opens the
   tab (with --url), optionally holds a CDP bridge, and registers the session as
   the active capture context so subsequent commands auto-target it.`;
 
 const STOP_USAGE = `capture session stop <session-id> — finalize a session and write its bundle manifest.
 
-Input:
+input:
   <session-id>   The session to stop (from \`capture session list\`).
 
 Output:
@@ -264,26 +264,26 @@ Output:
   counts (shots, HAR entries, logs, measure snaps, motion recs, other). --json
   mirrors the same fields.
 
-Effects:
+effects:
   Kills log tailers, tears down the held CDP bridge, finalizes any live
   recorder, collects every artifact into bundle.json, and clears the active
   capture context.`;
 
 const LIST_USAGE = `capture session list — list active and stopped capture sessions.
 
-Input:
+input:
   (none)
 
-Output:
+output:
   One <sessions count=…> block, one row per session: id, status
   (active|stopped), start time, and URL when set. --json mirrors the same rows.
 
-Effects:
+effects:
   None — reads session metadata only.`;
 
 const VIEW_USAGE = `capture session view <session-id> [--filter <section>] — read back a stopped session's bundle manifest.
 
-Input:
+input:
   <session-id>        A stopped session (from \`capture session list\`).
   --filter <section>  Show only one section: shots, har, logs, measure,
                       motion, or other. measure -> manifest snaps, motion ->
@@ -294,8 +294,50 @@ Output:
   har, logs, measure snaps, motion recs, other), or a single section under
   --filter. --json mirrors the same fields.
 
-Effects:
+effects:
   None — reads bundle.json only.`;
+
+const HAR_USAGE = `capture session har [<session-id>] — read a session's recorded HTTP traffic as a selection list.
+
+input:
+  <session-id>              session to read; defaults to the active session. A
+                            running session reads its live accumulating HAR; a
+                            stopped one reads the bundled har.json.
+  --filter-url <pattern>    substring or regex match on the request URL
+  --filter-status <code>    status code, prefix (e.g. 4), or range (e.g. 400-499)
+  --filter-method <method>  HTTP method (GET, POST, …)
+  --limit <n>               first n matching entries
+  --full                    inline per-entry detail (headers, post data,
+                            response body — escaped and capped); bodies are
+                            never inlined without it
+
+output:
+  One <session-har id=… path=… source=live|bundle entries=… total=…> block,
+  one row per entry: method, status, URL, body size, start time. The path
+  attribute is the HAR file's absolute path — the full-fidelity pointer.
+  --json mirrors the same fields. WebSockets opened while a command was
+  recording appear as entries with _resourceType "websocket" and their frames
+  in _webSocketMessages (capped at 200 frames/socket, 4KB/frame); sockets
+  opened before recording started are not visible.
+
+effects:
+  None — reads recorded HAR data only.`;
+
+const LOG_USAGE = `capture session log <path> [--name <label>] [--session <id>] — tail an external log file into a session's logs/ dir.
+
+input:
+  <path>          log file to follow (must exist)
+  --name <label>  destination label; default is the source file's basename
+  --session <id>  target session; defaults to the active session
+
+output:
+  One <log-tail session=… path=…> block: tailer name, source path, destination
+  path, and tailer pid. --json mirrors the same fields.
+
+effects:
+  Spawns a detached tail process appending timestamped lines to the session's
+  logs/<name>.log until \`session stop\` kills it; registers the tailer pid in
+  the session metadata.`;
 
 function printSessionHelp(): void {
   console.log(`capture session — the artifact container: opens a tab, records HAR, bundles every artifact.
@@ -308,6 +350,8 @@ manifest; \`view\` reads that manifest back.
   <subcommand name="stop" args="<session-id>" whenToUse="finalize the session and write its bundle manifest"/>
   <subcommand name="list" args="" whenToUse="show active and stopped sessions"/>
   <subcommand name="view" args="<session-id> [--filter shots|har|logs|measure|motion|other]" whenToUse="read back a stopped session's bundle manifest"/>
+  <subcommand name="har" args="[<session-id>] [--filter-url <pattern>] [--filter-status <code>] [--filter-method <method>] [--limit <n>] [--full]" whenToUse="inspect recorded traffic — the live accumulating HAR of a running session or a stopped session's bundled har.json"/>
+  <subcommand name="log" args="<path> [--name <label>] [--session <id>]" whenToUse="tail an external log file into the session's logs/ dir"/>
 
   capture session <leaf> -h    Per-leaf usage`);
 }
@@ -454,41 +498,65 @@ async function start(parsed: ParsedArgs): Promise<void> {
   }, { json: parsed.json });
 }
 
-export function logCommand(rawArgs: string[]): void {
-  const args = expandEqualsFlags(rawArgs);
-  if (hasHelpFlag(args)) {
-    console.log('Usage: capture log <path> [--name label] [--session <id>]');
+function logTail(parsed: ParsedArgs): void {
+  if (parsed.help) {
+    console.log(LOG_USAGE);
     return;
   }
 
-  const sourcePath = args[0];
+  const sourcePath = parsed.positional[0];
   if (!sourcePath) {
-    console.error('Usage: capture log <path> [--name label] [--session <id>]');
-    process.exit(1);
+    emitResult({
+      tag: 'error',
+      attrs: { command: 'session log', code: 'missing_argument' },
+      summary: fact`received: \`session log\`; expected: \`session log <path> [--name <label>] [--session <id>]\`.`,
+    }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
   }
 
   const resolved = path.resolve(sourcePath);
   if (!fs.existsSync(resolved)) {
-    throw new Error(`Log file not found: ${resolved}`);
+    emitResult({
+      tag: 'error',
+      attrs: { command: 'session log', code: 'log_file_not_found' },
+      summary: fact`received: ${resolved}; expected an existing log file to follow.`,
+    }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
   }
 
-  let name: string | null = null;
-  let sessionId: string | null = null;
-  for (let i = 1; i < args.length; i++) {
-    if (args[i] === '--name' && args[i + 1]) name = args[++i];
-    if (args[i] === '--session' && args[i + 1]) sessionId = args[++i];
-  }
-
+  let sessionId = parsed.session ?? null;
   if (!sessionId) {
     const active = getActiveSession();
     if (!active) {
-      throw new Error('No active capture session. Start one or pass --session <id>.');
+      emitResult({
+        tag: 'error',
+        attrs: { command: 'session log', code: 'no_active_session' },
+        summary: fact`received: \`session log\` with no --session and no active session; expected an active session or an explicit --session <id>.`,
+        followUp: text`Run \`capture session start\` or pass --session <id> from \`capture session list\`.`,
+      }, { json: parsed.json });
+      process.exitCode = 1;
+      return;
     }
     sessionId = active.sessionId;
   }
 
-  const session = readSession(sessionId);
-  name = name ?? path.basename(resolved, path.extname(resolved));
+  let session: Session;
+  try {
+    session = readSession(sessionId);
+  } catch {
+    emitResult({
+      tag: 'error',
+      attrs: { command: 'session log', code: 'unknown_session' },
+      summary: fact`No capture session found: ${sessionId}.`,
+      followUp: text`Run \`capture session list\` to see known sessions.`,
+    }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
+  }
+
+  const name = parsed.name ?? path.basename(resolved, path.extname(resolved));
 
   const logsDir = path.join(session.dir, 'logs');
   ensurePrivateDir(logsDir);
@@ -499,7 +567,10 @@ export function logCommand(rawArgs: string[]): void {
 
   const child = spawn(
     'sh',
-    ['-c', `tail -f "${resolved}" | perl -MPOSIX -ne 'print strftime("%Y-%m-%dT%H:%M:%SZ",gmtime())." ".$_'`],
+    // BEGIN{$|=1} autoflushes per line — without it perl block-buffers into
+    // the file fd and a short-lived session's lines die in the buffer when
+    // `session stop` SIGTERMs the tailer.
+    ['-c', `tail -f "${resolved}" | perl -MPOSIX -ne 'BEGIN{$|=1} print strftime("%Y-%m-%dT%H:%M:%SZ",gmtime())." ".$_'`],
     { detached: true, stdio: ['ignore', outFd, 'ignore'] },
   );
   child.unref();
@@ -509,8 +580,202 @@ export function logCommand(rawArgs: string[]): void {
   session.logPids.push({ pid, name, sourcePath: resolved });
   writeJsonPrivate(sessionMetaPath(session.id), session);
 
-  const payload = JSON.stringify({ name, sourcePath: resolved, destPath, pid }, null, 2);
-  console.log(payload);
+  emitResult({
+    tag: 'log-tail',
+    attrs: { session: session.id, path: destPath },
+    summary: fact`Tailing ${resolved} into the session logs/ dir.`,
+    sections: [lineList([
+      fact`name: ${name}`,
+      fact`source: ${resolved}`,
+      fact`dest: ${destPath}`,
+      fact`tailer pid: ${pid} — killed at \`session stop\``,
+    ])],
+  }, { json: parsed.json });
+}
+
+// ============================================================================
+// session har — the session-owned HAR read surface (D4)
+// ============================================================================
+
+/** Matcher for `--filter-status`: exact code, prefix (e.g. `4`), or range (`400-499`). */
+function statusMatcher(spec: string): (code: number) => boolean {
+  if (/^\d+-\d+$/.test(spec)) {
+    const [lo, hi] = spec.split('-').map((n) => parseInt(n, 10));
+    return (c) => c >= lo && c <= hi;
+  }
+  if (/^\d+$/.test(spec)) {
+    if (spec.length < 3) return (c) => String(c).startsWith(spec);
+    const n = parseInt(spec, 10);
+    return (c) => c === n;
+  }
+  return () => true;
+}
+
+interface HarSource {
+  har: HarFile;
+  /** Absolute HAR file path — the block's full-fidelity pointer. */
+  path: string;
+  source: 'live' | 'bundle';
+}
+
+/**
+ * Locates a session's HAR data: the live accumulating recording while the
+ * session runs, the bundled `har.json` once it is stopped. Returns an
+ * `unavailable` reason instead of a source when the session has no readable
+ * HAR (recording never started, or the file is gone).
+ */
+function locateSessionHar(session: Session): HarSource | { unavailable: string } {
+  const stopped = fs.existsSync(path.join(session.dir, 'bundle.json'));
+  if (stopped) {
+    const harPath = path.join(session.dir, 'har.json');
+    if (!fs.existsSync(harPath)) {
+      return { unavailable: 'the stopped session bundled no HAR (recording never started or captured nothing)' };
+    }
+    return { har: JSON.parse(fs.readFileSync(harPath, 'utf-8')) as HarFile, path: harPath, source: 'bundle' };
+  }
+  if (!session.harId) {
+    return { unavailable: 'the running session has no HAR recording (it could not be started with the session)' };
+  }
+  const live = readHarRecording(session.harId);
+  if (!live) {
+    return { unavailable: `the live HAR recording file is missing: ${harFilePath(session.harId)}` };
+  }
+  return { har: live, path: harFilePath(session.harId), source: 'live' };
+}
+
+/** One selection-list row: method, status, URL, body size, start time. Body
+ * content is NEVER inlined here (I-7) — `--full` is the only opt-in. */
+function harEntryRow(e: HAREntry): FactLine {
+  const bodyText = e.response.content?.text;
+  const sizePart = typeof bodyText === 'string'
+    ? fact`${Buffer.byteLength(bodyText, 'utf-8')} bytes`
+    : text`body not captured`;
+  return line(
+    fact`${e.request.method} ${e.response.status} `,
+    data(e.request.url, 300),
+    text` — `,
+    sizePart,
+    fact` — started ${e.startedDateTime}`,
+  );
+}
+
+/** `--full` inline detail for one entry: headers, post data, and response
+ * body — every value escaped and capped through data()/fact. */
+function harEntryDetail(e: HAREntry, index: number): FactLine {
+  const rows: FactLine[] = [line(fact`${index + 1}. `, harEntryRow(e))];
+  for (const h of e.request.headers ?? []) {
+    rows.push(fact`   req ${h.name}: ${h.value}`);
+  }
+  if (e.request.postData?.text !== undefined) {
+    rows.push(fact`   post data: ${capped(e.request.postData.text, 2000)}`);
+  }
+  for (const h of e.response.headers ?? []) {
+    rows.push(fact`   res ${h.name}: ${h.value}`);
+  }
+  const bodyText = e.response.content?.text;
+  rows.push(
+    typeof bodyText === 'string'
+      ? fact`   body: ${capped(bodyText, 2000)}`
+      : text`   body: not captured`,
+  );
+  return lineList(rows);
+}
+
+function har(parsed: ParsedArgs): void {
+  if (parsed.help) {
+    console.log(HAR_USAGE);
+    return;
+  }
+
+  let id = parsed.positional[0] ?? null;
+  if (!id) {
+    const active = getActiveSession();
+    if (!active) {
+      emitResult({
+        tag: 'error',
+        attrs: { command: 'session har', code: 'no_active_session' },
+        summary: fact`received: \`session har\` with no <session-id> and no active session; expected an active session or an explicit session id.`,
+        followUp: text`Run \`capture session list\` to find a session id.`,
+      }, { json: parsed.json });
+      process.exitCode = 1;
+      return;
+    }
+    id = active.sessionId;
+  }
+
+  let session: Session;
+  try {
+    session = readSession(id);
+  } catch {
+    emitResult({
+      tag: 'error',
+      attrs: { command: 'session har', code: 'unknown_session' },
+      summary: fact`No capture session found: ${id}.`,
+      followUp: text`Run \`capture session list\` to see known sessions.`,
+    }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
+  }
+
+  const located = locateSessionHar(session);
+  if ('unavailable' in located) {
+    emitResult({
+      tag: 'error',
+      attrs: { command: 'session har', code: 'har_unavailable' },
+      summary: fact`Session ${id} has no readable HAR: ${located.unavailable}.`,
+    }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
+  }
+
+  let entries = located.har.log.entries;
+  const total = entries.length;
+  const filters: string[] = [];
+
+  if (parsed.filterUrl) {
+    const pattern = parsed.filterUrl;
+    let re: RegExp | null = null;
+    try { re = new RegExp(pattern, 'i'); } catch { re = null; }
+    entries = entries.filter((e) =>
+      re ? re.test(e.request.url) : e.request.url.toLowerCase().includes(pattern.toLowerCase()),
+    );
+    filters.push(`url~${pattern}`);
+  }
+  if (parsed.filterStatus) {
+    const matches = statusMatcher(parsed.filterStatus);
+    entries = entries.filter((e) => matches(e.response.status));
+    filters.push(`status=${parsed.filterStatus}`);
+  }
+  if (parsed.filterMethod) {
+    const m = parsed.filterMethod.toUpperCase();
+    entries = entries.filter((e) => e.request.method.toUpperCase() === m);
+    filters.push(`method=${m}`);
+  }
+  if (typeof parsed.limit === 'number' && parsed.limit > 0) {
+    entries = entries.slice(0, parsed.limit);
+    filters.push(`limit=${parsed.limit}`);
+  }
+
+  const summary = filters.length > 0
+    ? fact`${entries.length} of ${total} entries match (${filters.join(', ')}).`
+    : fact`${total} entries.`;
+
+  const sections = parsed.full
+    ? entries.map((e, i) => harEntryDetail(e, i))
+    : [lineList(entries.map((e, i) => line(fact`${i + 1}. `, harEntryRow(e))))];
+
+  emitResult({
+    tag: 'session-har',
+    attrs: {
+      id,
+      path: located.path,
+      source: located.source,
+      entries: entries.length,
+      total,
+    },
+    summary,
+    sections,
+  }, { json: parsed.json });
 }
 
 async function stop(parsed: ParsedArgs): Promise<void> {
@@ -822,6 +1087,8 @@ export async function sessionMain(parsed: ParsedArgs, _args: string[]): Promise<
     case 'stop': return stop(rest);
     case 'list': return list(rest);
     case 'view': return view(rest);
+    case 'har': return har(rest);
+    case 'log': return logTail(rest);
     case undefined:
       printSessionHelp();
       return;
@@ -829,7 +1096,7 @@ export async function sessionMain(parsed: ParsedArgs, _args: string[]): Promise<
       emitResult({
         tag: 'error',
         attrs: { command: 'session', code: 'unknown_subcommand' },
-        summary: fact`received: \`session ${leaf}\`; expected one of: start, stop, list, view.`,
+        summary: fact`received: \`session ${leaf}\`; expected one of: start, stop, list, view, har, log.`,
         followUp: text`Run \`capture session -h\` for usage.`,
       }, { json: parsed.json });
       process.exitCode = 1;

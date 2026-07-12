@@ -7,7 +7,8 @@ const require = createRequire(import.meta.url);
 const fs = require('node:fs') as typeof import('node:fs');
 
 const HELP_TEXT = 'capture session — the artifact container';
-const LOG_HELP_TEXT = 'Usage: capture log <path> [--name label] [--session <id>]';
+const HAR_HELP_TEXT = 'capture session har [<session-id>]';
+const LOG_HELP_TEXT = 'capture session log <path>';
 
 function patchFs(): () => void {
   const originals = {
@@ -49,7 +50,7 @@ function patchFs(): () => void {
 }
 
 test('session help flags are read-only for all session subcommands', async () => {
-  const { sessionMain, logCommand } = await import('../src/session/commands.js');
+  const { sessionMain } = await import('../src/session/commands.js');
   const restoreFs = patchFs();
   const restoreExit = process.exit;
   const logs: string[] = [];
@@ -63,18 +64,17 @@ test('session help flags are read-only for all session subcommands', async () =>
   }) as typeof process.exit;
 
   try {
-    for (const subcommand of ['start', 'stop', 'list', 'view']) {
+    for (const subcommand of ['start', 'stop', 'list', 'view', 'har', 'log']) {
       await sessionMain({ command: 'session', positional: [subcommand], help: true, json: false } as ParsedArgs, []);
     }
     await sessionMain({ command: 'session', positional: [], json: false } as ParsedArgs, []);
 
-    logCommand(['some.log', '--help']);
-    logCommand(['-h']);
-    logCommand(['--help']);
-
     const output = logs.join('\n');
     assert.ok(output.includes(HELP_TEXT));
+    assert.ok(output.includes(HAR_HELP_TEXT));
     assert.ok(output.includes(LOG_HELP_TEXT));
+    assert.ok(output.includes('<subcommand name="har"'));
+    assert.ok(output.includes('<subcommand name="log"'));
   } finally {
     console.log = originalLog;
     process.exit = restoreExit;

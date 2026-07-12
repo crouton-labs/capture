@@ -1,38 +1,11 @@
 #!/usr/bin/env tsx
 /**
- * CDP (Chrome DevTools Protocol) — browser automation via exec-first design.
+ * CDP (Chrome DevTools Protocol) — the library barrel over the CDP substrate.
  *
- * The agent writes arbitrary JS and passes it to `exec`. No training-wheel
- * commands for click/type/wait — the agent composes whatever it needs.
- *
- * Commands:
- *   capture exec <code>         Execute JS in a tab (the primary interface)
- *   capture exec --file <path>  Execute JS from file
- *   capture detect              Detect CDP port
- *   capture list                List all browser tabs
- *   capture open <url>          Open URL in browser (returns tab ID)
- *   capture reset-tab <url>    Abandon stuck tab, open fresh one
- *   capture screenshot          Capture screenshot
- *   capture a11y                Get accessibility tree
- *   capture record              Passive HAR recording
- *   capture navigate <url>      Navigate + record HAR
- *   capture har create|read|delete  Manage HAR recordings
- *
- * Options:
- *   --port <port>       Override CDP port (auto-detects if not specified)
- *   --target <tabId>    Target tab by exact ID (preferred, parallel-safe)
- *   --new               Force open a new tab (open command)
- *   --record            Enable HAR recording (exec)
- *   --har <id>          Append traffic to a HAR recording
- *   --har-out <path>    HAR output path
- *   --file <path>       Read JS from file (exec)
- *   --duration <secs>   Recording duration (record, default: 10)
- *   --settle <ms>       Settle time after navigation (navigate, default: 2000)
- *   --out <path>        Output path (screenshot)
- *   --height <px>       Override viewport height (screenshot)
- *   --full-page         Capture entire scrollable page (screenshot)
- *   --json              JSON output (a11y)
- *   --interactive       Interactive elements only (a11y)
+ * Re-exports the client, target discovery, execution, screenshot, recording,
+ * and tab-lock building blocks, plus `cdpMain` (the routed command dispatch).
+ * The command surface itself lives under `src/cdp/commands/` and is routed by
+ * `src/capture.ts` → `src/cdp/dispatch.ts`.
  */
 
 export { CDPClient } from './cdp/client.js';
