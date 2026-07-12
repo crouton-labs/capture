@@ -19,6 +19,13 @@ import { cmdMeasureMapFocus } from './map-focus.js';
 import { cmdMeasureMapScroll } from './map-scroll.js';
 import { cmdMeasureMapLayers } from './map-layers.js';
 
+/** Root-help representation of this branch, assembled by `src/capture.ts`. */
+export const COMMAND_BLOCK = `<command name="measure">
+static facts over a settled snapshot — \`snap\` writes the substrate, every other leaf is a read-only query over it
+use when measuring layout/content/targetability facts, diffing snapshots, or reading one facet (focus, scroll, layers) of the substrate
+  snap · check · diff · census · explain · sweep · map — \`capture measure -h\`
+</command>`;
+
 export const MEASURE_USAGE = `capture measure — enriched snapshot substrate + read-only queries over it.
 
 \`snap\` drives the page (or a base snapshot) and writes one settled artifact

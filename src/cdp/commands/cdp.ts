@@ -23,6 +23,13 @@ import { type ParsedArgs } from '../types.js';
 
 const DEFAULT_TIMEOUT_MS = 10000;
 
+/** Root-help representation of this leaf, assembled by `src/capture.ts`. */
+export const COMMAND_BLOCK = `<command name="cdp">
+raw CDP escape hatch — send any protocol method capture doesn't wrap, or wait for a protocol event
+use when no other capture command covers the protocol surface you need (Browser.*, ServiceWorker.*, Target.*, ...)
+  cdp [<Domain.method>] [--params <json>] [--browser] [--wait-event <name>] — \`capture cdp -h\`
+</command>`;
+
 function printHelp(): void {
   console.log(
     `Usage: capture cdp <Domain.method> [--params '<json>'] [--browser] [--target <id>] [--wait-event <Domain.event>] [--timeout <ms>]

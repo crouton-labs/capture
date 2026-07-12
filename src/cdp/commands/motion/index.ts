@@ -14,6 +14,13 @@ import { cmdMotionTimeline } from './timeline.js';
 import { cmdMotionJank } from './jank.js';
 import { cmdMotionResponse } from './response.js';
 
+/** Root-help representation of this branch, assembled by `src/capture.ts`. */
+export const COMMAND_BLOCK = `<command name="motion">
+facts over a recording — recorder lifecycle plus read-only queries over a finalized recording
+use when recording an interaction (one-shot or composed) and reading motion facts: diffs, timelines, jank, input response
+  rec · mask · timeline · jank · response — \`capture motion -h\`
+</command>`;
+
 export const MOTION_USAGE = `capture motion — recorder lifecycle + read-only queries over a finalized recording.
 
 \`rec\` drives (and records) the browser, one-shot or composed across

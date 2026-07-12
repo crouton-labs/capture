@@ -191,6 +191,13 @@ export async function waitForPageLoad(
   });
 }
 
+/** Root-help representation of this branch, assembled by `src/capture.ts`. */
+export const COMMAND_BLOCK = `<command name="session">
+the artifact container — a session opens a tab, records HAR, and bundles every artifact; while active, every command auto-targets its tab
+use when starting scoped work against a page: start first, then every other capture command needs no --target/--port threading
+  start · stop · list · view — \`capture session -h\`
+</command>`;
+
 function printSessionHelp(): void {
   console.log(`capture session — manage capture sessions
 

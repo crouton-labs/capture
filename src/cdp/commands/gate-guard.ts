@@ -2,10 +2,13 @@
  * `--gate` (exit 2 on findings/changes) is scoped to exactly two leaves —
  * `measure check` and `measure diff` — per the observational-collector
  * posture invariant (no collector or query leaf grades/gates its own
- * output; see I-8). Every other measure/motion leaf must call this first,
- * before any leaf-specific logic, so a caller that supplies `--gate`
- * anywhere else gets a structured rejection instead of the flag being
- * silently accepted and ignored.
+ * output; see I-8). The shared dispatch path (`src/cdp/dispatch.ts`)
+ * invokes this guard ONCE per invocation, via `isGateLeaf`, for every
+ * command on the whole surface, so a caller that supplies `--gate`
+ * anywhere else gets a structured rejection before any branch main runs
+ * instead of the flag being silently accepted and ignored. (measure/motion
+ * leaves additionally still call `rejectUnsupportedGate` directly; those
+ * per-leaf calls are redundant with the dispatch-level guard.)
  */
 import { type ParsedArgs } from '../types.js';
 import { emitResult, fact, type RenderableResult } from '../../output/render.js';
@@ -19,6 +22,17 @@ import { emitResult, fact, type RenderableResult } from '../../output/render.js'
  * `"motion jank"`) — the same string every leaf already passes as
  * `attrs.command` on its own error results.
  */
+/** True iff this invocation is one of the exactly two leaves that accept
+ * `--gate`: `measure check` and `measure diff`. Leaf detection is
+ * `parsed.command` plus the first positional (the branch-leaf token —
+ * branch routers shift it off before their leaves run, but dispatch sees
+ * it in place). */
+export function isGateLeaf(parsed: ParsedArgs): boolean {
+  if (parsed.command !== 'measure') return false;
+  const leaf = parsed.positional[0];
+  return leaf === 'check' || leaf === 'diff';
+}
+
 export function rejectUnsupportedGate(parsed: ParsedArgs, command: string): boolean {
   if (!parsed.gate) return false;
 

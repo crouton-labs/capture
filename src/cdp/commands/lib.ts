@@ -20,6 +20,13 @@ import {
   type LibraryDoc,
 } from "../../vault/docs.js";
 
+/** Root-help representation of this leaf, assembled by `src/capture.ts`. */
+export const COMMAND_BLOCK = `<command name="lib">
+vault-lib introspection (dev checkout only) — discover the forked vault libs and their function schemas, then run them in the tab
+use when scripting against a bundled service lib: find the function, read its schema, invoke it via exec
+  list · search · show · read — \`capture lib -h\`
+</command>`;
+
 const USAGE =
   "Usage: capture lib <list|search|show|read> [options]\n\n" +
   "  list                          List available libs (name, fn count, description, srcPath)\n" +
