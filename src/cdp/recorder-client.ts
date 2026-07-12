@@ -171,6 +171,23 @@ export class RecorderHeldClient {
     return result;
   }
 
+  /** Marked lane for a mutating call the auto-markable set above doesn't
+   * cover — `Runtime.callFunctionOn` in `../../interact.ts`'s
+   * `scrollResolved`, whose caller supplies the landmark label explicitly
+   * (`LiveClient.sendMarked`). Rides the same bridge `mark` mechanism as
+   * every auto-marked call. */
+  async sendMarked(method: string, params: Record<string, unknown>, mark: string): Promise<unknown> {
+    const resp = await sendRecorderRequest(this.socketPath, {
+      type: 'cdp',
+      method,
+      params,
+      mark,
+      timeoutMs: this.defaultTimeoutMs,
+    });
+    if (!resp.ok) throw new Error(`recorder-routed marked CDP call "${method}" failed: ${resp.error}`);
+    return resp.result;
+  }
+
   /**
    * Blocks on the recorder bridge's own event broker for the next
    * occurrence of `eventName`, via a wait-event-ONLY request (`method`
