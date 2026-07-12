@@ -5,6 +5,7 @@ import { randomBytes } from 'crypto';
 import { type ParsedArgs } from '../../types.js';
 import { withConnection } from '../../connection.js';
 import { isRecorderHeldClient } from '../../recorder-client.js';
+import { parseViewport, type Viewport } from '../../viewport.js';
 import { captureSnapshotSubstrate } from '../../measure/snapshot.js';
 import { sanitizeString } from '../../measure/redaction.js';
 import { DEFAULT_SETTLE_TIMEOUT_MS } from '../../measure/settle.js';
@@ -31,7 +32,7 @@ input:
   --capture-unsettled         write the full substrate despite non-settlement, marking unstable regions
   --pixels                    also write per-element raster crops
   --state <state[:selector]>  force a pseudo-state or real control state (repeatable)
-  --viewport <WxH>            temporarily capture at a CSS-pixel viewport (repeatable)
+  --viewport <WxH>            temporarily capture at a CSS-pixel viewport (repeatable); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace
 output: <snapshot id=… path=…> — the settled artifact directory (geometry, styles, hit-test, text, forms, animation, ax, queries, focus, scroll, layers; per-element crops with --pixels) every other measure/motion query leaf reads instead of re-driving the browser; --json mirrors
 effects: drives the target page to capture; writes one snapshot artifact directory under the active (or a private one-shot) session`;
 
@@ -46,10 +47,8 @@ export interface MeasureSnapCapture {
   readonly artifacts: readonly string[];
 }
 
-interface ViewportSpec {
+interface ViewportSpec extends Viewport {
   readonly label: string;
-  readonly width: number;
-  readonly height: number;
 }
 
 function generateSnapId(): string {
@@ -75,19 +74,6 @@ function artifactEntries(dir: string, artifacts: readonly string[]): ArtifactEnt
     });
   }
   return entries;
-}
-
-function parseViewport(value: string): ViewportSpec {
-  const match = /^(\d+)x(\d+)$/.exec(value);
-  if (!match) {
-    throw new Error(`--viewport must be formatted as WxH with positive integer CSS pixels; received "${value}"`);
-  }
-  const width = Number(match[1]);
-  const height = Number(match[2]);
-  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
-    throw new Error(`--viewport dimensions must be positive safe integers; received "${value}"`);
-  }
-  return { label: `${width}x${height}`, width, height };
 }
 
 type ViewportClient = { send: (method: string, params?: Record<string, unknown>) => Promise<unknown> };
@@ -200,7 +186,9 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
   if (parsed.settleTimeout !== undefined && (!Number.isFinite(parsed.settleTimeout) || parsed.settleTimeout <= 0)) {
     throw new Error('--settle-timeout must be a positive number of milliseconds');
   }
-  const viewport = viewportValue ? parseViewport(viewportValue) : undefined;
+  const viewport: ViewportSpec | undefined = viewportValue === undefined
+    ? undefined
+    : { label: viewportValue, ...parseViewport(viewportValue) };
 
   let base: SnapRef | undefined;
   let baseUrl: string | null = null;
@@ -360,7 +348,10 @@ export async function cmdMeasureSnap(parsed: ParsedArgs, _args: string[]): Promi
   try {
     const viewportValues = parsed.viewports?.length ? parsed.viewports : [parsed.viewport];
     // Validate every repeat before allocating the first private artifact tree.
-    const viewports = viewportValues.map((viewport) => viewport === undefined ? undefined : parseViewport(viewport));
+    const viewports = viewportValues.map((value): ViewportSpec | undefined => {
+      if (value === undefined) return undefined;
+      return { label: value, ...parseViewport(value) };
+    });
     const results = [] as RenderableResult[];
     for (const viewport of viewports) {
       const capture = await captureMeasureSnap(parsed, parsed.positional[0], viewport?.label);

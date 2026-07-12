@@ -7,6 +7,7 @@ import { CDPClient } from '../../client.js';
 import { findTabById, openTab } from '../../targets.js';
 import { detectCdpPort } from '../../detect.js';
 import { RecorderSession } from '../../recorder-bridge.js';
+import { parseViewport, type Viewport } from '../../viewport.js';
 import {
   emitResult,
   fact,
@@ -72,7 +73,7 @@ input:
     target                  css selector (bare string) | ax:<name> (case-insensitive substring) | axid:<id> | backend:<id>
                             must resolve to exactly one live element; text: is not accepted by driving actions
     --duration <seconds>    keep recording after the action (default: 0)
-    --viewport <WxH>        emulate a viewport for the recording window (restored after)
+    --viewport <WxH>        emulate a viewport for the recording window (restored after); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace
   --start                   arm the composed recorder on the active session tab (requires \`capture session start\`)
     --viewport <WxH>        as above; restored on --stop
   --stop                    finalize the composed recording
@@ -92,12 +93,22 @@ export async function cmdMotionRec(parsed: ParsedArgs, _args: string[]): Promise
 
   const lifecycleError = validateLifecycleInputs(parsed);
   if (lifecycleError) return emitCommandError(parsed, lifecycleError.status, lifecycleError.message);
-  if (parsed.start) return handleStart(parsed);
+
+  let viewport: Viewport | undefined;
+  if (parsed.viewport !== undefined) {
+    try {
+      viewport = parseViewport(parsed.viewport);
+    } catch (error) {
+      return emitCommandError(parsed, 'invalid_viewport', error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  if (parsed.start) return handleStart(parsed, viewport);
   if (parsed.stop) return handleStop(parsed);
-  return handleOneShot(parsed);
+  return handleOneShot(parsed, viewport);
 }
 
-async function handleOneShot(parsed: ParsedArgs): Promise<void> {
+async function handleOneShot(parsed: ParsedArgs, viewport: Viewport | undefined): Promise<void> {
   const url = parsed.positional[0];
   const active = deps.getActiveSession();
   if (!parsed.do || parsed.positional.length > 1 || (!url && !active)) {
@@ -144,15 +155,14 @@ async function handleOneShot(parsed: ParsedArgs): Promise<void> {
     client = deps.createClient(tab.webSocketDebuggerUrl);
     await client.waitReady();
     await client.send('Page.enable');
-    const viewportRequested = Boolean(parseViewport(parsed.viewport));
-    viewportMayHaveApplied = viewportRequested;
-    await applyViewportOverride(client, parsed.viewport);
+    viewportMayHaveApplied = viewport !== undefined;
+    await applyViewportOverride(client, viewport);
     await waitForPageReady(client);
 
     const recorder = deps.createRecorderSession({ client, recDir });
     await recorder.start();
     await driveOneShotAction(recorder, parsed.do);
-    if (parsed.duration) await sleep(parsed.duration * 1000);
+    if (parsed.duration) await sleep(parsed.duration);
     const stopped = await recorder.stop();
     let viewportRestored: boolean | null = null;
     if (viewportMayHaveApplied) {
@@ -331,24 +341,11 @@ function validateLifecycleInputs(parsed: ParsedArgs): { status: string; message:
   return null;
 }
 
-function parseViewport(viewport: string | undefined): { width: number; height: number } | null {
-  if (!viewport) return null;
-  const match = /^(\d+)x(\d+)$/i.exec(viewport.trim());
-  if (!match) throw new Error('`--viewport` must be in WxH format, for example `390x844`.');
-  const width = Number(match[1]);
-  const height = Number(match[2]);
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
-    throw new Error('`--viewport` width and height must be positive integers.');
-  }
-  return { width, height };
-}
-
-async function applyViewportOverride(client: Pick<CDPClient, 'send'>, viewport: string | undefined): Promise<boolean> {
-  const parsed = parseViewport(viewport);
-  if (!parsed) return false;
+async function applyViewportOverride(client: Pick<CDPClient, 'send'>, viewport: Viewport | undefined): Promise<boolean> {
+  if (!viewport) return false;
   await client.send('Emulation.setDeviceMetricsOverride', {
-    width: parsed.width,
-    height: parsed.height,
+    width: viewport.width,
+    height: viewport.height,
     deviceScaleFactor: 1,
     mobile: false,
   });
@@ -448,17 +445,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function handleStart(parsed: ParsedArgs): Promise<void> {
+async function handleStart(parsed: ParsedArgs, viewport: Viewport | undefined): Promise<void> {
   const session = deps.getActiveSession();
   if (!session) return emitCommandError(parsed, 'no_active_session', 'No active capture session. Start one first: `capture session start --url <url>`.');
   if (!session.targetId) return emitCommandError(parsed, 'no_session_target', 'Active capture session has no target tab to record.');
-
-  let viewport: { width: number; height: number } | undefined;
-  try {
-    viewport = parseViewport(parsed.viewport) ?? undefined;
-  } catch (err) {
-    return emitCommandError(parsed, 'viewport_failed', err instanceof Error ? err.message : String(err));
-  }
 
   let started: StartRecorderResult;
   try {

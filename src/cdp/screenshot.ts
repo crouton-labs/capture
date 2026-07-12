@@ -53,71 +53,75 @@ export async function captureScreenshot(
   options?: { fullPage?: boolean },
 ): Promise<Buffer> {
   const MAX_DIM = 1600; // headroom below Anthropic's 2000px many-image limit
-
-  // Apply viewport emulation if requested
-  if (viewport) {
-    await client.send('Emulation.setDeviceMetricsOverride', {
-      width: viewport.width,
-      height: viewport.height,
-      deviceScaleFactor: 1,
-      mobile: false,
-    });
-    // Let the page re-layout at the new size
-    await new Promise((r) => setTimeout(r, 150));
-  }
-
-  // For full-page capture, resize viewport to the full content height
-  if (options?.fullPage) {
-    const layoutMetrics = (await client.send('Page.getLayoutMetrics')) as {
-      contentSize?: { width: number; height: number };
-      cssVisualViewport?: { clientWidth: number };
-    };
-    const contentWidth = layoutMetrics.cssVisualViewport?.clientWidth ?? viewport?.width ?? 1280;
-    const contentHeight = layoutMetrics.contentSize?.height ?? viewport?.height ?? 800;
-    await client.send('Emulation.setDeviceMetricsOverride', {
-      width: contentWidth,
-      height: Math.ceil(contentHeight),
-      deviceScaleFactor: 1,
-      mobile: false,
-    });
-    await new Promise((r) => setTimeout(r, 150));
-  }
-
-  let screenshotOpts: Record<string, unknown> = {
-    format: 'png',
-    captureBeyondViewport: false,
-  };
+  let ownsDeviceMetricsOverride = false;
+  let primaryFailed = false;
+  let primaryError: unknown;
 
   try {
-    const metrics = (await client.send('Page.getLayoutMetrics')) as {
-      cssVisualViewport?: { clientWidth: number; clientHeight: number; pageX: number; pageY: number };
+    if (viewport) {
+      // A rejected response does not prove that Chrome rejected the request.
+      // Claim cleanup responsibility before awaiting every override request.
+      ownsDeviceMetricsOverride = true;
+      await client.send('Emulation.setDeviceMetricsOverride', {
+        width: viewport.width,
+        height: viewport.height,
+        deviceScaleFactor: 1,
+        mobile: false,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+
+    if (options?.fullPage) {
+      const layoutMetrics = (await client.send('Page.getLayoutMetrics')) as {
+        contentSize?: { width: number; height: number };
+        cssVisualViewport?: { clientWidth: number };
+      };
+      const contentWidth = layoutMetrics.cssVisualViewport?.clientWidth ?? viewport?.width ?? 1280;
+      const contentHeight = layoutMetrics.contentSize?.height ?? viewport?.height ?? 800;
+      ownsDeviceMetricsOverride = true;
+      await client.send('Emulation.setDeviceMetricsOverride', {
+        width: contentWidth,
+        height: Math.ceil(contentHeight),
+        deviceScaleFactor: 1,
+        mobile: false,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+
+    let screenshotOpts: Record<string, unknown> = {
+      format: 'png',
+      captureBeyondViewport: false,
     };
-    // Snap the clip to integer CSS pixels: browser zoom (e.g. 110%) makes the
-    // CSS viewport fractional, and some Chromium-based browsers (Arc, at
-    // least) answer a clipped Page.captureScreenshot whose output dimensions
-    // are fractional with a SUCCESSFUL response carrying empty `data`.
-    const vw = Math.round(metrics.cssVisualViewport?.clientWidth ?? 0);
-    const vh = Math.round(metrics.cssVisualViewport?.clientHeight ?? 0);
-    const sx = Math.floor(metrics.cssVisualViewport?.pageX ?? 0);
-    const sy = Math.floor(metrics.cssVisualViewport?.pageY ?? 0);
 
-    const dprResult = (await client.send('Runtime.evaluate', {
-      expression: 'window.devicePixelRatio',
-      returnByValue: true,
-    })) as { result: { value: number } };
-    const dpr = dprResult.result.value ?? 1;
+    try {
+      const metrics = (await client.send('Page.getLayoutMetrics')) as {
+        cssVisualViewport?: { clientWidth: number; clientHeight: number; pageX: number; pageY: number };
+      };
+      // Snap the clip to integer CSS pixels: browser zoom (e.g. 110%) makes the
+      // CSS viewport fractional, and some Chromium-based browsers (Arc, at
+      // least) answer a clipped Page.captureScreenshot whose output dimensions
+      // are fractional with a SUCCESSFUL response carrying empty `data`.
+      const vw = Math.round(metrics.cssVisualViewport?.clientWidth ?? 0);
+      const vh = Math.round(metrics.cssVisualViewport?.clientHeight ?? 0);
+      const sx = Math.floor(metrics.cssVisualViewport?.pageX ?? 0);
+      const sy = Math.floor(metrics.cssVisualViewport?.pageY ?? 0);
 
-    const actualMaxSide = Math.max(vw, vh) * dpr;
-    const scale = actualMaxSide > MAX_DIM ? MAX_DIM / actualMaxSide : 1 / dpr;
-    screenshotOpts = {
-      ...screenshotOpts,
-      clip: { x: sx, y: sy, width: vw, height: vh, scale },
-    };
-  } catch {
-    // Fallback: capture without downscaling
-  }
+      const dprResult = (await client.send('Runtime.evaluate', {
+        expression: 'window.devicePixelRatio',
+        returnByValue: true,
+      })) as { result: { value: number } };
+      const dpr = dprResult.result.value ?? 1;
 
-  try {
+      const actualMaxSide = Math.max(vw, vh) * dpr;
+      const scale = actualMaxSide > MAX_DIM ? MAX_DIM / actualMaxSide : 1 / dpr;
+      screenshotOpts = {
+        ...screenshotOpts,
+        clip: { x: sx, y: sy, width: vw, height: vh, scale },
+      };
+    } catch {
+      // Capture without downscaling when the optional metrics probe is unavailable.
+    }
+
     const result = (await client.send(
       'Page.captureScreenshot',
       screenshotOpts,
@@ -156,10 +160,24 @@ export async function captureScreenshot(
     }
 
     return png;
+  } catch (error) {
+    primaryFailed = true;
+    primaryError = error;
+    throw error;
   } finally {
-    // Reset emulation so the browser window isn't stuck at the overridden size
-    if (viewport || options?.fullPage) {
-      await client.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+    if (ownsDeviceMetricsOverride) {
+      try {
+        await client.send('Emulation.clearDeviceMetricsOverride');
+      } catch (cleanupError) {
+        if (primaryFailed) {
+          throw new AggregateError(
+            [primaryError, cleanupError],
+            'Screenshot capture failed and device-metrics cleanup also failed.',
+            { cause: primaryError },
+          );
+        }
+        throw cleanupError;
+      }
     }
   }
 }

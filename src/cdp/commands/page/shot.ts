@@ -19,6 +19,7 @@ import * as path from 'path';
 import { type ParsedArgs } from '../../types.js';
 import { withConnection } from '../../connection.js';
 import { captureScreenshot } from '../../screenshot.js';
+import { parseViewport, type Viewport } from '../../viewport.js';
 import { nextStepPath } from '../../../session-context.js';
 import { createOneshotSession } from '../../../session/commands.js';
 import { assertUnderCaptureRoot, writeBinaryPrivate } from '../../../session/artifacts.js';
@@ -33,7 +34,7 @@ import {
 const USAGE = `capture page shot — capture a PNG of the tab as it is right now
 
 input:
-  --viewport <WxH>  transient device-metrics override for this capture; grammar: <width>x<height>, positive integers — preset names are not accepted. Absent → no emulation, the browser's actual current viewport is captured
+  --viewport <WxH>  transient device-metrics override for this capture; grammar: <positive-safe-int>x<positive-safe-int>, exact lowercase x with no whitespace — preset names are not accepted. Absent → no emulation, the browser's actual current viewport is captured
   --full-page       transient override to the full scrollable content height for this capture
   --out <path>      destination file; default: the active session's shots/ sequence, or a fresh oneshot-*/page/ dir under the capture root when no session is active
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
@@ -62,20 +63,6 @@ export function __setPageShotDepsForTest(overrides: Partial<PageShotDeps>): () =
   const previous = deps;
   deps = { ...deps, ...overrides };
   return () => { deps = previous; };
-}
-
-// ---------------------------------------------------------------------------
-// Viewport grammar (D10): WxH, positive integers, nothing else
-// ---------------------------------------------------------------------------
-
-const VIEWPORT_PATTERN = /^([1-9]\d*)x([1-9]\d*)$/;
-
-/** Parses the one viewport grammar; anything else (including the deleted
- * preset names) is null → structured error. */
-export function parseViewportWxH(value: string): { width: number; height: number } | null {
-  const match = VIEWPORT_PATTERN.exec(value);
-  if (!match) return null;
-  return { width: Number(match[1]), height: Number(match[2]) };
 }
 
 // ---------------------------------------------------------------------------
@@ -183,22 +170,22 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
     return;
   }
 
-  let viewport: { width: number; height: number } | undefined;
+  let viewport: Viewport | undefined;
   if (parsed.viewport !== undefined) {
-    const parsedViewport = parseViewportWxH(parsed.viewport);
-    if (!parsedViewport) {
+    try {
+      viewport = parseViewport(parsed.viewport);
+    } catch {
       emitResult(
         {
           tag: 'error',
           attrs: { command: 'page shot', code: 'invalid_viewport' },
-          summary: fact`received: --viewport ${parsed.viewport}; expected: <width>x<height> with positive integers — the one viewport grammar. Preset names are not accepted.`,
+          summary: fact`received: --viewport ${parsed.viewport}; expected: <positive-safe-int>x<positive-safe-int> with exact lowercase x and no whitespace. Preset names are not accepted.`,
         },
         { json: parsed.json },
       );
       process.exitCode = 1;
       return;
     }
-    viewport = parsedViewport;
   }
 
   const emulation: EmulationMode = parsed.fullPage ? 'full-page' : viewport ? 'viewport' : 'none';

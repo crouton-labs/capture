@@ -182,8 +182,15 @@ test('measure snap rejects invalid viewport input before capture and preserves s
   assert.equal(rejectedViewport.status, 1);
   const rejectedViewportResult = JSON.parse(rejectedViewport.stdout) as { attrs: { status: string }; sections: string[] };
   assert.equal(rejectedViewportResult.attrs.status, 'invalid_input');
-  assert.match(rejectedViewportResult.sections[0] ?? '', /--viewport must be formatted/);
+  assert.match(rejectedViewportResult.sections[0] ?? '', /<positive-safe-int>x<positive-safe-int>/);
   assert.deepEqual(oneShotRoots(), rootsBeforeRejectedViewport, 'an invalid viewport must not allocate a one-shot root');
+
+  const repeatedWithInvalidTail = runCapture([
+    'measure', 'snap', pageUrl, '--port', String(cdpPort),
+    '--viewport', '321x222', '--viewport', '390X844', '--json',
+  ]);
+  assert.equal(repeatedWithInvalidTail.status, 1);
+  assert.deepEqual(oneShotRoots(), rootsBeforeRejectedViewport, 'all repeated viewports are validated before the first capture');
 
   const pat = 'github_pat_abcdefghijklmnopqrstuvwxyz0123456789';
   const missingRef = path.join(CAPTURE_ROOT, `missing-prefix-${pat}`);

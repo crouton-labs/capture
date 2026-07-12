@@ -17,9 +17,9 @@ import * as path from 'node:path';
 import {
   cmdPageShot,
   __setPageShotDepsForTest,
-  parseViewportWxH,
   pngDimensions,
 } from '../src/cdp/commands/page/shot.js';
+import { captureScreenshot } from '../src/cdp/screenshot.js';
 import { createOneshotSession } from '../src/session/commands.js';
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
 import type { ParsedArgs, CDPTarget } from '../src/cdp/types.js';
@@ -75,6 +75,31 @@ function captureHandlers(png: Buffer, opts: { emulation?: boolean; contentHeight
     handlers['Emulation.clearDeviceMetricsOverride'] = () => ({});
   }
   return handlers;
+}
+
+interface ScriptedStep {
+  readonly method: string;
+  readonly result?: unknown;
+  readonly error?: unknown;
+}
+
+/** A client held for one screenshot call, with every awaited CDP response
+ * released in an exact scripted order. */
+function scriptedHeldClient(steps: readonly ScriptedStep[]) {
+  let cursor = 0;
+  const calls: string[] = [];
+  return {
+    calls,
+    get remaining() { return steps.length - cursor; },
+    async send(method: string): Promise<unknown> {
+      calls.push(method);
+      const step = steps[cursor++];
+      assert.ok(step, `unexpected CDP call: ${method}`);
+      assert.equal(method, step.method, `CDP call ${cursor} must follow the scripted order`);
+      if ('error' in step) throw step.error;
+      return step.result ?? {};
+    },
+  };
 }
 
 const FAKE_TAB: CDPTarget = { id: 'tab-1', title: '', url: 'https://fixture.test/', type: 'page' };
@@ -252,19 +277,126 @@ test('--full-page overrides to the full content height and clears it after the c
   }
 });
 
+test('screenshot cleanup follows a rejected first override setup exactly once', async () => {
+  const setupError = new Error('first setup response rejected');
+  const client = scriptedHeldClient([
+    { method: 'Emulation.setDeviceMetricsOverride', error: setupError },
+    { method: 'Emulation.clearDeviceMetricsOverride' },
+  ]);
+
+  await assert.rejects(
+    captureScreenshot(client as never, { width: 390, height: 844 }),
+    (error: unknown) => error === setupError,
+  );
+  assert.deepEqual(client.calls, [
+    'Emulation.setDeviceMetricsOverride',
+    'Emulation.clearDeviceMetricsOverride',
+  ]);
+  assert.equal(client.remaining, 0);
+});
+
+test('screenshot cleanup follows a rejected second override setup exactly once', async () => {
+  const setupError = new Error('second setup response rejected');
+  const client = scriptedHeldClient([
+    { method: 'Emulation.setDeviceMetricsOverride' },
+    { method: 'Page.getLayoutMetrics', result: { contentSize: { width: 390, height: 1200 }, cssVisualViewport: { clientWidth: 390 } } },
+    { method: 'Emulation.setDeviceMetricsOverride', error: setupError },
+    { method: 'Emulation.clearDeviceMetricsOverride' },
+  ]);
+
+  await assert.rejects(
+    captureScreenshot(client as never, { width: 390, height: 844 }, { fullPage: true }),
+    (error: unknown) => error === setupError,
+  );
+  assert.deepEqual(client.calls, [
+    'Emulation.setDeviceMetricsOverride',
+    'Page.getLayoutMetrics',
+    'Emulation.setDeviceMetricsOverride',
+    'Emulation.clearDeviceMetricsOverride',
+  ]);
+  assert.equal(client.remaining, 0);
+});
+
+test('screenshot cleanup follows capture rejection and preserves its primary error', async () => {
+  const captureError = new Error('capture rejected');
+  const client = scriptedHeldClient([
+    { method: 'Emulation.setDeviceMetricsOverride' },
+    { method: 'Page.getLayoutMetrics', result: { cssVisualViewport: { clientWidth: 390, clientHeight: 844, pageX: 0, pageY: 0 } } },
+    { method: 'Runtime.evaluate', result: { result: { value: 1 } } },
+    { method: 'Page.captureScreenshot', error: captureError },
+    { method: 'Emulation.clearDeviceMetricsOverride' },
+  ]);
+
+  await assert.rejects(
+    captureScreenshot(client as never, { width: 390, height: 844 }),
+    (error: unknown) => error === captureError,
+  );
+  assert.deepEqual(client.calls, [
+    'Emulation.setDeviceMetricsOverride',
+    'Page.getLayoutMetrics',
+    'Runtime.evaluate',
+    'Page.captureScreenshot',
+    'Emulation.clearDeviceMetricsOverride',
+  ]);
+  assert.equal(client.remaining, 0);
+});
+
+test('screenshot surfaces a clear-only failure after a successful capture', async () => {
+  const cleanupError = new Error('clear rejected');
+  const client = scriptedHeldClient([
+    { method: 'Emulation.setDeviceMetricsOverride' },
+    { method: 'Page.getLayoutMetrics', result: { cssVisualViewport: { clientWidth: 390, clientHeight: 844, pageX: 0, pageY: 0 } } },
+    { method: 'Runtime.evaluate', result: { result: { value: 1 } } },
+    { method: 'Page.captureScreenshot', result: { data: makePng(390, 844).toString('base64') } },
+    { method: 'Emulation.clearDeviceMetricsOverride', error: cleanupError },
+  ]);
+
+  await assert.rejects(
+    captureScreenshot(client as never, { width: 390, height: 844 }),
+    (error: unknown) => error === cleanupError,
+  );
+  assert.equal(client.calls.at(-1), 'Emulation.clearDeviceMetricsOverride');
+  assert.equal(client.calls.filter((method) => method === 'Emulation.clearDeviceMetricsOverride').length, 1);
+  assert.equal(client.remaining, 0);
+});
+
+test('screenshot dual failure preserves primary and cleanup errors in order', async () => {
+  const captureError = new Error('capture rejected');
+  const cleanupError = new Error('clear rejected');
+  const client = scriptedHeldClient([
+    { method: 'Emulation.setDeviceMetricsOverride' },
+    { method: 'Page.getLayoutMetrics', result: { cssVisualViewport: { clientWidth: 390, clientHeight: 844, pageX: 0, pageY: 0 } } },
+    { method: 'Runtime.evaluate', result: { result: { value: 1 } } },
+    { method: 'Page.captureScreenshot', error: captureError },
+    { method: 'Emulation.clearDeviceMetricsOverride', error: cleanupError },
+  ]);
+
+  await assert.rejects(
+    captureScreenshot(client as never, { width: 390, height: 844 }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [captureError, cleanupError]);
+      assert.equal(error.cause, captureError);
+      return true;
+    },
+  );
+  assert.equal(client.calls.filter((method) => method === 'Emulation.clearDeviceMetricsOverride').length, 1);
+  assert.equal(client.remaining, 0);
+});
+
 // ---------------------------------------------------------------------------
 // Viewport grammar: WxH only — malformed values and preset names rejected
 // ---------------------------------------------------------------------------
 
 test('a malformed WxH is a structured error, exit 1, before any connection', async () => {
-  for (const bad of ['390x', 'x844', '390by844', '0x100', '390x0', '390x844x2', '-390x844', '390 x 844', '1.5x800']) {
+  for (const bad of ['390x', 'x844', '390by844', '0x100', '390x0', '390x844x2', '-390x844', '390 x 844', '390X844', '1.5x800', '39e1x844', '9007199254740992x1']) {
     const client = stubClient({});
     const state = installDeps(client);
     try {
       const { stdout, exitCode } = await runCmd(() => cmdPageShot(parsedFor({ viewport: bad }), []));
       assert.equal(exitCode, 1, `--viewport ${bad} must exit 1`);
       assert.match(stdout, /<error command="page shot" code="invalid_viewport">/);
-      assert.match(stdout, /<width>x<height>/);
+      assert.match(stdout, /<positive-safe-int>x<positive-safe-int>/);
       assert.equal(state.connectionOpened, false, `--viewport ${bad} must fail before connecting`);
       assert.equal(client.calls.length, 0);
     } finally {
@@ -288,9 +420,6 @@ test('the deleted preset names are rejected by the WxH grammar', async () => {
       cleanup(state);
     }
   }
-  // The grammar itself: presets never parse, real WxH does.
-  assert.equal(parseViewportWxH('desktop'), null);
-  assert.deepEqual(parseViewportWxH('390x844'), { width: 390, height: 844 });
 });
 
 // ---------------------------------------------------------------------------

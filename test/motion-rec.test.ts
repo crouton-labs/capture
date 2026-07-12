@@ -455,6 +455,33 @@ test('cmdMotionRec rejects --rec-id outside --stop before touching any lifecycle
   } finally { restore(); }
 });
 
+test('cmdMotionRec applies the shared exact viewport grammar before lifecycle effects', async () => {
+  let touched = false;
+  const restore = __setMotionRecDepsForTest({
+    getActiveSession: () => { touched = true; return null; },
+    createOneshotSession: () => { touched = true; throw new Error('must not allocate'); },
+    openTab: async () => { touched = true; throw new Error('must not open'); },
+    startComposedRecorder: async () => { touched = true; throw new Error('must not start'); },
+  });
+  try {
+    for (const viewport of ['390X844', ' 390x844', '+390x844', '390.0x844', '39e1x844', 'desktop', '0x844', '9007199254740992x1']) {
+      touched = false;
+      const oneShot = await captureCommand(() => cmdMotionRec({
+        command: 'motion',
+        positional: ['https://fixture.test/'],
+        do: 'click:.send',
+        viewport,
+      }, []));
+      assert.equal(oneShot.exitCode, 1, `--viewport ${viewport} must be rejected`);
+      assert.equal(touched, false, `--viewport ${viewport} must fail before one-shot effects`);
+    }
+
+    const composed = await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], start: true, viewport: '390X844' }, []));
+    assert.equal(composed.exitCode, 1);
+    assert.equal(touched, false, 'composed start validates viewport before reading or starting the session lifecycle');
+  } finally { restore(); }
+});
+
 test('cmdMotionRec composed start/stop applies viewport for the recording window and finalizes the same inventory', async () => {
   const root = makeRoot('composed');
   const recDir = path.join(root, 'motion', 'recs', 'rec-composed');
