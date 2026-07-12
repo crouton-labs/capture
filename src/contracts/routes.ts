@@ -1,328 +1,119 @@
 /**
- * Frozen public route/leaf descriptor contract (U1). A descriptor is the sole
- * truth for one public path: exact canonical path, typed positional/flags and
- * their mutual exclusions, browser/session/artifact/environment effects, result
- * lane + schema, byte/list bounds, stderr policy, exits, and a typed handler
- * slot. The registry walker resolves the deepest exact path before leaf parsing.
- *
- * This module is type/interface + pure validators only. Descriptors carry a
- * `handler` SLOT (an opaque symbol name), never an imported handler function,
- * so the frozen contract layer does not depend on any handler, print, or exit
- * API. U4 populates real handlers against this shape.
- *
- * `EXPECTED_ROUTE_PATHS` is the exhaustive end-state public route census from
- * the design's route table. Registry conformance tests compare a built
- * registry's canonical paths against this list; private bridge entries and the
- * deleted `-v`/`version`/bare-`a11y` spellings never appear.
+ * Frozen public route/leaf descriptor contract. A descriptor is the sole truth
+ * for one canonical public path. It names inputs, effects, output lane, bounds,
+ * stderr, exits, and an opaque handler slot; it never imports a handler.
  */
+import { OK, ValidationResult, combine, contextualize, fail } from './primitives.js';
+import { BoundedBounds, ResultLane, validateBoundedBounds, validateResultLane } from './results.js';
 
-import {
-  OK,
-  ValidationResult,
-  combine,
-  contextualize,
-  fail,
-} from './primitives.js';
-import {
-  BoundedBounds,
-  ResultLane,
-  validateBoundedBounds,
-  validateResultLane,
-} from './results.js';
-
-/** Declared side effects a leaf may have. Help and version are always effect-free. */
 export interface RouteEffects {
   readonly browser: boolean;
   readonly session: boolean;
   readonly artifact: boolean;
   readonly environment: boolean;
 }
+export const NO_EFFECTS: RouteEffects = { browser: false, session: false, artifact: false, environment: false };
 
-export const NO_EFFECTS: RouteEffects = {
-  browser: false,
-  session: false,
-  artifact: false,
-  environment: false,
-};
-
-/** A typed positional target. A leaf has at most one PRIMARY positional; extras are variadic tails. */
-export interface PositionalSpec {
-  readonly name: string;
-  /** Grammar token the parser enforces (e.g. `container-id`, `url`, `uint`, `text`). */
-  readonly grammar: string;
-  readonly required: boolean;
-  /** True for a repeatable trailing positional (e.g. `lib read LIBRARY FUNCTION [FUNCTION ...]`). */
-  readonly variadic?: boolean;
-}
-
-/** A typed flag. Value flags accept only `--name value` / `--name=value`; booleans take no value. */
-export interface FlagSpec {
-  readonly name: string;
-  /** `boolean` for a switch, else the grammar token of its value. */
-  readonly grammar: string | 'boolean';
-  /** Accepted enum values, when the grammar is a closed set. */
-  readonly values?: readonly string[];
-  /** Default, when the flag is optional and has one. */
-  readonly default?: string | number | boolean;
-  /** Units, when meaningful (e.g. `ms`, `css-px`, `seconds`). */
-  readonly units?: string;
-}
-
-/** Stderr discipline. Only three leaves declare bounded factual progress; raw success stderr is empty. */
+export interface PositionalSpec { readonly name: string; readonly grammar: string; readonly required: boolean; readonly variadic?: boolean; }
+export interface FlagSpec { readonly name: string; readonly grammar: string | 'boolean'; readonly values?: readonly string[]; readonly default?: string | number | boolean; readonly units?: string; }
 export type StderrPolicy = 'empty-on-success' | 'declared-progress';
-
-/** Declared exit codes a leaf can produce, beyond the universal 0/2/3. */
 export type LeafExit = 0 | 2 | 3 | 10 | 11 | 130 | 143;
 
-/** A branch descriptor: help + child assembly only, never a handler or result. */
-export interface BranchDescriptor {
-  readonly kind: 'branch';
-  /** Canonical space-joined path, e.g. `measure map`. Root is `''`. */
-  readonly path: string;
-  /** One-line summary shown by the parent. */
-  readonly summary: string;
-}
-
-/** A leaf descriptor: the full contract for one runnable public path. */
+export interface BranchDescriptor { readonly kind: 'branch'; readonly path: string; readonly summary: string; }
 export interface LeafDescriptor {
-  readonly kind: 'leaf';
-  /** Canonical space-joined path, e.g. `measure snap`. */
-  readonly path: string;
-  readonly summary: string;
-  readonly positionals: readonly PositionalSpec[];
-  readonly flags: readonly FlagSpec[];
-  /** Sets of flag names that are mutually exclusive (at most one may be present). */
-  readonly mutualExclusions: readonly (readonly string[])[];
-  readonly effects: RouteEffects;
-  readonly result: ResultLane;
-  /** Byte/list bounds — present iff `result.kind === 'bounded'`. */
-  readonly bounds?: BoundedBounds;
-  readonly stderr: StderrPolicy;
-  readonly exits: readonly LeafExit[];
-  /**
-   * Opaque handler slot name. The frozen contract references a handler by name
-   * only; U4 binds the real typed handler. This keeps the contract free of any
-   * print/exit import.
-   */
-  readonly handler: string;
+  readonly kind: 'leaf'; readonly path: string; readonly summary: string;
+  readonly positionals: readonly PositionalSpec[]; readonly flags: readonly FlagSpec[];
+  readonly mutualExclusions: readonly (readonly string[])[]; readonly effects: RouteEffects;
+  readonly result: ResultLane; readonly bounds?: BoundedBounds; readonly stderr: StderrPolicy;
+  readonly exits: readonly LeafExit[]; readonly handler: string;
 }
-
 export type RouteDescriptor = BranchDescriptor | LeafDescriptor;
 
-// ---------------------------------------------------------------------------
-// Exhaustive end-state public route census (design route table).
-// ---------------------------------------------------------------------------
-
-/** Every branch path (has help + children, no result). Root `''` is implicit and not listed. */
+/** All public non-root branches in the seven-noun Capture topology. */
 export const EXPECTED_BRANCH_PATHS: readonly string[] = [
-  'session',
-  'har',
-  'lib',
-  'a11y',
-  'measure',
-  'measure map',
-  'motion',
+  'session', 'page', 'measure', 'measure map', 'measure variation', 'motion',
+  'traffic', 'traffic har', 'browser', 'library',
 ];
 
-/** Every runnable public leaf path, exactly. No aliases, no `-v`/`version`, no bare `a11y`, no private bridge. */
+/** Every public runnable path, exactly once. There are no aliases. */
 export const EXPECTED_LEAF_PATHS: readonly string[] = [
-  // top-level session/browser/interaction
-  'session start',
-  'session stop',
-  'session list',
-  'session view',
-  'log',
-  'detect',
-  'list',
-  'open',
-  'reset-tab',
-  'screenshot',
-  'click',
-  'type',
-  // accessibility
-  'a11y acquire',
-  'a11y search',
-  'a11y detail',
-  // traffic / protocol / library
-  'record',
-  'navigate',
-  'network',
-  'har create',
-  'har read',
-  'har delete',
-  'lib list',
-  'lib search',
-  'lib show',
-  'lib read',
-  'cdp',
-  'exec',
-  // measurement
-  'measure snap',
-  'measure check',
-  'measure diff',
-  'measure census',
-  'measure explain',
-  'measure resolve',
-  'measure sweep',
-  'measure map scroll',
-  'measure map layers',
-  'measure map focus',
-  // motion
-  'motion rec',
-  'motion mask',
-  'motion timeline',
-  'motion observations',
+  'session start', 'session stop', 'session list', 'session view', 'session log',
+  'page a11y', 'page screenshot', 'page click', 'page type', 'page navigate', 'page exec',
+  'measure snap', 'measure check', 'measure geometry', 'measure map focus', 'measure map scroll', 'measure map layers', 'measure explain', 'measure variation diff', 'measure variation census', 'measure variation sweep',
+  'motion rec', 'motion mask', 'motion timeline', 'motion jank', 'motion response',
+  'traffic record', 'traffic har create', 'traffic har read', 'traffic har delete',
+  'browser detect', 'browser list', 'browser open', 'browser reset', 'browser network', 'browser cdp',
+  'library list', 'library search', 'library show', 'library read',
 ];
 
-/** The exactly-nine leaves that adopt immutable-cursor pagination. */
 export const PAGINATED_LEAF_PATHS: readonly string[] = [
-  'session list',
-  'session view',
-  'detect',
-  'list',
-  'lib list',
-  'lib search',
-  'lib show',
-  'a11y search',
-  'measure resolve',
+  'session list', 'session view', 'browser detect', 'browser list', 'library list',
+  'library search', 'library show',
 ];
 
-/** Raw-json leaves and their single named envelope. */
-export const RAW_LEAF_ENVELOPES: Readonly<Record<string, string>> = {
-  'har read': 'recorded-har-projection',
-  'lib read': 'library-schema-envelope',
-  cdp: 'cdp-envelope',
-  exec: 'javascript-evaluation-envelope',
+/** Exact raw leaves are handler-owned bytes/text, never global JSON envelopes. */
+export const EXACT_RAW_LEAF_PAYLOADS: Readonly<Record<string, string>> = {
+  'session log': 'recorded session log bytes',
+  'page a11y': 'full accessibility-tree text',
+  'page exec': 'handler evaluation bytes/text',
+  'traffic har read': 'stored HAR bytes',
+  'browser cdp': 'raw protocol response bytes',
+  'library read': 'bundled function source bytes',
 };
 
-/** Spellings that must NOT be reachable in the end state (deletion scan targets). */
+/** Legacy spellings are deliberately unreachable after the U15 cutover. */
 export const FORBIDDEN_PUBLIC_PATHS: readonly string[] = [
-  '-v',
-  'version',
-  'a11y', // bare a11y is deleted; only acquire/search/detail exist
-  'motion jank',
-  'motion response',
-  '__bridge-serve',
+  '-v', 'version', 'log', 'detect', 'list', 'open', 'reset-tab', 'screenshot',
+  'click', 'type', 'a11y', 'record', 'navigate', 'network', 'har', 'lib', 'cdp',
+  'exec', 'motion observations', '__bridge-serve',
 ];
 
-// ---------------------------------------------------------------------------
-// Descriptor and registry validators.
-// ---------------------------------------------------------------------------
-
-function flagNames(leaf: LeafDescriptor): Set<string> {
-  return new Set(leaf.flags.map((f) => f.name));
-}
+function flagNames(leaf: LeafDescriptor): Set<string> { return new Set(leaf.flags.map((flag) => flag.name)); }
 
 export function validateLeafDescriptor(leaf: LeafDescriptor): ValidationResult {
-  const errs: ValidationResult[] = [];
-
-  if (!leaf.path) errs.push(fail('leaf has empty path'));
-
-  // At most one primary (non-variadic, required-or-optional) positional target.
-  const primary = leaf.positionals.filter((p) => !p.variadic);
-  if (primary.length > 1) {
-    errs.push(fail(`leaf ${leaf.path} declares ${primary.length} primary positionals; at most one allowed`));
-  }
-
-  // Mutual exclusions must reference declared flags.
+  const errors: ValidationResult[] = [];
+  if (!leaf.path) errors.push(fail('leaf has empty path'));
+  if (leaf.positionals.filter((p) => !p.variadic).length > 1) errors.push(fail(`leaf ${leaf.path} declares more than one primary positional`));
   const names = flagNames(leaf);
-  for (const group of leaf.mutualExclusions) {
-    for (const n of group) {
-      if (!names.has(n)) {
-        errs.push(fail(`leaf ${leaf.path} mutual-exclusion references undeclared flag ${n}`));
-      }
-    }
-  }
-
-  // Result lane well-formedness.
-  errs.push(contextualize(`leaf ${leaf.path} result`, validateResultLane(leaf.result)));
-
-  // Bounded leaves must declare bounds; raw leaves must name an envelope and declare no bounds.
+  for (const group of leaf.mutualExclusions) for (const name of group) if (!names.has(name)) errors.push(fail(`leaf ${leaf.path} mutual-exclusion references undeclared flag ${name}`));
+  errors.push(contextualize(`leaf ${leaf.path} result`, validateResultLane(leaf.result)));
   if (leaf.result.kind === 'bounded') {
-    if (!leaf.bounds) {
-      errs.push(fail(`bounded leaf ${leaf.path} missing byte/list bounds`));
-    } else {
-      errs.push(contextualize(`leaf ${leaf.path} bounds`, validateBoundedBounds(leaf.bounds)));
-    }
-  } else if (leaf.result.kind === 'raw-json') {
-    if (leaf.bounds) errs.push(fail(`raw leaf ${leaf.path} must not declare bounded bounds`));
-    if (!leaf.result.envelope) errs.push(fail(`raw leaf ${leaf.path} missing named envelope`));
-    if (leaf.stderr !== 'empty-on-success') {
-      errs.push(fail(`raw leaf ${leaf.path} must have empty-on-success stderr`));
-    }
-  } else {
-    errs.push(fail(`leaf ${leaf.path} must use bounded or raw-json result lane`));
-  }
-
-  if (!leaf.handler) errs.push(fail(`leaf ${leaf.path} missing handler slot`));
-  if (leaf.exits.length === 0) errs.push(fail(`leaf ${leaf.path} declares no exits`));
-
-  return combine(...errs);
+    if (!leaf.bounds) errors.push(fail(`bounded leaf ${leaf.path} missing byte/list bounds`));
+    else errors.push(contextualize(`leaf ${leaf.path} bounds`, validateBoundedBounds(leaf.bounds)));
+  } else if (leaf.result.kind === 'exact-raw') {
+    if (leaf.bounds) errors.push(fail(`exact raw leaf ${leaf.path} must not declare bounded bounds`));
+    if (leaf.stderr !== 'empty-on-success') errors.push(fail(`exact raw leaf ${leaf.path} must have empty-on-success stderr`));
+  } else errors.push(fail(`leaf ${leaf.path} must use bounded or exact-raw result lane`));
+  if (!leaf.handler) errors.push(fail(`leaf ${leaf.path} missing handler slot`));
+  if (!leaf.exits.length) errors.push(fail(`leaf ${leaf.path} declares no exits`));
+  return combine(...errors);
 }
 
 export function validateBranchDescriptor(branch: BranchDescriptor): ValidationResult {
-  const errs: ValidationResult[] = [];
-  if (!branch.path) errs.push(fail('branch has empty path'));
-  // A branch cannot masquerade as a leaf; TS type guarantees no handler/result field.
-  if ((branch as unknown as { handler?: unknown }).handler !== undefined) {
-    errs.push(fail(`branch ${branch.path} must not declare a handler`));
-  }
-  return combine(...errs);
+  if (!branch.path) return fail('branch has empty path');
+  if ((branch as unknown as { handler?: unknown }).handler !== undefined) return fail(`branch ${branch.path} must not declare a handler`);
+  return OK;
 }
 
-/**
- * Validate an assembled registry against the frozen census: exhaustive leaf and
- * branch coverage, no duplicate paths, no forbidden/private spellings, correct
- * pagination and raw-envelope declarations, and per-descriptor well-formedness.
- */
+/** Validate an assembled public registry against the canonical seven-noun census. */
 export function validateRegistry(descriptors: readonly RouteDescriptor[]): ValidationResult {
-  const errs: ValidationResult[] = [];
-  const seen = new Set<string>();
-  const leafPaths = new Set<string>();
-  const branchPaths = new Set<string>();
-
-  for (const d of descriptors) {
-    if (seen.has(d.path)) errs.push(fail(`duplicate route path: ${d.path}`));
-    seen.add(d.path);
-    if (FORBIDDEN_PUBLIC_PATHS.includes(d.path)) {
-      errs.push(fail(`forbidden public path present: ${d.path}`));
-    }
-    if (d.kind === 'leaf') {
-      leafPaths.add(d.path);
-      errs.push(validateLeafDescriptor(d));
-      // Raw envelope / pagination consistency with the census.
-      const expectedEnvelope = RAW_LEAF_ENVELOPES[d.path];
-      if (expectedEnvelope) {
-        if (d.result.kind !== 'raw-json' || d.result.envelope !== expectedEnvelope) {
-          errs.push(fail(`leaf ${d.path} must be raw-json:${expectedEnvelope}`));
-        }
-      }
-      const shouldPaginate = PAGINATED_LEAF_PATHS.includes(d.path);
-      const declaresPaginate = d.result.kind === 'bounded' && d.bounds?.paginated === true;
-      if (shouldPaginate && !declaresPaginate) {
-        errs.push(fail(`leaf ${d.path} must adopt immutable-cursor pagination`));
-      }
-      if (!shouldPaginate && declaresPaginate) {
-        errs.push(fail(`leaf ${d.path} must not paginate (not one of the nine adopters)`));
-      }
-    } else {
-      branchPaths.add(d.path);
-      errs.push(validateBranchDescriptor(d));
-    }
+  const errors: ValidationResult[] = [];
+  const seen = new Set<string>(); const leaves = new Set<string>(); const branches = new Set<string>();
+  for (const descriptor of descriptors) {
+    if (seen.has(descriptor.path)) errors.push(fail(`duplicate route path: ${descriptor.path}`));
+    seen.add(descriptor.path);
+    if (FORBIDDEN_PUBLIC_PATHS.includes(descriptor.path)) errors.push(fail(`forbidden public path present: ${descriptor.path}`));
+    if (descriptor.kind === 'leaf') {
+      leaves.add(descriptor.path); errors.push(validateLeafDescriptor(descriptor));
+      const expectedPayload = EXACT_RAW_LEAF_PAYLOADS[descriptor.path];
+      if (expectedPayload && (descriptor.result.kind !== 'exact-raw' || descriptor.result.payload !== expectedPayload)) errors.push(fail(`leaf ${descriptor.path} must be exact-raw:${expectedPayload}`));
+      const paginated = descriptor.result.kind === 'bounded' && descriptor.bounds?.paginated === true;
+      if (PAGINATED_LEAF_PATHS.includes(descriptor.path) !== paginated) errors.push(fail(`leaf ${descriptor.path} pagination declaration disagrees with census`));
+    } else { branches.add(descriptor.path); errors.push(validateBranchDescriptor(descriptor)); }
   }
-
-  for (const p of EXPECTED_LEAF_PATHS) {
-    if (!leafPaths.has(p)) errs.push(fail(`missing expected leaf path: ${p}`));
-  }
-  for (const p of EXPECTED_BRANCH_PATHS) {
-    if (!branchPaths.has(p)) errs.push(fail(`missing expected branch path: ${p}`));
-  }
-  for (const p of leafPaths) {
-    if (!EXPECTED_LEAF_PATHS.includes(p)) errs.push(fail(`unexpected leaf path (not in census): ${p}`));
-  }
-  for (const p of branchPaths) {
-    if (!EXPECTED_BRANCH_PATHS.includes(p)) errs.push(fail(`unexpected branch path (not in census): ${p}`));
-  }
-
-  return combine(...errs);
+  for (const path of EXPECTED_LEAF_PATHS) if (!leaves.has(path)) errors.push(fail(`missing expected leaf path: ${path}`));
+  for (const path of EXPECTED_BRANCH_PATHS) if (!branches.has(path)) errors.push(fail(`missing expected branch path: ${path}`));
+  for (const path of leaves) if (!EXPECTED_LEAF_PATHS.includes(path)) errors.push(fail(`unexpected leaf path (not in census): ${path}`));
+  for (const path of branches) if (!EXPECTED_BRANCH_PATHS.includes(path)) errors.push(fail(`unexpected branch path (not in census): ${path}`));
+  return combine(...errors);
 }

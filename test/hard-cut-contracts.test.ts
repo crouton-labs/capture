@@ -42,9 +42,9 @@ test('U1 freezes grammar/bounds primitives and the complete route census', () =>
   assert.equal(parseSignedInt('-42'), -42);
   assert.equal(MAX_BOUNDED_BYTES, 16_384);
   assert.equal(MAX_CURSOR_BYTES, 2048);
-  assert.equal(EXPECTED_LEAF_PATHS.length, 41);
-  assert.deepEqual(EXPECTED_BRANCH_PATHS, ['session', 'har', 'lib', 'a11y', 'measure', 'measure map', 'motion']);
-  for (const forbidden of ['-v', 'version', 'a11y', 'motion jank', 'motion response', '__bridge-serve']) assert.ok(FORBIDDEN_PUBLIC_PATHS.includes(forbidden));
+  assert.equal(EXPECTED_LEAF_PATHS.length, 40);
+  assert.deepEqual(EXPECTED_BRANCH_PATHS, ['session', 'page', 'measure', 'measure map', 'measure variation', 'motion', 'traffic', 'traffic har', 'browser', 'library']);
+  for (const forbidden of ['-v', 'version', 'a11y', 'motion observations', '__bridge-serve']) assert.ok(FORBIDDEN_PUBLIC_PATHS.includes(forbidden));
   assert.equal(NEUTRAL_FAMILIES.length, 11);
   valid(validateBoundedBounds({ maxBytes: 16_384, maxRecords: 20, growing: true, paginated: true }));
   assert.equal(validateBoundedBounds({ maxBytes: 100, maxRecords: 20, growing: false, paginated: false }).valid, false);

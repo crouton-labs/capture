@@ -6,9 +6,9 @@
  *    prose and JSON, with fixed identity/summary/scope/coverage/count/artifact
  *    metadata that is NEVER dropped, and optional records removed only at
  *    record boundaries (never byte-sliced) until both encodings fit.
- *  - `raw-json:<envelope>` — exactly one native lossless JSON serialization of
- *    a single named recorded envelope, unbounded, followed by one newline;
- *    empty stderr on success.
+ *  - `exact-raw:<payload>` — handler-produced bytes/text for one named payload,
+ *    unbounded and preserved exactly (including final-newline presence); empty
+ *    stderr on success. Global `--json` is rejected before effects.
  *
  * This module is type/interface + pure validators only. It imports no print or
  * exit API. The "no direct stdout" rule is a contract on the handlers that
@@ -29,7 +29,7 @@ import {
 export { MAX_BOUNDED_BYTES };
 
 /** Discriminator for the two public result lanes plus the effect-only branch/launcher rows. */
-export type ResultLaneKind = 'bounded' | 'raw-json' | 'branch' | 'launcher-metadata';
+export type ResultLaneKind = 'bounded' | 'exact-raw' | 'branch' | 'launcher-metadata';
 
 /** A `bounded:<domain>` lane naming exactly one bounded projection domain. */
 export interface BoundedLane {
@@ -39,11 +39,11 @@ export interface BoundedLane {
   readonly schema: string;
 }
 
-/** A `raw-json:<envelope>` lane naming exactly one recorded envelope. */
-export interface RawJsonLane {
-  readonly kind: 'raw-json';
-  /** The single named recorded envelope, e.g. `cdp-envelope`. */
-  readonly envelope: string;
+/** An exact raw lane naming its handler-owned unbounded payload. */
+export interface ExactRawLane {
+  readonly kind: 'exact-raw';
+  /** The payload type, e.g. `recorded HAR bytes`. */
+  readonly payload: string;
 }
 
 /** A branch row: help + child assembly, no result. */
@@ -56,7 +56,7 @@ export interface LauncherMetadataLane {
   readonly kind: 'launcher-metadata';
 }
 
-export type ResultLane = BoundedLane | RawJsonLane | BranchLane | LauncherMetadataLane;
+export type ResultLane = BoundedLane | ExactRawLane | BranchLane | LauncherMetadataLane;
 
 // ---------------------------------------------------------------------------
 // Byte/list bounds descriptor a bounded leaf declares.
@@ -142,8 +142,8 @@ export function validateResultLane(lane: ResultLane): ValidationResult {
       if (!lane.domain) return fail('bounded lane missing domain');
       if (!lane.schema) return fail('bounded lane missing schema');
       return OK;
-    case 'raw-json':
-      if (!lane.envelope) return fail('raw-json lane missing named envelope');
+    case 'exact-raw':
+      if (!lane.payload) return fail('exact-raw lane missing payload type');
       return OK;
     case 'branch':
     case 'launcher-metadata':
