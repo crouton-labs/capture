@@ -223,15 +223,13 @@ interface ScreencastFrameParams {
 // Binding-channel hardening — every `Runtime.bindingCalled` payload
 // is untrusted page-controlled input: it must carry this recording's nonce,
 // its `kind` must be one of the observer's own emitted kinds, its fields are
-// whitelisted/size-capped, and the channel itself is rate-limited. Anything
+// schema-validated without rewriting admitted strings or arrays, and the channel itself is rate-limited. Anything
 // that fails a check is dropped (never parsed further/written) and tallied
 // for a single summarizing `binding-dropped` event per reason at `rec-stop`.
 // ---------------------------------------------------------------------------
 
 /** Raw `payload` string length cap — checked before `JSON.parse`, so an oversized payload is never even parsed. */
 const MAX_BINDING_PAYLOAD_BYTES = 8 * 1024;
-const MAX_BINDING_STRING_LENGTH = 256;
-const MAX_BINDING_ARRAY_LENGTH = 50;
 const BINDING_RATE_LIMIT_PER_SECOND = 200;
 
 // ---------------------------------------------------------------------------
@@ -300,30 +298,11 @@ async function resolveCappedRectObjectIds(
 }
 
 // ---------------------------------------------------------------------------
-// Trace-batch hardening — `Tracing.dataCollected`'s raw `value` array is the SAME
-// hostile-page threat class as the binding channel and rect samples above: individual event
-// `args` can carry page URLs, script names, and frame names, and a batch is otherwise unbounded
-// in count and size. Every appended trace event is whitelisted field-by-field (dropping `args`
-// entirely — a field-whitelisting design choice), retained verbatim within explicit string bounds,
-// and capped by both event count and total serialized bytes, exactly like `sanitizeRectSample`.
+// Trace batches are source evidence. `Tracing.dataCollected.value` is written as received:
+// `args` and every other CDP field remain available for later inspection. JSONL is the only
+// structural encoding boundary; no field whitelist, string cap, array cap, or byte budget may
+// rewrite admitted trace evidence.
 // ---------------------------------------------------------------------------
-
-const MAX_TRACE_EVENTS_PER_BATCH = 500;
-const MAX_TRACE_SERIALIZED_BYTES = 256 * 1024;
-const MAX_TRACE_STRING_LENGTH = 256;
-
-/** The bounded, whitelisted shape one raw `Tracing.dataCollected` event is reduced to — every
- * other field on the raw event (notably `args`, which can carry page URLs/script names) is
- * dropped outright, never appended. */
-interface SanitizedTraceEvent {
-  name?: string;
-  cat?: string;
-  ph?: string;
-  ts?: number;
-  dur?: number;
-  pid?: number;
-  tid?: number;
-}
 
 type BindingFieldSanitizer = (value: unknown) => unknown;
 
@@ -331,39 +310,39 @@ function sanitizeFiniteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function sanitizeBoolean(value: unknown): boolean | undefined {
-  return typeof value === 'boolean' ? value : undefined;
-}
-
-/** Preserves page-controlled strings verbatim within the explicit artifact size bound. */
-function sanitizeString(value: unknown, maxLength = MAX_BINDING_STRING_LENGTH): string | undefined {
+function sanitizeRectString(value: unknown, maxLength: number): string | undefined {
   if (typeof value !== 'string') return undefined;
   return value.length > maxLength ? value.slice(0, maxLength) : value;
 }
 
-function sanitizeStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const out: string[] = [];
-  for (const item of value) {
-    if (out.length >= MAX_BINDING_ARRAY_LENGTH) break;
-    if (typeof item !== 'string') continue;
-    out.push(item.length > MAX_BINDING_STRING_LENGTH ? item.slice(0, MAX_BINDING_STRING_LENGTH) : item);
-  }
-  return out;
+function sanitizeBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
 }
 
-function sanitizeResizeTargets(value: unknown): Array<{ tag?: string; width?: number; height?: number }> | undefined {
+/** Preserves an admitted observer string verbatim in its source artifact. */
+function preserveObserverString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function preserveObserverStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) return undefined;
+  return value as string[];
+}
+
+function preserveResizeTargets(value: unknown): Array<{ tag?: string; width?: number; height?: number }> | undefined {
   if (!Array.isArray(value)) return undefined;
   const out: Array<{ tag?: string; width?: number; height?: number }> = [];
   for (const item of value) {
-    if (out.length >= MAX_BINDING_ARRAY_LENGTH) break;
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') return undefined;
     const record = item as Record<string, unknown>;
-    out.push({
-      tag: sanitizeString(record.tag, 64),
-      width: sanitizeFiniteNumber(record.width),
-      height: sanitizeFiniteNumber(record.height),
-    });
+    const target: { tag?: string; width?: number; height?: number } = {};
+    const tag = preserveObserverString(record.tag);
+    const width = sanitizeFiniteNumber(record.width);
+    const height = sanitizeFiniteNumber(record.height);
+    if (tag !== undefined) target.tag = tag;
+    if (width !== undefined) target.width = width;
+    if (height !== undefined) target.height = height;
+    out.push(target);
   }
   return out;
 }
@@ -377,16 +356,16 @@ function sanitizeResizeTargets(value: unknown): Array<{ tag?: string; width?: nu
 const BINDING_FIELD_SANITIZERS: Record<string, Record<string, BindingFieldSanitizer>> = {
   mutation: {
     count: sanitizeFiniteNumber,
-    types: sanitizeStringArray,
+    types: preserveObserverStringArray,
   },
   resize: {
     count: sanitizeFiniteNumber,
-    targets: sanitizeResizeTargets,
+    targets: preserveResizeTargets,
     seq: sanitizeFiniteNumber,
   },
   performance: {
-    entryType: (v) => sanitizeString(v, 64),
-    name: (v) => sanitizeString(v, MAX_BINDING_STRING_LENGTH),
+    entryType: preserveObserverString,
+    name: preserveObserverString,
     startTime: sanitizeFiniteNumber,
     duration: sanitizeFiniteNumber,
     value: sanitizeFiniteNumber,
@@ -442,8 +421,6 @@ export class RecorderSession {
   private bindingWindowCount = 0;
   /** Tallies of rect-sample elements dropped/truncated by host-side sanitization, by reason — flushed as `rect-sample-dropped` summary events at stop(), same style as `bindingDropCounts`. */
   private rectDropCounts = new Map<string, number>();
-  /** Tallies of trace events dropped/truncated by host-side sanitization, by reason — flushed as `trace-dropped` summary events at stop(), same style as `rectDropCounts`. */
-  private traceDropCounts = new Map<string, number>();
   /** The main frame's CDP `frameId`, resolved once via `Page.getFrameTree` on the first
    * `injectObserverScript()` call, then kept current from `Page.frameNavigated`'s own `frame.id`
    * on every subsequent rearm — avoids one `Page.getFrameTree` round trip per navigation. */
@@ -677,7 +654,6 @@ export class RecorderSession {
 
     this.flushBindingDropSummary();
     this.flushRectDropSummary();
-    this.flushTraceDropSummary();
 
     this.state = 'stopped';
     return {
@@ -815,7 +791,7 @@ export class RecorderSession {
     this.isolatedWorldContextId = undefined;
     this.activeWorldGeneration = undefined;
     if (frame.id) this.mainFrameId = frame.id;
-    this.appendEvent({ kind: 'navigation-gap', url: sanitizeString(frame.url) ?? null });
+    this.appendEvent({ kind: 'navigation-gap', url: preserveObserverString(frame.url) ?? null });
     try {
       await this.injectObserverScript(generation);
     } catch (err) {
@@ -915,70 +891,9 @@ export class RecorderSession {
     // before sanitization, which can drop or reshape events (and runs against a shape that isn't
     // guaranteed to preserve `ts` on every kept event).
     this.captureFirstTraceEventTs(params.value);
-    const events = this.sanitizeTraceEvents(Array.isArray(params.value) ? params.value : []);
-    this.appendEvent({ kind: 'trace', events });
-  }
-
-  /**
-   * Host-side sanitizer for one `Tracing.dataCollected` batch — whitelists a bounded
-   * per-event shape (`SanitizedTraceEvent`), retaining each selected string verbatim within its
-   * explicit bound, and drops every other field on the raw event
-   * (notably `args`, which can carry page URLs/script/frame names) outright. Caps the number of
-   * events kept and enforces a total serialized-byte budget, same style as `sanitizeRectSample`;
-   * anything dropped/truncated is tallied by reason into `traceDropCounts` (flushed as
-   * `trace-dropped` summaries at stop()) rather than silently discarded.
-   */
-  private sanitizeTraceEvents(raw: unknown[]): SanitizedTraceEvent[] {
-    const events: SanitizedTraceEvent[] = [];
-    let serializedBytes = 0;
-    for (let i = 0; i < raw.length; i++) {
-      if (events.length >= MAX_TRACE_EVENTS_PER_BATCH) {
-        this.recordTraceDrop('event-cap', raw.length - i);
-        break;
-      }
-      const item = raw[i];
-      if (!item || typeof item !== 'object') {
-        this.recordTraceDrop('invalid-shape');
-        continue;
-      }
-      const record = item as Record<string, unknown>;
-      const sanitized: SanitizedTraceEvent = {};
-      const name = sanitizeString(record.name, MAX_TRACE_STRING_LENGTH);
-      if (name !== undefined) sanitized.name = name;
-      const cat = sanitizeString(record.cat, 128);
-      if (cat !== undefined) sanitized.cat = cat;
-      const ph = sanitizeString(record.ph, 8);
-      if (ph !== undefined) sanitized.ph = ph;
-      const ts = sanitizeFiniteNumber(record.ts);
-      if (ts !== undefined) sanitized.ts = ts;
-      const dur = sanitizeFiniteNumber(record.dur);
-      if (dur !== undefined) sanitized.dur = dur;
-      const pid = sanitizeFiniteNumber(record.pid);
-      if (pid !== undefined) sanitized.pid = pid;
-      const tid = sanitizeFiniteNumber(record.tid);
-      if (tid !== undefined) sanitized.tid = tid;
-
-      const sizeBytes = Buffer.byteLength(JSON.stringify(sanitized), 'utf-8');
-      if (serializedBytes + sizeBytes > MAX_TRACE_SERIALIZED_BYTES) {
-        this.recordTraceDrop('byte-budget', raw.length - i);
-        break;
-      }
-      serializedBytes += sizeBytes;
-      events.push(sanitized);
-    }
-    return events;
-  }
-
-  private recordTraceDrop(reason: string, count = 1): void {
-    this.traceDropCounts.set(reason, (this.traceDropCounts.get(reason) ?? 0) + count);
-  }
-
-  /** Writes one summarizing `trace-dropped` event per drop reason instead of one per dropped/truncated trace event. */
-  private flushTraceDropSummary(): void {
-    for (const [reason, count] of this.traceDropCounts) {
-      this.appendEvent({ kind: 'trace-dropped', reason, count });
-    }
-    this.traceDropCounts.clear();
+    // `value` is CDP source evidence. Preserve its exact JSON structure, including `args`, in
+    // events.jsonl rather than selecting or truncating fields.
+    this.appendEvent({ kind: 'trace', events: Array.isArray(params.value) ? params.value : [] });
   }
 
   private captureFirstTraceEventTs(events: unknown[]): void {
@@ -1007,8 +922,8 @@ export class RecorderSession {
    * dropped as `wrong-origin`, and a payload missing the nonce as `bad-nonce`, without touching the
    * rate budget — so no foreign-context flood can starve legitimate isolated-world events out of the
    * shared budget. A payload must also be `<= MAX_BINDING_PAYLOAD_BYTES` (UTF-8, checked before
-   * parsing) and carry a whitelisted `kind`; only that kind's whitelisted fields (size/length-capped)
-   * are kept. Anything that fails a check is dropped and tallied, never parsed further or written
+   * parsing) and carry a whitelisted `kind`; only that kind's schema fields are retained, with
+   * admitted strings and arrays preserved verbatim. Anything that fails a check is dropped and tallied, never parsed further or written
    * verbatim. Discards outright once fully `'stopped'`; an observer emission can legitimately still
    * arrive during the `'stopping'` window and must still be captured.
    */
@@ -1289,9 +1204,9 @@ export class RecorderSession {
       }
       const backendNodeId = backendNodeIds[i];
       const sanitized: SampledRect = {
-        tag: sanitizeString(record.tag, MAX_RECT_TAG_LENGTH) ?? '',
-        id: record.id === null ? null : (sanitizeString(record.id, MAX_RECT_STRING_LENGTH) ?? null),
-        classes: record.classes === null ? null : (sanitizeString(record.classes, MAX_RECT_STRING_LENGTH) ?? null),
+        tag: sanitizeRectString(record.tag, MAX_RECT_TAG_LENGTH) ?? '',
+        id: record.id === null ? null : (sanitizeRectString(record.id, MAX_RECT_STRING_LENGTH) ?? null),
+        classes: record.classes === null ? null : (sanitizeRectString(record.classes, MAX_RECT_STRING_LENGTH) ?? null),
         x,
         y,
         width,
@@ -1479,13 +1394,12 @@ function buildObserverScript(bindingName: string, nonce: string): string {
 
     var resizeObserver = new ResizeObserver(function(entries) {
       var seq = ++resizeSeq;
-      var sliced = entries.slice(0, 20);
-      resizeQueue[seq] = sliced.map(function(e) { return e.target; });
+      resizeQueue[seq] = entries.map(function(e) { return e.target; });
       pruneQueue(resizeQueue, 40);
       emit('resize', {
         seq: seq,
         count: entries.length,
-        targets: sliced.map(function(e) {
+        targets: entries.map(function(e) {
           var rect = e.contentRect;
           return { tag: e.target && e.target.tagName, width: rect.width, height: rect.height };
         }),

@@ -587,12 +587,11 @@ test('stopComposedRecorder best-effort finalizes an orphaned (dead-pid) recordin
 });
 
 // ---------------------------------------------------------------------------
-// Fix 7 — the session url is redacted at the single boundary (`readSessionUrl`)
-// where it enters recorder artifacts, so a secret in `.session.json`'s url
-// never reaches `recorder.json.url` or (via finalize) `meta.json.url`.
+// Session URLs are browser evidence. The exact .session.json value must reach
+// recorder.json and the finalized meta.json without redaction or rewriting.
 // ---------------------------------------------------------------------------
 
-test('Fix 7: a secret-shaped .session.json url is redacted in recorder.json.url and stays redacted through to meta.json.url', async () => {
+test('a secret-shaped .session.json url is preserved verbatim in recorder.json.url and meta.json.url', async () => {
   const sessionDir = freshSessionDir('url-redaction');
   const secretUrl = 'https://example.com/?token=github_pat_' + '1'.repeat(40);
   fs.writeFileSync(path.join(sessionDir, '.session.json'), JSON.stringify({ url: secretUrl }));
@@ -614,15 +613,12 @@ test('Fix 7: a secret-shaped .session.json url is redacted in recorder.json.url 
 
     const rj = readRecorderJson(result.recDir);
     assert.ok(rj);
-    assert.ok(rj!.url, 'expected a redacted-but-present url');
-    assert.ok(!rj!.url!.includes('github_pat_'), 'the raw secret must never reach recorder.json.url');
-    assert.ok(rj!.url!.includes('[REDACTED]'));
+    assert.equal(rj!.url, secretUrl, 'the browser URL is source evidence in recorder.json.url');
 
     const stopResult = await stopComposedRecorder({ sessionDir, recId: result.recId });
     const metaRaw = fs.readFileSync(path.join(stopResult.recDir, 'meta.json'), 'utf-8');
-    assert.ok(!metaRaw.includes('github_pat_'), 'the raw secret must never reach meta.json.url');
     const meta = JSON.parse(metaRaw) as { url: string | null };
-    assert.ok(meta.url?.includes('[REDACTED]'));
+    assert.equal(meta.url, secretUrl, 'the browser URL remains verbatim source evidence in meta.json.url');
   } finally {
     fakeServer?.close();
     placeholder.kill();

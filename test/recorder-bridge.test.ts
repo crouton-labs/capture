@@ -653,6 +653,28 @@ test('binding payloads without the recording nonce, with an unknown kind, or ove
   }
 });
 
+test('admitted observer strings and arrays are preserved verbatim', async () => {
+  const recDir = freshRecDir('observer-evidence-verbatim');
+  const client = new StubCdpClient();
+  const session = new RecorderSession({ client, recDir });
+  const types = Array.from({ length: 80 }, (_, i) => `mutation-type-${i}-${'x'.repeat(48)}`);
+  const name = `paint:${'y'.repeat(1024)}`;
+
+  try {
+    await session.start();
+    const nonce = extractBindingNonce(client);
+    client.fireBinding(JSON.stringify({ kind: 'mutation', performanceNowMs: 1, count: types.length, types, nonce }));
+    client.fireBinding(JSON.stringify({ kind: 'performance', performanceNowMs: 2, entryType: 'paint', name, startTime: 2, duration: 0, nonce }));
+    await tick();
+
+    const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
+    assert.deepEqual(events.find((event) => event.kind === 'mutation')?.types, types);
+    assert.equal(events.find((event) => event.kind === 'performance')?.name, name);
+  } finally {
+    fs.rmSync(recDir, { recursive: true, force: true });
+  }
+});
+
 test('the binding channel rate-caps events per second, dropping the excess and summarizing it', async () => {
   const recDir = freshRecDir('binding-rate-limit');
   const client = new StubCdpClient();
@@ -1224,8 +1246,8 @@ test('a secret-shaped rect id/classes is redacted (not just length-capped) befor
   }
 });
 
-test('a secret-shaped performance-entry name from the observer binding is redacted before it reaches events.jsonl', async () => {
-  const recDir = freshRecDir('perf-name-secret-redaction');
+test('a secret-shaped performance-entry name from the observer binding reaches events.jsonl verbatim', async () => {
+  const recDir = freshRecDir('perf-name-verbatim');
   const client = new StubCdpClient();
   const session = new RecorderSession({ client, recDir });
 
@@ -1256,8 +1278,8 @@ test('a secret-shaped performance-entry name from the observer binding is redact
   }
 });
 
-test('a secret-shaped navigation-gap URL is redacted before it reaches events.jsonl', async () => {
-  const recDir = freshRecDir('navgap-url-secret-redaction');
+test('a secret-shaped navigation-gap URL reaches events.jsonl verbatim', async () => {
+  const recDir = freshRecDir('navgap-url-verbatim');
   const client = new StubCdpClient();
   const session = new RecorderSession({ client, recDir });
 
@@ -1279,8 +1301,8 @@ test('a secret-shaped navigation-gap URL is redacted before it reaches events.js
   }
 });
 
-test('a secret-shaped mark label is redacted before the input landmark is written to events.jsonl', async () => {
-  const recDir = freshRecDir('mark-label-secret-redaction');
+test('a secret-shaped mark label is retained as input evidence while its structural mark is distinct', async () => {
+  const recDir = freshRecDir('mark-label-evidence');
   const client = new StubCdpClient();
   const session = new RecorderSession({ client, recDir });
 
@@ -1306,14 +1328,12 @@ test('a secret-shaped mark label is redacted before the input landmark is writte
   }
 });
 
-test('a mark label secret that straddles the truncation boundary is fully redacted, not sliced into a raw partial fragment', async () => {
-  const recDir = freshRecDir('mark-boundary-secret');
+test('a long mark label remains verbatim input evidence while its structural mark is hashed', async () => {
+  const recDir = freshRecDir('long-mark-evidence');
   const client = new StubCdpClient();
   const session = new RecorderSession({ client, recDir });
-  // MAX_MARK_LABEL_LENGTH is 128. A 120-char run + a space puts the following SECRET_TOKEN
-  // (51 chars, `github_pat_` + 40 digits) starting at index 121 — straddling the 128 boundary,
-  // so a slice-then-redact order would cut the token mid-string and leave its first 7 raw
-  // characters ("github_") past the redaction check's 16-char minimum run length.
+  // A long caller-supplied action remains readable evidence. The separate structural mark
+  // is stable and opaque so it cannot be confused with the action identity.
   const prefix = 'x'.repeat(120);
   const boundaryStraddlingMark = `${prefix} ${SECRET_TOKEN}`;
 
@@ -1337,62 +1357,50 @@ test('a mark label secret that straddles the truncation boundary is fully redact
 });
 
 // ---------------------------------------------------------------------------
-// Trace batches are whitelisted (no `args`), redacted+capped, and bounded by
-// event count + serialized bytes, with drops summarized.
+// Trace batches are source evidence. Trace fields, strings, arrays, and args
+// must remain verbatim in events.jsonl.
 // ---------------------------------------------------------------------------
 
-test('an appended trace event drops args entirely and redacts+caps name, so no secret in args can reach events.jsonl', async () => {
-  const recDir = freshRecDir('trace-args-dropped-name-redaction');
+test('an appended trace event preserves args and all trace fields verbatim in events.jsonl', async () => {
+  const recDir = freshRecDir('trace-evidence-verbatim');
   const client = new StubCdpClient();
   const session = new RecorderSession({ client, recDir });
+  const source = {
+    name: 'x'.repeat(400),
+    cat: 'devtools.timeline',
+    ph: 'X',
+    ts: 1000,
+    dur: 5,
+    pid: 1,
+    tid: 2,
+    args: { data: { url: `https://example.com/?token=${SECRET_TOKEN}`, secret: SECRET_TOKEN, nested: ['all', 'source', 'evidence'] } },
+  };
 
   try {
     await session.start();
-
-    client.fire('Tracing.dataCollected', {
-      value: [
-        {
-          name: 'x'.repeat(400),
-          cat: 'devtools.timeline',
-          ph: 'X',
-          ts: 1000,
-          dur: 5,
-          pid: 1,
-          tid: 2,
-          args: { data: { url: `https://example.com/?token=${SECRET_TOKEN}`, secret: SECRET_TOKEN } },
-        },
-      ],
-    });
+    client.fire('Tracing.dataCollected', { value: [source] });
     await tick();
 
     const eventsRaw = fs.readFileSync(session.eventsPath, 'utf-8');
-    assert.ok(!eventsRaw.includes(SECRET_TOKEN), 'no secret from a trace event\'s args can reach events.jsonl');
-
+    assert.ok(eventsRaw.includes(SECRET_TOKEN), 'trace args are retained verbatim as browser evidence');
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
     const trace = events.find((e) => e.kind === 'trace') as { events: Array<Record<string, unknown>> } | undefined;
     assert.ok(trace);
-    assert.equal(trace!.events.length, 1);
-    const sanitizedEvent = trace!.events[0];
-    assert.equal('args' in sanitizedEvent, false, 'args must be dropped outright, not whitelisted through');
-    assert.ok((sanitizedEvent.name as string).length <= 256, 'name must be capped');
-    assert.equal(sanitizedEvent.ts, 1000);
-    assert.equal(sanitizedEvent.pid, 1);
-    assert.equal(sanitizedEvent.tid, 2);
+    assert.deepEqual(trace!.events, [source]);
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }
 });
 
-test('a trace batch exceeding the event cap is truncated with a trace-dropped summary, while still capturing the baseline ts', async () => {
-  const recDir = freshRecDir('trace-event-cap');
+test('a large trace batch is retained in full while still capturing the first trace baseline', async () => {
+  const recDir = freshRecDir('trace-batch-verbatim');
   const client = new StubCdpClient();
   const session = new RecorderSession({ client, recDir });
 
   try {
     await session.start();
-
     const totalEvents = 600;
-    const batch = Array.from({ length: totalEvents }, (_, i) => ({ name: `evt-${i}`, ts: 1000 + i }));
+    const batch = Array.from({ length: totalEvents }, (_, i) => ({ name: `evt-${i}`, ts: 1000 + i, args: { index: i } }));
     client.fire('Tracing.dataCollected', { value: batch });
     await tick();
 
@@ -1400,13 +1408,8 @@ test('a trace batch exceeding the event cap is truncated with a trace-dropped su
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
     const trace = events.find((e) => e.kind === 'trace') as { events: unknown[] } | undefined;
     assert.ok(trace);
-    assert.ok(trace!.events.length <= 500, 'the per-batch event cap must be enforced');
-
-    const drop = events.find((e) => e.kind === 'trace-dropped' && e.reason === 'event-cap');
-    assert.ok(drop, 'an event-cap trace-dropped summary must be written, not a silent truncation');
-    assert.equal((drop!.count as number), totalEvents - trace!.events.length);
-
-    assert.equal(summary.markers.firstTraceEventTsUs, 1000, 'the baseline ts is still captured from the RAW batch, unaffected by the cap');
+    assert.deepEqual(trace!.events, batch);
+    assert.equal(summary.markers.firstTraceEventTsUs, 1000);
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }

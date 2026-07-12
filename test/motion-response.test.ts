@@ -148,6 +148,30 @@ test('motion response requires unique --action semantics and lists duplicate occ
   }
 });
 
+test('motion response reads retained events from a partial no_frames artifact and marks frame facts unavailable', () => {
+  const root = path.join(CAPTURE_ROOT, `response-no-frames-${process.pid}-${Date.now()}`);
+  const recDir = path.join(root, 'motion', 'recs', 'rec-no-frames');
+  try {
+    ensurePrivateDir(recDir);
+    writeJsonPrivate(path.join(recDir, 'meta.json'), { id: 'rec-no-frames', state: 'partial', reason: 'no_frames' });
+    writeJsonPrivate(path.join(recDir, 'markers.json'), { performanceNowMs: 100 });
+    writeNdjsonPrivate(path.join(recDir, 'events.jsonl'), [
+      { kind: 'input', action: 'click:send', mark: 'mark-abc', startPerformanceNow: 120, endPerformanceNow: 121 },
+      { kind: 'mutation', performanceNowMs: 125 },
+    ]);
+    writeNdjsonPrivate(path.join(recDir, 'rects.jsonl'), []);
+
+    const loaded = loadResponseTimeline(recDir, 'click:send');
+    assert.equal(loaded.timeline.state, 'partial');
+    assert.deepEqual(loaded.timeline.points.map((point) => point.stage), ['input', 'mutation']);
+    assert.ok(loaded.timeline.unavailableStages.includes('paint'));
+    assert.ok(loaded.timeline.unavailableStages.includes('settle'));
+    assert.ok(loaded.timeline.caveats.some((caveat) => caveat.includes('partial (no_frames)')));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('motion response queries the original action identity rather than the internal mark', () => {
   const timeline = responseTimelineFromArtifacts(
     'click:Open Hearth chat',

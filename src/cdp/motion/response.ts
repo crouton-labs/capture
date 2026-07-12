@@ -230,6 +230,7 @@ export function responseTimelineFromArtifacts(
   const caveats = eventDropCaveats(events);
   if (markers.baselinesPending) caveats.push('markers.json still has baselinesPending=true; timing sources without anchors are omitted rather than aligned approximately.');
   if (state === 'orphaned-finalized') caveats.push('recording state is orphaned-finalized; artifacts are a partial best-effort recording from data flushed before recorder exit.');
+  if (state === 'partial') caveats.push('recording state is partial (no_frames); retained source records are readable, while frame-derived paint and settle facts are unavailable.');
   if (!finite(markers.wallClockMs)) caveats.push('screencast wall-clock anchor unavailable; frame-derived paint and settle timing are unavailable.');
 
   const actions = inputMarks(events, markers);
@@ -319,12 +320,13 @@ function withFrameDeltas(ref: RecRef, rects: readonly FrameRecord[], markers: Ma
   }
 }
 
-/** Resolves and validates a finalized recording before reading its response artifacts. */
+/** Resolves recording artifacts that contain a completed evidence inventory before reading its response facts. */
 export function loadResponseTimeline(rec: string, action?: string, occurrence?: number): LoadedResponseTimeline {
   const ref = resolveRecRef(rec);
-  const meta = readMeta<{ state?: unknown }>(ref);
+  const meta = readMeta<{ state?: unknown; reason?: unknown }>(ref);
   const state = typeof meta.state === 'string' ? meta.state : 'unknown';
-  if (state !== 'finalized' && state !== 'orphaned-finalized') {
+  const readablePartial = state === 'partial' && meta.reason === 'no_frames';
+  if (state !== 'finalized' && state !== 'orphaned-finalized' && !readablePartial) {
     throw new Error(`Recording ${JSON.stringify(ref.id)} is state ${JSON.stringify(state)}; finalize it with \`capture motion rec --stop\` before querying response.`);
   }
   const events = readEvents<EventRecord>(ref);
