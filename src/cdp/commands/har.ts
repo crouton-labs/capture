@@ -19,7 +19,12 @@ export async function cmdHar(parsed: ParsedArgs, args: string[]): Promise<void> 
         '  --filter-status <code>      Status code, prefix (e.g. 4), or range (e.g. 400-499)\n' +
         '  --filter-method <method>    HTTP method (GET, POST, ...)\n' +
         '  --limit <N>                 Return only the first N matching entries\n\n' +
-        'Pass --har <id> to exec/navigate commands to append traffic to a recording.',
+        'Pass --har <id> to exec/navigate commands to append traffic to a recording.\n' +
+        'In an active session every command records automatically.\n\n' +
+        'WebSockets: sockets OPENED while a command is recording appear as entries\n' +
+        'with _resourceType "websocket" and their frames in _webSocketMessages\n' +
+        '(capped at 200 frames/socket, 4KB/frame). Sockets opened before recording\n' +
+        'started (e.g. by a page load no command was attached to) are not visible.',
     );
     process.exit(0);
   }

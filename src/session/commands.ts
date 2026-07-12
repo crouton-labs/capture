@@ -171,10 +171,23 @@ export async function waitForPageLoad(
 
   return await new Promise<boolean>((resolve) => {
     const timer = setTimeout(() => resolve(true), timeoutMs);
-    client.on('Page.loadEventFired', () => {
+    const done = (timedOut: boolean) => {
       clearTimeout(timer);
-      resolve(false);
-    });
+      resolve(timedOut);
+    };
+    client.on('Page.loadEventFired', () => done(false));
+    // A page that finished loading before we attached (about:blank, cached
+    // instant loads) never fires loadEventFired — check readyState directly.
+    client
+      .send('Runtime.evaluate', {
+        expression: 'document.readyState',
+        returnByValue: true,
+      })
+      .then((r) => {
+        const value = (r as { result?: { value?: unknown } } | undefined)?.result?.value;
+        if (value === 'complete') done(false);
+      })
+      .catch(() => {});
   });
 }
 

@@ -19,6 +19,17 @@ interface NetworkResponse {
   timestamp: number;
 }
 
+interface WebSocketConnection {
+  requestId: string;
+  url: string;
+  wallTime?: number;
+  requestHeaders: Record<string, string>;
+  status?: number;
+  responseHeaders: Record<string, string>;
+  messages: Array<{ type: 'send' | 'receive'; time: number; opcode: number; data: string }>;
+  droppedFrames: number;
+}
+
 // HAREntry imported from ../har-manager.ts
 
 const SKIP_EXTENSIONS =
@@ -26,6 +37,8 @@ const SKIP_EXTENSIONS =
 const SKIP_DOMAINS =
   /(google-analytics|googletagmanager|doubleclick|facebook\.com\/tr|px\.ads|analytics|tracking|beacon|telemetry)/i;
 const MAX_BODY_SIZE = 256 * 1024; // 256KB per response body in HAR
+const MAX_WS_FRAMES = 200; // per socket; further frames are counted, not stored
+const MAX_WS_FRAME_SIZE = 4 * 1024; // 4KB per frame payload in HAR
 
 function shouldRecordRequest(url: string): boolean {
   if (SKIP_EXTENSIONS.test(url)) return false;
@@ -36,6 +49,7 @@ function shouldRecordRequest(url: string): boolean {
 export class HARRecorder {
   private requests = new Map<string, NetworkRequest>();
   private responses = new Map<string, NetworkResponse>();
+  private webSockets = new Map<string, WebSocketConnection>();
 
   constructor(private client: CDPClient) {}
 
@@ -87,6 +101,98 @@ export class HARRecorder {
         timestamp: p.timestamp,
       });
     });
+
+    // WebSocket lifecycle. Only sockets OPENED while this recorder is
+    // attached are visible — CDP does not replay creation events for
+    // pre-existing sockets.
+    this.client.on('Network.webSocketCreated', (params: unknown) => {
+      const p = params as { requestId: string; url: string };
+      if (!shouldRecordRequest(p.url)) return;
+      this.webSockets.set(p.requestId, {
+        requestId: p.requestId,
+        url: p.url,
+        requestHeaders: {},
+        responseHeaders: {},
+        messages: [],
+        droppedFrames: 0,
+      });
+    });
+
+    this.client.on('Network.webSocketWillSendHandshakeRequest', (params: unknown) => {
+      const p = params as {
+        requestId: string;
+        wallTime: number;
+        request: { headers: Record<string, string> };
+      };
+      const ws = this.webSockets.get(p.requestId);
+      if (!ws) return;
+      ws.wallTime = p.wallTime;
+      ws.requestHeaders = p.request.headers;
+    });
+
+    this.client.on('Network.webSocketHandshakeResponseReceived', (params: unknown) => {
+      const p = params as {
+        requestId: string;
+        response: { status: number; headers: Record<string, string> };
+      };
+      const ws = this.webSockets.get(p.requestId);
+      if (!ws) return;
+      ws.status = p.response.status;
+      ws.responseHeaders = p.response.headers;
+    });
+
+    const recordFrame = (type: 'send' | 'receive') => (params: unknown) => {
+      const p = params as {
+        requestId: string;
+        timestamp: number;
+        response: { opcode: number; payloadData: string };
+      };
+      const ws = this.webSockets.get(p.requestId);
+      if (!ws) return;
+      if (ws.messages.length >= MAX_WS_FRAMES) {
+        ws.droppedFrames++;
+        return;
+      }
+      const data = p.response.payloadData;
+      ws.messages.push({
+        type,
+        time: p.timestamp,
+        opcode: p.response.opcode,
+        data: data.length > MAX_WS_FRAME_SIZE
+          ? data.slice(0, MAX_WS_FRAME_SIZE) + `…[truncated: ${data.length} bytes]`
+          : data,
+      });
+    };
+    this.client.on('Network.webSocketFrameSent', recordFrame('send'));
+    this.client.on('Network.webSocketFrameReceived', recordFrame('receive'));
+  }
+
+  private buildWebSocketEntries(): HAREntry[] {
+    return Array.from(this.webSockets.values()).map((ws) => {
+      const messages = ws.droppedFrames > 0
+        ? [...ws.messages, {
+            type: 'receive' as const,
+            time: 0,
+            opcode: 1,
+            data: `[${ws.droppedFrames} further frames not recorded — per-socket cap of ${MAX_WS_FRAMES}]`,
+          }]
+        : ws.messages;
+      return {
+        startedDateTime: new Date(ws.wallTime ? ws.wallTime * 1000 : Date.now()).toISOString(),
+        request: {
+          method: 'GET',
+          url: ws.url,
+          headers: Object.entries(ws.requestHeaders).map(([name, value]) => ({ name, value })),
+        },
+        response: {
+          status: ws.status ?? 0,
+          headers: Object.entries(ws.responseHeaders).map(([name, value]) => ({ name, value })),
+          content: {},
+        },
+        _resourceType: 'websocket',
+        _webSocketMessages: messages,
+      };
+    });
   }
 
   private buildHar(): { log: { entries: HAREntry[] } } {
@@ -113,7 +219,7 @@ export class HARRecorder {
               content: { text: resp.body },
             },
           };
-        }),
+        }).concat(this.buildWebSocketEntries()),
       },
     };
   }

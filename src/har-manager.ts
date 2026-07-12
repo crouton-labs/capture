@@ -20,6 +20,15 @@ export interface HAREntry {
     content: { text?: string };
   };
   startedDateTime: string;
+  /** Chrome DevTools HAR convention — 'websocket' for WebSocket connections. */
+  _resourceType?: string;
+  /** WebSocket frames (DevTools convention): send/receive + payload. */
+  _webSocketMessages?: Array<{
+    type: 'send' | 'receive';
+    time: number;
+    opcode: number;
+    data: string;
+  }>;
 }
 
 export type HarFile = { log: { entries: HAREntry[] } };
