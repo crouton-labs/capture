@@ -118,6 +118,37 @@ function getLocalhostListeningPorts(): number[] {
   }
 }
 
+function getListeningProcessNames(): Map<number, string> {
+  const names = new Map<number, string>();
+  try {
+    const output = execSync('lsof -nP -iTCP -sTCP:LISTEN -Fpcn 2>/dev/null', {
+      encoding: 'utf-8',
+    });
+    let command: string | null = null;
+    for (const line of output.split('\n')) {
+      if (line.startsWith('c')) {
+        command = line.slice(1);
+      } else if (command && line.startsWith('n')) {
+        const match = line.match(/:(\d+)(?:\s|$)/);
+        if (match) names.set(Number(match[1]), command);
+      }
+    }
+  } catch {
+    // Process identity is an optional refinement; CDP probing still works.
+  }
+  return names;
+}
+
+export function identifyBrowserBundleId(browser: string, processName?: string): string {
+  // A listening process is stronger identity than Chromium's generic
+  // Browser/User-Agent strings: Arc and Spotify both report as "Chrome".
+  const identity = (processName ?? browser).toLowerCase();
+  for (const [bundleId, patterns] of Object.entries(BROWSER_PATTERNS)) {
+    if (patterns.some((pattern) => identity.includes(pattern))) return bundleId;
+  }
+  return 'unknown';
+}
+
 export interface CdpEndpoint {
   port: number;
   app: string;
@@ -128,25 +159,18 @@ export interface CdpEndpoint {
 
 export async function detectCdpPortsAsync(): Promise<CdpEndpoint[]> {
   const ports = getLocalhostListeningPorts();
+  const processNames = getListeningProcessNames();
   const results: CdpEndpoint[] = [];
 
   // Probe ports in parallel for speed
   const probes = ports.map(async (port) => {
     const probe = await probeCdpPort(port);
     if (probe) {
-      // Map browser string to bundle ID for default browser matching
-      const lower = probe.browser.toLowerCase();
-      let bundleId = 'unknown';
-      for (const [bid, patterns] of Object.entries(BROWSER_PATTERNS)) {
-        if (patterns.some((p) => lower.includes(p))) {
-          bundleId = bid;
-          break;
-        }
-      }
+      const processName = processNames.get(port);
       results.push({
         port,
-        app: probe.app,
-        bundleId,
+        app: processName ?? probe.app,
+        bundleId: identifyBrowserBundleId(probe.browser, processName),
         isElectron: probe.isElectron,
         hasPageTarget: probe.hasPageTarget,
       });
@@ -179,8 +203,13 @@ export function pickPreferredEndpoint(
     if (match) return match;
   }
 
-  // Fall back to first non-Electron, then first found
-  const nonElectron = candidates.find((p) => !p.isElectron);
+  // Prefer a recognized browser over other Chromium hosts (Spotify, app
+  // shells), then fall back to the original non-Electron ordering.
+  const knownBrowser = candidates.find(
+    (endpoint) => endpoint.bundleId !== 'unknown' && !endpoint.isElectron,
+  );
+  if (knownBrowser) return knownBrowser;
+  const nonElectron = candidates.find((endpoint) => !endpoint.isElectron);
   return nonElectron ?? candidates[0];
 }
 

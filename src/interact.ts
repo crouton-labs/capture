@@ -25,6 +25,10 @@ interface FullAXNode {
   childIds?: string[];
 }
 
+function normalizeAccessibleName(name: string): string {
+  return name.replace(/\s+/gu, ' ').trim().toLowerCase();
+}
+
 /**
  * Click an element by its accessible name. Optionally filter by ARIA role.
  *
@@ -44,12 +48,13 @@ export async function clickByName(
   };
   await client.send('Accessibility.disable');
 
-  // Find nodes matching the accessible name (exact match)
-  const nameLower = name.toLowerCase();
+  // Accessible-name whitespace is presentation-insignificant: browsers may
+  // preserve label indentation or a trailing space that users never see.
+  const normalizedName = normalizeAccessibleName(name);
   const matches = nodes.filter((n) => {
     if (!n.backendDOMNodeId) return false;
     if (!n.name?.value) return false;
-    if (n.name.value.toLowerCase() !== nameLower) return false;
+    if (normalizeAccessibleName(n.name.value) !== normalizedName) return false;
     if (role && n.role?.value !== role) return false;
     return true;
   });
