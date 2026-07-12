@@ -103,6 +103,11 @@ const FAKE_SESSION: ActiveSessionState = {
 
 interface InstalledDeps {
   settleSeen: number | undefined;
+  /** parsed.command as the connection seam saw it — connection.ts derives
+   * the recorder landmark label from it, so it must be the VERB, not the
+   * 'page' branch token (U06's heads-up: 'page' would mislabel landmarks and,
+   * for type, leak typed text past deriveActionLabel's type-guard). */
+  commandSeen: string | undefined;
   shots: Array<{ action: string; label: string; noScreenshot: boolean | undefined }>;
   restore: () => void;
 }
@@ -112,10 +117,11 @@ function installDeps(
   client: { send: (m: string, p?: Record<string, unknown>) => Promise<unknown> },
   opts: { session?: boolean; screenshotPath?: string | null } = {},
 ): InstalledDeps {
-  const state: InstalledDeps = { settleSeen: undefined, shots: [], restore: () => {} };
+  const state: InstalledDeps = { settleSeen: undefined, commandSeen: undefined, shots: [], restore: () => {} };
   state.restore = __setPageInputDepsForTest({
-    withConnection: (async (_parsed: ParsedArgs, fn: (c: unknown, t: CDPTarget) => Promise<unknown>, o?: { settle?: number }) => {
+    withConnection: (async (parsed: ParsedArgs, fn: (c: unknown, t: CDPTarget) => Promise<unknown>, o?: { settle?: number }) => {
       state.settleSeen = o?.settle;
+      state.commandSeen = parsed.command;
       return fn(client, FAKE_TAB);
     }) as never,
     getActiveSession: () => (opts.session ? FAKE_SESSION : null),
@@ -199,6 +205,9 @@ test('page click: `ax:…` substring-resolves a single match and dispatches at t
       ],
     );
     assert.deepEqual(deps.shots, [{ action: 'click', label: 'ax:later', noScreenshot: undefined }]);
+    // The connection is opened as the VERB so a routed click's landmark
+    // label derives as `click:<target>`, never `page:<target>`.
+    assert.equal(deps.commandSeen, 'click');
   } finally {
     deps.restore();
   }
@@ -332,6 +341,10 @@ test('page type: without --into inserts into the focused element and echoes the 
     assert.equal(insert.params.text, 'hello world');
     // The screenshot label identifies the field, never the typed content.
     assert.deepEqual(deps.shots, [{ action: 'type', label: 'focused element', noScreenshot: undefined }]);
+    // The connection is opened as command 'type' — that is what engages
+    // deriveActionLabel's type-guard so the typed text never becomes a
+    // recorder landmark label.
+    assert.equal(deps.commandSeen, 'type');
   } finally {
     deps.restore();
   }
@@ -386,6 +399,9 @@ test('page scroll: --to bottom moves the container and auto-screenshots', async 
     assert.ok(scrollCall, 'the scroll must drive scrollTop in-page');
     assert.deepEqual(scrollCall.params.arguments, [{ value: 'bottom' }]);
     assert.deepEqual(deps.shots, [{ action: 'scroll', label: '.feed', noScreenshot: undefined }]);
+    // The connection is opened as the VERB so a routed scroll's
+    // connection-level label derives as `scroll:<target>`.
+    assert.equal(deps.commandSeen, 'scroll');
   } finally {
     deps.restore();
   }

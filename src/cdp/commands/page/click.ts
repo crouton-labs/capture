@@ -152,8 +152,11 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
   }
 
   const settle = effectiveSettle(parsed, { standalone: 1000, session: 2500 });
+  // connection.ts derives the recorder landmark label from parsed.command,
+  // which the router leaves as the branch token 'page' — restore the verb so
+  // a routed click's landmark stays `click:<target>`.
   const outcome = await deps.withConnection(
-    parsed,
+    { ...parsed, command: 'click' },
     async (client) => {
       const live = client as unknown as LiveClient;
       const resolved = await resolveLiveTarget(live, target);

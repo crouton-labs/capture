@@ -51,8 +51,12 @@ export async function cmdPageType(parsed: ParsedArgs, _args: string[]): Promise<
 
   const deps = pageInputDeps();
   const settle = effectiveSettle(parsed, { standalone: 500, session: 1500 });
+  // connection.ts derives the recorder landmark label from parsed.command —
+  // restoring the verb here is what engages deriveActionLabel's type-guard,
+  // so a routed type's landmark is `type:<field>` and NEVER the typed text
+  // (positional[0], which the generic label branch would otherwise use).
   const outcome = await deps.withConnection(
-    parsed,
+    { ...parsed, command: 'type' },
     async (client) => {
       const live = client as unknown as LiveClient;
       let dispatch: ClickDispatch | null = null;

@@ -64,8 +64,11 @@ export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promis
 
   const deps = pageInputDeps();
   const settle = effectiveSettle(parsed, { standalone: 1000, session: 2500 });
+  // connection.ts derives the recorder landmark label from parsed.command,
+  // which the router leaves as the branch token 'page' — restore the verb so
+  // a routed scroll's connection-level label stays `scroll:<target>`.
   const outcome = await deps.withConnection(
-    parsed,
+    { ...parsed, command: 'scroll' },
     async (client) => {
       const live = client as unknown as LiveClient;
       const resolved = await resolveLiveTarget(live, target);
