@@ -22,6 +22,27 @@ function getPortFromWebSocketDebuggerUrl(url?: string): number | null {
 }
 
 /**
+ * CDP network emulation belongs to a connection. Reissue the active
+ * session's requested state whenever a command opens a fresh connection to
+ * that session's target so `network offline` remains true until `online`.
+ */
+export async function applyActiveSessionNetworkConditions(
+  client: Pick<CDPClient, 'send'>,
+  session: ActiveSessionState | null,
+  targetId: string,
+): Promise<void> {
+  if (!session || session.targetId !== targetId || session.networkOffline === undefined) return;
+  const offline = session.networkOffline;
+  await client.send('Network.enable');
+  await client.send('Network.emulateNetworkConditions', {
+    offline,
+    latency: offline ? -1 : 0,
+    downloadThroughput: offline ? 0 : -1,
+    uploadThroughput: offline ? 0 : -1,
+  });
+}
+
+/**
  * Builds a short, human-readable label for this command invocation, used to
  * tag every marked (`Input.dispatch*`) CDP call the recorder-held adapter
  * makes on its behalf — e.g. `click:Send`, `type:another message`,
@@ -94,7 +115,13 @@ export async function connectForCommand(
   const activeSession = getActiveSession();
   if (activeSession?.activeRecId) {
     const routed = connectToActiveRecorder(activeSession, parsed);
-    if (routed) return routed;
+    if (routed) {
+      // The recorder bridge owns its own persistent target connection, so
+      // the persisted offline/online state must be reissued here too — the
+      // ephemeral connection that ran `network offline` has since closed.
+      await applyActiveSessionNetworkConditions(routed.client, activeSession, routed.tab.id);
+      return routed;
+    }
   }
 
   if (!parsed.target && !parsed.url) {
@@ -128,9 +155,14 @@ export async function connectForCommand(
   );
 
   const client = new CDPClient(tab.webSocketDebuggerUrl);
-  await client.waitReady();
-
-  return { client, tab };
+  try {
+    await client.waitReady();
+    await applyActiveSessionNetworkConditions(client, getActiveSession(), tab.id);
+    return { client, tab };
+  } catch (err) {
+    client.close();
+    throw err;
+  }
 }
 
 export async function withConnection<T>(

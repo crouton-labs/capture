@@ -40,6 +40,8 @@ export interface ActiveSessionState {
   stepCount: number;
   /** Unix socket of the session's held CDP bridge (`session start --hold`), if any. */
   bridgeSocket?: string | null;
+  /** Network.emulateNetworkConditions offline state for the session target. */
+  networkOffline?: boolean;
   /**
    * The id of the recording (`motion/recs/{recId}`) currently live under
    * this session, if `motion rec --start` has armed one. Cleared by
@@ -99,6 +101,11 @@ export function clearActiveRecId(): ActiveSessionState | null {
 /** Reads the active session's live recording id, or `null` if none. */
 export function getActiveRecId(): string | null {
   return getActiveSession()?.activeRecId ?? null;
+}
+
+/** Records the active session target's requested network emulation state. */
+export function setActiveNetworkOffline(offline: boolean): ActiveSessionState | null {
+  return updateActiveSession({ networkOffline: offline });
 }
 
 function sanitizeLabel(label: string): string {

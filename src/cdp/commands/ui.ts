@@ -1,10 +1,11 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import { withConnection } from '../connection.js';
 import { captureScreenshot, autoScreenshot } from '../screenshot.js';
 import { getAccessibilityTree, flattenA11yTree } from '../a11y.js';
 import { clickByName, typeText, focusAndType } from '../../interact.js';
-import { nextStepPath } from '../../session-context.js';
-import { assertUnderCaptureRoot, writeBinaryPrivate } from '../../session/artifacts.js';
+import { getActiveSession, nextStepPath } from '../../session-context.js';
+import { assertUnderCaptureRoot, writeBinaryPrivate, writeJsonPrivate } from '../../session/artifacts.js';
 import { type ParsedArgs } from '../types.js';
 
 /**
@@ -21,6 +22,20 @@ function writeScreenshot(outPath: string, png: Buffer): void {
     return;
   }
   writeBinaryPrivate(outPath, png);
+}
+
+/** Persists a successful a11y read only when it targeted the active session tab. */
+export function persistActiveSessionA11y(tree: unknown, targetId: string): string | null {
+  const session = getActiveSession();
+  if (!session || session.targetId !== targetId) return null;
+  const name = `a11y-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+  const artifactPath = path.join(session.dir, 'a11y', name);
+  writeJsonPrivate(artifactPath, {
+    capturedAt: new Date().toISOString(),
+    targetId,
+    tree,
+  });
+  return artifactPath;
 }
 
 export async function cmdScreenshot(parsed: ParsedArgs, _args: string[]): Promise<void> {
@@ -142,8 +157,9 @@ export async function cmdA11y(parsed: ParsedArgs, _args: string[]): Promise<void
   }
   const result = await withConnection(
     parsed,
-    async (client) => {
+    async (client, tab) => {
       const tree = await getAccessibilityTree(client);
+      persistActiveSessionA11y(tree, tab.id);
 
       if (parsed.json) {
         return tree;

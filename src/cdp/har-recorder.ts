@@ -7,6 +7,7 @@ interface NetworkRequest {
   method: string;
   headers: Record<string, string>;
   postData?: string;
+  /** CDP monotonic seconds. */
   timestamp: number;
 }
 
@@ -59,6 +60,8 @@ export class HARRecorder {
   private requests = new Map<string, NetworkRequest>();
   private responses = new Map<string, NetworkResponse>();
   private webSockets = new Map<string, WebSocketConnection>();
+  /** Wall-clock seconds minus CDP monotonic seconds, from Network.requestWillBeSent.wallTime. */
+  private wallClockOffsetSeconds: number | undefined;
 
   constructor(private client: CDPClient) {}
 
@@ -79,7 +82,11 @@ export class HARRecorder {
           postData?: string;
         };
         timestamp: number;
+        wallTime?: number;
       };
+      if (this.wallClockOffsetSeconds === undefined && Number.isFinite(p.wallTime)) {
+        this.wallClockOffsetSeconds = p.wallTime! - p.timestamp;
+      }
       if (!shouldRecordRequest(p.request.url)) return;
       this.requests.set(p.requestId, {
         requestId: p.requestId,
@@ -206,13 +213,20 @@ export class HARRecorder {
     });
   }
 
+  private wallClockIso(monotonicSeconds: number): string {
+    if (this.wallClockOffsetSeconds === undefined) {
+      throw new Error('Network.requestWillBeSent did not provide a wall-clock baseline');
+    }
+    return new Date((this.wallClockOffsetSeconds + monotonicSeconds) * 1000).toISOString();
+  }
+
   private buildHar(): { log: { entries: HAREntry[] } } {
     return {
       log: {
         entries: Array.from(this.responses.values()).map((resp) => {
           const req = this.requests.get(resp.requestId);
           return {
-            startedDateTime: new Date(resp.timestamp * 1000).toISOString(),
+            startedDateTime: this.wallClockIso(req?.timestamp ?? resp.timestamp),
             request: {
               method: req?.method ?? 'GET',
               url: resp.url,

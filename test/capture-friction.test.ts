@@ -48,6 +48,27 @@ class NetworkClient extends EventEmitter {
   async send(): Promise<unknown> { return {}; }
 }
 
+test('HAR request timestamps convert CDP monotonic time through the recorded wall-clock baseline', async () => {
+  const client = new NetworkClient();
+  const recorder = new HARRecorder(client as unknown as CDPClient);
+  await recorder.start();
+
+  client.emit('Network.requestWillBeSent', {
+    requestId: 'req-1',
+    timestamp: 42.25,
+    wallTime: 1_784_147_200.25,
+    request: { url: 'https://example.test/api', method: 'GET', headers: {} },
+  });
+  client.emit('Network.responseReceived', {
+    requestId: 'req-1',
+    timestamp: 42.75,
+    response: { url: 'https://example.test/api', status: 200, headers: {} },
+  });
+
+  const [entry] = recorder.finishPartial().log.entries;
+  assert.equal(entry.startedDateTime, '2026-07-15T20:26:40.250Z');
+});
+
 test('HAR recording emits WebSocket handshakes and frames as filterable entries', async () => {
   const client = new NetworkClient();
   const recorder = new HARRecorder(client as unknown as CDPClient);

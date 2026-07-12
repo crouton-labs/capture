@@ -1,6 +1,6 @@
 import { recordTraffic, navigateAndRecord, waitForLoadAndSettle } from '../record.js';
 import { withConnection, connectForCommand } from '../connection.js';
-import { getActiveSession, type ActiveSessionState } from '../../session-context.js';
+import { getActiveSession, setActiveNetworkOffline, type ActiveSessionState } from '../../session-context.js';
 import { isRecorderHeldClient, type RecorderHeldClient } from '../recorder-client.js';
 import { recDirFor, readRecorderJson } from '../motion/recorder.js';
 import { appendToHarRecording as appendToHar } from '../../har-manager.js';
@@ -275,7 +275,7 @@ export async function cmdNetwork(parsed: ParsedArgs, _args: string[]): Promise<v
   const offline = mode === 'offline';
   const result = await withConnection(
     parsed,
-    async (client) => {
+    async (client, tab) => {
       await client.send('Network.enable');
       await client.send('Network.emulateNetworkConditions', {
         offline,
@@ -283,6 +283,9 @@ export async function cmdNetwork(parsed: ParsedArgs, _args: string[]): Promise<v
         downloadThroughput: offline ? 0 : -1,
         uploadThroughput: offline ? 0 : -1,
       });
+      // Only a command aimed at the active session's own tab changes the
+      // state later independent command connections must inherit.
+      if (getActiveSession()?.targetId === tab.id) setActiveNetworkOffline(offline);
       return { network: mode, offline };
     },
     { settle: 0 },

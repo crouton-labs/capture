@@ -86,6 +86,51 @@ test('active session target, HAR, and endpoint win over stale environment values
   }
 });
 
+test('active session network emulation is retained and reapplied only to its target', async () => {
+  const { setActiveSession, clearActiveSession, setActiveNetworkOffline } = await import('../src/session-context.js');
+  const { applyActiveSessionNetworkConditions } = await import('../src/cdp/connection.js');
+  const prevNodeId = process.env.CRTR_NODE_ID;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-test-network-'));
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const client = {
+    async send(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+      calls.push({ method, params });
+      return {};
+    },
+  };
+
+  try {
+    process.env.CRTR_NODE_ID = 'test-node-network';
+    clearActiveSession();
+    setActiveSession({ sessionId: 'sess-network', dir, harId: null, targetId: 'session-target', stepCount: 0 });
+    setActiveNetworkOffline(true);
+
+    await applyActiveSessionNetworkConditions(client as never, (await import('../src/session-context.js')).getActiveSession(), 'session-target');
+    assert.deepEqual(calls, [
+      { method: 'Network.enable', params: {} },
+      { method: 'Network.emulateNetworkConditions', params: { offline: true, latency: -1, downloadThroughput: 0, uploadThroughput: 0 } },
+    ]);
+
+    await applyActiveSessionNetworkConditions(client as never, (await import('../src/session-context.js')).getActiveSession(), 'other-target');
+    assert.equal(calls.length, 2, 'a session setting must not affect an explicitly different target');
+
+    // The online transition is reapplied on the session target too, so a
+    // recorder-routed or fresh connection inherits the restored state.
+    calls.length = 0;
+    setActiveNetworkOffline(false);
+    await applyActiveSessionNetworkConditions(client as never, (await import('../src/session-context.js')).getActiveSession(), 'session-target');
+    assert.deepEqual(calls, [
+      { method: 'Network.enable', params: {} },
+      { method: 'Network.emulateNetworkConditions', params: { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 } },
+    ]);
+  } finally {
+    clearActiveSession();
+    if (prevNodeId === undefined) delete process.env.CRTR_NODE_ID;
+    else process.env.CRTR_NODE_ID = prevNodeId;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('CDP_TARGET env var still fills the target when no session is active', async () => {
   const { clearActiveSession } = await import('../src/session-context.js');
   const { parseCliArgs } = await import('../src/cdp/args.js');
