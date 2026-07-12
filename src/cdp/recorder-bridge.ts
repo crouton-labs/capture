@@ -887,9 +887,7 @@ export class RecorderSession {
     // Once fully stopped, discard — a trace batch can legitimately still arrive during the
     // 'stopping' window (between `Tracing.end` and `tracingComplete`) and must still be captured.
     if (this.state === 'stopped') return;
-    // Read the baseline from the RAW batch first — the earliest event `ts` must be captured
-    // before sanitization, which can drop or reshape events (and runs against a shape that isn't
-    // guaranteed to preserve `ts` on every kept event).
+    // Capture the earliest event timestamp as the trace baseline before recording this batch.
     this.captureFirstTraceEventTs(params.value);
     // `value` is CDP source evidence. Preserve its exact JSON structure, including `args`, in
     // events.jsonl rather than selecting or truncating fields.
