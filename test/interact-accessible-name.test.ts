@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { clickByName } from '../src/interact.js';
-import type { CDPClient } from '../src/cdp/client.js';
+import { resolveLiveTarget } from '../src/interact.js';
+import type { LiveClient } from '../src/interact.js';
 
-class InteractionClient {
+class ResolutionClient {
   readonly calls: Array<{ method: string; params: Record<string, unknown> }> = [];
 
   async send(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
@@ -18,20 +18,19 @@ class InteractionClient {
         }],
       };
     }
-    if (method === 'DOM.getBoxModel') {
-      return { model: { content: [0, 0, 100, 0, 100, 20, 0, 20] } };
-    }
     return {};
   }
 }
 
 test('accessible-name targeting ignores leading, trailing, and repeated whitespace', async () => {
-  const client = new InteractionClient();
-  const result = await clickByName(client as unknown as CDPClient, 'Token name', 'textbox');
+  const client = new ResolutionClient();
+  const resolved = await resolveLiveTarget(client as unknown as LiveClient, 'ax:Token name');
 
-  assert.deepEqual(result, { x: 50, y: 10, role: 'textbox', name: '  Token   name \n' });
-  assert.equal(
-    client.calls.filter((call) => call.method === 'Input.dispatchMouseEvent').length,
-    2,
-  );
+  assert.deepEqual(resolved, {
+    ok: true,
+    kind: 'ax',
+    backendNodeId: 42,
+    role: 'textbox',
+    name: '  Token   name \n',
+  });
 });

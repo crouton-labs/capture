@@ -3,7 +3,13 @@ import * as path from 'path';
 import { withConnection } from '../connection.js';
 import { captureScreenshot, autoScreenshot } from '../screenshot.js';
 import { getAccessibilityTree, flattenA11yTree } from '../a11y.js';
-import { clickByName, typeText, focusAndType } from '../../interact.js';
+import {
+  resolveLiveTarget,
+  clickResolved,
+  typeText,
+  focusAndType,
+  type ResolvedTarget,
+} from '../../interact.js';
 import { getActiveSession, nextStepPath } from '../../session-context.js';
 import { assertUnderCaptureRoot, writeBinaryPrivate, writeJsonPrivate } from '../../session/artifacts.js';
 import { type ParsedArgs } from '../types.js';
@@ -82,6 +88,33 @@ export async function cmdScreenshot(parsed: ParsedArgs, _args: string[]): Promis
   return;
 }
 
+/**
+ * Resolves an accessible name for this legacy surface through the unified
+ * live grammar (`ax:` = case-insensitive substring, exactly-one cardinality),
+ * turning a resolution failure into this surface's thrown-error contract.
+ */
+async function resolveAxTarget(
+  client: Parameters<typeof resolveLiveTarget>[0],
+  name: string,
+): Promise<ResolvedTarget> {
+  const resolved = await resolveLiveTarget(client, `ax:${name}`);
+  if (resolved.ok) return resolved;
+  if (resolved.code === 'unsupported-prefix') {
+    throw new Error(`Unsupported target "${name}". Accepted prefixes: ${resolved.acceptedPrefixes.join(', ')}.`);
+  }
+  if (resolved.code === 'no-match') {
+    throw new Error(
+      `No element found with accessible name "${name}". ` +
+        'Run `capture a11y --interactive` to see available elements.',
+    );
+  }
+  const summary = resolved.candidates
+    .slice(0, 5)
+    .map((c) => `  ${c.role ?? 'unknown'} "${c.name ?? ''}" (backend:${c.backendNodeId})`)
+    .join('\n');
+  throw new Error(`Multiple elements match "${name}" — retry with backend:<id>:\n${summary}`);
+}
+
 export async function cmdClick(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
     console.log(
@@ -99,7 +132,14 @@ export async function cmdClick(parsed: ParsedArgs, _args: string[]): Promise<voi
   const result = await withConnection(
     parsed,
     async (client) => {
-      const clickResult = await clickByName(client, name);
+      const target = await resolveAxTarget(client, name);
+      const dispatch = await clickResolved(client, target);
+      const clickResult = {
+        x: dispatch.x,
+        y: dispatch.y,
+        role: dispatch.role ?? 'unknown',
+        name: dispatch.name ?? name,
+      };
       const screenshot = await autoScreenshot(client, 'click', name, parsed.noScreenshot);
       return { ...clickResult, screenshot };
     },
@@ -127,7 +167,8 @@ export async function cmdType(parsed: ParsedArgs, _args: string[]): Promise<void
     async (client) => {
       let field: string | null = null;
       if (parsed.into) {
-        await focusAndType(client, parsed.into, text);
+        const target = await resolveAxTarget(client, parsed.into);
+        await focusAndType(client, target, text);
         field = parsed.into;
       } else {
         await typeText(client, text);

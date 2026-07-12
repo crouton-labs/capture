@@ -29,7 +29,7 @@ import { connectForCommand } from '../src/cdp/connection.js';
 import { isRecorderHeldClient } from '../src/cdp/recorder-client.js';
 import { type RecorderRequest, type RecorderResponse, type RecorderClockBaselines } from '../src/cdp/bridge/protocol.js';
 import { type ParsedArgs } from '../src/cdp/types.js';
-import { clickByName, focusAndType } from '../src/interact.js';
+import { resolveLiveTarget, clickResolved, focusAndType } from '../src/interact.js';
 
 // Isolates this file's active-session pointer from any other concurrent
 // `capture` usage on the machine (session-context.ts scopes its pointer
@@ -227,7 +227,9 @@ test('a composed routed click emits exactly one coherent input landmark', async 
   });
   try {
     const { client } = await connectForCommand(minimalParsedArgs('click', { positional: ['Send'] }));
-    await clickByName(client, 'Send', 'button');
+    const resolved = await resolveLiveTarget(client, 'ax:Send');
+    assert.ok(resolved.ok, 'fixture AX tree must resolve ax:Send to exactly one node');
+    await clickResolved(client, resolved);
     const mouse = fakeServer.received.filter((r) => r.type === 'cdp' && r.method === 'Input.dispatchMouseEvent') as Array<{ mark?: string; params?: { type?: string } }>;
     assert.equal(mouse.length, 2);
     assert.deepEqual(mouse.map((r) => [r.params?.type, r.mark]), [['mousePressed', 'click:Send'], ['mouseReleased', undefined]]);
@@ -276,7 +278,9 @@ test('a composed routed `type --into` emits one insertion landmark, never a dupl
     const { client } = await connectForCommand(parsed);
     assert.ok(isRecorderHeldClient(client));
 
-    await focusAndType(client, 'Password', secretText, 'textbox');
+    const resolved = await resolveLiveTarget(client, 'ax:Password');
+    assert.ok(resolved.ok, 'fixture AX tree must resolve ax:Password to exactly one node');
+    await focusAndType(client, resolved, secretText);
 
     const input = fakeServer.received.filter((r) => r.type === 'cdp' && ['Input.dispatchMouseEvent', 'Input.insertText'].includes((r as { method?: string }).method ?? '')) as Array<{ method?: string; mark?: string }>;
     assert.deepEqual(input.map((r) => [r.method, r.mark]), [

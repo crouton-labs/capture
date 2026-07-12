@@ -98,7 +98,7 @@ export async function requestRecStop(socketPath: string): Promise<RecStopRespons
  * label never touches the page, see `../timing.ts`'s
  * `withDocumentPerformanceNow`), so it must only be set on the CDP calls that
  * actually dispatch a distinct, landmark-worthy ACTION, not on every
- * incidental call a higher-level helper (`clickByName`, `focusAndType`, ...)
+ * incidental call a higher-level helper (`resolveLiveTarget`, `focusAndType`, ...)
  * happens to make while resolving a selector/name (`Accessibility.*`,
  * `DOM.*`, `Runtime.evaluate`, `Page.captureScreenshot`, ...). Every
  * `Input.dispatch*` method (mouse/key/touch) is covered by the prefix;
@@ -116,7 +116,7 @@ const MARKABLE_EXACT_METHODS = new Set(['Input.insertText', 'Page.navigate']);
 function isMarkableActionMethod(method: string, params: Record<string, unknown>): boolean {
   if (MARKABLE_EXACT_METHODS.has(method)) return true;
   // A logical input may require several low-level dispatches. Mark its
-  // initiating edge only: e.g. clickByName emits press + release, which is
+  // initiating edge only: e.g. clickResolved emits press + release, which is
   // one landmark rather than two identically-labelled observations.
   if (method === 'Input.dispatchMouseEvent') return params.type === 'mousePressed';
   if (method === 'Input.dispatchKeyEvent') return params.type === 'keyDown' || params.type === 'rawKeyDown';
