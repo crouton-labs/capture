@@ -6,7 +6,15 @@ import { walkCommand } from '../src/command-walker.js';
 import { CAPTURE_REGISTRY, type RegistryBranch, type RegistryLeaf, validateCaptureRegistry } from '../src/registry.js';
 
 const valid = (result: { valid: boolean; errors: readonly string[] }): void => assert.equal(result.valid, true, result.errors.join('; '));
-const branch = (path: string, root = CAPTURE_REGISTRY): RegistryBranch => root.children.find((child): child is RegistryBranch => child.kind === 'branch' && child.path === path)!;
+const findBranch = (path: string, root: RegistryBranch): RegistryBranch | undefined => {
+  if (root.path === path) return root;
+  for (const child of root.children) if (child.kind === 'branch') {
+    const found = findBranch(path, child);
+    if (found) return found;
+  }
+  return undefined;
+};
+const branch = (path: string, root = CAPTURE_REGISTRY): RegistryBranch => findBranch(path, root) ?? assert.fail(`missing branch ${path}`);
 const leaf = (path: string): RegistryLeaf => {
   const resolved = walkCommand(path.split(' '));
   assert.equal(resolved.kind, 'resolved');
@@ -43,27 +51,63 @@ test('root-only version precedes walking, while nested version is an invalid lea
   assert.equal(help.kind, 'help', 'help wins after path resolution without parsing bad argv');
 });
 
-test('descriptor help snapshots root, branch, and raw leaf specification structure', () => {
+test('descriptor help renders descriptor-owned measurement selection and recovery contracts', () => {
   const root = assembleHelp(CAPTURE_REGISTRY);
   const measure = assembleHelp(branch('measure'));
+  const map = assembleHelp(branch('measure map'));
   const cdp = assembleHelp(leaf('browser cdp'));
-  assert.deepEqual(root.split('\n').filter((line) => /^(capture|Globals:|I\/O contract:|Commands:|  measure )/.test(line)), [
-    'capture', 'Globals:', 'I/O contract: Leaf-declared flags and positionals are input. Structured leaves emit factual prose or JSON; exact-raw leaves emit declared bytes/text. Diagnostics are stderr; exit 0 is success and nonzero is failure.', 'Commands:', '  measure  immutable snapshots and factual rendered-structure reads. When to use: Choose this when working with immutable snapshots and factual rendered-structure reads.',
-  ]);
-  assert.deepEqual(measure.split('\n').filter((line) => /^(capture measure$|Model:|Commands:|  (snap|map|variation) )/.test(line)), [
-    'capture measure', 'Model: A snapshot is an immutable explicit observation. snap acquires it; check, geometry, map, and explain read one explicit snapshot; variation owns cross-state work. Choose by fact resolution, not fixed sequence.', 'Commands:',
-    '  snap  acquire one immutable structural snapshot. When to use: Choose this when you need acquire one immutable structural snapshot.',
-    '  map  page-wide focus, scroll/container, or paint/layer topology. When to use: Choose this when working with page-wide focus, scroll/container, or paint/layer topology.',
-    '  variation  compare states, distributions, or controlled environments. When to use: Choose this when working with compare states, distributions, or controlled environments.',
-  ]);
-  assert.deepEqual(cdp.split('\n').filter((line) => /^(capture browser cdp$|Parameters:|  --port|Constraints:|Output:|Artifact ownership:|Recovery:)/.test(line)), [
-    'capture browser cdp', 'Parameters:', '  --port <1..65535> required units=tcp-port',
+  const scroll = assembleHelp(leaf('measure map scroll'));
+  for (const section of [
+    'capture\n\nCapture — browser evidence and automation over CDP.',
+    'When to use: Choose this when working with capture — browser evidence and automation over cdp.',
+    'Model: Commands divide browser lifecycle, current-page work, rendered structure, time, traffic, endpoint control, and site-service APIs. Select evidence by modality: page owns semantics and pixels; measure owns rendered structure; motion owns time; traffic owns requests.',
+    'Globals:',
+    '-h resolves the deepest command then renders help with zero effects; --json requests JSON only from structured leaves; --version is root-only and precedes path resolution.',
+    'I/O contract: Leaf-declared flags and positionals are input. Structured leaves emit factual prose or JSON; exact-raw leaves emit declared bytes/text. Diagnostics are stderr; exit 0 is success and nonzero is failure.',
+    'Commands:',
+    '  measure  immutable snapshots and factual rendered-structure reads. When to use: Choose this when working with immutable snapshots and factual rendered-structure reads.',
+    'Next action: run capture -h',
+  ]) assert.ok(root.includes(section), section);
+  for (const row of [
+    'capture measure\n\nimmutable snapshots and factual rendered-structure reads.',
+    'When to use: Choose this when working with immutable snapshots and factual rendered-structure reads.',
+    'Model: A snapshot is an immutable explicit observation. snap acquires it; check, geometry, map, and explain read one explicit snapshot; variation owns cross-state work. Choose by fact resolution, not fixed sequence.',
+    'Next action: run capture measure -h',
+    'Choose this when no suitable snapshot exists or a later page state must be recorded; every structural read takes the returned snapshot explicitly.',
+    "Choose this for a known family's recorded population and distributions or a bounded all-family orientation; use geometry for an exact relation between two selected subjects, map for page-wide topology, and explain for one subject's causal provenance.",
+    "Choose this for two-subject rectangles, edge/center deltas, nominal intersection, and pairwise distance; these are nominal boxes, not painted-pixel coverage. Use explain for one subject's captured clipping/style provenance, map layers for page-wide stacking/paint evidence, and page screenshot for what pixels visibly appear covered, occluded, clipped, cropped, masked, or absent.",
+    'Choose this when the relationship is page-wide: traversal, container bounds and client/content extents, recorded overflow clipping and reachability, or stacking/paint/layer membership and order. Use geometry for one selected pair, explain for one selected subject, and page screenshot for what pixels visibly appear covered, occluded, clipped, cropped, masked, or absent; no map leaf infers rendered-pixel coverage.',
+    "Choose this for one subject's cascade, containing/overflow-clip/scroll chain, stacking context, size, text, or form provenance; use geometry for distance or nominal intersection between two subjects and map for topology across the page.",
+    'Choose this when the question spans snapshots or controlled environments rather than one settled state; use the direct read children for facts within one snapshot.',
+  ]) assert.ok(measure.includes(row), row);
+  for (const row of [
+    'Choose this for forward/reverse focus order, unreached focusable subjects, focus-visible facts, and scroll movement caused by traversal; use scroll for container reachability independent of focus.',
+    'Choose this for page-wide bounds, scroll containers, current/maximum offsets, client-versus-content size, overflow behavior on both axes, recorded ancestor overflow boundaries, sticky/fixed occupancy, snap points, and reachable content; use layers for stacking or paint order.',
+    "Choose this for page-wide DOMSnapshot paint rank, stacking-context/layer membership, compositor bounds/reasons, and layer-affecting declaration provenance. These facts do not establish which rendered pixels occlude another subject; use page screenshot for observed pixel coverage, geometry for one pair's nominal box relation, and scroll for overflow containment.",
+  ]) assert.ok(map.includes(row), row);
+  for (const section of [
+    'capture browser cdp\n\nsend one raw CDP request.',
+    'When to use: Choose this when you need send one raw cdp request.',
+    'Model: Exact raw raw protocol response bytes; size unbounded. --json rejects before effects with code=output_mode_unsupported, field=--json, expected=omit --json for exact raw output, and next_action=run browser cdp -h.',
+    'Parameters:\n  <method>  ^[A-Za-z][A-Za-z0-9]*\\.[A-Za-z][A-Za-z0-9]*$\n  [params-json-object]  JSON-object\n  --port <1..65535> required units=tcp-port',
     'Constraints: Required singleton --port <1..65535>, one required method, and at most one JSON-object params positional (omitted means {}). No ambient endpoint, session, target, URL, stdin, or duplicate options.',
     'Output: Exactly the matching CDP response text-frame bytes, including byte order and final-newline absence; unrelated events are omitted.',
     'Artifact ownership: Creates no artifact. Exactly one CDP request is sent only after all validation and endpoint connection succeed.',
-    'Recovery: Input failures: run capture browser cdp -h. Endpoint/transport failures: run capture browser list --port <port>; command failure: correct method or params from exact stdout response.',
-  ]);
-  assert.match(cdp, /output_mode_unsupported/);
+    'Effects: browser=true, session=false, artifact=false, environment=false',
+    'Recovery: browser_endpoint_unavailable and cdp_transport_failed: check the exact port with capture browser list --port <port> before retry. cdp_command_failed: use the exact stdout error response to correct the method or params before retry. Stable input failures (browser_cdp_port_required, invalid_port, browser_cdp_method_required, browser_cdp_method_invalid, browser_cdp_params_invalid, duplicate_option, unknown_option, unexpected_positional) recover through capture browser cdp -h.',
+    'Next action: run capture browser cdp -h',
+  ]) assert.ok(cdp.includes(section), section);
+  for (const section of [
+    'capture measure map scroll\n\nmap scroll topology and container extents.',
+    'When to use: Choose this for page-wide bounds, scroll containers, current/maximum offsets, client-versus-content size, overflow behavior on both axes, recorded ancestor overflow boundaries, sticky/fixed occupancy, snap points, and reachable content; use layers for stacking or paint order.',
+    'Parameters:\n  <snapshot>  snapshot-id-or-absolute-directory\n  --detail <container-id>\n  --limit <1..20> default=20 units=records',
+    'Constraints: One snapshot; --detail or summary --limit <1..20>, never both.',
+    'Output: Attestation; authoritative viewport and separate content extent; source coverage; exact complete relation counts/reasons and relation object key; derived manifest/scroll artifact; root then source-ordered container rows with both-axis client/content/excess/overflow; detail ancestry, boundaries, reachability, relations, provenance, and omissions.',
+    'Artifact ownership: Always creates or reuses one deterministic scroll-topology derived read.',
+    'Effects: browser=false, session=false, artifact=true, environment=false',
+    'Recovery: Correct the snapshot, --detail container id, or summary --limit (mutually exclusive) and rerun capture measure map scroll -h; scroll owns viewport, containers, client/content extent, both-axis overflow, recorded overflow boundaries, and reachability from one deterministic scroll-topology derived read.',
+    'Next action: run capture measure map scroll -h',
+  ]) assert.ok(scroll.includes(section), section);
 });
 
 test('real grammar declarations include value flags, CDP method plus optional params, and exact pagination census', () => {
@@ -75,6 +119,25 @@ test('real grammar declarations include value flags, CDP method plus optional pa
   const snap = leaf('measure snap');
   assert.equal(snap.flags.find((flag) => flag.name === '--state')?.repeatable, true);
   assert.equal(snap.flags.find((flag) => flag.name === '--state')?.values, undefined);
+  const snapHelp = assembleHelp(snap);
+  const snapConstraints = 'Constraints: Exactly one target mode from the four-row matrix: fresh-url = one absolute http(s) URL with optional --port; named-session = --session <exact-id> with no --port; explicit-target = --target <token> with optional --port; active-session = none of url/--session/--target. --port alone fails port_requires_url_or_target; --port with either session route fails port_conflicts_with_session; conflicting modes fail snapshot_target_conflict; more than one positional fails unexpected_positional. --navigation-timeout <1..60000> integer ms default 10000 is valid only in fresh-url mode (else navigation_timeout_requires_fresh_url). --settle-timeout <1..60000> integer ms default 5000. State and target tokens are case-sensitive. --state <name[:css-selector]> repeats; the nine names are normal, hover, focus, active, checked, open, disabled, invalid, all; all expands in that fixed order excluding normal and conflicts with every other state; the first colon splits name from a nonempty selector and later colons belong to the selector; duplicate normalized (state,selector) requests are rejected while distinct selectors for one state stay distinct. --viewport <width>x<height> with each dimension a base-10 safe integer 1..16384. CDP_PORT, CDP_TARGET, CDP_HAR_ID are ignored. Every syntax/mode error fails before endpoint probes, navigation, mutation, lock acquisition, or durable allocation.';
+  const snapRecovery = `Recovery: snapshot_target_required: run capture measure snap <url> [--port <port>]; intentionally persistent work may instead run capture session start --url <url> [--port <port>] and retry without target arguments, or run capture browser list and use the exact target retry below. snapshot_target_conflict: keep exactly one row from the snap mode matrix; port may qualify only fresh URL or explicit target. duplicate_option: remove the repeated occurrence and rerun the same invocation. unexpected_positional: keep exactly one absolute HTTP(S) URL or no positional. port_requires_url_or_target: add one URL or --target <token>, or remove port to use the scoped active session. port_conflicts_with_session: remove port; session routes always use their recorded endpoint. navigation_timeout_requires_fresh_url: remove the option and reacquire the existing page state, or select fresh-url mode with one absolute HTTP(S) URL when navigation timing is required. session_unavailable: run capture session list; retry only with an exact row whose lifecycle is open and target_live=true, or run capture session start --url <url> [--port <port>]. target_unavailable: run capture browser list; retry exactly capture measure snap --port <displayed-port> --target <full-displayed-id>. browser_endpoint_unavailable: run capture browser detect or capture browser list, then rerun the URL with an available displayed port. navigation_failed: correct the URL/connectivity or raise the bounded navigation timeout and rerun the same URL invocation; no snapshot was retained. temporary_target_cleanup_unconfirmed: run capture browser list --port <reported-port>; if the full reported target remains, run capture browser cdp --port <reported-port> Target.closeTarget '{"targetId":"<full-reported-id>"}', then reacquire. No snapshot or ID index entry was published. capture_restoration_unconfirmed: re-establish the intended page state and reacquire explicitly; the failed snapshot is unavailable, incomplete artifacts were removed, and no ID index entry was published. artifact_path_too_long: use a shorter Capture root or snapshot path and rerun; no durable artifact was created for the failed invocation. snapshot_publication_owner_live: let the reported live publication finish or terminate that exact owner before retrying; no index entry was published. snapshot_index_recovery_failed: restore filesystem access for the reported final/quarantine paths and retry; no index entry was published.`;
+  assert.ok(snapHelp.includes(snapConstraints), snapConstraints);
+  assert.ok(snapHelp.includes('capture measure snap\n\nacquire one immutable structural snapshot.'), 'snap title and description');
+  assert.ok(snapHelp.includes('Output: Snapshot ID and complete absolute directory; fixed target attestation {mode,session_id,session_source,target_id,endpoint,observed_url}; request metadata; settledness/timing; viewport provenance; content extent; source coverage; fixed facets; aggregate pixels/crops; immutable source-manifest access.'), 'snap output');
+  assert.ok(snapHelp.includes('Artifact ownership: Creates one immutable snapshot source tree and atomically publishes its global ID only after restoration and closure gates.'), 'snap artifact ownership');
+  assert.ok(snapHelp.includes('Effects: browser=true, session=true, artifact=true, environment=false'), 'snap effects');
+  assert.ok(snapHelp.includes(snapRecovery), snapRecovery);
+  const sweep = leaf('measure variation sweep');
+  const navigationTimeout = sweep.flags.find((flag) => flag.name === '--navigation-timeout');
+  assert.ok(navigationTimeout, 'navigation timeout is recognized before its mode error');
+  assert.equal(navigationTimeout.default, undefined, 'recognized-but-invalid sweep navigation timeout has no default');
+  const sweepHelp = assembleHelp(sweep);
+  assert.ok(sweepHelp.includes('  --navigation-timeout <1..60000> units=ms'), 'rendered sweep navigation timeout is recognized without a default');
+  assert.doesNotMatch(sweepHelp, /--navigation-timeout <1\.\.60000>[^\n]*default=/);
+  const sweepConstraints = 'Constraints: Selects one existing target: --session <exact-id>, or --target <token> with optional --port, or scoped active-session omission. --port is accepted only with --target (with --session it fails port_conflicts_with_session; alone it fails sweep_port_requires_target). A positional URL is forbidden. --navigation-timeout is recognized but always fails sweep_navigation_timeout_forbidden (no fresh-url mode here). Raw selection ignores ambient CDP_PORT, CDP_TARGET, and CDP_HAR_ID; all selection failures precede probes, locks, mutation, and allocation; resolution/locking matches snap. Axis is exactly viewport-width or viewport-height. --from and --to are safe integers 1..16384 with from < to. --samples <2..64> default 5, and samples must be <= to-from+1. A width sweep requires singleton --viewport-height <1..16384>; a height sweep requires singleton --viewport-width <1..16384>. Snap acquisition flags allowed are --freeze-animations, --settle-timeout <1..60000> default 5000, --capture-unsettled, --pixels; state-mutation flags, legacy ranges/set-files/gates are rejected before probes, locks, mutation, allocation.';
+  assert.ok(sweepHelp.includes(sweepConstraints), sweepConstraints);
+  for (const recovery of ['sweep_port_requires_target: add --target <token>, or remove --port to use the scoped active session.', 'sweep_navigation_timeout_forbidden: remove --navigation-timeout and retry the same existing-target sweep.', 'snapshot_publication_owner_live: let the reported live publication finish or terminate that exact owner before retrying; no index entry was published.', 'snapshot_index_recovery_failed: restore filesystem access for the reported final/quarantine paths and retry; no index entry was published.']) assert.ok(sweepHelp.includes(recovery), recovery);
   assert.equal(leaf('measure variation census').flags.find((flag) => flag.name === '--snapshot')?.repeatable, true);
   for (const path of ['browser detect', 'browser list', 'library list', 'library search', 'library show']) assert.equal((leaf(path).bounds?.paginated), true, path);
   for (const path of ['session list', 'session view']) assert.equal((leaf(path).bounds?.paginated), false, path);
