@@ -60,7 +60,14 @@ interface ChangeSample {
 
 interface Component {
   pixels: Array<{ x: number; y: number }>;
-  lookup: Set<number>;
+}
+
+/** Per-component facts computed in single shared passes over the label map. */
+interface ComponentStats {
+  /** Best element attribution by summed pixel overlap across rect records. */
+  attribution: { element: MotionElement; overlap: number } | null;
+  /** Pair-ordered centroids of this component's changed pixels, one per active sample. */
+  activeCentroids: Array<{ pair: number; cx: number; cy: number }>;
 }
 
 /**
@@ -147,16 +154,16 @@ export function createMotionMask(ref: RecRef): MotionMaskResult {
 
     if (!composite) throw new Error(`Recording ${ref.id} had no readable frame pairs.`);
     writeBinaryPrivate(outputPath, PNG.sync.write(composite));
-    const components = connectedComponents(composite, width, height);
+    const { components, labels } = connectedComponents(composite, width, height);
+    const stats = computeComponentStats(components, labels, width, height, samples, recordsByFile);
     const durationMs = finiteNumber(meta.durationMs) ?? 0;
     const regions = components.map((component, index) => regionForComponent(
       component,
       index + 1,
-      samples,
+      stats[index],
       frameFiles,
       recordsByFile,
       durationMs,
-      width,
       run.start,
       allFrameFiles.length,
     ));
@@ -205,13 +212,18 @@ function recordingArtifactPath(ref: RecRef, filename: string): string {
   }
 }
 
-function connectedComponents(composite: PNG, width: number, height: number): Component[] {
+/**
+ * Flood-fills the composite into connected components, plus a label map
+ * assigning each changed pixel its (size-sorted) component index. The label
+ * map replaces per-component membership Sets so later passes can classify a
+ * pixel in O(1) without per-component storage proportional to the canvas.
+ */
+function connectedComponents(composite: PNG, width: number, height: number): { components: Component[]; labels: Int32Array } {
   const seen = new Uint8Array(width * height);
   const components: Component[] = [];
   for (let start = 0; start < seen.length; start++) {
     if (seen[start] || composite.data[start * 4 + 3] === 0) continue;
     const pixels: Array<{ x: number; y: number }> = [];
-    const lookup = new Set<number>();
     const queue = [start];
     seen[start] = 1;
     while (queue.length) {
@@ -219,7 +231,6 @@ function connectedComponents(composite: PNG, width: number, height: number): Com
       const x = current % width;
       const y = Math.floor(current / width);
       pixels.push({ x, y });
-      lookup.add(current);
       for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const nx = x + dx;
         const ny = y + dy;
@@ -229,36 +240,110 @@ function connectedComponents(composite: PNG, width: number, height: number): Com
         queue.push(next);
       }
     }
-    components.push({ pixels, lookup });
+    components.push({ pixels });
   }
-  return components.sort((a, b) => b.pixels.length - a.pixels.length);
+  components.sort((a, b) => b.pixels.length - a.pixels.length);
+  const labels = new Int32Array(width * height).fill(-1);
+  components.forEach((component, index) => {
+    for (const pixel of component.pixels) labels[pixel.y * width + pixel.x] = index;
+  });
+  return { components, labels };
+}
+
+/**
+ * Computes every component's element attribution and per-sample centroids in
+ * shared single passes: one over each sample's changed pixels, one over each
+ * rect record's element areas. Per-component scans over the whole canvas (or
+ * whole pixel lists) are quadratic in practice — a full-viewport scroll
+ * produces a component of millions of pixels — so all per-component facts are
+ * accumulated against the label map instead.
+ */
+function computeComponentStats(
+  components: Component[],
+  labels: Int32Array,
+  width: number,
+  height: number,
+  samples: ChangeSample[],
+  recordsByFile: Map<string, MotionRect>,
+): ComponentStats[] {
+  const activeCentroids: ComponentStats['activeCentroids'][] = components.map(() => []);
+  for (const sample of samples) {
+    const sums = new Map<number, { sx: number; sy: number; n: number }>();
+    for (const pixel of sample.pixels) {
+      const label = labels[pixel.y * width + pixel.x];
+      if (label < 0) continue;
+      const acc = sums.get(label);
+      if (acc) {
+        acc.sx += pixel.x;
+        acc.sy += pixel.y;
+        acc.n++;
+      } else {
+        sums.set(label, { sx: pixel.x, sy: pixel.y, n: 1 });
+      }
+    }
+    for (const [label, acc] of sums) {
+      activeCentroids[label].push({ pair: sample.pair, cx: acc.sx / acc.n, cy: acc.sy / acc.n });
+    }
+  }
+
+  const candidates: Array<Map<string, { element: MotionElement; overlap: number }>> = components.map(() => new Map());
+  for (const record of recordsByFile.values()) {
+    for (const element of record.elements ?? []) {
+      if (![element.x, element.y, element.width, element.height].every((value) => typeof value === 'number' && Number.isFinite(value))) continue;
+      const key = typeof element.backendNodeId === 'number' ? `backend:${element.backendNodeId}` : elementLabel(element);
+      const x0 = Math.max(0, Math.floor(element.x!));
+      const x1 = Math.min(width, Math.ceil(element.x! + element.width!));
+      const y0 = Math.max(0, Math.floor(element.y!));
+      const y1 = Math.min(height, Math.ceil(element.y! + element.height!));
+      for (let py = y0; py < y1; py++) {
+        const rowBase = py * width;
+        for (let px = x0; px < x1; px++) {
+          const label = labels[rowBase + px];
+          if (label < 0) continue;
+          const map = candidates[label];
+          const existing = map.get(key);
+          if (existing) existing.overlap++;
+          else map.set(key, { element, overlap: 1 });
+        }
+      }
+    }
+  }
+
+  return components.map((_, index) => ({
+    attribution: [...candidates[index].values()].sort((a, b) => b.overlap - a.overlap)[0] ?? null,
+    activeCentroids: activeCentroids[index],
+  }));
 }
 
 function regionForComponent(
   component: Component,
   index: number,
-  samples: ChangeSample[],
+  stats: ComponentStats,
   frameFiles: string[],
   recordsByFile: Map<string, MotionRect>,
   durationMs: number,
-  width: number,
   runStart: number,
   totalFrames: number,
 ): MotionMaskRegion {
-  const xs = component.pixels.map((pixel) => pixel.x);
-  const ys = component.pixels.map((pixel) => pixel.y);
-  const x = Math.min(...xs);
-  const y = Math.min(...ys);
-  const right = Math.max(...xs);
-  const bottom = Math.max(...ys);
-  const activeSamples = samples.filter((sample) => sample.pixels.some((pixel) => component.lookup.has(pixel.y * width + pixel.x)));
-  const startPair = activeSamples[0]?.pair ?? 0;
-  const endPair = activeSamples.at(-1)?.pair ?? startPair;
+  // Loop instead of Math.min(...spread): a full-viewport change produces one
+  // component with millions of pixels, and spreading that overflows the call stack.
+  let x = Infinity;
+  let y = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const pixel of component.pixels) {
+    if (pixel.x < x) x = pixel.x;
+    if (pixel.x > right) right = pixel.x;
+    if (pixel.y < y) y = pixel.y;
+    if (pixel.y > bottom) bottom = pixel.y;
+  }
+  const { attribution, activeCentroids } = stats;
+  const startPair = activeCentroids[0]?.pair ?? 0;
+  const endPair = activeCentroids.at(-1)?.pair ?? startPair;
   const startMs = timestampForPair(startPair, frameFiles, recordsByFile, durationMs, runStart, totalFrames);
   const endMs = timestampForPair(endPair + 1, frameFiles, recordsByFile, durationMs, runStart, totalFrames);
-  const attribution = attributeElement(component, recordsByFile, width);
   const rectDistance = attribution ? distanceForElement(attribution.element, recordsByFile) : null;
-  const pixelDistance = centroidDistance(activeSamples, component, width);
+  const pixelDistance = activeCentroids.slice(1).reduce((total, center, i) => total + Math.hypot(center.cx - activeCentroids[i].cx, center.cy - activeCentroids[i].cy), 0);
   const distancePx = round2(rectDistance ?? pixelDistance);
   const elapsedSeconds = Math.max(0, endMs - startMs) / 1000;
   return {
@@ -276,26 +361,6 @@ function regionForComponent(
   };
 }
 
-function attributeElement(component: Component, recordsByFile: Map<string, MotionRect>, width: number): { element: MotionElement; overlap: number } | null {
-  const candidates = new Map<string, { element: MotionElement; overlap: number }>();
-  for (const record of recordsByFile.values()) {
-    for (const element of record.elements ?? []) {
-      if (![element.x, element.y, element.width, element.height].every((value) => typeof value === 'number' && Number.isFinite(value))) continue;
-      let overlap = 0;
-      for (let py = Math.max(0, Math.floor(element.y!)); py < Math.ceil(element.y! + element.height!); py++) {
-        for (let px = Math.max(0, Math.floor(element.x!)); px < Math.ceil(element.x! + element.width!); px++) {
-          if (component.lookup.has(py * width + px)) overlap++;
-        }
-      }
-      if (!overlap) continue;
-      const key = typeof element.backendNodeId === 'number' ? `backend:${element.backendNodeId}` : elementLabel(element);
-      const existing = candidates.get(key);
-      if (!existing) candidates.set(key, { element, overlap });
-      else existing.overlap += overlap;
-    }
-  }
-  return [...candidates.values()].sort((a, b) => b.overlap - a.overlap)[0] ?? null;
-}
 
 function distanceForElement(target: MotionElement, recordsByFile: Map<string, MotionRect>): number | null {
   const key = typeof target.backendNodeId === 'number' ? `backend:${target.backendNodeId}` : elementLabel(target);
@@ -306,15 +371,6 @@ function distanceForElement(target: MotionElement, recordsByFile: Map<string, Mo
     centers.push({ x: element.x! + element.width! / 2, y: element.y! + element.height! / 2 });
   }
   if (centers.length < 2) return null;
-  return centers.slice(1).reduce((total, center, i) => total + Math.hypot(center.x - centers[i].x, center.y - centers[i].y), 0);
-}
-
-function centroidDistance(samples: ChangeSample[], component: Component, width: number): number {
-  const centers = samples.map((sample) => {
-    const pixels = sample.pixels.filter((pixel) => component.lookup.has(pixel.y * width + pixel.x));
-    if (!pixels.length) return null;
-    return pixels.reduce((sum, pixel) => ({ x: sum.x + pixel.x / pixels.length, y: sum.y + pixel.y / pixels.length }), { x: 0, y: 0 });
-  }).filter((center): center is { x: number; y: number } => center !== null);
   return centers.slice(1).reduce((total, center, i) => total + Math.hypot(center.x - centers[i].x, center.y - centers[i].y), 0);
 }
 
