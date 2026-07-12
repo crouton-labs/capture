@@ -1,8 +1,8 @@
 /** Frozen immutable index/cursor contract (U1), pure types/validators only. */
 import { MAX_CURSOR_BYTES, OK, ValidationResult, combine, fail, isAscii, isObject, isSha256Hex } from './primitives.js';
 
-/** Exactly the nine leaves permitted to materialize immutable cursor indexes. */
-export type CursorLeaf = 'session list' | 'session view' | 'detect' | 'list' | 'lib list' | 'lib search' | 'lib show' | 'a11y search' | 'measure resolve';
+/** Exactly the five public leaves permitted to materialize immutable cursor indexes. */
+export type CursorLeaf = 'browser detect' | 'browser list' | 'library list' | 'library search' | 'library show';
 export interface ImmutableIndex<Row = unknown> { readonly schemaVersion: 1; readonly leaf: CursorLeaf; readonly path: string; readonly digest: string; readonly createdAt: string; readonly expiresAt: string; readonly filter: Record<string, unknown>; readonly pageSize: number; readonly order: string; readonly coverage: unknown; readonly rows: readonly Row[]; }
 /** Authenticated opaque cursor claims. The serialized token itself is <=2048 ASCII bytes. */
 export interface CursorClaims { readonly schemaVersion: 1; readonly indexDigest: string; readonly leaf: CursorLeaf; readonly filter: Record<string, unknown>; readonly nextExclusiveOrdinal: number; readonly pageSize: number; readonly expiresAt: string; readonly mac: string; }
@@ -25,7 +25,7 @@ export function validateCursorClaims(value: unknown): ValidationResult {
   const errs: ValidationResult[] = [];
   if (value.schemaVersion !== 1) errs.push(fail('cursor schemaVersion must be 1'));
   if (typeof value.indexDigest !== 'string' || !isSha256Hex(value.indexDigest)) errs.push(fail('cursor missing valid indexDigest'));
-  if (!['session list', 'session view', 'detect', 'list', 'lib list', 'lib search', 'lib show', 'a11y search', 'measure resolve'].includes(value.leaf as string)) errs.push(fail('cursor has invalid leaf'));
+  if (!['browser detect', 'browser list', 'library list', 'library search', 'library show'].includes(value.leaf as string)) errs.push(fail('cursor has invalid leaf'));
   if (!isObject(value.filter)) errs.push(fail('cursor missing filter object'));
   if (typeof value.expiresAt !== 'string' || Number.isNaN(Date.parse(value.expiresAt))) errs.push(fail('cursor missing valid expiresAt'));
   if (!(typeof value.nextExclusiveOrdinal === 'number' && Number.isSafeInteger(value.nextExclusiveOrdinal) && value.nextExclusiveOrdinal >= 0)) errs.push(fail('cursor nextExclusiveOrdinal must be nonnegative safe integer'));

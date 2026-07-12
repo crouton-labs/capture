@@ -31,5 +31,5 @@ export function hasHelpFlag(argv: readonly string[]): boolean {
 
 /** Root version is the sole accepted version spelling and wins before walking. */
 export function hasRootVersionFlag(argv: readonly string[]): boolean {
-  return argv.includes('--version');
+  return argv[0] === '--version';
 }

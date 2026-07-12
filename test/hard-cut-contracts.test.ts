@@ -83,7 +83,8 @@ test('U1 concrete derived/read/tree fixture schemas are well formed and preserve
 test('U1 cursor, motion, and release validators reject contract drift without I/O', () => {
   valid(validateCursorToken('opaque.cursor-token'));
   assert.equal(validateCursorToken('x'.repeat(2049)).valid, false);
-  valid(validateCursorClaims({ schemaVersion: 1, indexDigest: 'a'.repeat(64), leaf: 'list', filter: {}, nextExclusiveOrdinal: 0, pageSize: 20, expiresAt: '2026-07-13T00:00:00.000Z', mac: 'mac' }));
+  valid(validateCursorClaims({ schemaVersion: 1, indexDigest: 'a'.repeat(64), leaf: 'browser list', filter: {}, nextExclusiveOrdinal: 0, pageSize: 20, expiresAt: '2026-07-13T00:00:00.000Z', mac: 'mac' }));
+  assert.equal(validateCursorClaims({ schemaVersion: 1, indexDigest: 'a'.repeat(64), leaf: 'session list', filter: {}, nextExclusiveOrdinal: 0, pageSize: 20, expiresAt: '2026-07-13T00:00:00.000Z', mac: 'mac' }).valid, false);
   assert.equal(validateCursorClaims({ schemaVersion: 1, indexDigest: 'a'.repeat(64), nextExclusiveOrdinal: 0, pageSize: 20, mac: 'mac' }).valid, false);
   valid(validateMotionObservationsManifest({ schemaVersion: 2, sourceSchemaVersion: 2, recordingId: 'recording-1', observations: [], completeWithinRetainedCoverage: true, ordering: '(sourceOrdinal,kind-rank,child-rank)' }));
   assert.equal(validateMotionObservationsManifest({ schemaVersion: 1 }).valid, false);

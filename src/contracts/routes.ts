@@ -15,7 +15,17 @@ export interface RouteEffects {
 export const NO_EFFECTS: RouteEffects = { browser: false, session: false, artifact: false, environment: false };
 
 export interface PositionalSpec { readonly name: string; readonly grammar: string; readonly required: boolean; readonly variadic?: boolean; }
-export interface FlagSpec { readonly name: string; readonly grammar: string | 'boolean'; readonly values?: readonly string[]; readonly default?: string | number | boolean; readonly units?: string; }
+export interface FlagSpec {
+  readonly name: string;
+  readonly grammar: string | 'boolean';
+  /** Required singleton unless repeatable is explicitly declared. */
+  readonly required?: boolean;
+  /** Repetition is accepted; required means at least one occurrence. */
+  readonly repeatable?: boolean;
+  readonly values?: readonly string[];
+  readonly default?: string | number | boolean;
+  readonly units?: string;
+}
 export type StderrPolicy = 'empty-on-success' | 'declared-progress';
 export type LeafExit = 0 | 2 | 3 | 10 | 11 | 130 | 143;
 
@@ -47,8 +57,7 @@ export const EXPECTED_LEAF_PATHS: readonly string[] = [
 ];
 
 export const PAGINATED_LEAF_PATHS: readonly string[] = [
-  'session list', 'session view', 'browser detect', 'browser list', 'library list',
-  'library search', 'library show',
+  'browser detect', 'browser list', 'library list', 'library search', 'library show',
 ];
 
 /** Exact raw leaves are handler-owned bytes/text, never global JSON envelopes. */
@@ -73,8 +82,19 @@ function flagNames(leaf: LeafDescriptor): Set<string> { return new Set(leaf.flag
 export function validateLeafDescriptor(leaf: LeafDescriptor): ValidationResult {
   const errors: ValidationResult[] = [];
   if (!leaf.path) errors.push(fail('leaf has empty path'));
-  if (leaf.positionals.filter((p) => !p.variadic).length > 1) errors.push(fail(`leaf ${leaf.path} declares more than one primary positional`));
+  const fixed = leaf.positionals.filter((positional) => !positional.variadic);
+  const required = fixed.filter((positional) => positional.required);
+  const optional = fixed.filter((positional) => !positional.required);
+  if (required.length > 1 || optional.length > 1 || fixed.length > 2 || (fixed.length === 2 && (!fixed[0].required || fixed[1].required))) {
+    errors.push(fail(`leaf ${leaf.path} permits only one required positional followed by one optional trailing positional`));
+  }
   const names = flagNames(leaf);
+  if (names.size !== leaf.flags.length) errors.push(fail(`leaf ${leaf.path} declares duplicate flag names`));
+  for (const flag of leaf.flags) {
+    if (!flag.name.startsWith('--')) errors.push(fail(`leaf ${leaf.path} flag ${flag.name} is not a long option`));
+    if (flag.grammar === 'boolean' && (flag.values || flag.default !== undefined || flag.units)) errors.push(fail(`boolean flag ${flag.name} must not declare value metadata`));
+    if (flag.repeatable && flag.default !== undefined) errors.push(fail(`repeatable flag ${flag.name} must not declare a default`));
+  }
   for (const group of leaf.mutualExclusions) for (const name of group) if (!names.has(name)) errors.push(fail(`leaf ${leaf.path} mutual-exclusion references undeclared flag ${name}`));
   errors.push(contextualize(`leaf ${leaf.path} result`, validateResultLane(leaf.result)));
   if (leaf.result.kind === 'bounded') {
@@ -107,6 +127,7 @@ export function validateRegistry(descriptors: readonly RouteDescriptor[]): Valid
       leaves.add(descriptor.path); errors.push(validateLeafDescriptor(descriptor));
       const expectedPayload = EXACT_RAW_LEAF_PAYLOADS[descriptor.path];
       if (expectedPayload && (descriptor.result.kind !== 'exact-raw' || descriptor.result.payload !== expectedPayload)) errors.push(fail(`leaf ${descriptor.path} must be exact-raw:${expectedPayload}`));
+      if (!expectedPayload && descriptor.result.kind === 'exact-raw') errors.push(fail(`leaf ${descriptor.path} is not declared exact-raw by the public output contract`));
       const paginated = descriptor.result.kind === 'bounded' && descriptor.bounds?.paginated === true;
       if (PAGINATED_LEAF_PATHS.includes(descriptor.path) !== paginated) errors.push(fail(`leaf ${descriptor.path} pagination declaration disagrees with census`));
     } else { branches.add(descriptor.path); errors.push(validateBranchDescriptor(descriptor)); }
