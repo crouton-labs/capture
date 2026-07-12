@@ -153,12 +153,12 @@ async function armActiveRecording(
 }
 
 // ---------------------------------------------------------------------------
-// Routed `capture navigate` marks Page.navigate through the active recorder,
-// and the fragment-fix bounce only fires when the fake server reports no
-// loaderId.
+// Routed `capture page navigate` marks Page.navigate through the active
+// recorder, and the fragment-fix bounce only fires when the fake server
+// reports no loaderId.
 // ---------------------------------------------------------------------------
 
-test('cmdNavigate sends ONE combined marked Page.navigate+wait-event request through the active recorder and does NOT bounce through about:blank for a predicted cross-document nav', async () => {
+test('cmdPageNavigate sends ONE combined marked Page.navigate+wait-event request through the active recorder and does NOT bounce through about:blank for a predicted cross-document nav', async () => {
   const armed = await armActiveRecording('nav-marked', {
     cdp: (req) => {
       if (req.type === 'cdp' && req.method === 'Page.navigate') {
@@ -168,24 +168,33 @@ test('cmdNavigate sends ONE combined marked Page.navigate+wait-event request thr
       return defaultResponseFor(req);
     },
   });
-  const originalLog = console.log;
-  let stdout = '';
-  console.log = ((msg?: unknown) => {
-    stdout += String(msg);
-  }) as typeof console.log;
+  // cmdPageNavigate emits through render.ts's emitResult (process.stdout.write),
+  // so the capture TEES the stream write — node's test runner shares this
+  // same stdout for its own child-process protocol, so the original write
+  // must keep flowing; the emitted result is recovered as the one captured
+  // chunk that is a JSON object (emitResult writes it as a single chunk).
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  const chunks: string[] = [];
+  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+    chunks.push(String(chunk));
+    return (originalWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof process.stdout.write;
   try {
-    const { cmdNavigate } = await import('../src/cdp/commands/traffic.js');
-    const parsed = minimalParsedArgs('navigate', { positional: ['https://example.com/dest'] });
-    await cmdNavigate(parsed, []);
+    const { cmdPageNavigate } = await import('../src/cdp/commands/page/navigate.js');
+    const parsed = minimalParsedArgs('page', { positional: ['https://example.com/dest'], json: true });
+    await cmdPageNavigate(parsed, []);
 
-    // Exercises cmdNavigate itself end-to-end (not tryNavigateViaActiveRecorder
-    // directly) so a regression in cmdNavigate's routing call or its emitted
-    // output shape actually fails this test.
-    const output = JSON.parse(stdout) as { entryCount: number; harPath?: unknown; tabUrl: string; timedOut: boolean };
-    assert.equal(output.entryCount, 0);
-    assert.equal(output.harPath, undefined, 'harPath is omitted (JSON.stringify drops the undefined value) while routed');
-    assert.equal(output.tabUrl, 'https://example.com/dest');
-    assert.equal(output.timedOut, false);
+    // Exercises cmdPageNavigate itself end-to-end (not
+    // tryNavigateViaActiveRecorder directly) so a regression in the leaf's
+    // routing call or its emitted output shape actually fails this test.
+    const resultChunk = chunks.find((c) => c.trimStart().startsWith('{'));
+    assert.ok(resultChunk, `expected one emitted JSON result chunk on stdout; got: ${JSON.stringify(chunks)}`);
+    const output = JSON.parse(resultChunk) as { tag: string; attrs: Record<string, unknown> };
+    assert.equal(output.tag, 'navigated');
+    assert.equal(output.attrs.url, 'https://example.com/dest');
+    assert.equal(output.attrs.routed, true, 'a routed navigate must carry the routed dispatch fact');
+    assert.equal(output.attrs['timed-out'], false);
+    assert.equal(output.attrs.settle, 2000, 'the default 2000ms settle must be reported as applied');
 
     const navigateCalls = armed.fakeServer.received.filter(
       (r): r is Extract<RecorderRequest, { type: 'cdp' }> => r.type === 'cdp' && r.method === 'Page.navigate',
@@ -195,7 +204,7 @@ test('cmdNavigate sends ONE combined marked Page.navigate+wait-event request thr
     assert.equal(navigateCalls[0].mark, 'navigate:https://example.com/dest');
     assert.equal(navigateCalls[0].waitEvent, 'Page.loadEventFired', 'the wait must be bundled on the SAME request, not a separate one');
   } finally {
-    console.log = originalLog;
+    process.stdout.write = originalWrite;
     armed.cleanup();
   }
 });
@@ -219,8 +228,8 @@ test('F2: tryNavigateViaActiveRecorder bounces through about:blank and re-naviga
     },
   });
   try {
-    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/traffic.js');
-    const parsed = minimalParsedArgs('navigate', { positional: ['https://example.com/dest#frag'] });
+    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/page/navigate.js');
+    const parsed = minimalParsedArgs('page', { positional: ['https://example.com/dest#frag'] });
     const routed = await tryNavigateViaActiveRecorder(parsed, 'https://example.com/dest#frag');
 
     assert.deepEqual(routed, {
@@ -271,8 +280,8 @@ test('F2: tryNavigateViaActiveRecorder tolerates a failed/timed-out load-event w
     },
   });
   try {
-    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/traffic.js');
-    const parsed = minimalParsedArgs('navigate', { positional: ['https://example.com/dest#frag'] });
+    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/page/navigate.js');
+    const parsed = minimalParsedArgs('page', { positional: ['https://example.com/dest#frag'] });
     const routed = await tryNavigateViaActiveRecorder(parsed, 'https://example.com/dest#frag');
 
     assert.deepEqual(
@@ -298,8 +307,8 @@ test('F2: tryNavigateViaActiveRecorder tolerates a failed/timed-out load-event w
 
 test('F2: with no active session/activeRecId, the routing helper returns null without opening a recorder connection', async () => {
   clearActiveSession();
-  const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/traffic.js');
-  const parsed = minimalParsedArgs('navigate', { positional: ['https://example.com/no-session'] });
+  const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/page/navigate.js');
+  const parsed = minimalParsedArgs('page', { positional: ['https://example.com/no-session'] });
   const routed = await tryNavigateViaActiveRecorder(parsed, 'https://example.com/no-session');
   assert.equal(routed, null);
 });
@@ -318,8 +327,8 @@ test('a stale activeRecId with no routable recorder falls back to null instead o
   setActiveSession({ sessionId: 's-stale', dir: sessionDir, harId: null, targetId: null, stepCount: 0 });
   setActiveRecId(recId);
   try {
-    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/traffic.js');
-    const parsed = minimalParsedArgs('navigate', { positional: ['https://example.com/stale'] });
+    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/page/navigate.js');
+    const parsed = minimalParsedArgs('page', { positional: ['https://example.com/stale'] });
     const routed = await tryNavigateViaActiveRecorder(parsed, 'https://example.com/stale');
     assert.equal(routed, null, 'a non-routable recorder must fall back to null, not throw');
   } finally {
@@ -352,8 +361,8 @@ test('F2 (Major fix): tryNavigateViaActiveRecorder awaits Page.loadEventFired bu
     },
   });
   try {
-    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/traffic.js');
-    const parsed = minimalParsedArgs('navigate', {
+    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/page/navigate.js');
+    const parsed = minimalParsedArgs('page', {
       positional: ['https://example.com/dest'],
       settle: settleMs,
     });
@@ -400,8 +409,8 @@ test('F2 (Major fix): tryNavigateViaActiveRecorder tolerates a failed/timed-out 
     },
   });
   try {
-    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/traffic.js');
-    const parsed = minimalParsedArgs('navigate', {
+    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/page/navigate.js');
+    const parsed = minimalParsedArgs('page', {
       positional: ['https://example.com/dest'],
       settle: settleMs,
     });
@@ -587,20 +596,32 @@ test('F4: runPageScope (the cmdCdp page-scope path) issues ONE combined recorder
       timeoutMs: 2000,
     });
 
-    const originalLog = console.log;
-    let stdout = '';
-    console.log = ((msg?: unknown) => {
-      stdout += String(msg);
-    }) as typeof console.log;
+    // runPageScope emits through render.ts's emitResult (process.stdout.write)
+    // — tee the stream (node's test runner shares it for its own protocol) and
+    // recover the emitted JSON mirror chunk.
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    const chunks: string[] = [];
+    process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+      chunks.push(String(chunk));
+      return (originalWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof process.stdout.write;
     try {
-      await runPageScope('Page.reload', {}, parsed, 2000);
+      await runPageScope('Page.reload', {}, { ...parsed, json: true }, 2000);
     } finally {
-      console.log = originalLog;
+      process.stdout.write = originalWrite;
     }
 
-    const output = JSON.parse(stdout) as { result: unknown; event: unknown };
-    assert.deepEqual(output.event, eventFixture, 'the resolved event must reach stdout via client.dispatch(), not a hung/no-op .on()');
-    assert.deepEqual(output.result, { reloaded: true });
+    const resultChunk = chunks.find((c) => c.trimStart().startsWith('{'));
+    assert.ok(resultChunk, `expected one emitted JSON result chunk on stdout; got: ${JSON.stringify(chunks)}`);
+    const output = JSON.parse(resultChunk) as { tag: string; attrs: Record<string, unknown>; sections: string[] };
+    assert.equal(output.tag, 'cdp-result');
+    assert.equal(output.attrs.method, 'Page.reload');
+    assert.equal(output.attrs['wait-event'], 'Page.loadEventFired');
+    assert.ok(
+      output.sections.some((s) => s === `event: ${JSON.stringify(eventFixture)}`),
+      'the resolved event must reach stdout via client.dispatch(), not a hung/no-op .on()',
+    );
+    assert.ok(output.sections.some((s) => s === `result: ${JSON.stringify({ reloaded: true })}`));
 
     const cdpRequests = armed.fakeServer.received.filter(
       (r): r is Extract<RecorderRequest, { type: 'cdp' }> => r.type === 'cdp',
