@@ -7,6 +7,8 @@ import { PNG } from 'pngjs';
 import { CAPTURE_ROOT, ensurePrivateDir, writeBinaryPrivate, writeJsonPrivate, writeNdjsonPrivate } from '../src/session/artifacts.js';
 import { createMotionMask } from '../src/cdp/motion/mask.js';
 import { cmdMotionMask } from '../src/cdp/commands/motion/mask.js';
+import { motionMain } from '../src/cdp/commands/motion/index.js';
+import { parseCliArgs } from '../src/cdp/args.js';
 import { resolveRecRef } from '../src/output/artifact.js';
 
 function png(width: number, height: number, block?: { x: number; y: number; width: number; height: number }): Buffer {
@@ -31,6 +33,36 @@ function png(width: number, height: number, block?: { x: number; y: number; widt
     }
   }
   return PNG.sync.write(image);
+}
+
+function checkerboardPng(width: number, height: number): Buffer {
+  const image = new PNG({ width, height, fill: true });
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const offset = (y * width + x) * 4;
+      const value = (x + y) % 2 === 0 ? 0 : 255;
+      image.data[offset] = value;
+      image.data[offset + 1] = value;
+      image.data[offset + 2] = value;
+      image.data[offset + 3] = 255;
+    }
+  }
+  return PNG.sync.write(image);
+}
+
+async function captureOutput(fn: () => Promise<void>): Promise<string> {
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  let output = '';
+  process.stdout.write = ((chunk: unknown) => {
+    output += String(chunk);
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await fn();
+    return output;
+  } finally {
+    process.stdout.write = originalWrite;
+  }
 }
 
 // Importing the command leaf above verifies the renderer-facing surface resolves;
@@ -72,6 +104,41 @@ test('motion mask writes a private time-colored PNG and reports region area, dis
     assert.ok(region.velocityPxPerSecond > 0);
     assert.equal(region.element?.label, 'button#send.primary');
     assert.equal(region.element?.backendNodeId, 7);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('motion mask bounds large prose reports while --json retains every region row', async () => {
+  const sessionDir = path.join(CAPTURE_ROOT, `motion-mask-many-regions-${process.pid}-${Date.now()}`);
+  const recDir = path.join(sessionDir, 'motion', 'recs', 'rec-many-regions');
+  const framesDir = path.join(recDir, 'frames');
+  try {
+    ensurePrivateDir(framesDir);
+    writeJsonPrivate(path.join(recDir, 'meta.json'), {
+      id: 'rec-many-regions', action: 'scroll:down', frames: 2, durationMs: 100, state: 'finalized',
+    });
+    // 128 × 102 has exactly 6,528 alternating pixels. Four-neighbor component
+    // detection makes each changed pixel a distinct region, matching a noisy
+    // scroll recording without relying on a browser fixture.
+    writeBinaryPrivate(path.join(framesDir, 'frame-000000.png'), png(128, 102));
+    writeBinaryPrivate(path.join(framesDir, 'frame-000001.png'), checkerboardPng(128, 102));
+    writeNdjsonPrivate(path.join(recDir, 'rects.jsonl'), []);
+    writeNdjsonPrivate(path.join(recDir, 'events.jsonl'), []);
+
+    const prose = await captureOutput(() => motionMain(parseCliArgs(['motion', 'mask', recDir]), []));
+    assert.match(prose, /regions="6528"/);
+    assert.match(prose, /Showing 20 of 6528 size-sorted changed-pixel regions/);
+    assert.equal((prose.match(/^\d+\. x=/gm) ?? []).length, 20);
+    assert.ok(fs.existsSync(path.join(recDir, 'motion-mask.png')));
+
+    // --limit overrides the default prose cap; the truncation note follows it.
+    const limited = await captureOutput(() => motionMain(parseCliArgs(['motion', 'mask', recDir, '--limit', '5']), []));
+    assert.match(limited, /Showing 5 of 6528 size-sorted changed-pixel regions/);
+    assert.equal((limited.match(/^\d+\. x=/gm) ?? []).length, 5);
+
+    const json = JSON.parse(await captureOutput(() => motionMain(parseCliArgs(['motion', 'mask', recDir, '--json']), []))) as { sections: string[] };
+    assert.equal(json.sections.at(-1)?.split('\n').length, 6528);
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }

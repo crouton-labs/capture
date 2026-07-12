@@ -25,13 +25,15 @@ Leaves:
   rec --start                                 Composed: arm the recorder (needs an active session)
   rec --stop                                  Composed: finalize the recorder
 
-  mask <rec>                                  Motion-diff composite image + per-region facts
+  mask <rec> [--limit <N>]                    Motion-diff composite image + per-region facts
   timeline <rec> --element <sel> [--prop <prop>]
                                                Per-frame geometry/scroll/property timeline
   jank <rec>                                  Dropped-frame/long-task/layout-shift facts
   response <rec> [--action <action>]          Input-to-settled response timeline
 
 Every leaf defaults to rendered prose; --json mirrors the same result as JSON.
+\`mask\` is the one exception: default prose caps region rows (\`--limit\`, default
+20) while \`--json\` always carries every region.
 Exit codes: findings exit 0 — a report, not a failure. Input/precondition
 errors — a bad or missing recording target, an unfinalized recording, an
 unusable artifact — exit 1. No leaf accepts --gate.

@@ -4,12 +4,18 @@ import { readMeta, resolveRecRef } from '../../../output/artifact.js';
 import { emitResult, fact, formatArtifactList, line, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
 import { rejectUnsupportedGate } from '../gate-guard.js';
 
-const USAGE = `Usage: capture motion mask <rec>
+const DEFAULT_REGION_LIMIT = 20;
+
+const USAGE = `Usage: capture motion mask <rec> [--limit <N>]
 
 Motion-diff composite image over a finalized recording, plus per-region
 area, distance, velocity, and element attribution where recorded rects overlap.
 
-<rec> is a recording id in the active session or an absolute recording path.`;
+<rec> is a recording id in the active session or an absolute recording path.
+
+Options:
+  --limit <N>  Render at most N size-sorted region rows (default: ${DEFAULT_REGION_LIMIT}).
+               --json always contains every region row.`;
 
 export async function cmdMotionMask(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
@@ -29,8 +35,12 @@ export async function cmdMotionMask(parsed: ParsedArgs, _args: string[]): Promis
       return emitCommandError(parsed, 'recording_not_finalized', `Recording ${ref.id} has state ${state}; finalize it with \`capture motion rec --stop\` before creating a mask.`);
     }
     const mask = createMotionMask(ref);
-    const regionLines = mask.regions.length
-      ? mask.regions.map((region) => formatRegion(region))
+    // A recording can have many isolated changed-pixel components. Limit the
+    // human/agent prose view, while JSON keeps the complete size-sorted list.
+    const proseLimit = parsed.limit ?? DEFAULT_REGION_LIMIT;
+    const reportedRegions = parsed.json ? mask.regions : mask.regions.slice(0, proseLimit);
+    const regionLines = reportedRegions.length
+      ? reportedRegions.map((region) => formatRegion(region))
       : [text`No changed pixels were measured across the recorded frame pairs.`];
     const result: RenderableResult = {
       tag: 'motion-mask',
@@ -43,6 +53,7 @@ export async function cmdMotionMask(parsed: ParsedArgs, _args: string[]): Promis
       attrs: {
         state,
         regions: mask.regions.length,
+        'prose-regions': Math.min(mask.regions.length, proseLimit),
         image: `${ref.id}/motion-mask.png`,
         'timestamp-uncertainty': '±1 frame',
         ...(mask.caveat ? { window: 'partial (viewport resize)' } : {}),
@@ -51,6 +62,9 @@ export async function cmdMotionMask(parsed: ParsedArgs, _args: string[]): Promis
       artifacts: formatArtifactList([{ name: 'motion-mask.png', note: 'motion-diff composite' }]),
       sections: [
         ...(mask.caveat ? [line(text`${mask.caveat}`)] : []),
+        ...(mask.regions.length > proseLimit && !parsed.json
+          ? [fact`Showing ${reportedRegions.length} of ${mask.regions.length} size-sorted changed-pixel regions; --json contains all region rows.`]
+          : []),
         lineList(regionLines),
       ],
       followUp: mask.regions[0]?.element
