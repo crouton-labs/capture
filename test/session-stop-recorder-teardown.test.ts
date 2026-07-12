@@ -16,6 +16,7 @@ import {
   type RecorderJson,
 } from '../src/cdp/motion/recorder.js';
 import { sessionMain } from '../src/session/commands.js';
+import { type ParsedArgs } from '../src/cdp/types.js';
 import { type RecorderRequest, type RecorderResponse, type RecorderClockBaselines } from '../src/cdp/bridge/protocol.js';
 
 // Isolates this file's active-session pointer from any other concurrent
@@ -417,7 +418,7 @@ test('session stop finalizes an active recording before collecting the bundle, s
   const fakeServer = await startFakeRecorderServer(socketPath);
   const out = captureStdout();
   try {
-    await sessionMain(['stop', id]);
+    await sessionMain({ command: 'session', positional: ['stop', id], json: false } as ParsedArgs, []);
   } finally {
     out.restore();
     fakeServer.close();

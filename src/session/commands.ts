@@ -12,8 +12,17 @@ import {
   clearActiveSession,
 } from '../session-context.js';
 import { expandEqualsFlags } from '../cdp/args.js';
+import { type ParsedArgs } from '../cdp/types.js';
 import { startBridge, stopBridge } from '../cdp/bridge/spawn.js';
 import { teardownAnyLiveRecorderAtSessionStop } from '../cdp/motion/recorder.js';
+import {
+  emitResult,
+  fact,
+  text,
+  line,
+  lineList,
+  type FactLine,
+} from '../output/render.js';
 import {
   CAPTURE_ROOT,
   FILE_MODE,
@@ -50,9 +59,8 @@ interface BundleManifest {
   stoppedAt: string;
   duration: number;
   url: string | null;
-  screenshots: Array<{ name: string; path: string }>;
+  shots: Array<{ name: string; path: string }>;
   har: { id: string; path: string; entryCount: number } | null;
-  a11y: Array<{ name: string; path: string }>;
   logs: Array<{ name: string; path: string; lines: number }>;
   other: Array<{ name: string; path: string }>;
   /** `measure snap` artifacts collected from `measure/snaps/{id}/meta.json`. */
@@ -62,6 +70,32 @@ interface BundleManifest {
   /** Retry outcomes for viewport obligations retained by failed recorder starts. */
   pendingViewportRestorations: Array<{ recId: string; viewportRestored: boolean | null }>;
 }
+
+/** The bundle-manifest section keys `session view --filter` can address. */
+type SectionKey = 'shots' | 'har' | 'logs' | 'snaps' | 'recs' | 'other';
+
+// The `--filter <name>` query names map onto manifest section keys. Most are
+// identical; `measure`/`motion` are the query-facing names for the `snaps`/
+// `recs` keys (matching the `measure`/`motion` command branches rather than
+// the artifact-file naming), so they get an explicit mapping.
+const VIEW_FILTERS: Record<string, SectionKey> = {
+  shots: 'shots',
+  har: 'har',
+  logs: 'logs',
+  measure: 'snaps',
+  motion: 'recs',
+  other: 'other',
+};
+
+/** User-facing label for each manifest section in the unfiltered view. */
+const SECTION_LABELS: Record<SectionKey, string> = {
+  shots: 'shots',
+  har: 'har',
+  logs: 'logs',
+  snaps: 'measure',
+  recs: 'motion',
+  other: 'other',
+};
 
 function sessionDir(id: string): string {
   return path.join(CAPTURE_ROOT, id);
@@ -73,26 +107,28 @@ export interface OneshotSession {
   id: string;
   /** `{CAPTURE_ROOT}/oneshot-{id}` */
   dir: string;
-  kind: 'measure' | 'motion';
-  /** `{dir}/measure/snaps` or `{dir}/motion/recs`, already created private. */
+  kind: 'measure' | 'motion' | 'page';
+  /** `{dir}/measure/snaps`, `{dir}/motion/recs`, or `{dir}/page`, already created private. */
   artifactsDir: string;
 }
 
 /**
- * Creates the ephemeral artifact dir a URL-target `measure`/`motion` leaf
- * writes into when there is no active session: `oneshot-{id}/measure/snaps`
- * or `oneshot-{id}/motion/recs` under `CAPTURE_ROOT`. Holds only the one
- * subtree the caller needs — no HAR, no held bridge, no `.session.json` —
- * and is never registered as the active session. It is not bundled/torn
- * down by `session stop`; it accumulates under `/tmp` the same as any other
- * session dir until the OS reaps `/tmp`.
+ * Creates the ephemeral artifact dir a URL-target `measure`/`motion`/`page`
+ * leaf writes into when there is no active session: `oneshot-{id}/measure/snaps`,
+ * `oneshot-{id}/motion/recs`, or `oneshot-{id}/page` under `CAPTURE_ROOT`.
+ * Holds only the one subtree the caller needs — no HAR, no held bridge, no
+ * `.session.json` — and is never registered as the active session. It is not
+ * bundled/torn down by `session stop`; it accumulates under `/tmp` the same as
+ * any other session dir until the OS reaps `/tmp`.
  */
-export function createOneshotSession(kind: 'measure' | 'motion'): OneshotSession {
+export function createOneshotSession(kind: 'measure' | 'motion' | 'page'): OneshotSession {
   const id = `oneshot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const dir = sessionDir(id);
   const artifactsDir = kind === 'measure'
     ? path.join(dir, 'measure', 'snaps')
-    : path.join(dir, 'motion', 'recs');
+    : kind === 'motion'
+      ? path.join(dir, 'motion', 'recs')
+      : path.join(dir, 'page');
   ensurePrivateDir(artifactsDir);
   return { id, dir, kind, artifactsDir };
 }
@@ -198,70 +234,102 @@ use when starting scoped work against a page: start first, then every other capt
   start · stop · list · view — \`capture session -h\`
 </command>`;
 
+const START_USAGE = `capture session start [--url <url>] [--hold] — open a tab, record HAR, and set the active capture context.
+
+Input:
+  --url <url>    Absolute URL to open in a fresh tab. Omit to start a session
+                 with no tab (HAR-only until a later command targets one).
+  --hold         Hold one CDP browser connection open for the session's
+                 lifetime, so browser-level state (permission grants,
+                 ServiceWorker enablement) survives across separate commands.
+  --port <n>     CDP port to attach to; default is auto-detected across localhost.
+
+Output:
+  One <session id=… path=… [url=…]> block: the session id, bundle dir, opened
+  tab, HAR recording id, and held-bridge pid when applicable. --json mirrors
+  the same fields.
+
+Effects:
+  Creates a private session dir with shots/, starts a HAR recording, opens the
+  tab (with --url), optionally holds a CDP bridge, and registers the session as
+  the active capture context so subsequent commands auto-target it.`;
+
+const STOP_USAGE = `capture session stop <session-id> — finalize a session and write its bundle manifest.
+
+Input:
+  <session-id>   The session to stop (from \`capture session list\`).
+
+Output:
+  One <session-stopped id=… path=…> block: the bundle manifest path plus
+  counts (shots, HAR entries, logs, measure snaps, motion recs, other). --json
+  mirrors the same fields.
+
+Effects:
+  Kills log tailers, tears down the held CDP bridge, finalizes any live
+  recorder, collects every artifact into bundle.json, and clears the active
+  capture context.`;
+
+const LIST_USAGE = `capture session list — list active and stopped capture sessions.
+
+Input:
+  (none)
+
+Output:
+  One <sessions count=…> block, one row per session: id, status
+  (active|stopped), start time, and URL when set. --json mirrors the same rows.
+
+Effects:
+  None — reads session metadata only.`;
+
+const VIEW_USAGE = `capture session view <session-id> [--filter <section>] — read back a stopped session's bundle manifest.
+
+Input:
+  <session-id>        A stopped session (from \`capture session list\`).
+  --filter <section>  Show only one section: shots, har, logs, measure,
+                      motion, or other. measure -> manifest snaps, motion ->
+                      manifest recs.
+
+Output:
+  One <session id=… path=… [filter=…]> block: the manifest sections (shots,
+  har, logs, measure snaps, motion recs, other), or a single section under
+  --filter. --json mirrors the same fields.
+
+Effects:
+  None — reads bundle.json only.`;
+
 function printSessionHelp(): void {
-  console.log(`capture session — manage capture sessions
+  console.log(`capture session — the artifact container: opens a tab, records HAR, bundles every artifact.
 
-Sub-commands:
-  start [--url <url>] [--hold]    Start a session (opens tab, records HAR, sets active context)
-                                   --hold keeps one CDP browser connection open for the session
-  stop  <session-id>              Finalize and bundle artifacts (screenshots, HAR, a11y, logs)
-  list                            List active and stopped sessions
-  view  <id> [--filter section]   View bundle manifest; section = screenshots|har|a11y|logs|measure|motion
-                                   measure -> manifest.snaps, motion -> manifest.recs
+An active session auto-targets its tab and auto-appends recorded traffic — no
+--target/--har threading. \`stop\` finalizes the session and writes its bundle
+manifest; \`view\` reads that manifest back.
 
-Why sessions: once started, every subsequent capture command auto-fills
---target (the tab) and --har (the recording). No manual flag threading.
+  <subcommand name="start" args="[--url <url>] [--hold]" whenToUse="open a tab, start HAR, and set the active capture context"/>
+  <subcommand name="stop" args="<session-id>" whenToUse="finalize the session and write its bundle manifest"/>
+  <subcommand name="list" args="" whenToUse="show active and stopped sessions"/>
+  <subcommand name="view" args="<session-id> [--filter shots|har|logs|measure|motion|other]" whenToUse="read back a stopped session's bundle manifest"/>
 
-Typical flow:
-  1. capture session start --url http://localhost:3000
-  2. Interact — no --target / --har needed:
-       capture a11y --interactive
-       capture click "Sign in"
-       capture type "hi@me.com" --into "Email"
-       capture screenshot
-       capture navigate https://app.example.com/dashboard
-       capture har read --filter-url /api
-  3. capture session stop <session-id>
-  4. capture session view <session-id>
-
---hold: keeps one CDP browser connection open for the session's lifetime, so
-browser-level state (Browser.grantPermissions, ServiceWorker.enable, ...)
-survives across separate commands instead of reverting the instant each
-command's own connection closes. Use it together with \`capture cdp --browser\`:
-
-  capture session start --url http://localhost:3000 --hold
-  capture cdp Browser.grantPermissions --browser --params '{"origin":"http://localhost:3000","permissions":["notifications"]}'
-  capture cdp ServiceWorker.enable --browser --target <pageTabId>
-  capture cdp ServiceWorker.deliverPushMessage --browser --target <pageTabId> --params '{...}'
-  capture session stop <session-id>   # also tears down the held connection
-
-Related:  capture log <path> [--name label]   Tail a log into the active session
-See also: capture --help                      Full command list`);
+  capture session <leaf> -h    Per-leaf usage`);
 }
 
 // ============================================================================
 // Session Commands
 // ============================================================================
 
-async function start(rawArgs: string[]): Promise<void> {
-  const args = expandEqualsFlags(rawArgs);
-  let url: string | null = null;
-  let hold = false;
-
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--url' && args[i + 1]) {
-      url = args[++i];
-    } else if (args[i] === '--hold') {
-      hold = true;
-    }
+async function start(parsed: ParsedArgs): Promise<void> {
+  if (parsed.help) {
+    console.log(START_USAGE);
+    return;
   }
+
+  const url = parsed.url ?? null;
+  const hold = parsed.hold === true;
 
   const id = generateId();
   const dir = sessionDir(id);
   ensurePrivateDir(path.join(dir, 'shots'));
-  ensurePrivateDir(path.join(dir, 'a11y'));
 
-  // Start HAR recording directly
+  // Start HAR recording directly.
   let harId: string | null = null;
   try {
     const harResult = createHarRecording();
@@ -270,16 +338,20 @@ async function start(rawArgs: string[]): Promise<void> {
     console.error(`Warning: could not start HAR recording: ${err instanceof Error ? err.message : err}`);
   }
 
-  // Open tab if URL provided. Fail fast if the new target cannot attach.
   let targetId: string | null = null;
   let pageLoadTimedOut = false;
-  let cdpPort: number | null = null;
-  if (url || hold) {
-    const { detectCdpPort } = await import('../cdp.js');
-    cdpPort = await detectCdpPort();
-  }
-  if (url) {
-    try {
+  let bridgeSocket: string | null = null;
+  let bridgePid: number | null = null;
+
+  try {
+    let cdpPort: number | null = null;
+    if (url || hold) {
+      const { detectCdpPort } = await import('../cdp.js');
+      cdpPort = parsed.port ?? await detectCdpPort();
+    }
+
+    // Open tab if URL provided. Fail fast if the new target cannot attach.
+    if (url) {
       const { openTab, CDPClient } = await import('../cdp.js');
       const tab = await openTab(cdpPort!, url);
       targetId = tab.id;
@@ -308,39 +380,37 @@ async function start(rawArgs: string[]): Promise<void> {
       } finally {
         client.close();
       }
-    } catch (err) {
-      if (harId) {
-        try {
-          deleteHarRecording(harId);
-        } catch {
-          /* best effort */
-        }
-      }
-      throw err;
     }
-  }
 
-  // Hold a CDP browser connection open for the session's lifetime so
-  // browser-level state (permission grants, ServiceWorker enablement)
-  // survives across separate `capture` commands instead of reverting the
-  // instant each command's own connection closes.
-  let bridgeSocket: string | null = null;
-  let bridgePid: number | null = null;
-  if (hold) {
-    try {
+    // Hold a CDP browser connection open for the session's lifetime so
+    // browser-level state (permission grants, ServiceWorker enablement)
+    // survives across separate `capture` commands instead of reverting the
+    // instant each command's own connection closes.
+    if (hold) {
       const bridge = await startBridge(dir, cdpPort!);
       bridgeSocket = bridge.socketPath;
       bridgePid = bridge.pid;
-    } catch (err) {
-      if (harId) {
-        try {
-          deleteHarRecording(harId);
-        } catch {
-          /* best effort */
-        }
-      }
-      throw err;
     }
+  } catch (err) {
+    // Any failure after HAR creation (CDP-port detection, tab open, bridge
+    // start) leaks the newly-created HAR recording unless we clean it up here.
+    // Best-effort so a cleanup failure can't mask the real start error.
+    if (harId) {
+      try {
+        deleteHarRecording(harId);
+      } catch {
+        /* best effort */
+      }
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    emitResult({
+      tag: 'error',
+      attrs: { command: 'session start', code: 'start_failed' },
+      summary: fact`Session could not start: ${msg}`,
+      followUp: text`Ensure a CDP-enabled browser is running — \`capture tab list\` is the probe.`,
+    }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
   }
 
   const session: Session = {
@@ -358,7 +428,7 @@ async function start(rawArgs: string[]): Promise<void> {
   };
   writeJsonPrivate(sessionMetaPath(id), session);
 
-  // Set as active session for auto-defaults
+  // Set as active session for auto-defaults.
   setActiveSession({
     sessionId: id,
     dir,
@@ -369,32 +439,19 @@ async function start(rawArgs: string[]): Promise<void> {
     bridgeSocket,
   });
 
-  // Output for agent consumption
-  const result = {
-    sessionId: id,
-    bundleDir: dir,
-    harId,
-    targetId,
-    cdpPort,
-    pageLoadTimedOut,
-    shotsDir: path.join(dir, 'shots'),
-    a11yDir: path.join(dir, 'a11y'),
-    held: hold,
-  };
-  console.log(JSON.stringify(result, null, 2));
+  const rows: FactLine[] = [fact`bundle dir: ${dir}`];
+  if (targetId) rows.push(fact`tab ${targetId} opened at ${url ?? ''}`);
+  if (pageLoadTimedOut) rows.push(fact`page load timed out after 10000ms; the session stays attached to target ${targetId ?? ''}`);
+  if (harId) rows.push(fact`HAR recording ${harId} — traffic auto-appends while the session is active`);
+  if (hold) rows.push(fact`held CDP bridge: pid ${bridgePid ?? 0}`);
 
-  // Agent-friendly next steps on stderr
-  console.error(`\nCapture session started: ${id}`);
-  if (targetId) {
-    console.error(`Tab opened — session context active. No need to pass --target or --har.`);
-    if (pageLoadTimedOut) {
-      console.error(`Page load timed out, but the session is attached to target ${targetId.slice(0, 8)}. Use \`capture exec --target ${targetId.slice(0, 8)}\` or \`capture list\` if you need to recover it.`);
-    }
-  }
-  if (hold) {
-    console.error(`CDP bridge held (pid ${bridgePid}) — browser-level state now survives across commands via: capture cdp <Method> --browser [--params '<json>']`);
-  }
-  console.error(`\nWhen done: capture session stop ${id}`);
+  emitResult({
+    tag: 'session',
+    attrs: { id, path: dir, ...(url ? { url } : {}) },
+    summary: fact`Session ${id} started; it is now the active capture context.`,
+    sections: [lineList(rows)],
+    followUp: fact`capture session stop ${id}`,
+  }, { json: parsed.json });
 }
 
 export function logCommand(rawArgs: string[]): void {
@@ -452,22 +509,47 @@ export function logCommand(rawArgs: string[]): void {
   session.logPids.push({ pid, name, sourcePath: resolved });
   writeJsonPrivate(sessionMetaPath(session.id), session);
 
-  console.log(JSON.stringify({ name, sourcePath: resolved, destPath, pid }, null, 2));
+  const payload = JSON.stringify({ name, sourcePath: resolved, destPath, pid }, null, 2);
+  console.log(payload);
 }
 
-async function stop(args: string[]): Promise<void> {
-  const id = args[0];
-  if (!id) {
-    console.error('Usage: capture session stop <session-id>');
-    process.exit(1);
+async function stop(parsed: ParsedArgs): Promise<void> {
+  if (parsed.help) {
+    console.log(STOP_USAGE);
+    return;
   }
 
-  const session = readSession(id);
+  const id = parsed.positional[0];
+  if (!id) {
+    emitResult({
+      tag: 'error',
+      attrs: { command: 'session stop', code: 'missing_argument' },
+      summary: fact`received: \`session stop\`; expected: \`session stop <session-id>\`.`,
+      followUp: text`Run \`capture session list\` to find a session id.`,
+    }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
+  }
+
+  let session: Session;
+  try {
+    session = readSession(id);
+  } catch {
+    emitResult({
+      tag: 'error',
+      attrs: { command: 'session stop', code: 'unknown_session' },
+      summary: fact`No capture session found: ${id}.`,
+      followUp: text`Run \`capture session list\` to see known sessions.`,
+    }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
+  }
+
   const stoppedAt = new Date().toISOString();
   const startMs = new Date(session.startedAt).getTime();
   const duration = Date.now() - startMs;
 
-  // Kill log tailers
+  // Kill log tailers.
   for (const lp of session.logPids ?? []) {
     try { process.kill(-lp.pid, 'SIGTERM'); } catch { /* already dead */ }
   }
@@ -491,23 +573,15 @@ async function stop(args: string[]): Promise<void> {
     console.error(`Warning: could not finalize active recording: ${err instanceof Error ? err.message : err}`);
   }
 
-  // Collect screenshots
+  // Collect screenshots.
   const shotsDir = path.join(session.dir, 'shots');
-  const screenshots = fs.existsSync(shotsDir)
+  const shots = fs.existsSync(shotsDir)
     ? fs.readdirSync(shotsDir)
         .filter((f) => f.endsWith('.png') || f.endsWith('.jpg'))
         .map((f) => ({ name: f, path: path.join(shotsDir, f) }))
     : [];
 
-  // Collect a11y snapshots
-  const a11yDir = path.join(session.dir, 'a11y');
-  const a11y = fs.existsSync(a11yDir)
-    ? fs.readdirSync(a11yDir)
-        .filter((f) => f.endsWith('.json') || f.endsWith('.txt'))
-        .map((f) => ({ name: f, path: path.join(a11yDir, f) }))
-    : [];
-
-  // Collect HAR directly from har-manager
+  // Collect HAR directly from har-manager.
   let har: BundleManifest['har'] = null;
   if (session.harId) {
     try {
@@ -516,7 +590,6 @@ async function stop(args: string[]): Promise<void> {
         const harPath = path.join(session.dir, 'har.json');
         writeJsonPrivate(harPath, harData);
         har = { id: session.harId, path: harPath, entryCount: harData.log.entries.length };
-        // Clean up the HAR recording
         try { deleteHarRecording(session.harId); } catch { /* best effort */ }
       }
     } catch (err) {
@@ -524,7 +597,7 @@ async function stop(args: string[]): Promise<void> {
     }
   }
 
-  // Collect log files
+  // Collect log files.
   const logsDir = path.join(session.dir, 'logs');
   const logs = fs.existsSync(logsDir)
     ? fs.readdirSync(logsDir)
@@ -537,18 +610,18 @@ async function stop(args: string[]): Promise<void> {
         })
     : [];
 
-  // Collect measure snapshots and motion recordings
+  // Collect measure snapshots and motion recordings.
   const snaps = collectSnaps(session.dir);
   const recs = collectRecs(session.dir);
 
-  // Collect anything else dropped in the session dir
-  const knownDirs = new Set(['shots', 'a11y', 'logs', 'measure', 'motion']);
+  // Collect anything else dropped in the session dir.
+  const knownDirs = new Set(['shots', 'logs', 'measure', 'motion']);
   const knownFiles = new Set(['.session.json', 'har.json', 'bundle.json', 'bridge.sock']);
   const other = fs.readdirSync(session.dir)
     .filter((f) => !knownDirs.has(f) && !knownFiles.has(f))
     .map((f) => ({ name: f, path: path.join(session.dir, f) }));
 
-  // Clear active session context
+  // Clear active session context.
   clearActiveSession();
 
   const manifest: BundleManifest = {
@@ -557,9 +630,8 @@ async function stop(args: string[]): Promise<void> {
     stoppedAt,
     duration,
     url: session.url,
-    screenshots,
+    shots,
     har,
-    a11y,
     logs,
     other,
     snaps,
@@ -570,95 +642,197 @@ async function stop(args: string[]): Promise<void> {
   const bundlePath = path.join(session.dir, 'bundle.json');
   writeJsonPrivate(bundlePath, manifest);
 
-  console.log(JSON.stringify({
-    bundlePath,
-    summary: {
-      duration,
-      screenshots: screenshots.length,
-      harEntries: har?.entryCount ?? 0,
-      a11ySnapshots: a11y.length,
-      logFiles: logs.length,
-      otherFiles: other.length,
-      snaps: snaps.length,
-      recs: recs.length,
-      ...(recorderTeardown && !('recording' in recorderTeardown) ? { recording: { recId: recorderTeardown.recId, state: recorderTeardown.state, viewportRestored: recorderTeardown.viewportRestored } } : {}),
-      ...(recorderTeardown?.pendingViewportRestorations.length ? { pendingViewportRestorations: recorderTeardown.pendingViewportRestorations } : {}),
-    },
-  }, null, 2));
+  const rows: FactLine[] = [
+    fact`shots: ${shots.length}`,
+    har ? fact`har: ${har.entryCount} entries — ${har.path}` : fact`har: 0 entries`,
+    fact`logs: ${logs.length}`,
+    fact`measure snaps: ${snaps.length}`,
+    fact`motion recs: ${recs.length}`,
+    fact`other: ${other.length}`,
+  ];
+  if (recorderTeardown && 'recId' in recorderTeardown) {
+    rows.push(fact`recorder ${recorderTeardown.recId} finalized — state ${recorderTeardown.state}, viewport restored ${String(recorderTeardown.viewportRestored)}`);
+  }
+  if (recorderTeardown?.pendingViewportRestorations.length) {
+    rows.push(fact`pending viewport restorations: ${recorderTeardown.pendingViewportRestorations.length}`);
+  }
 
-  console.error(`\nBundle written: ${bundlePath}`);
-  console.error(`Read it: capture session view ${id}`);
+  emitResult({
+    tag: 'session-stopped',
+    attrs: { id, path: bundlePath },
+    summary: fact`Session ${id} stopped after ${duration}ms; bundle manifest written.`,
+    sections: [lineList(rows)],
+    followUp: fact`capture session view ${id}`,
+  }, { json: parsed.json });
 }
 
-function list(): void {
-  if (!fs.existsSync(CAPTURE_ROOT)) {
-    console.log('[]');
+function list(parsed: ParsedArgs): void {
+  if (parsed.help) {
+    console.log(LIST_USAGE);
     return;
   }
 
-  const sessions = fs.readdirSync(CAPTURE_ROOT)
-    .filter((d) => fs.existsSync(sessionMetaPath(d)))
-    .map((d) => {
-      const session = readSession(d);
-      const hasBundled = fs.existsSync(path.join(session.dir, 'bundle.json'));
-      return { id: session.id, startedAt: session.startedAt, url: session.url, status: hasBundled ? 'stopped' : 'active' };
-    });
+  const sessions = fs.existsSync(CAPTURE_ROOT)
+    ? fs.readdirSync(CAPTURE_ROOT)
+        .filter((d) => fs.existsSync(sessionMetaPath(d)))
+        .map((d) => {
+          const session = readSession(d);
+          const hasBundled = fs.existsSync(path.join(session.dir, 'bundle.json'));
+          return { id: session.id, startedAt: session.startedAt, url: session.url, status: hasBundled ? 'stopped' : 'active' };
+        })
+    : [];
 
-  console.log(JSON.stringify(sessions, null, 2));
-}
-
-// `session view --filter <name>` reads a manifest section by the same key
-// name for most sections (screenshots|har|a11y|logs|other), but `measure`
-// and `motion` are the query-facing filter names for the `snaps`/`recs`
-// manifest keys (matching the `measure`/`motion` command branches, not the
-// artifact-file naming), so they need an explicit alias.
-const VIEW_FILTER_ALIASES: Record<string, keyof BundleManifest> = {
-  measure: 'snaps',
-  motion: 'recs',
-};
-
-function view(rawArgs: string[]): void {
-  const args = expandEqualsFlags(rawArgs);
-  const id = args[0];
-  if (!id) {
-    console.error('Usage: capture session view <session-id> [--filter screenshots|har|a11y|logs|other|measure|motion]');
-    process.exit(1);
+  if (sessions.length === 0) {
+    emitResult({
+      tag: 'sessions',
+      attrs: { count: 0 },
+      summary: text`No capture sessions.`,
+    }, { json: parsed.json });
+    return;
   }
 
-  const session = readSession(id);
-  const bundlePath = path.join(session.dir, 'bundle.json');
+  const rows = sessions.map((s) =>
+    line(
+      fact`${s.id} — ${s.status} — started ${s.startedAt}`,
+      s.url ? fact` — ${s.url}` : text``,
+    ),
+  );
 
+  emitResult({
+    tag: 'sessions',
+    attrs: { count: sessions.length },
+    sections: [lineList(rows)],
+  }, { json: parsed.json });
+}
+
+/** Renders one manifest section into the per-entry rows the view command prints. */
+function sectionRows(manifest: BundleManifest, key: SectionKey): FactLine[] {
+  switch (key) {
+    case 'shots':
+      return manifest.shots.map((s) => fact`${s.name} — ${s.path}`);
+    case 'har':
+      return manifest.har
+        ? [fact`har.json — ${manifest.har.entryCount} entries — ${manifest.har.path}`]
+        : [];
+    case 'logs':
+      return manifest.logs.map((l) => fact`${l.name} — ${l.lines} lines — ${l.path}`);
+    case 'snaps':
+      return manifest.snaps.map((s) =>
+        fact`${s.id} — url ${s.url ?? '(none)'} — viewport ${s.viewport ?? '(none)'} — settled ${String(s.settled)} — ${s.path}`);
+    case 'recs':
+      return manifest.recs.map((r) =>
+        fact`${r.id} — ${r.action ?? '(none)'} — ${r.frames} frames, ${r.durationMs}ms, ${r.state} — ${r.path}`);
+    case 'other':
+      return manifest.other.map((o) => fact`${o.name} — ${o.path}`);
+  }
+}
+
+function view(parsed: ParsedArgs): void {
+  if (parsed.help) {
+    console.log(VIEW_USAGE);
+    return;
+  }
+
+  const id = parsed.positional[0];
+  if (!id) {
+    emitResult({
+      tag: 'error',
+      attrs: { command: 'session view', code: 'missing_argument' },
+      summary: fact`received: \`session view\`; expected: \`session view <session-id>\`.`,
+      followUp: text`Run \`capture session list\` to find a session id.`,
+    }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
+  }
+
+  let session: Session;
+  try {
+    session = readSession(id);
+  } catch {
+    emitResult({
+      tag: 'error',
+      attrs: { command: 'session view', code: 'unknown_session' },
+      summary: fact`No capture session found: ${id}.`,
+      followUp: text`Run \`capture session list\` to see known sessions.`,
+    }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
+  }
+
+  const bundlePath = path.join(session.dir, 'bundle.json');
   if (!fs.existsSync(bundlePath)) {
-    console.error(`Session ${id} hasn't been stopped yet. Run: capture session stop ${id}`);
-    process.exit(1);
+    emitResult({
+      tag: 'error',
+      attrs: { command: 'session view', code: 'session_not_stopped' },
+      summary: fact`Session ${id} has not been stopped; there is no bundle manifest yet.`,
+      followUp: fact`capture session stop ${id}`,
+    }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
   }
 
   const manifest = JSON.parse(fs.readFileSync(bundlePath, 'utf-8')) as BundleManifest;
 
-  const filter = args.find((_, i) => args[i - 1] === '--filter');
-  if (filter) {
-    const key = VIEW_FILTER_ALIASES[filter] ?? (filter as keyof BundleManifest);
-    const section = manifest[key];
-    console.log(JSON.stringify(section, null, 2));
-  } else {
-    console.log(JSON.stringify(manifest, null, 2));
-  }
-}
+  if (parsed.filter !== undefined) {
+    const key = VIEW_FILTERS[parsed.filter];
+    if (!key) {
+      emitResult({
+        tag: 'error',
+        attrs: { command: 'session view', code: 'invalid_filter' },
+        summary: fact`received: --filter ${parsed.filter}; expected one of: shots, har, logs, measure, motion, other.`,
+        followUp: text`Re-run \`capture session view <id> --filter <section>\` with a valid section.`,
+      }, { json: parsed.json });
+      process.exitCode = 1;
+      return;
+    }
 
-export async function sessionMain(args: string[]): Promise<void> {
-  const [subcommand, ...rest] = args;
-
-  if (!subcommand || hasHelpFlag(args)) {
-    printSessionHelp();
+    const rows = sectionRows(manifest, key);
+    emitResult({
+      tag: 'session',
+      attrs: { id, path: bundlePath, filter: parsed.filter },
+      summary: fact`${parsed.filter}: ${rows.length} entries`,
+      sections: [lineList(rows)],
+    }, { json: parsed.json });
     return;
   }
 
-  switch (subcommand) {
+  const keys: SectionKey[] = ['shots', 'har', 'logs', 'snaps', 'recs', 'other'];
+  const sections = keys.map((key) => {
+    const rows = sectionRows(manifest, key);
+    return lineList([
+      fact`${SECTION_LABELS[key]}: ${rows.length}`,
+      ...rows.map((r) => line(text`  `, r)),
+    ]);
+  });
+
+  emitResult({
+    tag: 'session',
+    attrs: { id, path: bundlePath },
+    summary: fact`Session ${id}: started ${manifest.startedAt}, stopped ${manifest.stoppedAt}, ${manifest.duration}ms.`,
+    sections,
+  }, { json: parsed.json });
+}
+
+export async function sessionMain(parsed: ParsedArgs, _args: string[]): Promise<void> {
+  const leaf = parsed.positional[0];
+  const rest: ParsedArgs = { ...parsed, positional: parsed.positional.slice(1) };
+
+  switch (leaf) {
     case 'start': return start(rest);
     case 'stop': return stop(rest);
-    case 'list': return list();
+    case 'list': return list(rest);
     case 'view': return view(rest);
-    default:
+    case undefined:
       printSessionHelp();
+      return;
+    default:
+      emitResult({
+        tag: 'error',
+        attrs: { command: 'session', code: 'unknown_subcommand' },
+        summary: fact`received: \`session ${leaf}\`; expected one of: start, stop, list, view.`,
+        followUp: text`Run \`capture session -h\` for usage.`,
+      }, { json: parsed.json });
+      process.exitCode = 1;
+      return;
   }
 }

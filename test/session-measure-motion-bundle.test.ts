@@ -4,6 +4,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { CAPTURE_ROOT, writeJsonPrivate } from '../src/session/artifacts.js';
+import type { ParsedArgs } from '../src/cdp/types.js';
+
+/** Builds a ParsedArgs for a `session` invocation the way dispatch does. */
+function sessionArgs(positional: string[], extra: Partial<ParsedArgs> = {}): ParsedArgs {
+  return { command: 'session', positional, json: false, ...extra } as ParsedArgs;
+}
 
 function makeSessionId(label: string): string {
   return `test-${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -30,11 +36,12 @@ function writeSessionFixture(id: string): string {
 
 function captureStdout(): { logs: string[]; restore: () => void } {
   const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (...args: unknown[]) => {
-    logs.push(args.map((a) => String(a)).join(' '));
-  };
-  return { logs, restore: () => { console.log = originalLog; } };
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: unknown) => {
+    logs.push(typeof chunk === 'string' ? chunk : String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  return { logs, restore: () => { process.stdout.write = originalWrite; } };
 }
 
 test('session stop collects measure/snaps and motion/recs meta.json into bundle.snaps/recs', async () => {
@@ -65,7 +72,7 @@ test('session stop collects measure/snaps and motion/recs meta.json into bundle.
   try {
     const out = captureStdout();
     try {
-      await sessionMain(['stop', id]);
+      await sessionMain(sessionArgs(['stop', id]), []);
     } finally {
       out.restore();
     }
@@ -73,6 +80,8 @@ test('session stop collects measure/snaps and motion/recs meta.json into bundle.
     const bundlePath = path.join(dir, 'bundle.json');
     const manifest = JSON.parse(fs.readFileSync(bundlePath, 'utf-8'));
 
+    assert.ok(!('a11y' in manifest));
+    assert.deepEqual(manifest.shots, []);
     assert.equal(manifest.snaps.length, 1);
     assert.deepEqual(manifest.snaps[0], {
       id: 'snap-a1',
@@ -113,11 +122,13 @@ test('session stop tolerates a session with no measure/motion artifacts (empty a
   try {
     const out = captureStdout();
     try {
-      await sessionMain(['stop', id]);
+      await sessionMain(sessionArgs(['stop', id]), []);
     } finally {
       out.restore();
     }
     const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf-8'));
+    assert.ok(!('a11y' in manifest));
+    assert.deepEqual(manifest.shots, []);
     assert.deepEqual(manifest.snaps, []);
     assert.deepEqual(manifest.recs, []);
   } finally {
@@ -138,23 +149,36 @@ test('session view --filter measure|motion map to manifest.snaps/manifest.recs; 
 
   try {
     const out1 = captureStdout();
-    try { await sessionMain(['stop', id]); } finally { out1.restore(); }
+    try { await sessionMain(sessionArgs(['stop', id]), []); } finally { out1.restore(); }
 
     const outMeasure = captureStdout();
-    try { await sessionMain(['view', id, '--filter', 'measure']); } finally { outMeasure.restore(); }
-    const measureSection = JSON.parse(outMeasure.logs.join(''));
-    assert.equal(measureSection.length, 1);
-    assert.equal(measureSection[0].id, 'snap-x');
+    try { await sessionMain(sessionArgs(['view', id], { filter: 'measure' }), []); } finally { outMeasure.restore(); }
+    const measureText = outMeasure.logs.join('');
+    assert.ok(measureText.startsWith('<session'), measureText);
+    assert.ok(measureText.includes('filter="measure"'), measureText);
+    assert.ok(measureText.includes('snap-x'), measureText);
 
     const outMotion = captureStdout();
-    try { await sessionMain(['view', id, '--filter', 'motion']); } finally { outMotion.restore(); }
-    assert.deepEqual(JSON.parse(outMotion.logs.join('')), []);
+    try { await sessionMain(sessionArgs(['view', id], { filter: 'motion' }), []); } finally { outMotion.restore(); }
+    const motionText = outMotion.logs.join('');
+    assert.ok(motionText.startsWith('<session'), motionText);
+    assert.ok(motionText.includes('motion: 0 entries'), motionText);
 
-    // Existing filter-by-manifest-key sections still map directly.
-    for (const section of ['screenshots', 'har', 'a11y', 'logs', 'other']) {
+    // Existing filter-by-manifest-key sections still render a <session> block.
+    for (const section of ['shots', 'har', 'logs', 'other']) {
       const out = captureStdout();
-      try { await sessionMain(['view', id, '--filter', section]); } finally { out.restore(); }
-      assert.doesNotThrow(() => JSON.parse(out.logs.join('')));
+      try { await sessionMain(sessionArgs(['view', id], { filter: section }), []); } finally { out.restore(); }
+      assert.ok(out.logs.join('').startsWith('<session'), section);
+    }
+
+    // Retired/invalid filter names are a structured error listing all six valid.
+    for (const bad of ['a11y', 'screenshots']) {
+      const out = captureStdout();
+      try { await sessionMain(sessionArgs(['view', id], { filter: bad }), []); } finally { out.restore(); }
+      const badText = out.logs.join('');
+      assert.ok(badText.includes('invalid_filter'), badText);
+      assert.ok(badText.includes('shots, har, logs, measure, motion, other'), badText);
+      process.exitCode = 0;
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -165,7 +189,7 @@ test('session --help documents the measure|motion view filters', async () => {
   const { sessionMain } = await import('../src/session/commands.js');
   const out = captureStdout();
   try {
-    await sessionMain(['view', '--help']);
+    await sessionMain(sessionArgs(['view'], { help: true }), []);
   } finally {
     out.restore();
   }
@@ -203,6 +227,77 @@ test("createOneshotSession('motion') creates a private oneshot-{id}/motion/recs 
     assert.equal(fs.statSync(oneshot.artifactsDir).mode & 0o777, 0o700);
   } finally {
     fs.rmSync(oneshot.dir, { recursive: true, force: true });
+  }
+});
+
+test('sessionMain emits unknown_subcommand for an unrecognized leaf and sets exitCode 1', async () => {
+  const { sessionMain } = await import('../src/session/commands.js');
+  const out = captureStdout();
+  try {
+    await sessionMain(sessionArgs(['bogus']), []);
+  } finally {
+    out.restore();
+  }
+  const text = out.logs.join('');
+  assert.ok(text.includes('<error'), text);
+  assert.ok(text.includes('code="unknown_subcommand"'), text);
+  assert.equal(process.exitCode, 1);
+  process.exitCode = 0;
+});
+
+test('session stop|view with no id emit missing_argument and set exitCode 1', async () => {
+  const { sessionMain } = await import('../src/session/commands.js');
+  for (const leaf of ['stop', 'view']) {
+    const out = captureStdout();
+    try {
+      await sessionMain(sessionArgs([leaf]), []);
+    } finally {
+      out.restore();
+    }
+    const text = out.logs.join('');
+    assert.ok(text.includes('<error'), `${leaf}: ${text}`);
+    assert.ok(text.includes('code="missing_argument"'), `${leaf}: ${text}`);
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  }
+});
+
+test('session stop|view with an unknown id emit unknown_session and set exitCode 1', async () => {
+  const { sessionMain } = await import('../src/session/commands.js');
+  const missing = makeSessionId('nonexistent');
+  for (const leaf of ['stop', 'view']) {
+    const out = captureStdout();
+    try {
+      await sessionMain(sessionArgs([leaf, missing]), []);
+    } finally {
+      out.restore();
+    }
+    const text = out.logs.join('');
+    assert.ok(text.includes('<error'), `${leaf}: ${text}`);
+    assert.ok(text.includes('code="unknown_session"'), `${leaf}: ${text}`);
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  }
+});
+
+test('session view on a started-but-not-stopped session emits session_not_stopped and sets exitCode 1', async () => {
+  const { sessionMain } = await import('../src/session/commands.js');
+  const id = makeSessionId('notstopped');
+  const dir = writeSessionFixture(id); // fixture has no bundle.json
+  try {
+    const out = captureStdout();
+    try {
+      await sessionMain(sessionArgs(['view', id]), []);
+    } finally {
+      out.restore();
+    }
+    const text = out.logs.join('');
+    assert.ok(text.includes('<error'), text);
+    assert.ok(text.includes('code="session_not_stopped"'), text);
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

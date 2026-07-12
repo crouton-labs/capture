@@ -78,6 +78,14 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--session' && next) {
       parsed.session = next;
       i++;
+    } else if (arg === '--hold') {
+      parsed.hold = true;
+    } else if (arg === '--filter' && next) {
+      parsed.filter = next;
+      i++;
+    } else if (arg === '--name' && next) {
+      parsed.name = next;
+      i++;
     } else if (arg === '--filter-url' && next) {
       parsed.filterUrl = next;
       i++;

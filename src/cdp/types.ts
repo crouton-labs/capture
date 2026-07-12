@@ -31,6 +31,12 @@ export interface ParsedArgs {
   all?: boolean;
   /** `--session <id>` — explicit session id override (per-leaf semantics). */
   session?: string;
+  /** `session start --hold` — hold one CDP browser connection open for the session's lifetime. */
+  hold?: boolean;
+  /** `session view --filter <section>` — show only one bundle-manifest section. */
+  filter?: string;
+  /** `session log --name <label>` */
+  name?: string;
   filterUrl?: string;
   filterStatus?: string;
   filterMethod?: string;

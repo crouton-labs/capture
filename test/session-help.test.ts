@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
+import type { ParsedArgs } from '../src/cdp/types.js';
 
 const require = createRequire(import.meta.url);
 const fs = require('node:fs') as typeof import('node:fs');
 
-const HELP_TEXT = 'capture session — manage capture sessions';
+const HELP_TEXT = 'capture session — the artifact container';
 const LOG_HELP_TEXT = 'Usage: capture log <path> [--name label] [--session <id>]';
 
 function patchFs(): () => void {
@@ -63,9 +64,9 @@ test('session help flags are read-only for all session subcommands', async () =>
 
   try {
     for (const subcommand of ['start', 'stop', 'list', 'view']) {
-      await sessionMain([subcommand, '-h']);
-      await sessionMain([subcommand, '--help']);
+      await sessionMain({ command: 'session', positional: [subcommand], help: true, json: false } as ParsedArgs, []);
     }
+    await sessionMain({ command: 'session', positional: [], json: false } as ParsedArgs, []);
 
     logCommand(['some.log', '--help']);
     logCommand(['-h']);

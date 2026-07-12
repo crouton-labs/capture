@@ -23,6 +23,7 @@ import { motionMain } from './commands/motion/index.js';
  * command plus its first positional (the branch-leaf token). */
 function gateLeafName(parsed: ParsedArgs): string {
   const branch =
+    parsed.command === 'session' ||
     parsed.command === 'page' ||
     parsed.command === 'tab' ||
     parsed.command === 'measure' ||
@@ -34,23 +35,6 @@ function gateLeafName(parsed: ParsedArgs): string {
 
 export async function cdpMain(): Promise<void> {
   const args = process.argv.slice(2);
-  const command = args[0] ?? '';
-
-  if (command === 'session') {
-    // sessionMain still parses its own raw argv (it owns flags the shared
-    // parser doesn't know: --hold, --filter, --name), so the shared gate
-    // guard scans argv directly here instead of going through parseCliArgs.
-    if (args.includes('--gate')) {
-      const sub = args[1] && !args[1].startsWith('-') ? `session ${args[1]}` : 'session';
-      rejectUnsupportedGate(
-        { gate: true, json: args.includes('--json') } as ParsedArgs,
-        sub,
-      );
-      return;
-    }
-    return sessionMain(args.slice(1));
-  }
-
   const parsed = parseCliArgs(args);
 
   if (parsed.gate && !isGateLeaf(parsed)) {
@@ -59,6 +43,7 @@ export async function cdpMain(): Promise<void> {
   }
 
   switch (parsed.command) {
+    case 'session': return sessionMain(parsed, args);
     case 'page': return pageMain(parsed, args);
     case 'tab': return tabMain(parsed, args);
     case 'lib': return cmdLib(parsed, args);
