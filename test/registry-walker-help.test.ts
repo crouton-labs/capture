@@ -55,6 +55,8 @@ test('descriptor help renders descriptor-owned measurement selection and recover
   const root = assembleHelp(CAPTURE_REGISTRY);
   const measure = assembleHelp(branch('measure'));
   const map = assembleHelp(branch('measure map'));
+  const geometry = assembleHelp(leaf('measure geometry'));
+  const explain = assembleHelp(leaf('measure explain'));
   const cdp = assembleHelp(leaf('browser cdp'));
   const scroll = assembleHelp(leaf('measure map scroll'));
   for (const section of [
@@ -65,12 +67,27 @@ test('descriptor help renders descriptor-owned measurement selection and recover
     '-h resolves the deepest command then renders help with zero effects; --json requests JSON only from structured leaves; --version is root-only and precedes path resolution.',
     'I/O contract: Leaf-declared flags and positionals are input. Structured leaves emit factual prose or JSON; exact-raw leaves emit declared bytes/text. Diagnostics are stderr; exit 0 is success and nonzero is failure.',
     'Commands:',
-    '  measure  immutable snapshots and factual rendered-structure reads. When to use: Choose this when working with immutable snapshots and factual rendered-structure reads.',
+    '  session  persistent browser-work lifecycle and artifact bundles. When to use: Choose this when work spans multiple invocations or must bundle the selected tab and artifacts; use an evidence branch for work performed inside the session.',
+    '  page  semantic/pixel orientation and actions on the selected page. When to use: Choose this when reading accessibility roles and names, capturing pixels, clicking, typing, navigating, or executing page JavaScript. For what pixels visibly appear covered, occluded, clipped, cropped, masked, or absent, screenshot is the pixel evidence; use measure only for separately named nominal geometry, captured CSS/ancestor clipping or overflow structure, stacking, paint order, computed style, or distance evidence. Capture does not infer rendered-pixel coverage.',
+    '  measure  immutable snapshots and factual rendered-structure reads. When to use: Choose this when a claim depends on nominal geometry or intersection, captured CSS/ancestor clipping or overflow structure, scroll/container extents, stacking or paint order, computed style, sampled hit reception, or distance; screenshots and accessibility trees do not establish these structural facts. Measurement does not establish what pixels visibly appear covered, occluded, clipped, cropped, masked, or absent; use page screenshot for that separate pixel evidence.',
+    '  motion  recorded temporal behavior and frame-change measurements. When to use: Choose this when measuring response timing, changed pixels over time, animation timelines, or frame/jank facts; use measure for one settled structural state.',
+    '  traffic  network recording and HAR reads. When to use: Choose this when measuring requests, responses, status, timing, or payload metadata; use page for page state and browser for endpoint/connectivity control.',
+    '  browser  CDP endpoints, tabs, connectivity, and raw protocol access. When to use: Choose this when selecting or repairing browser/tab infrastructure, opening a tab, changing network state, or invoking an otherwise-unwrapped CDP method; use a domain branch when Capture already exposes the needed evidence or action.',
+    '  library  catalog and schemas for bundled site-service functions. When to use: Choose this when selecting or reading a bundled site API function before executing it through page exec; use traffic to inspect browser network evidence.',
     'Next action: run capture -h',
   ]) assert.ok(root.includes(section), section);
+  for (const fallback of [
+    'Choose this when working with persistent browser-work lifecycle and artifact bundles.',
+    'Choose this when working with semantic/pixel orientation and actions on the selected page.',
+    'Choose this when working with immutable snapshots and factual rendered-structure reads.',
+    'Choose this when working with recorded temporal behavior and frame-change measurements.',
+    'Choose this when working with network recording and HAR reads.',
+    'Choose this when working with CDP endpoints, tabs, connectivity, and raw protocol access.',
+    'Choose this when working with catalog and schemas for bundled site-service functions.',
+  ]) assert.doesNotMatch(root, new RegExp(fallback.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   for (const row of [
     'capture measure\n\nimmutable snapshots and factual rendered-structure reads.',
-    'When to use: Choose this when working with immutable snapshots and factual rendered-structure reads.',
+    'When to use: Choose this when a claim depends on nominal geometry or intersection, captured CSS/ancestor clipping or overflow structure, scroll/container extents, stacking or paint order, computed style, sampled hit reception, or distance; screenshots and accessibility trees do not establish these structural facts. Measurement does not establish what pixels visibly appear covered, occluded, clipped, cropped, masked, or absent; use page screenshot for that separate pixel evidence.',
     'Model: A snapshot is an immutable explicit observation. snap acquires it; check, geometry, map, and explain read one explicit snapshot; variation owns cross-state work. Choose by fact resolution, not fixed sequence.',
     'Next action: run capture measure -h',
     'Choose this when no suitable snapshot exists or a later page state must be recorded; every structural read takes the returned snapshot explicitly.',
@@ -85,6 +102,26 @@ test('descriptor help renders descriptor-owned measurement selection and recover
     'Choose this for page-wide bounds, scroll containers, current/maximum offsets, client-versus-content size, overflow behavior on both axes, recorded ancestor overflow boundaries, sticky/fixed occupancy, snap points, and reachable content; use layers for stacking or paint order.',
     "Choose this for page-wide DOMSnapshot paint rank, stacking-context/layer membership, compositor bounds/reasons, and layer-affecting declaration provenance. These facts do not establish which rendered pixels occlude another subject; use page screenshot for observed pixel coverage, geometry for one pair's nominal box relation, and scroll for overflow containment.",
   ]) assert.ok(map.includes(row), row);
+  for (const section of [
+    'capture measure geometry\n\nmeasure nominal relation between two subjects.',
+    'Parameters:\n  <snapshot>  snapshot-id-or-absolute-directory\n  --first <css:<selector> | backend:<id> | axid:<id> | ax:<name> | text:<text>> required\n  --second <css:<selector> | backend:<id> | axid:<id> | ax:<name> | text:<text>> required',
+    'Output: Explicit snapshot; ordered --first and --second subject refs (css:, backend:, axid:, ax:, text:); attestation and ordered identities; page-css-v1 coordinate authority/comparability; each subject border_aabb availability/provenance; available border AABBs; corresponding-edge and center deltas (second - first); signed separations (positive gap, zero touch, negative overlap); minimum distance as the Euclidean norm of nonnegative gaps (zero for touching/intersecting boxes); exact intersection relation/AABB/area: positive-area, edge-touching, or disjoint with null intersection_aabb and zero area; source coverage; exactly one immutable snapshot root, fixed meta.json locator, bounded manifest keys; caveats. It makes no paint, clipping, or pixel-coverage claim; content_quads_union_aabb is separately named provenance and never satisfies a border field.',
+    'Artifact ownership: Reads immutable snapshot artifacts only and creates no artifact, derived read, crop, browser mutation, or session mutation.',
+    'Recovery: If the explicit snapshot or either ordered subject reference is unavailable, inspect its exact resolver reason and source availability, then retry with one available css:, backend:, axid:, ax:, or text: reference from that immutable snapshot. If either border_aabb is unavailable, pair scalars remain unavailable; reacquire a snapshot only when the required source evidence was not captured.',
+  ]) assert.ok(geometry.includes(section), section);
+  assert.doesNotMatch(geometry, /Identity and attestation; fixed summary and scope; source coverage; leaf-owned evidence access; omission metadata; bounded records; static follow-up\./);
+  assert.doesNotMatch(geometry, /Reads declared evidence only and creates no projection-owned artifact\./);
+  assert.doesNotMatch(geometry, /Correct the reported input and run capture measure geometry -h\./);
+  for (const section of [
+    'capture measure explain\n\nread one subject’s structural provenance.',
+    'Constraints: One explicit snapshot and required singleton --subject element reference; optional bounded --size, --text, and --form sections.',
+    'Output: Explicit snapshot and --subject; attestation/identity; cascade winners; containing block; stacking context; scroll/overflow chain; independently named normalized border_aabb, content_quads_union_aabb, and requested box/source bounds with availability; requested sections; source coverage; one immutable snapshot root, fixed meta.json locator, bounded manifest keys covering consulted and omitted retained arrays; omission metadata.',
+    'Artifact ownership: Reads immutable snapshot artifacts only and creates no artifact, derived read, crop, browser mutation, or session mutation.',
+    'Recovery: If the explicit snapshot or --subject is unavailable, inspect its exact resolver reason and source availability, then retry with one available css:, backend:, axid:, ax:, or text: reference from that immutable snapshot. Requested size, text, or form evidence remains unavailable when its captured source was omitted; reacquire only when that source evidence is required.',
+  ]) assert.ok(explain.includes(section), section);
+  assert.doesNotMatch(explain, /Identity and attestation; fixed summary and scope; source coverage; leaf-owned evidence access; omission metadata; bounded records; static follow-up\./);
+  assert.doesNotMatch(explain, /Reads declared evidence only and creates no projection-owned artifact\./);
+  assert.doesNotMatch(explain, /Correct the reported input and run capture measure explain -h\./);
   for (const section of [
     'capture browser cdp\n\nsend one raw CDP request.',
     'When to use: Choose this when you need send one raw cdp request.',
