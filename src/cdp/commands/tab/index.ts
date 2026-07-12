@@ -8,6 +8,7 @@
  * capture command does — leaf commands never need to know they're nested
  * under a branch.
  */
+import { invalidInput } from '../../../errors.js';
 import { type ParsedArgs } from '../../types.js';
 import { cmdTabList } from './list.js';
 import { cmdTabOpen } from './open.js';
@@ -51,7 +52,6 @@ export async function tabMain(parsed: ParsedArgs, args: string[]): Promise<void>
       console.log(TAB_USAGE);
       return;
     default:
-      console.error(`Unknown tab leaf: ${leaf}\n\n${TAB_USAGE}`);
-      process.exit(1);
+      throw invalidInput(`Unknown tab leaf: ${leaf}.`, 'unknown_command');
   }
 }

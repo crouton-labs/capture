@@ -229,7 +229,7 @@ test('command renders a bounded cross-kind sample with a factual rollup, while J
   for (const limit of ['0', '1.9', 'nope', 'Infinity']) {
     const invalid = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--limit', limit], { encoding: 'utf8' });
     assert.equal(invalid.status, 1, `${limit}: ${invalid.stdout}`);
-    assert.match(invalid.stdout, /--limit must be a positive integer/);
+    assert.match(invalid.stdout, /Invalid --limit/);
   }
   const customLimit = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--limit', '3'], { encoding: 'utf8' });
   assert.equal(customLimit.status, 0);

@@ -12,7 +12,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { cdpMain } from './cdp.js';
-import { emitResult, fact, text } from './output/render.js';
+import { captureError, failureResult } from './errors.js';
+import { emitResult } from './output/render.js';
 import { COMMAND_BLOCK as SESSION_BLOCK } from './session/commands.js';
 import { COMMAND_BLOCK as PAGE_BLOCK } from './cdp/commands/page/index.js';
 import { COMMAND_BLOCK as TAB_BLOCK } from './cdp/commands/tab/index.js';
@@ -82,19 +83,14 @@ async function main(): Promise<void> {
     return cdpMain();
   }
 
-  emitResult(
-    {
-      tag: 'error',
-      attrs: { code: 'unknown_command' },
-      summary: fact`received: unknown command \`${command}\`; expected one of the seven roots: session, page, tab, measure, motion, cdp, lib.`,
-      followUp: text`Run \`capture -h\` for the assembled command tree.`,
-    },
-    { json: process.argv.includes('--json') },
+  throw captureError(
+    'invocation',
+    'unknown_command',
+    `Unknown command ${command}; expected one of the seven roots: session, page, tab, measure, motion, cdp, lib.`,
   );
-  process.exit(1);
 }
 
-main().catch((err) => {
-  console.error(err.message);
-  process.exit(1);
+main().catch((error) => {
+  emitResult(failureResult(error), { json: process.argv.includes('--json') });
+  process.exitCode = 1;
 });

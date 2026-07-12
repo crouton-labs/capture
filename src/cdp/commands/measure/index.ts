@@ -7,6 +7,7 @@
  * command does — leaf commands never need to know they're nested under a
  * branch.
  */
+import { invalidInput } from '../../../errors.js';
 import { type ParsedArgs } from '../../types.js';
 import { cmdMeasureSnap } from './snap.js';
 import { cmdMeasureCheck } from './check.js';
@@ -79,8 +80,7 @@ export async function measureMain(parsed: ParsedArgs, args: string[]): Promise<v
       console.log(MEASURE_USAGE);
       return;
     default:
-      console.error(`Unknown measure leaf: ${leaf}\n\n${MEASURE_USAGE}`);
-      process.exit(1);
+      throw invalidInput(`Unknown measure leaf: ${leaf}.`, 'unknown_command');
   }
 }
 
@@ -101,7 +101,6 @@ async function measureMapMain(parsed: ParsedArgs, args: string[]): Promise<void>
       console.log(MEASURE_MAP_USAGE);
       return;
     default:
-      console.error(`Unknown measure map leaf: ${sub}\n\n${MEASURE_MAP_USAGE}`);
-      process.exit(1);
+      throw invalidInput(`Unknown measure map leaf: ${sub}.`, 'unknown_command');
   }
 }

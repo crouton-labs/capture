@@ -56,11 +56,6 @@ export async function cmdMeasureCheck(parsed: ParsedArgs, _args: string[]): Prom
     process.exitCode = 1;
     return;
   }
-  if (parsed.limitRaw !== undefined && !/^[1-9]\d*$/.test(parsed.limitRaw)) {
-    emitResult({ tag: 'error', attrs: { command: 'measure check', status: 'invalid_input' }, summary: text`--limit must be a positive integer.` }, { json: parsed.json });
-    process.exitCode = 1;
-    return;
-  }
   try {
     const target = parsed.positional[0];
     if (!target) throw new Error('missing snapshot target; pass a snapshot id/path or URL');

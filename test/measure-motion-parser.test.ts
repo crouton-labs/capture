@@ -1,32 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { CaptureError } from '../src/errors.js';
 import { parseCliArgs } from '../src/cdp/args.js';
 
-/** Run `fn` with `process.exit` trapped to throw and `console.error`
- * captured, restoring both in `finally`. Mirrors test/session-help.test.ts's
- * pattern for exercising parseCliArgs' `process.exit(1)` unknown-flag path
- * without actually exiting the test runner. */
-function withExitTrap<T>(fn: () => T): { result?: T; threw?: unknown; errors: string[] } {
-  const restoreExit = process.exit;
-  const restoreError = console.error;
-  const errors: string[] = [];
-
-  console.error = (...args: unknown[]) => {
-    errors.push(args.map((a) => String(a)).join(' '));
-  };
-  process.exit = ((code?: number) => {
-    throw new Error(`process.exit(${code ?? 0})`);
-  }) as typeof process.exit;
-
-  try {
-    return { result: fn(), errors };
-  } catch (threw) {
-    return { threw, errors };
-  } finally {
-    process.exit = restoreExit;
-    console.error = restoreError;
-  }
+function assertCaptureError(fn: () => unknown, code = 'invalid_input'): void {
+  assert.throws(fn, (error: unknown) => error instanceof CaptureError && error.descriptor.code === code);
 }
 
 test('measure snap flags parse correctly', () => {
@@ -189,20 +168,66 @@ test('motion timeline/response flags parse correctly', () => {
   assert.equal(response.action, 'click:button.send-btn');
 });
 
-test('unknown flags are still rejected for a new branch command', () => {
-  const { threw, errors } = withExitTrap(() => parseCliArgs(['measure', 'snap', '--nonsense']));
-
-  assert.ok(threw instanceof Error);
-  assert.match((threw as Error).message, /process\.exit\(1\)/);
-  assert.ok(errors.some((e) => e.includes('Unknown flag: --nonsense')));
+test('unknown flags throw typed invocation failures', () => {
+  assertCaptureError(() => parseCliArgs(['measure', 'snap', '--nonsense']), 'unknown_flag');
+  assertCaptureError(() => parseCliArgs(['screenshot', '--nonsense']), 'unknown_flag');
 });
 
-test('unknown flags are still rejected for an existing (pre-U02) command', () => {
-  const { threw, errors } = withExitTrap(() => parseCliArgs(['screenshot', '--nonsense']));
+test('exact numeric domains reject partials, signs, exponents, and overflow', () => {
+  const cases: Array<{ flag: string; values: string[] }> = [
+    { flag: '--port', values: ['0', '65536', '1x', '-1', '+1', '1e2', 'Infinity'] },
+    { flag: '--settle', values: ['-1', '+1', '1.1', '1x', '1e2', '2147483648'] },
+    { flag: '--timeout', values: ['0', '-1', '1.1', '1x', '1e2', '2147483648'] },
+    { flag: '--settle-timeout', values: ['0', '-1', '1.1', '1x', '1e2', '2147483648'] },
+    { flag: '--limit', values: ['0', '-1', '+1', '1.1', '1e2', '9007199254740992'] },
+    { flag: '--occurrence', values: ['0', '-1', '+1', '1.1', '1e2', '9007199254740992'] },
+    { flag: '--duration', values: ['-1', '+1', '1e2', '1x', 'Infinity', '2147483.648', '2147483.6470000001', '2147483.6470000000000000000000000001'] },
+  ];
+  for (const { flag, values } of cases) for (const value of values) assertCaptureError(() => parseCliArgs(['motion', 'rec', flag, value]));
+});
 
-  assert.ok(threw instanceof Error);
-  assert.match((threw as Error).message, /process\.exit\(1\)/);
-  assert.ok(errors.some((e) => e.includes('Unknown flag: --nonsense')));
+test('exact numeric domains retain valid boundaries and duration stores milliseconds', () => {
+  assert.equal(parseCliArgs(['tab', 'list', '--port', '1']).port, 1);
+  assert.equal(parseCliArgs(['tab', 'list', '--port', '65535']).port, 65535);
+  assert.equal(parseCliArgs(['page', 'click', '--settle', '0']).settle, 0);
+  assert.equal(parseCliArgs(['page', 'click', '--settle', '2147483647']).settle, 2147483647);
+  assert.equal(parseCliArgs(['cdp', '--timeout', '1']).timeoutMs, 1);
+  assert.equal(parseCliArgs(['motion', 'rec', '--duration', '0.001']).duration, 1);
+  assert.equal(parseCliArgs(['motion', 'rec', '--duration', '2147483.647']).duration, 2147483647);
+});
+
+test('duration compares decimal seconds to the timer-ms bound exactly', () => {
+  const cases: Array<{ token: string; milliseconds?: number }> = [
+    { token: '2147483.645', milliseconds: 2147483645 },
+    { token: '2147483.647', milliseconds: 2147483647 },
+    { token: '2147483.647000000000000000', milliseconds: 2147483647 },
+    { token: '2147483.6470000001' },
+    { token: '2147483.648' },
+  ];
+  for (const { token, milliseconds } of cases) {
+    if (milliseconds === undefined) assertCaptureError(() => parseCliArgs(['motion', 'rec', '--duration', token]));
+    else assert.equal(parseCliArgs(['motion', 'rec', '--duration', token]).duration, milliseconds);
+  }
+});
+
+test('the full unsigned decimal grammar is accepted — leading zeros and bare-dot forms', () => {
+  assert.equal(parseCliArgs(['tab', 'list', '--port', '09222']).port, 9222);
+  assert.equal(parseCliArgs(['page', 'click', '--settle', '00']).settle, 0);
+  assert.equal(parseCliArgs(['motion', 'rec', '--duration', '.5']).duration, 500);
+  assert.equal(parseCliArgs(['motion', 'rec', '--duration', '1.']).duration, 1000);
+  assert.equal(parseCliArgs(['motion', 'rec', '--duration', '00.5']).duration, 500);
+});
+
+test('an explicit --port survives an irrelevant malformed ambient CDP_PORT', () => {
+  const prior = process.env.CDP_PORT;
+  process.env.CDP_PORT = 'garbage';
+  try {
+    assert.equal(parseCliArgs(['tab', 'list', '--port', '9222']).port, 9222);
+    assertCaptureError(() => parseCliArgs(['tab', 'list']));
+  } finally {
+    if (prior === undefined) delete process.env.CDP_PORT;
+    else process.env.CDP_PORT = prior;
+  }
 });
 
 test('parseCliArgs itself still tokenizes --gate anywhere it appears (leaf-level rejection is enforced by the command layer, not the tokenizer)', () => {
@@ -225,11 +250,7 @@ test('deleted flags are rejected as unknown', () => {
     // Give value-taking flags a value token so rejection is about the flag
     // itself, not a missing argument.
     if (['--role', '--har', '--har-out', '--height'].includes(flag)) argv.push('x');
-    const { threw, errors } = withExitTrap(() => parseCliArgs(argv));
-
-    assert.ok(threw instanceof Error, `${flag} should be rejected`);
-    assert.match((threw as Error).message, /process\.exit\(1\)/);
-    assert.ok(errors.some((e) => e.includes(`Unknown flag: ${flag}`)), `${flag} should surface as unknown`);
+    assertCaptureError(() => parseCliArgs(argv), 'unknown_flag');
   }
 });
 

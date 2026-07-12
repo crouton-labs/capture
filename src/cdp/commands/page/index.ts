@@ -9,6 +9,7 @@
  * capture command does — leaf commands never need to know they're nested
  * under a branch.
  */
+import { invalidInput } from '../../../errors.js';
 import { type ParsedArgs } from '../../types.js';
 import { cmdPageClick } from './click.js';
 import { cmdPageType } from './type.js';
@@ -66,7 +67,6 @@ export async function pageMain(parsed: ParsedArgs, args: string[]): Promise<void
       console.log(PAGE_USAGE);
       return;
     default:
-      console.error(`Unknown page leaf: ${leaf}\n\n${PAGE_USAGE}`);
-      process.exit(1);
+      throw invalidInput(`Unknown page leaf: ${leaf}.`, 'unknown_command');
   }
 }

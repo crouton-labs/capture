@@ -6,6 +6,7 @@
  * recording id, ...) at `positional[0]` exactly as every other capture
  * command does.
  */
+import { invalidInput } from '../../../errors.js';
 import { type ParsedArgs } from '../../types.js';
 import { cmdMotionRec } from './rec.js';
 import { cmdMotionMask } from './mask.js';
@@ -55,7 +56,6 @@ export async function motionMain(parsed: ParsedArgs, args: string[]): Promise<vo
       console.log(MOTION_USAGE);
       return;
     default:
-      console.error(`Unknown motion leaf: ${leaf}\n\n${MOTION_USAGE}`);
-      process.exit(1);
+      throw invalidInput(`Unknown motion leaf: ${leaf}.`, 'unknown_command');
   }
 }
