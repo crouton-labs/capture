@@ -18,6 +18,7 @@ import { cmdMeasureSweep } from './sweep.js';
 import { cmdMeasureMapFocus } from './map-focus.js';
 import { cmdMeasureMapScroll } from './map-scroll.js';
 import { cmdMeasureMapLayers } from './map-layers.js';
+import { cmdMeasureMapAx } from './map-ax.js';
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="measure">
@@ -53,7 +54,7 @@ Leaves:
   sweep [url] --axis <axis> [--from <val>] [--to <val>] [--viewport-height <val>]
                                             Responsive/environment sampling
 
-  map focus|scroll|layers [url|snap]       Read one facet of a snapshot's substrate
+  map focus|scroll|layers|ax [url|snap]    Read one facet of a snapshot's substrate
                                             (see \`capture measure map --help\`)
 
 Every leaf defaults to rendered prose; --json mirrors the same result as JSON.
@@ -68,6 +69,7 @@ Leaves:
   focus  [url|snap]      Keyboard traversal order (focus.json)
   scroll [url|snap]      Scroll-container topology (scroll.json)
   layers [url|snap]      Paint/compositor layer map (layers.json)
+  ax     [url|snap]      AX-tree ↔ layout map (ax.json + geometry.json)
 
 A URL target first creates a snap; a snap target reads its existing artifact.
 
@@ -113,6 +115,8 @@ async function measureMapMain(parsed: ParsedArgs, args: string[]): Promise<void>
       return cmdMeasureMapScroll(rest, args);
     case 'layers':
       return cmdMeasureMapLayers(rest, args);
+    case 'ax':
+      return cmdMeasureMapAx(rest, args);
     case undefined:
       if (rejectUnsupportedGate(parsed, 'measure map')) return;
       console.log(MEASURE_MAP_USAGE);
