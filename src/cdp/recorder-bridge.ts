@@ -564,36 +564,46 @@ export class RecorderSession {
       );
     }
 
-    const eventPromise = hasWaitEvent ? this.events.wait(req.waitEvent as string, req.timeoutMs ?? 10000) : undefined;
+    // This recorder owns a direct tab websocket, so its actual CDP event
+    // envelope scope is `undefined` (there is no flattened attach session).
+    // Arm synchronously before any triggering send below.
+    const eventWait = hasWaitEvent
+      ? this.events.wait(req.waitEvent as string, undefined, req.timeoutMs ?? 10000)
+      : undefined;
 
-    if (!hasMethod) {
-      // Wait-event-ONLY request (`RecCdpWaitEventRequest`) — there is no CDP
-      // call to dispatch, so `client.send` must never be reached here (it
-      // would otherwise send `method: undefined` over the real websocket).
-      const event = eventPromise ? await eventPromise : undefined;
-      return { event };
+    try {
+      if (!hasMethod) {
+        // Wait-event-ONLY request (`RecCdpWaitEventRequest`) — there is no CDP
+        // call to dispatch, so `client.send` must never be reached here (it
+        // would otherwise send `method: undefined` over the real websocket).
+        const event = eventWait ? await eventWait.result() : undefined;
+        return { event };
+      }
+
+      if (req.mark) {
+        const internalMark = structuralMarkLabel(req.mark);
+        const bracket = await withDocumentPerformanceNow(asCDPClient(this.client), () =>
+          this.client.send(req.method!, req.params ?? {}, req.timeoutMs ?? 60000),
+        );
+        this.appendEvent({
+          kind: 'input',
+          action: req.mark,
+          mark: internalMark,
+          method: req.method,
+          startPerformanceNow: bracket.startPerformanceNow,
+          endPerformanceNow: bracket.endPerformanceNow,
+        });
+        const event = eventWait ? await eventWait.result() : undefined;
+        return { result: bracket.result, event };
+      }
+
+      const result = await this.client.send(req.method, req.params ?? {}, req.timeoutMs ?? 60000);
+      const event = eventWait ? await eventWait.result() : undefined;
+      return { result, event };
+    } catch (err) {
+      eventWait?.cancel();
+      throw err;
     }
-
-    if (req.mark) {
-      const internalMark = structuralMarkLabel(req.mark);
-      const bracket = await withDocumentPerformanceNow(asCDPClient(this.client), () =>
-        this.client.send(req.method!, req.params ?? {}, req.timeoutMs ?? 60000),
-      );
-      this.appendEvent({
-        kind: 'input',
-        action: req.mark,
-        mark: internalMark,
-        method: req.method,
-        startPerformanceNow: bracket.startPerformanceNow,
-        endPerformanceNow: bracket.endPerformanceNow,
-      });
-      const event = eventPromise ? await eventPromise : undefined;
-      return { result: bracket.result, event };
-    }
-
-    const result = await this.client.send(req.method, req.params ?? {}, req.timeoutMs ?? 60000);
-    const event = eventPromise ? await eventPromise : undefined;
-    return { result, event };
   }
 
   async stop(): Promise<RecorderStopSummary> {
@@ -622,13 +632,14 @@ export class RecorderSession {
     this.acceptingFrames = false;
     await this.flushPendingFrames();
 
-    const tracingComplete = this.events.wait('Tracing.tracingComplete', 5000).catch(() => undefined);
+    const tracingCompleteWait = this.events.wait('Tracing.tracingComplete', undefined, 5000);
     try {
       await this.client.send('Tracing.end');
+      await tracingCompleteWait.result().catch(() => undefined);
     } catch {
-      // Best-effort.
+      // Best-effort, including removal of the now-ownerless event wait.
+      tracingCompleteWait.cancel();
     }
-    await tracingComplete;
 
     // Every resize-target identity-bridge follow-up already committed to running must finish
     // before teardown removes the observer script it depends on. Closing acceptance immediately

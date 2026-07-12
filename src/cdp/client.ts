@@ -8,7 +8,7 @@ export class CDPClient {
     { resolve: (v: unknown) => void; reject: (e: Error) => void }
   >();
   private pendingTimeouts = new Map<number, NodeJS.Timeout>();
-  private eventHandlers = new Map<string, Array<(params: unknown) => void>>();
+  private eventHandlers = new Map<string, Array<(params: unknown, sessionId?: string) => void>>();
   private ready: Promise<void>;
 
   constructor(wsUrl: string, connectTimeout = 5000) {
@@ -47,7 +47,7 @@ export class CDPClient {
         }
       } else if (msg.method) {
         const handlers = this.eventHandlers.get(msg.method);
-        handlers?.forEach((h) => h(msg.params));
+        handlers?.forEach((handler) => handler(msg.params, msg.sessionId));
       }
     });
   }
@@ -80,7 +80,8 @@ export class CDPClient {
     });
   }
 
-  on(event: string, handler: (params: unknown) => void): void {
+  /** Registers an event callback. The second argument is the actual optional `sessionId` from a flattened CDP event envelope; it is never inferred from the method or params. */
+  on(event: string, handler: (params: unknown, sessionId?: string) => void): void {
     if (!this.eventHandlers.has(event)) {
       this.eventHandlers.set(event, []);
     }
@@ -88,7 +89,7 @@ export class CDPClient {
   }
 
   /** Unregisters a handler previously added with {@link on}. Required so one-shot event consumers (e.g. the `LayerTree.layerTreeDidChange` collector) can remove their listener on settle/timeout instead of leaking a retained closure for the connection's lifetime. */
-  off(event: string, handler: (params: unknown) => void): void {
+  off(event: string, handler: (params: unknown, sessionId?: string) => void): void {
     const handlers = this.eventHandlers.get(event);
     if (!handlers) return;
     const index = handlers.indexOf(handler);

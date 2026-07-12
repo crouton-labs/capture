@@ -17,7 +17,7 @@ export interface BridgeRequest {
    * domains (`Browser.*`, `Target.*`).
    */
   targetId?: string;
-  /** CDP event name to wait for (consumes the next occurrence, FIFO, buffered if it already fired). */
+  /** CDP event name to observe after this request is armed. Observation is future-only and scoped to this request's actual flattened target session (`undefined` without `targetId`); one event broadcasts to all already-armed same-key requests. */
   waitEvent?: string;
   timeoutMs?: number;
 }
@@ -121,8 +121,8 @@ export interface RecStopResponseOk {
  * supports. Omit `mark` for a plain passthrough call (still observed
  * natively by the recorder's own event subscriptions, just not logged as a
  * distinct input landmark). Omit `method` for a wait-event-only request;
- * the bridge will block on its existing event broker and return the matched
- * event in one response.
+ * the bridge arms a future-only wait on the recorder tab websocket's
+ * unscoped event envelope and returns the matched event in one response.
  */
 export interface RecCdpDispatchRequest {
   reqId: number;

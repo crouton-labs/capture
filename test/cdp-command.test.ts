@@ -218,6 +218,36 @@ test('combined method + --wait-event renders both result and event sections', as
   assert.match(stdout, /event: /);
 });
 
+test('direct page event wait is armed before a synchronous triggering send', async () => {
+  let eventHandler: ((params: unknown) => void) | undefined;
+  let closed = false;
+  const client: CdpScopeClient = {
+    async send(method): Promise<unknown> {
+      assert.equal(method, 'Page.reload');
+      assert.ok(eventHandler, 'the event callback must be installed before send starts');
+      eventHandler({ frameId: 'synchronous-main' });
+      return { reloaded: true };
+    },
+    on(event, handler): void {
+      assert.equal(event, 'Page.loadEventFired');
+      eventHandler = handler;
+    },
+    close(): void {
+      closed = true;
+    },
+  };
+  const parsed = parsedArgs({ positional: ['Page.reload'], waitEvent: 'Page.loadEventFired' });
+
+  const { exitCode, stdout } = await withCapturedOutput(() =>
+    runPageScope('Page.reload', {}, parsed, 100, stubConnect(client)),
+  );
+
+  assert.equal(exitCode, undefined);
+  assert.ok(closed);
+  assert.match(stdout, /synchronous-main/);
+  assert.match(stdout, /reloaded/);
+});
+
 // ---------------------------------------------------------------------------
 // -h — D6 leaf shape, documents the D11 constraints.
 // ---------------------------------------------------------------------------

@@ -19,20 +19,30 @@ import { type CDPClient } from '../client.js';
 import { type BridgeRequest, type BridgeResponse } from './protocol.js';
 
 interface EventWaiter {
-  resolve: (v: unknown) => void;
+  resolve: (value: unknown) => void;
 }
 
+export interface EventWait {
+  /** Returns the event or throws its timeout. The broker observes timeouts internally until this is called, so a slow triggering method cannot create an unhandled rejection. */
+  result(): Promise<unknown>;
+  /** Removes and settles this waiter without affecting any other waiter. */
+  cancel(): void;
+}
+
+type EventWaitOutcome =
+  | { kind: 'event'; value: unknown }
+  | { kind: 'timeout'; error: Error }
+  | { kind: 'cancelled' };
+
 /**
- * Buffers CDP events by name and resolves `wait()` callers FIFO, either
- * immediately (from the buffer) or when the next matching event arrives.
- * Shared by the plain browser-level bridge and the recorder bridge
- * (`../recorder-bridge.ts`) — both hold one long-lived `CDPClient` and need
- * the same "consume the next occurrence of this event" primitive for
- * `waitEvent`-bearing requests.
+ * Observes future CDP events on one long-lived client. Waiters are scoped by
+ * the event envelope's actual flattened session id (including `undefined`
+ * for an unscoped event). An event is dropped when no exact-key waiter is
+ * armed, and otherwise broadcasts to every waiter already armed for that
+ * key. The broker never retains event history.
  */
 export class EventBroker {
-  private queues = new Map<string, unknown[]>();
-  private waiters = new Map<string, EventWaiter[]>();
+  private waiters = new Map<string, Map<string | undefined, Set<EventWaiter>>>();
   private listening = new Set<string>();
 
   constructor(private client: Pick<CDPClient, 'on'>) {}
@@ -40,45 +50,109 @@ export class EventBroker {
   private ensureListening(eventName: string): void {
     if (this.listening.has(eventName)) return;
     this.listening.add(eventName);
-    this.client.on(eventName, (params) => {
-      const waiters = this.waiters.get(eventName);
-      if (waiters && waiters.length > 0) {
-        waiters.shift()!.resolve(params);
-        return;
-      }
-      const q = this.queues.get(eventName) ?? [];
-      q.push(params);
-      // Cap the buffer so an event nobody ever asks for can't leak memory.
-      if (q.length > 50) q.shift();
-      this.queues.set(eventName, q);
+    this.client.on(eventName, (params, actualSessionId) => {
+      const bySession = this.waiters.get(eventName);
+      const matching = bySession?.get(actualSessionId);
+      if (!matching || matching.size === 0) return;
+
+      // Remove the exact bucket before resolving its snapshot. A waiter armed
+      // by a resolution continuation is therefore future-only and cannot
+      // observe the event currently being broadcast.
+      bySession!.delete(actualSessionId);
+      if (bySession!.size === 0) this.waiters.delete(eventName);
+      for (const waiter of matching) waiter.resolve(params);
     });
   }
 
-  wait(eventName: string, timeoutMs: number): Promise<unknown> {
+  wait(eventName: string, sessionId: string | undefined, timeoutMs: number): EventWait {
     this.ensureListening(eventName);
-    const q = this.queues.get(eventName);
-    if (q && q.length > 0) {
-      return Promise.resolve(q.shift());
+    let bySession = this.waiters.get(eventName);
+    if (!bySession) {
+      bySession = new Map();
+      this.waiters.set(eventName, bySession);
     }
-    return new Promise((resolve, reject) => {
-      const list = this.waiters.get(eventName) ?? [];
-      const entry: EventWaiter = {
-        resolve: (v) => {
-          clearTimeout(timer);
-          resolve(v);
-        },
-      };
-      const timer = setTimeout(() => {
-        const current = this.waiters.get(eventName);
-        if (current) {
-          const idx = current.indexOf(entry);
-          if (idx >= 0) current.splice(idx, 1);
-        }
-        reject(new Error(`Timed out after ${timeoutMs}ms waiting for event "${eventName}"`));
-      }, timeoutMs);
-      list.push(entry);
-      this.waiters.set(eventName, list);
+    let matching = bySession.get(sessionId);
+    if (!matching) {
+      matching = new Set();
+      bySession.set(sessionId, matching);
+    }
+
+    let settleOutcome!: (outcome: EventWaitOutcome) => void;
+    const outcome = new Promise<EventWaitOutcome>((resolve) => {
+      settleOutcome = resolve;
     });
+    let settled = false;
+    const removeOnlyThisWaiter = (): void => {
+      const currentBySession = this.waiters.get(eventName);
+      const current = currentBySession?.get(sessionId);
+      if (!current) return;
+      current.delete(waiter);
+      if (current.size === 0) currentBySession!.delete(sessionId);
+      if (currentBySession!.size === 0) this.waiters.delete(eventName);
+    };
+    const waiter: EventWaiter = {
+      resolve: (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        settleOutcome({ kind: 'event', value });
+      },
+    };
+    matching.add(waiter);
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      removeOnlyThisWaiter();
+      settleOutcome({
+        kind: 'timeout',
+        error: new Error(
+          `Timed out after ${timeoutMs}ms waiting for event "${eventName}"` +
+            (sessionId === undefined ? ' without a session' : ` in session "${sessionId}"`),
+        ),
+      });
+    }, timeoutMs);
+
+    return {
+      result: async () => {
+        const settledOutcome = await outcome;
+        if (settledOutcome.kind === 'timeout') throw settledOutcome.error;
+        return settledOutcome.kind === 'event' ? settledOutcome.value : undefined;
+      },
+      cancel: () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        removeOnlyThisWaiter();
+        settleOutcome({ kind: 'cancelled' });
+      },
+    };
+  }
+}
+
+export async function handleBridgeRequest(
+  req: BridgeRequest,
+  client: Pick<CDPClient, 'send'>,
+  events: EventBroker,
+  attach: (targetId: string) => Promise<string>,
+): Promise<BridgeResponse> {
+  let eventWait: EventWait | undefined;
+  try {
+    const sessionId = req.targetId ? await attach(req.targetId) : undefined;
+    eventWait = req.waitEvent
+      ? events.wait(req.waitEvent, sessionId, req.timeoutMs ?? 10000)
+      : undefined;
+    const result = req.method
+      ? await client.send(req.method, req.params ?? {}, 60000, sessionId)
+      : undefined;
+    const event = eventWait ? await eventWait.result() : undefined;
+    return { reqId: req.reqId, ok: true, result, event };
+  } catch (err) {
+    eventWait?.cancel();
+    return {
+      reqId: req.reqId,
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -115,16 +189,7 @@ export async function runBridgeServer(socketPath: string, port?: number): Promis
     } catch {
       return;
     }
-    let resp: BridgeResponse;
-    try {
-      const sessionId = req.targetId ? await attach(req.targetId) : undefined;
-      const eventPromise = req.waitEvent ? events.wait(req.waitEvent, req.timeoutMs ?? 10000) : undefined;
-      const result = req.method ? await client.send(req.method, req.params ?? {}, 60000, sessionId) : undefined;
-      const event = eventPromise ? await eventPromise : undefined;
-      resp = { reqId: req.reqId, ok: true, result, event };
-    } catch (err) {
-      resp = { reqId: req.reqId, ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
+    const resp = await handleBridgeRequest(req, client, events, attach);
     socket.write(JSON.stringify(resp) + '\n');
   }
 

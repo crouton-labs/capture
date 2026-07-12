@@ -81,7 +81,7 @@ class StubCdpClient extends EventEmitter implements RecorderCdpClient {
     }
   }
 
-  on(event: string, handler: (params: unknown) => void): void {
+  on(event: string, handler: (params: unknown, sessionId?: string) => void): void {
     super.on(event, handler);
   }
 
@@ -93,8 +93,8 @@ class StubCdpClient extends EventEmitter implements RecorderCdpClient {
     // No-op for the stub \u2014 nothing to tear down.
   }
 
-  fire(event: string, params: unknown): void {
-    this.emit(event, params);
+  fire(event: string, params: unknown, sessionId?: string): void {
+    this.emit(event, params, sessionId);
   }
 
   /** Fires a `Runtime.bindingCalled` the way the recorder's scoped binding would deliver one —
@@ -1017,6 +1017,98 @@ test('handleCdp on an idle (unstarted) session proceeds to protocol/wait handlin
       'an idle session must reach protocol/shape validation, not a state rejection',
     );
     assert.equal(session.state, 'idle', 'handleCdp must not itself change session state');
+  } finally {
+    fs.rmSync(recDir, { recursive: true, force: true });
+  }
+});
+
+test('recorder bridge arms its unscoped event wait before synchronous send and preserves method result separately', async () => {
+  const recDir = freshRecDir('handlecdp-arm-before-send');
+  const client = new StubCdpClient();
+  const originalSend = client.send.bind(client);
+  client.send = async (method: string, params: Record<string, unknown> = {}) => {
+    if (method === 'Page.reload') {
+      // A flattened child-session event is not the recorder tab websocket's
+      // actual unscoped event and must not satisfy this request.
+      client.fire('Page.loadEventFired', { scope: 'wrong-session' }, 'session-A');
+      client.fire('Page.loadEventFired', { scope: 'recorder-tab' });
+      return { reloaded: true };
+    }
+    return originalSend(method, params);
+  };
+  const session = new RecorderSession({ client, recDir });
+
+  try {
+    const outcome = await session.handleCdp({
+      reqId: 1,
+      type: 'cdp',
+      method: 'Page.reload',
+      waitEvent: 'Page.loadEventFired',
+      timeoutMs: 100,
+    });
+    assert.deepEqual(outcome, {
+      result: { reloaded: true },
+      event: { scope: 'recorder-tab' },
+    });
+  } finally {
+    fs.rmSync(recDir, { recursive: true, force: true });
+  }
+});
+
+test('recorder bridge preserves a delayed method failure after the event deadline without an unhandled rejection', async () => {
+  const recDir = freshRecDir('handlecdp-delayed-send-failure');
+  const client = new StubCdpClient();
+  const originalSend = client.send.bind(client);
+  client.send = async (method: string, params: Record<string, unknown> = {}) => {
+    if (method === 'Page.reload') {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      throw new Error('recorder send failed');
+    }
+    return originalSend(method, params);
+  };
+  const session = new RecorderSession({ client, recDir });
+
+  try {
+    await assert.rejects(
+      session.handleCdp({
+        reqId: 1,
+        type: 'cdp',
+        method: 'Page.reload',
+        waitEvent: 'Page.loadEventFired',
+        timeoutMs: 10,
+      }),
+      /recorder send failed/,
+    );
+  } finally {
+    fs.rmSync(recDir, { recursive: true, force: true });
+  }
+});
+
+test('marked recorder bridge preserves a delayed wrapper failure after the event deadline', async () => {
+  const recDir = freshRecDir('handlecdp-delayed-marked-failure');
+  const client = new StubCdpClient();
+  const originalSend = client.send.bind(client);
+  client.send = async (method: string, params: Record<string, unknown> = {}) => {
+    if (method === 'Page.reload') {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      throw new Error('marked recorder send failed');
+    }
+    return originalSend(method, params);
+  };
+  const session = new RecorderSession({ client, recDir });
+
+  try {
+    await assert.rejects(
+      session.handleCdp({
+        reqId: 1,
+        type: 'cdp',
+        method: 'Page.reload',
+        mark: 'reload',
+        waitEvent: 'Page.loadEventFired',
+        timeoutMs: 10,
+      }),
+      /marked recorder send failed/,
+    );
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }
