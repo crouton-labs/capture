@@ -87,9 +87,9 @@ export function pngDimensions(png: Buffer): { width: number; height: number } | 
  * Resolves the output path: explicit `--out` > active session's `shots/`
  * sequence > a fresh `oneshot-{id}/page` dir under the capture root.
  */
-function resolveOutPath(parsed: ParsedArgs): string {
+async function resolveOutPath(parsed: ParsedArgs): Promise<string> {
   if (parsed.out) return parsed.out;
-  const sessionPath = deps.nextStepPath('shot', 'manual');
+  const sessionPath = await deps.nextStepPath('shot', 'manual');
   if (sessionPath) return sessionPath;
   return path.join(deps.createOneshotSession('page').artifactsDir, 'shot.png');
 }
@@ -197,7 +197,7 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
     { ...parsed, command: 'shot' },
     async (client) => {
       const png = await captureScreenshot(client, viewport, { fullPage: parsed.fullPage });
-      const outPath = resolveOutPath(parsed);
+      const outPath = await resolveOutPath(parsed);
       writeScreenshot(outPath, png);
       return { path: outPath, bytes: png.length, dimensions: pngDimensions(png) };
     },

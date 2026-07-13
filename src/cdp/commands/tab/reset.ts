@@ -117,7 +117,7 @@ export async function cmdTabReset(parsed: ParsedArgs, _args: string[]): Promise<
     client.close();
   }
 
-  const sessionUpdated = updateActiveSession({ targetId: tab.id }) !== null;
+  const sessionUpdated = await updateActiveSession({ targetId: tab.id, port }) !== null;
 
   emitResult(buildTabResetResult(tab, port, sessionUpdated), { json: parsed.json });
 }

@@ -13,12 +13,18 @@ execFileSync(path.join(process.cwd(), 'node_modules/.bin/esbuild'), [
   'src/capture.ts', '--bundle', '--platform=node', '--format=cjs', `--outfile=${entry}`,
 ], { stdio: 'pipe' });
 
-function run(args: string[], envOverrides: NodeJS.ProcessEnv = {}, preserveStale = true): ReturnType<typeof spawnSync> {
+function run(
+  args: string[],
+  envOverrides: NodeJS.ProcessEnv = {},
+  preserveStale = true,
+  setup?: (activePath: string, nodeId: string) => void,
+): ReturnType<typeof spawnSync> {
   const nodeId = `cli-error-${process.pid}-${Math.random().toString(16).slice(2)}`;
   const active = path.join(os.tmpdir(), 'capture-sessions', `.active-${nodeId}`);
   fs.mkdirSync(path.dirname(active), { recursive: true });
   const stale = '{"sessionId":"stale","dir":"/does/not/exist"}\n';
   fs.writeFileSync(active, stale);
+  setup?.(active, nodeId);
   const childEnv: NodeJS.ProcessEnv = { ...process.env, CRTR_NODE_ID: nodeId };
   for (const [key, value] of Object.entries(envOverrides)) {
     if (value === undefined) delete childEnv[key];
@@ -52,6 +58,70 @@ test('source CLI renders malformed root, flag, env, numeric, and branch failures
   assertOneError(['measure', 'unknown']);
   assertOneError(['measure', 'map', 'unknown']);
   assertOneError(['motion', 'unknown']);
+});
+
+test('session stop ignores malformed CDP_PORT because it does not use CDP', () => {
+  let sessionDir = '';
+  const id = `stop-no-cdp-${process.pid}-${Date.now()}`;
+  try {
+    const result = run(['session', 'stop', id], { CDP_PORT: 'garbage' }, false, (activePath) => {
+      sessionDir = path.join(path.dirname(activePath), id);
+      fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(sessionDir, '.session.json'), JSON.stringify({
+        sessionId: id,
+        dir: sessionDir,
+        harId: null,
+        targetId: null,
+        stepCount: 0,
+        startedAt: new Date().toISOString(),
+      }), { mode: 0o600 });
+    });
+    assert.equal(result.status, 0, result.stdout);
+    assert.match(result.stdout, /<session-stopped\b/);
+    assert.equal(fs.existsSync(path.join(sessionDir, 'bundle.json')), true);
+  } finally {
+    if (sessionDir) fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('a session endpoint wins over malformed CDP_PORT before page dispatch', () => {
+  let sessionDir = '';
+  try {
+    const result = run(['page', 'click', '.button'], { CDP_PORT: 'garbage' }, false, (activePath, nodeId) => {
+      sessionDir = path.join(path.dirname(activePath), `endpoint-${nodeId}`);
+      fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
+      const session = {
+        sessionId: `endpoint-${nodeId}`,
+        dir: sessionDir,
+        harId: null,
+        targetId: 'target-abc',
+        stepCount: 0,
+        port: 1,
+      };
+      fs.writeFileSync(path.join(sessionDir, '.session.json'), JSON.stringify(session), { mode: 0o600 });
+      fs.writeFileSync(activePath, JSON.stringify({ sessionId: session.sessionId, dir: sessionDir }), { mode: 0o600 });
+    });
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.stdout, /Invalid CDP_PORT/);
+  } finally {
+    if (sessionDir) fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('leaf grammar rejects before stale-pointer cleanup or one-shot allocation', () => {
+  const root = path.join(os.tmpdir(), 'capture-sessions');
+  const before = new Set(fs.existsSync(root) ? fs.readdirSync(root).filter(name => name.startsWith('oneshot-')) : []);
+  for (const args of [
+    ['page', 'navigate', 'not-a-url'],
+    ['measure', 'sweep', '--axis', 'width', '--from', 'bogus'],
+    ['measure', 'sweep', '--axis', 'color-scheme', '--from', 'light', '--to', 'light'],
+    ['motion', 'rec', 'https://example.test/', '--do', 'bad-action'],
+    ['motion', 'rec', 'https://example.test/', '--do', 'scroll:.pane,to=bogus'],
+  ]) {
+    assertOneError(args);
+  }
+  const after = new Set(fs.existsSync(root) ? fs.readdirSync(root).filter(name => name.startsWith('oneshot-')) : []);
+  assert.deepEqual(after, before);
 });
 
 test('source CLI emits the same single error mirror under --json', () => {

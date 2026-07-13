@@ -146,7 +146,7 @@ export async function connectForCommand(
 
   // Lazy-populate targetId in active session if not yet set
   if (activeSession && !activeSession.targetId) {
-    updateActiveSession({ targetId: tab.id });
+    await updateActiveSession({ targetId: tab.id, port: resolved?.port ?? null });
   }
 
   const port = resolved?.port ?? getPortFromWebSocketDebuggerUrl(tab.webSocketDebuggerUrl);

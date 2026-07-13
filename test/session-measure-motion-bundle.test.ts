@@ -20,7 +20,7 @@ function writeSessionFixture(id: string): string {
   const dir = path.join(CAPTURE_ROOT, id);
   fs.mkdirSync(dir, { recursive: true });
   writeJsonPrivate(path.join(dir, '.session.json'), {
-    id,
+    sessionId: id,
     dir,
     harId: null,
     startedAt: new Date().toISOString(),
@@ -315,14 +315,14 @@ test('session context persists activeRecId with set/clear/read helpers, scoped l
   try {
     process.env.CRTR_NODE_ID = 'test-node-active-rec-id';
     clearActiveSession();
-    setActiveSession({ sessionId: 'sess-rec', dir, harId: null, targetId: null, stepCount: 0 });
+    await setActiveSession({ sessionId: 'sess-rec', dir, harId: null, targetId: null, stepCount: 0 });
 
     assert.equal(getActiveRecId(), null, 'no recording armed yet');
 
-    setActiveRecId('rec-live-1');
+    await setActiveRecId('rec-live-1');
     assert.equal(getActiveRecId(), 'rec-live-1');
 
-    clearActiveRecId();
+    await clearActiveRecId();
     assert.equal(getActiveRecId(), null);
   } finally {
     clearActiveSession();

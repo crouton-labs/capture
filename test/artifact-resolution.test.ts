@@ -19,7 +19,7 @@ async function withActiveSession<T>(
   const nodeId = scopedNodeId(sessionId);
   process.env.CRTR_NODE_ID = nodeId;
   clearActiveSession();
-  setActiveSession({ sessionId, dir, harId: null, targetId: null, stepCount: 0 });
+  await setActiveSession({ sessionId, dir, harId: null, targetId: null, stepCount: 0 });
   try {
     return await fn();
   } finally {

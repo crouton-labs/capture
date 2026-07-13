@@ -189,7 +189,7 @@ export async function autoScreenshot(
   noScreenshot?: boolean,
 ): Promise<string | null> {
   if (noScreenshot) return null;
-  const shotPath = nextStepPath(action, label);
+  const shotPath = await nextStepPath(action, label);
   if (!shotPath) return null;
 
   // Brief settle for UI to update

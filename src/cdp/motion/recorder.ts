@@ -235,10 +235,10 @@ export interface FinalizedRecording {
  * when the pointer is actually OURS to clear. A teardown/reap running
  * against session A must never blow away session B's pointer just because
  * B happens to be the currently-active one for this caller scope. */
-function clearActiveRecIdIfOwned(sessionDir: string, recId: string): void {
+async function clearActiveRecIdIfOwned(sessionDir: string, recId: string): Promise<void> {
   const active = getActiveSession();
   if (active && active.dir === sessionDir && active.activeRecId === recId) {
-    clearActiveRecId();
+    await clearActiveRecId();
   }
 }
 
@@ -369,7 +369,7 @@ async function writeFinalizedArtifacts(
   };
   writeJsonPrivate(metaPath(recDir), meta);
   removeArtifactTree(recorderJsonPath(recDir));
-  clearActiveRecIdIfOwned(sessionDir, recId);
+  await clearActiveRecIdIfOwned(sessionDir, recId);
   return { recId, recDir, frames, durationMs, fps, state, eventCount, viewportRestored };
 }
 
@@ -422,7 +422,7 @@ export async function reapStaleActiveRecorder(sessionDir: string): Promise<Final
   }
 
   if (activeHere?.activeRecId && !handles.some((h) => h.recId === activeHere.activeRecId)) {
-    clearActiveRecId();
+    await clearActiveRecId();
   }
 
   return primary;
@@ -516,7 +516,7 @@ export async function startComposedRecorder(
         markers,
       };
       writeJsonPrivate(recorderJsonPath(recDir), recorderJson);
-      setActiveRecId(recId);
+      await setActiveRecId(recId);
       return { recId, recDir, state: 'recording', reapedStale };
     } catch (err) {
       if (pid !== null) stopBridge(pid, socketPath);
@@ -659,7 +659,7 @@ export async function teardownAnyLiveRecorderAtSessionStop(sessionDir: string): 
   // A dangling pointer for THIS session with no matching on-disk handle left
   // to tear down (already reaped, or the pointer never named a real one).
   if (activeHere?.activeRecId && !handles.some((h) => h.recId === activeHere.activeRecId)) {
-    clearActiveRecId();
+    await clearActiveRecId();
   }
 
   const pendingViewportRestorations = await restorePendingStartViewportOverrides(sessionDir);

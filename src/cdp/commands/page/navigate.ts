@@ -13,6 +13,7 @@ import { isRecorderHeldClient, type RecorderHeldClient } from '../../recorder-cl
 import { recDirFor, readRecorderJson } from '../../motion/recorder.js';
 import { appendToHarRecording as appendToHar } from '../../../har-manager.js';
 import { type ParsedArgs } from '../../types.js';
+import { isParseableUrl } from '../../leaf-grammar.js';
 import { emitResult, fact, text, type FactLine, type RenderableResult } from '../../../output/render.js';
 
 const LOAD_EVENT_NAME = 'Page.loadEventFired';
@@ -176,12 +177,7 @@ export async function tryNavigateViaActiveRecorder(
   const session = getActiveSession();
   if (!session || !isRecorderRoutable(session, parsed)) return null;
 
-  try {
-    // eslint-disable-next-line no-new
-    new URL(url);
-  } catch {
-    throw new Error(`Invalid URL: ${url}`);
-  }
+  if (!isParseableUrl(url)) throw new Error(`Invalid URL: ${url}`);
 
   // The branch router hands leaves `command: 'page'`, but the recorded
   // input-landmark label (`deriveActionLabel` in connection.ts) is

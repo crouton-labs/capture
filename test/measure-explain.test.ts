@@ -21,10 +21,10 @@ function write(name: string, value: unknown): void {
   writeJsonPrivate(path.join(snapDir, name), value);
 }
 
-before(() => {
+before(async () => {
   process.env.CRTR_NODE_ID = scope;
   ensurePrivateDir(snapDir);
-  setActiveSession({ sessionId: scope, dir: sessionDir, harId: null, targetId: null, stepCount: 0 });
+  await setActiveSession({ sessionId: scope, dir: sessionDir, harId: null, targetId: null, stepCount: 0 });
 
   write('meta.json', {
     id: 'snap-test',

@@ -118,6 +118,33 @@ test('session start --json mirrors the <session> result as JSON', async () => {
   }
 });
 
+test('simultaneous session starts publish exactly one live session', async () => {
+  clearActiveSession();
+  process.exitCode = 0;
+  const out = captureStdout();
+  let active: ReturnType<typeof getActiveSession> = null;
+  try {
+    await Promise.all([
+      sessionMain(sessionArgs(['start'], { json: true }), []),
+      sessionMain(sessionArgs(['start'], { json: true }), []),
+    ]);
+    active = getActiveSession();
+    assert.ok(active);
+    const output = out.logs.join('');
+    assert.equal((output.match(/\"tag\": \"session\"/g) ?? []).length, 1);
+    assert.equal((output.match(/\"tag\": \"error\"/g) ?? []).length, 1);
+    assert.match(output, /start_failed/);
+  } finally {
+    out.restore();
+    process.exitCode = 0;
+    if (active) {
+      await stopSilently(active.sessionId);
+      fs.rmSync(active.dir, { recursive: true, force: true });
+    }
+    clearActiveSession();
+  }
+});
+
 // --- Real-Chrome integration: `session start --url` acceptance ---------------
 
 async function waitForHttpOk(url: string, timeoutMs: number): Promise<void> {

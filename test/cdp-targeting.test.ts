@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCliArgs } from '../src/cdp/args.js';
+import { parseCliArgs, resolveCliContext } from '../src/cdp/args.js';
 import { findTabByIdInPorts, requireTargetId, scoreTabUrlMatch } from '../src/cdp/targets.js';
 
 test('CDP_PORT env fills the default port when --port is omitted', () => {
@@ -8,7 +8,7 @@ test('CDP_PORT env fills the default port when --port is omitted', () => {
   process.env.CDP_PORT = '49561';
 
   try {
-    const parsed = parseCliArgs(['navigate', 'https://account.godaddy.com/products']);
+    const parsed = resolveCliContext(parseCliArgs(['navigate', 'https://account.godaddy.com/products']));
     assert.equal(parsed.port, 49561);
   } finally {
     if (previous === undefined) {

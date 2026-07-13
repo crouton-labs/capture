@@ -133,8 +133,8 @@ async function armActiveRecording(
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
-  setActiveSession({ sessionId: `s-${label}`, dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: `s-${label}`, dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
 
   const fakeServer = await startFakeRecorderServer(socketPath, handlers);
 
@@ -322,8 +322,8 @@ test('a stale activeRecId with no routable recorder falls back to null instead o
   // positional, not parsed.url/parsed.target.
   const sessionDir = freshSessionDir('stale-recid');
   const recId = 'rec-stale-does-not-exist';
-  setActiveSession({ sessionId: 's-stale', dir: sessionDir, harId: null, targetId: null, stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: 's-stale', dir: sessionDir, harId: null, targetId: null, stepCount: 0 });
+  await setActiveRecId(recId);
   try {
     const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/page/navigate.js');
     const parsed = minimalParsedArgs('page', { positional: ['https://example.com/stale'] });

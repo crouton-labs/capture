@@ -12,7 +12,9 @@ import {
 import {
   getActiveSession,
   setActiveSession,
-  clearActiveSession,
+  clearActiveSessionIf,
+  updateSessionState,
+  type ActiveSessionState,
 } from '../session-context.js';
 import { type ParsedArgs } from '../cdp/types.js';
 import { startBridge, stopBridge } from '../cdp/bridge/spawn.js';
@@ -30,33 +32,17 @@ import {
 import {
   CAPTURE_ROOT,
   FILE_MODE,
+  acquirePrivateLock,
   ensurePrivateDir,
   writeJsonPrivate,
+  readPrivateFile,
   unlinkPrivateFile,
   type SnapMeta,
   type RecMeta,
 } from './artifacts.js';
+import { beginSessionStop } from './coordinator.js';
 
-interface LogPid {
-  pid: number;
-  name: string;
-  sourcePath: string;
-}
-
-interface Session {
-  id: string;
-  dir: string;
-  harId: string | null;
-  startedAt: string;
-  url: string | null;
-  targetId: string | null;
-  cdpPort: number | null;
-  stepCount: number;
-  logPids: LogPid[];
-  /** Set when started with --hold: one CDP browser connection held open for the session. */
-  bridgeSocket: string | null;
-  bridgePid: number | null;
-}
+type Session = ActiveSessionState;
 
 interface BundleManifest {
   id: string;
@@ -104,6 +90,26 @@ const SECTION_LABELS: Record<SectionKey, string> = {
 
 function sessionDir(id: string): string {
   return path.join(CAPTURE_ROOT, id);
+}
+
+function lifecycleScopeLockPath(): string {
+  return path.join(CAPTURE_ROOT, `.session-lifecycle-${process.env.CRTR_NODE_ID ?? 'default'}`);
+}
+
+async function withLifecycleCoordinator<T>(action: () => Promise<T>): Promise<T> {
+  const handle = await acquirePrivateLock(lifecycleScopeLockPath(), {
+    acquireTimeoutMs: 120_000,
+    leaseMs: 1_000,
+  });
+  try {
+    return await action();
+  } finally {
+    handle.release();
+  }
+}
+
+function isSessionStopped(session: Session): boolean {
+  return Boolean(session.stoppedAt) || fs.existsSync(path.join(session.dir, 'bundle.json'));
 }
 
 /** One-shot artifact session outside an active session — see `createOneshotSession`. */
@@ -189,10 +195,12 @@ function sessionMetaPath(id: string): string {
 
 function readSession(id: string): Session {
   const metaPath = sessionMetaPath(id);
-  if (!fs.existsSync(metaPath)) {
-    throw new Error(`No capture session found: ${id}`);
+  try {
+    return JSON.parse(readPrivateFile(metaPath).toString('utf-8')) as Session;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`No capture session found: ${id}`);
+    throw error;
   }
-  return JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as Session;
 }
 
 function generateId(): string {
@@ -367,149 +375,154 @@ async function start(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
-  const url = parsed.url ?? null;
-  const hold = parsed.hold === true;
-
-  const id = generateId();
-  const dir = sessionDir(id);
-  ensurePrivateDir(path.join(dir, 'shots'));
-
-  // Start HAR recording directly.
-  let harId: string | null = null;
-  try {
-    const harResult = await createHarRecording(dir);
-    harId = harResult.id;
-  } catch (err) {
-    console.error(`Warning: could not start HAR recording: ${err instanceof Error ? err.message : err}`);
-  }
-
-  let targetId: string | null = null;
-  let pageLoadTimedOut = false;
-  let bridgeSocket: string | null = null;
-  let bridgePid: number | null = null;
-  let cdpPort: number | null = null;
-
-  try {
-    if (url || hold) {
-      const { detectCdpPort } = await import('../cdp.js');
-      cdpPort = parsed.port ?? await detectCdpPort();
+  return withLifecycleCoordinator(async () => {
+    const active = getActiveSession();
+    if (active && !isSessionStopped(active)) {
+      emitResult({
+        tag: 'error',
+        attrs: { command: 'session start', code: 'start_failed' },
+        summary: fact`A session is already active for this scope (${active.sessionId}); stop it first with \`session stop ${active.sessionId}\`.`,
+        followUp: text`Only one live session is allowed per capture scope at a time.`,
+      }, { json: parsed.json });
+      process.exitCode = 1;
+      return;
     }
 
-    // Open tab if URL provided. Fail fast if the new target cannot attach.
-    if (url) {
-      const { openTab, CDPClient } = await import('../cdp.js');
-      const tab = await openTab(cdpPort!, url);
-      targetId = tab.id;
+    const url = parsed.url ?? null;
+    const hold = parsed.hold === true;
 
-      if (!targetId) {
-        throw new Error(
-          `capture session start could not attach to ${url}. Reuse an existing tab with --target.`,
-        );
-      }
-      if (!tab.webSocketDebuggerUrl) {
-        throw new Error(
-          `capture session start could not attach to ${url}: missing WebSocket debugger URL. Reuse an existing tab with --target.`,
-        );
+    const id = generateId();
+    const dir = sessionDir(id);
+    ensurePrivateDir(path.join(dir, 'shots'));
+
+    // Start HAR recording directly.
+    let harId: string | null = null;
+    try {
+      const harResult = await createHarRecording(dir);
+      harId = harResult.id;
+    } catch (err) {
+      console.error(`Warning: could not start HAR recording: ${err instanceof Error ? err.message : err}`);
+    }
+
+    let targetId: string | null = null;
+    let pageLoadTimedOut = false;
+    let bridgeSocket: string | null = null;
+    let bridgePid: number | null = null;
+    let cdpPort: number | null = null;
+
+    try {
+      if (url || hold) {
+        const { detectCdpPort } = await import('../cdp.js');
+        cdpPort = parsed.port ?? await detectCdpPort();
       }
 
-      const client = new CDPClient(tab.webSocketDebuggerUrl);
-      try {
-        try {
-          await client.send('Runtime.enable', {}, 5_000);
-        } catch (err) {
+      // Open tab if URL provided. Fail fast if the new target cannot attach.
+      if (url) {
+        const { openTab, CDPClient } = await import('../cdp.js');
+        const tab = await openTab(cdpPort!, url);
+        targetId = tab.id;
+
+        if (!targetId) {
           throw new Error(
-            `capture session start could not attach to ${url}: ${err instanceof Error ? err.message : err}. Reuse an existing tab with --target.`,
+            `capture session start could not attach to ${url}. Reuse an existing tab with --target.`,
           );
         }
-        pageLoadTimedOut = await waitForPageLoad(client, 10_000);
-      } finally {
-        client.close();
+        if (!tab.webSocketDebuggerUrl) {
+          throw new Error(
+            `capture session start could not attach to ${url}: missing WebSocket debugger URL. Reuse an existing tab with --target.`,
+          );
+        }
+
+        const client = new CDPClient(tab.webSocketDebuggerUrl);
+        try {
+          try {
+            await client.send('Runtime.enable', {}, 5_000);
+          } catch (err) {
+            throw new Error(
+              `capture session start could not attach to ${url}: ${err instanceof Error ? err.message : err}. Reuse an existing tab with --target.`,
+            );
+          }
+          pageLoadTimedOut = await waitForPageLoad(client, 10_000);
+        } finally {
+          client.close();
+        }
       }
+
+      // Hold a CDP browser connection open for the session's lifetime so
+      // browser-level state (permission grants, ServiceWorker enablement)
+      // survives across separate `capture` commands instead of reverting the
+      // instant each command's own connection closes.
+      if (hold) {
+        const bridge = await startBridge(dir, cdpPort!);
+        bridgeSocket = bridge.socketPath;
+        bridgePid = bridge.pid;
+      }
+    } catch (err) {
+      // Any failure after HAR creation (CDP-port detection, tab open, bridge
+      // start) leaks the newly-created HAR recording unless we clean it up here.
+      // Best-effort so a cleanup failure can't mask the real start error.
+      if (harId) {
+        try {
+          await deleteHarRecording(harId);
+        } catch {
+          /* best effort */
+        }
+        try {
+          unlinkPrivateFile(harId);
+        } catch {
+          /* best effort */
+        }
+      }
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      emitResult({
+        tag: 'error',
+        attrs: { command: 'session start', code: 'start_failed' },
+        summary: fact`Session could not start: ${msg}`,
+        followUp: text`Ensure a CDP-enabled browser is running — \`capture tab list\` is the probe.`,
+      }, { json: parsed.json });
+      process.exitCode = 1;
+      return;
     }
 
-    // Hold a CDP browser connection open for the session's lifetime so
-    // browser-level state (permission grants, ServiceWorker enablement)
-    // survives across separate `capture` commands instead of reverting the
-    // instant each command's own connection closes.
-    if (hold) {
-      const bridge = await startBridge(dir, cdpPort!);
-      bridgeSocket = bridge.socketPath;
-      bridgePid = bridge.pid;
-    }
-  } catch (err) {
-    // Any failure after HAR creation (CDP-port detection, tab open, bridge
-    // start) leaks the newly-created HAR recording unless we clean it up here.
-    // Best-effort so a cleanup failure can't mask the real start error.
-    if (harId) {
-      try {
-        await deleteHarRecording(harId);
-      } catch {
-        /* best effort */
-      }
-      try {
-        unlinkPrivateFile(harId);
-      } catch {
-        /* best effort */
-      }
-    }
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-    } catch {
-      /* best effort */
-    }
-    const msg = err instanceof Error ? err.message : String(err);
+    const session: Session = {
+      sessionId: id,
+      dir,
+      harId,
+      startedAt: new Date().toISOString(),
+      stoppedAt: null,
+      stopping: false,
+      url,
+      targetId,
+      port: cdpPort,
+      stepCount: 0,
+      logPids: [],
+      bridgeSocket,
+      bridgePid,
+    };
+    await setActiveSession(session);
+
+    const rows: FactLine[] = [fact`bundle dir: ${dir}`];
+    if (targetId) rows.push(fact`tab ${targetId} opened at ${url ?? ''}`);
+    if (pageLoadTimedOut) rows.push(fact`page load timed out after 10000ms; the session stays attached to target ${targetId ?? ''}`);
+    if (harId) rows.push(fact`HAR recording ${harId} — traffic auto-appends while the session is active`);
+    if (hold) rows.push(fact`held CDP bridge: pid ${bridgePid ?? 0}`);
+
     emitResult({
-      tag: 'error',
-      attrs: { command: 'session start', code: 'start_failed' },
-      summary: fact`Session could not start: ${msg}`,
-      followUp: text`Ensure a CDP-enabled browser is running — \`capture tab list\` is the probe.`,
+      tag: 'session',
+      attrs: { id, path: dir, ...(url ? { url } : {}) },
+      summary: fact`Session ${id} started; it is now the active capture context.`,
+      sections: [lineList(rows)],
+      followUp: fact`capture session stop ${id}`,
     }, { json: parsed.json });
-    process.exitCode = 1;
-    return;
-  }
-
-  const session: Session = {
-    id,
-    dir,
-    harId,
-    startedAt: new Date().toISOString(),
-    url,
-    targetId,
-    cdpPort,
-    stepCount: 0,
-    logPids: [],
-    bridgeSocket,
-    bridgePid,
-  };
-  writeJsonPrivate(sessionMetaPath(id), session);
-
-  // Set as active session for auto-defaults.
-  setActiveSession({
-    sessionId: id,
-    dir,
-    harId,
-    targetId,
-    cdpPort,
-    stepCount: 0,
-    bridgeSocket,
   });
-
-  const rows: FactLine[] = [fact`bundle dir: ${dir}`];
-  if (targetId) rows.push(fact`tab ${targetId} opened at ${url ?? ''}`);
-  if (pageLoadTimedOut) rows.push(fact`page load timed out after 10000ms; the session stays attached to target ${targetId ?? ''}`);
-  if (harId) rows.push(fact`HAR recording ${harId} — traffic auto-appends while the session is active`);
-  if (hold) rows.push(fact`held CDP bridge: pid ${bridgePid ?? 0}`);
-
-  emitResult({
-    tag: 'session',
-    attrs: { id, path: dir, ...(url ? { url } : {}) },
-    summary: fact`Session ${id} started; it is now the active capture context.`,
-    sections: [lineList(rows)],
-    followUp: fact`capture session stop ${id}`,
-  }, { json: parsed.json });
 }
 
-function logTail(parsed: ParsedArgs): void {
+async function logTail(parsed: ParsedArgs): Promise<void> {
   if (parsed.help) {
     console.log(LOG_USAGE);
     return;
@@ -588,12 +601,12 @@ function logTail(parsed: ParsedArgs): void {
   fs.closeSync(outFd);
 
   const pid = child.pid!;
-  session.logPids.push({ pid, name, sourcePath: resolved });
-  writeJsonPrivate(sessionMetaPath(session.id), session);
+  const logPids = [...(session.logPids ?? []), { pid, name, sourcePath: resolved }];
+  session = await updateSessionState(session.dir, { logPids });
 
   emitResult({
     tag: 'log-tail',
-    attrs: { session: session.id, path: destPath },
+    attrs: { session: session.sessionId, path: destPath },
     summary: fact`Tailing ${resolved} into the session logs/ dir.`,
     sections: [lineList([
       fact`name: ${name}`,
@@ -790,6 +803,27 @@ async function har(parsed: ParsedArgs): Promise<void> {
   }, { json: parsed.json });
 }
 
+function bundleRows(manifest: BundleManifest): FactLine[] {
+  return [
+    fact`shots: ${manifest.shots.length}`,
+    manifest.har ? fact`har: ${manifest.har.entryCount} entries — ${manifest.har.path}` : fact`har: 0 entries`,
+    fact`logs: ${manifest.logs.length}`,
+    fact`measure snaps: ${manifest.snaps.length}`,
+    fact`motion recs: ${manifest.recs.length}`,
+    fact`other: ${manifest.other.length}`,
+  ];
+}
+
+function emitStoppedFromManifest(id: string, sessionDir: string, manifest: BundleManifest, parsed: ParsedArgs): void {
+  emitResult({
+    tag: 'session-stopped',
+    attrs: { id, path: path.join(sessionDir, 'bundle.json') },
+    summary: fact`Session ${id} stopped after ${manifest.duration}ms; bundle manifest written.`,
+    sections: [lineList(bundleRows(manifest))],
+    followUp: fact`capture session view ${id}`,
+  }, { json: parsed.json });
+}
+
 async function stop(parsed: ParsedArgs): Promise<void> {
   if (parsed.help) {
     console.log(STOP_USAGE);
@@ -808,139 +842,139 @@ async function stop(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
-  let session: Session;
-  try {
-    session = readSession(id);
-  } catch {
-    emitResult({
-      tag: 'error',
-      attrs: { command: 'session stop', code: 'unknown_session' },
-      summary: fact`No capture session found: ${id}.`,
-      followUp: text`Run \`capture session list\` to see known sessions.`,
-    }, { json: parsed.json });
-    process.exitCode = 1;
-    return;
-  }
-
-  const stoppedAt = new Date().toISOString();
-  const startMs = new Date(session.startedAt).getTime();
-  const duration = Date.now() - startMs;
-
-  // Kill log tailers.
-  for (const lp of session.logPids ?? []) {
-    try { process.kill(-lp.pid, 'SIGTERM'); } catch { /* already dead */ }
-  }
-  if (session.logPids?.length) {
-    await new Promise((r) => setTimeout(r, 200));
-  }
-
-  // Tear down the held CDP bridge, if any — releases the browser-level
-  // connection (and any grants/target-enablement it was keeping alive).
-  if (session.bridgePid || session.bridgeSocket) {
-    stopBridge(session.bridgePid, session.bridgeSocket);
-  }
-
-  // Recorder lifecycle teardown — finalize/tear down any live recorder
-  // before bundle collection (cdp/motion/recorder.ts); a stale recorder.json
-  // with a dead pid is reaped, never resumed.
-  let recorderTeardown: Awaited<ReturnType<typeof teardownAnyLiveRecorderAtSessionStop>> | null = null;
-  try {
-    recorderTeardown = await teardownAnyLiveRecorderAtSessionStop(session.dir);
-  } catch (err) {
-    console.error(`Warning: could not finalize active recording: ${err instanceof Error ? err.message : err}`);
-  }
-
-  // Collect screenshots.
-  const shotsDir = path.join(session.dir, 'shots');
-  const shots = fs.existsSync(shotsDir)
-    ? fs.readdirSync(shotsDir)
-        .filter((f) => f.endsWith('.png') || f.endsWith('.jpg'))
-        .map((f) => ({ name: f, path: path.join(shotsDir, f) }))
-    : [];
-
-  // Collect HAR directly from har-manager.
-  let har: BundleManifest['har'] = null;
-  if (session.harId) {
+  return withLifecycleCoordinator(async () => {
+    let session: Session;
     try {
-      const harData = await readHarRecording(session.harId);
-      if (harData) {
+      session = readSession(id);
+    } catch {
+      emitResult({
+        tag: 'error',
+        attrs: { command: 'session stop', code: 'unknown_session' },
+        summary: fact`No capture session found: ${id}.`,
+        followUp: text`Run \`capture session list\` to see known sessions.`,
+      }, { json: parsed.json });
+      process.exitCode = 1;
+      return;
+    }
+
+    const stopAdmission = await beginSessionStop(session.dir);
+    let committed = false;
+    try {
+      // A process waiting behind another stop must re-read finalized truth after
+      // winning the per-session stop lock. Existing bundles are immutable.
+      session = readSession(id);
+      const bundlePath = path.join(session.dir, 'bundle.json');
+      try {
+        const manifest = JSON.parse(readPrivateFile(bundlePath).toString('utf-8')) as BundleManifest;
+        // The bundle commit is authoritative even if the committing process
+        // died before post-commit cleanup. Complete those idempotent steps
+        // without ever replacing the immutable manifest.
+        if (session.harId) {
+          try { await deleteHarRecording(session.harId); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        }
+        await updateSessionState(session.dir, { stoppedAt: manifest.stoppedAt, stopping: false });
+        clearActiveSessionIf(id);
+        emitStoppedFromManifest(id, session.dir, manifest, parsed);
+        committed = true;
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        if (session.stoppedAt) throw new Error(`finalized session ${id} is missing its immutable bundle`);
+      }
+
+      session = await updateSessionState(session.dir, { stopping: true });
+      const stoppedAt = new Date().toISOString();
+      const startMs = new Date(session.startedAt ?? stoppedAt).getTime();
+      const duration = Date.now() - startMs;
+
+      for (const lp of session.logPids ?? []) {
+        try { process.kill(-lp.pid, 'SIGTERM'); } catch { /* already dead */ }
+      }
+      if (session.logPids?.length) await new Promise(resolve => setTimeout(resolve, 200));
+      if (session.bridgePid || session.bridgeSocket) stopBridge(session.bridgePid, session.bridgeSocket);
+
+      let recorderTeardown: Awaited<ReturnType<typeof teardownAnyLiveRecorderAtSessionStop>> | null = null;
+      try {
+        recorderTeardown = await teardownAnyLiveRecorderAtSessionStop(session.dir);
+      } catch (error) {
+        console.error(`Warning: could not finalize active recording: ${error instanceof Error ? error.message : error}`);
+      }
+
+      const shotsDir = path.join(session.dir, 'shots');
+      const shots = fs.existsSync(shotsDir)
+        ? fs.readdirSync(shotsDir).filter(name => name.endsWith('.png') || name.endsWith('.jpg')).map(name => ({ name, path: path.join(shotsDir, name) }))
+        : [];
+
+      let har: BundleManifest['har'] = null;
+      if (session.harId) {
+        const harData = await readHarRecording(session.harId);
         const harPath = path.join(session.dir, 'har.json');
         writeJsonPrivate(harPath, harData);
         har = { id: session.harId, path: harPath, entryCount: harData.log.entries.length };
-        try { await deleteHarRecording(session.harId); } catch { /* best effort */ }
       }
-    } catch (err) {
-      console.error(`Warning: could not read HAR: ${err instanceof Error ? err.message : err}`);
+
+      const logsDir = path.join(session.dir, 'logs');
+      const logs = fs.existsSync(logsDir)
+        ? fs.readdirSync(logsDir).filter(name => name.endsWith('.log')).map(name => {
+            const filePath = path.join(logsDir, name);
+            const content = fs.readFileSync(filePath, 'utf-8');
+            return { name, path: filePath, lines: content ? content.split('\n').filter(Boolean).length : 0 };
+          })
+        : [];
+      const snaps = collectSnaps(session.dir);
+      const recs = collectRecs(session.dir);
+      const knownDirs = new Set(['shots', 'logs', 'measure', 'motion', '.har', '.stop.lock', '.operations.lock']);
+      const knownFiles = new Set(['.session.json', '.operations.json', 'har.json', 'bundle.json', 'bridge.sock']);
+      const other = fs.readdirSync(session.dir)
+        .filter(name => !knownDirs.has(name) && !knownFiles.has(name))
+        .map(name => ({ name, path: path.join(session.dir, name) }));
+
+      const manifest: BundleManifest = {
+        id: session.sessionId,
+        startedAt: session.startedAt ?? '',
+        stoppedAt,
+        duration,
+        url: session.url ?? null,
+        shots,
+        har,
+        logs,
+        other,
+        snaps,
+        recs,
+        pendingViewportRestorations: recorderTeardown?.pendingViewportRestorations ?? [],
+      };
+
+      // The immutable bundle is the commit point. Live HAR deletion, stopped
+      // metadata, and pointer compare-clear are strictly post-commit.
+      writeJsonPrivate(bundlePath, manifest);
+      if (session.harId) await deleteHarRecording(session.harId);
+      await updateSessionState(session.dir, { stoppedAt, stopping: false });
+      clearActiveSessionIf(id);
+      committed = true;
+
+      const rows = bundleRows(manifest);
+      if (recorderTeardown && 'recId' in recorderTeardown) rows.push(fact`recorder ${recorderTeardown.recId} finalized — state ${recorderTeardown.state}, viewport restored ${String(recorderTeardown.viewportRestored)}`);
+      if (recorderTeardown?.pendingViewportRestorations.length) rows.push(fact`pending viewport restorations: ${recorderTeardown.pendingViewportRestorations.length}`);
+      emitResult({
+        tag: 'session-stopped',
+        attrs: { id, path: bundlePath },
+        summary: fact`Session ${id} stopped after ${duration}ms; bundle manifest written.`,
+        sections: [lineList(rows)],
+        followUp: fact`capture session view ${id}`,
+      }, { json: parsed.json });
+    } catch (error) {
+      try { await updateSessionState(session.dir, { stopping: false }); } catch { /* preserve stop failure */ }
+      emitResult({
+        tag: 'error',
+        attrs: { command: 'session stop', code: 'stop_failed' },
+        summary: fact`Session ${id} could not be stopped: ${error instanceof Error ? error.message : String(error)}`,
+      }, { json: parsed.json });
+      process.exitCode = 1;
+    } finally {
+      await stopAdmission.finish(committed);
     }
-  }
-
-  // Collect log files.
-  const logsDir = path.join(session.dir, 'logs');
-  const logs = fs.existsSync(logsDir)
-    ? fs.readdirSync(logsDir)
-        .filter((f) => f.endsWith('.log'))
-        .map((f) => {
-          const filePath = path.join(logsDir, f);
-          const content = fs.readFileSync(filePath, 'utf-8');
-          const lines = content ? content.split('\n').filter(Boolean).length : 0;
-          return { name: f, path: filePath, lines };
-        })
-    : [];
-
-  // Collect measure snapshots and motion recordings.
-  const snaps = collectSnaps(session.dir);
-  const recs = collectRecs(session.dir);
-
-  // Collect anything else dropped in the session dir.
-  const knownDirs = new Set(['shots', 'logs', 'measure', 'motion']);
-  const knownFiles = new Set(['.session.json', 'har.json', 'bundle.json', 'bridge.sock']);
-  const other = fs.readdirSync(session.dir)
-    .filter((f) => !knownDirs.has(f) && !knownFiles.has(f))
-    .map((f) => ({ name: f, path: path.join(session.dir, f) }));
-
-  // Clear active session context.
-  clearActiveSession();
-
-  const manifest: BundleManifest = {
-    id: session.id,
-    startedAt: session.startedAt,
-    stoppedAt,
-    duration,
-    url: session.url,
-    shots,
-    har,
-    logs,
-    other,
-    snaps,
-    recs,
-    pendingViewportRestorations: recorderTeardown?.pendingViewportRestorations ?? [],
-  };
-
-  const bundlePath = path.join(session.dir, 'bundle.json');
-  writeJsonPrivate(bundlePath, manifest);
-
-  const rows: FactLine[] = [
-    fact`shots: ${shots.length}`,
-    har ? fact`har: ${har.entryCount} entries — ${har.path}` : fact`har: 0 entries`,
-    fact`logs: ${logs.length}`,
-    fact`measure snaps: ${snaps.length}`,
-    fact`motion recs: ${recs.length}`,
-    fact`other: ${other.length}`,
-  ];
-  if (recorderTeardown && 'recId' in recorderTeardown) {
-    rows.push(fact`recorder ${recorderTeardown.recId} finalized — state ${recorderTeardown.state}, viewport restored ${String(recorderTeardown.viewportRestored)}`);
-  }
-  if (recorderTeardown?.pendingViewportRestorations.length) {
-    rows.push(fact`pending viewport restorations: ${recorderTeardown.pendingViewportRestorations.length}`);
-  }
-
-  emitResult({
-    tag: 'session-stopped',
-    attrs: { id, path: bundlePath },
-    summary: fact`Session ${id} stopped after ${duration}ms; bundle manifest written.`,
-    sections: [lineList(rows)],
-    followUp: fact`capture session view ${id}`,
-  }, { json: parsed.json });
+  });
 }
 
 function list(parsed: ParsedArgs): void {
@@ -955,7 +989,7 @@ function list(parsed: ParsedArgs): void {
         .map((d) => {
           const session = readSession(d);
           const hasBundled = fs.existsSync(path.join(session.dir, 'bundle.json'));
-          return { id: session.id, startedAt: session.startedAt, url: session.url, status: hasBundled ? 'stopped' : 'active' };
+          return { id: session.sessionId, startedAt: session.startedAt ?? '', url: session.url ?? null, status: hasBundled ? 'stopped' : 'active' };
         })
     : [];
 

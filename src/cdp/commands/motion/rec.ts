@@ -17,6 +17,7 @@ import {
 } from '../../../output/render.js';
 import { getActiveSession } from '../../../session-context.js';
 import { createOneshotSession } from '../../../session/commands.js';
+import { parseDoAction } from '../../leaf-grammar.js';
 import { ensurePrivateDir, writeBinaryPrivate, writeJsonPrivate, writeNdjsonPrivate, type RecMeta } from '../../../session/artifacts.js';
 import {
   startComposedRecorder,
@@ -191,27 +192,6 @@ export class DoActionError extends Error {
   constructor(message: string, readonly status: string) {
     super(message);
   }
-}
-
-type DoAction =
-  | { verb: 'click'; target: string }
-  | { verb: 'scroll'; target: string; to: string };
-
-/** Parses the deliberately narrow one-shot action grammar; targets use the
- * unified driving-verb target grammar (no `text:`). */
-function parseDoAction(action: string): DoAction {
-  if (action.startsWith('click:')) {
-    const target = action.slice('click:'.length);
-    if (!target) throw new DoActionError('Invalid --do action: click requires a target — a css selector, ax:<name>, axid:<id>, or backend:<id>.', 'invalid_do_action');
-    return { verb: 'click', target };
-  }
-  if (action.startsWith('scroll:')) {
-    const spec = action.slice('scroll:'.length);
-    const comma = spec.lastIndexOf(',to=');
-    if (comma <= 0) throw new DoActionError('Invalid --do action: scroll requires `scroll:<target>,to=<top|bottom|px>`.', 'invalid_do_action');
-    return { verb: 'scroll', target: spec.slice(0, comma), to: spec.slice(comma + ',to='.length) };
-  }
-  throw new DoActionError('Unsupported --do action. Supported actions: click:<target>; scroll:<target>,to=<top|bottom|px> — target is a css selector, ax:<name>, axid:<id>, or backend:<id>.', 'invalid_do_action');
 }
 
 /** Adapts `RecorderSession.handleCdp` onto interact.ts's `LiveClient` so

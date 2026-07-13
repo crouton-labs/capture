@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { CaptureError } from '../src/errors.js';
-import { parseCliArgs } from '../src/cdp/args.js';
+import { parseCliArgs, resolveCliContext } from '../src/cdp/args.js';
 
 function assertCaptureError(fn: () => unknown, code = 'invalid_input'): void {
   assert.throws(fn, (error: unknown) => error instanceof CaptureError && error.descriptor.code === code);
@@ -222,8 +222,8 @@ test('an explicit --port survives an irrelevant malformed ambient CDP_PORT', () 
   const prior = process.env.CDP_PORT;
   process.env.CDP_PORT = 'garbage';
   try {
-    assert.equal(parseCliArgs(['tab', 'list', '--port', '9222']).port, 9222);
-    assertCaptureError(() => parseCliArgs(['tab', 'list']));
+    assert.equal(resolveCliContext(parseCliArgs(['tab', 'list', '--port', '9222'])).port, 9222);
+    assertCaptureError(() => resolveCliContext(parseCliArgs(['tab', 'list'])));
   } finally {
     if (prior === undefined) delete process.env.CDP_PORT;
     else process.env.CDP_PORT = prior;

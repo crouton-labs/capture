@@ -8,6 +8,7 @@ import { captureSnapshotSubstrate } from '../../measure/snapshot.js';
 import { createOneshotSession } from '../../../session/commands.js';
 import { getActiveSession } from '../../../session-context.js';
 import { emitResult, fact, line, lineList, renderResult, text, type FactLine, type RenderableResult } from '../../../output/render.js';
+import { assertSweepBounds, parsePositiveNumber } from '../../leaf-grammar.js';
 import {
   SWEEP_AXES,
   analyzeSweepSamples,
@@ -62,27 +63,20 @@ function writtenSnapshotArtifacts(dir: string): string[] {
   }
 }
 
-function parsePositive(raw: string | undefined, fallback: number, flag: string): number {
-  if (raw === undefined) return fallback;
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) throw new Error(`${flag} must be a positive number`);
-  return value;
-}
+// The `--from`/`--to`/`--viewport-height` numeric grammar and the enum-axis
+// domain are validated up front in `validateCliInvocation` (before any
+// artifact allocation) via the shared `parsePositiveNumber`/`assertSweepBounds`
+// predicates below; the runtime path re-runs the same pure functions so the
+// two layers can never diverge.
+const parsePositive = parsePositiveNumber;
 
 function valuesForAxis(axis: SweepAxis, parsed: ParsedArgs): Array<number | string> {
+  assertSweepBounds(axis, parsed.from, parsed.to);
   if (axis === 'width') return numericSweepValues(parsePositive(parsed.from, 320, '--from'), parsePositive(parsed.to, 1440, '--to'), axis);
   if (axis === 'dpr') return numericSweepValues(parsePositive(parsed.from, 1, '--from'), parsePositive(parsed.to, 3, '--to'), axis);
   if (axis === 'zoom') return numericSweepValues(parsePositive(parsed.from, 0.5, '--from'), parsePositive(parsed.to, 2, '--to'), axis);
-  if (axis === 'color-scheme') {
-    const from = parsed.from ?? 'light';
-    const to = parsed.to ?? 'dark';
-    if (!['light', 'dark'].includes(from) || !['light', 'dark'].includes(to) || from === to) throw new Error('color-scheme uses distinct --from/--to values from light,dark');
-    return [from, to];
-  }
-  const from = parsed.from ?? 'no-preference';
-  const to = parsed.to ?? 'reduce';
-  if (!['no-preference', 'reduce'].includes(from) || !['no-preference', 'reduce'].includes(to) || from === to) throw new Error('reduced-motion uses distinct --from/--to values from no-preference,reduce');
-  return [from, to];
+  if (axis === 'color-scheme') return [parsed.from ?? 'light', parsed.to ?? 'dark'];
+  return [parsed.from ?? 'no-preference', parsed.to ?? 'reduce'];
 }
 
 export function transitionSections(artifact: SweepArtifact): FactLine[] {

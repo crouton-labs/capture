@@ -154,7 +154,7 @@ test('measure snap writes one-shot and active-session substrates, including a ho
     id: sessionId, dir: sessionDir, harId: null, startedAt: new Date().toISOString(),
     url: pageUrl, targetId, stepCount: 0, logPids: [], bridgeSocket: null, bridgePid: null,
   });
-  setActiveSession({ sessionId, dir: sessionDir, harId: null, targetId, stepCount: 0, bridgeSocket: null });
+  await setActiveSession({ sessionId, dir: sessionDir, harId: null, targetId, stepCount: 0, bridgeSocket: null });
 
   const active = runCapture(['measure', 'snap', '--port', String(cdpPort), '--state', 'hover:button', '--json']);
   assert.equal(active.status, 0, active.stderr);
@@ -309,7 +309,7 @@ test('viewport request preserves a foreign DPR2 override without allocating arti
   }
 });
 
-test('viewport request rejects a recorder-held target before it allocates a session snap', () => {
+test('viewport request rejects a recorder-held target before it allocates a session snap', async () => {
   const sessionId = `cap-recorder-viewport-${Date.now().toString(36)}`;
   const sessionDir = path.join(CAPTURE_ROOT, sessionId);
   const recId = 'rec-live';
@@ -326,7 +326,7 @@ test('viewport request rejects a recorder-held target before it allocates a sess
     state: 'recording',
     markers: { performanceNowMs: 0, wallClockMs: 0, firstScreencastTimestampSec: null, firstTraceEventTsUs: null, baselinesPending: true },
   });
-  setActiveSession({ sessionId, dir: sessionDir, harId: null, targetId, stepCount: 0, bridgeSocket: null, activeRecId: recId });
+  await setActiveSession({ sessionId, dir: sessionDir, harId: null, targetId, stepCount: 0, bridgeSocket: null, activeRecId: recId });
   try {
     const rejected = runCapture(['measure', 'snap', '--port', String(cdpPort), '--viewport', '321x222', '--json']);
     assert.equal(rejected.status, 1);

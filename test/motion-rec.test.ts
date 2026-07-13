@@ -279,7 +279,7 @@ test('motion rec composed lifecycle records a real Chrome routed type action bet
   const root = makeRoot('real-chrome-composed');
   const chrome = await spawnHeadlessChrome();
   const target = await (await fetch(`http://localhost:${chrome.port}/json/new?${encodeURIComponent(`data:text/html,${encodeURIComponent('<input aria-label="Message">')}`)}`, { method: 'PUT' })).json() as { id: string };
-  setActiveSession({ sessionId: 'real-composed', dir: root, harId: null, targetId: target.id, stepCount: 0 });
+  await setActiveSession({ sessionId: 'real-composed', dir: root, harId: null, targetId: target.id, stepCount: 0 });
   const restore = __setMotionRecDepsForTest({
     startComposedRecorder: (opts) => startComposedRecorder(opts, {
       detectPort: async () => chrome.port,
@@ -487,7 +487,7 @@ test('cmdMotionRec composed start/stop applies viewport for the recording window
   const recDir = path.join(root, 'motion', 'recs', 'rec-composed');
   let startOpts: { sessionDir: string; targetId: string | null; port?: number; viewport?: { width: number; height: number } } | null = null;
   const restore = __setMotionRecDepsForTest({
-    getActiveSession: () => ({ sessionId: 'cap-test', dir: root, harId: null, targetId: 'target-1', cdpPort: 52621, stepCount: 0, activeRecId: 'rec-composed' }),
+    getActiveSession: () => ({ sessionId: 'cap-test', dir: root, harId: null, targetId: 'target-1', port: 52621, stepCount: 0, activeRecId: 'rec-composed' }),
     startComposedRecorder: async (opts) => {
       startOpts = opts;
       ensurePrivateDir(path.join(recDir, 'frames'));

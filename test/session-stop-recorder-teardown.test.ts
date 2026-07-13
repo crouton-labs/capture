@@ -145,8 +145,8 @@ test('teardownAnyLiveRecorderAtSessionStop gracefully stops a live (socket-reach
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
-  setActiveSession({ sessionId: id, dir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: id, dir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
 
   const fakeServer = await startFakeRecorderServer(socketPath);
   try {
@@ -188,8 +188,8 @@ test('teardownAnyLiveRecorderAtSessionStop best-effort finalizes an orphaned (de
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
-  setActiveSession({ sessionId: id, dir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: id, dir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
 
   try {
     const result = await teardownAnyLiveRecorderAtSessionStop(dir);
@@ -234,8 +234,8 @@ test('teardownAnyLiveRecorderAtSessionStop kills a known-live-but-unresponsive r
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
-  setActiveSession({ sessionId: id, dir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: id, dir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
 
   try {
     assert.ok(isPidAlive(placeholder.pid), 'placeholder pid must be alive before teardown');
@@ -354,8 +354,8 @@ test('teardownAnyLiveRecorderAtSessionStop finalizes session A\'s on-disk record
   const idB = freshSessionId('scope-b');
   const dirB = sessionDirFor(idB);
   ensurePrivateDir(dirB);
-  setActiveSession({ sessionId: idB, dir: dirB, harId: null, targetId: 'target-b', stepCount: 0 });
-  setActiveRecId('rec-scope-b1');
+  await setActiveSession({ sessionId: idB, dir: dirB, harId: null, targetId: 'target-b', stepCount: 0 });
+  await setActiveRecId('rec-scope-b1');
 
   const fakeServerA = await startFakeRecorderServer(socketPathA);
   try {
@@ -412,8 +412,8 @@ test('session stop finalizes an active recording before collecting the bundle, s
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
-  setActiveSession({ sessionId: id, dir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: id, dir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
 
   const fakeServer = await startFakeRecorderServer(socketPath);
   const out = captureStdout();

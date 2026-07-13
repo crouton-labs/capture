@@ -117,7 +117,7 @@ function spawnPlaceholderChild(): { pid: number; kill: () => void } {
 
 test('startComposedRecorder writes recorder.json + frames/, arms activeRecId, returns recDir/state', async () => {
   const sessionDir = freshSessionDir('start');
-  setActiveSession({ sessionId: 's-start', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveSession({ sessionId: 's-start', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
   const placeholder = spawnPlaceholderChild();
 
   let fakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
@@ -177,8 +177,8 @@ test('connectForCommand routes through the active recorder, marking Input.dispat
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
-  setActiveSession({ sessionId: 's-routed', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: 's-routed', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
 
   const fakeServer = await startFakeRecorderServer(socketPath);
   try {
@@ -214,8 +214,8 @@ test('a composed routed click emits exactly one coherent input landmark', async 
   const socketPath = recorderSocketPath(recDir);
   const placeholder = spawnPlaceholderChild();
   writeJsonPrivate(path.join(recDir, 'recorder.json'), { recId, pid: placeholder.pid, socketPath, targetId: 'target-abc', url: 'https://example.com', startedAt: new Date().toISOString(), state: 'recording', markers: PENDING_MARKERS } satisfies RecorderJson);
-  setActiveSession({ sessionId: 's-routed-click', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: 's-routed-click', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
   const fakeServer = await startFakeRecorderServer(socketPath, {
     cdp: (req) => {
       const method = (req as { method?: string }).method;
@@ -258,8 +258,8 @@ test('a composed routed `type --into` emits one insertion landmark, never a dupl
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
-  setActiveSession({ sessionId: 's-routed-type', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: 's-routed-type', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
 
   const secretText = 'hunter2-super-secret-password';
   const fakeServer = await startFakeRecorderServer(socketPath, {
@@ -319,8 +319,8 @@ test('connectForCommand derives a safe `type` mark even without --into (never fa
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
-  setActiveSession({ sessionId: 's-routed-type-noninto', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: 's-routed-type-noninto', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
 
   const secretText = 'another-secret-token';
   const fakeServer = await startFakeRecorderServer(socketPath);
@@ -433,8 +433,8 @@ test('stopComposedRecorder finalizes: writes markers.json/meta.json from the rec
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
-  setActiveSession({ sessionId: 's-stop', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: 's-stop', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
 
   const fakeServer = await startFakeRecorderServer(socketPath, {
     'rec-stop': (req) => ({
@@ -503,8 +503,8 @@ test('startComposedRecorder reaps a stale (dead-pid) recorder.json before arming
     findTarget: async (targetId: string) => ({ port: 9222, tab: { id: targetId, title: '', url: '', type: 'page', webSocketDebuggerUrl: 'ws://viewport' } }),
     createClient: () => ({ waitReady: async () => {}, send: async (method: string) => { viewportEvents.push(method); }, close: () => {} }) as never,
   });
-  setActiveSession({ sessionId: 's-reap', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(staleRecId);
+  await setActiveSession({ sessionId: 's-reap', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(staleRecId);
 
   let fakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
   const placeholder = spawnPlaceholderChild();
@@ -569,8 +569,8 @@ test('stopComposedRecorder best-effort finalizes an orphaned (dead-pid) recordin
     markers,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
-  setActiveSession({ sessionId: 's-orphan-stop', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: 's-orphan-stop', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
 
   try {
     const result = await stopComposedRecorder({ sessionDir, recId });
@@ -598,8 +598,7 @@ test('stopComposedRecorder best-effort finalizes an orphaned (dead-pid) recordin
 test('Fix 7: a token-shaped .session.json url is preserved through recorder.json and meta.json', async () => {
   const sessionDir = freshSessionDir('url-evidence');
   const secretUrl = 'https://example.com/?token=github_pat_' + '1'.repeat(40);
-  fs.writeFileSync(path.join(sessionDir, '.session.json'), JSON.stringify({ url: secretUrl }));
-  setActiveSession({ sessionId: 's-url-evidence', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveSession({ sessionId: 's-url-evidence', dir: sessionDir, harId: null, url: secretUrl, targetId: 'target-abc', stepCount: 0 });
   const placeholder = spawnPlaceholderChild();
 
   let fakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
@@ -676,8 +675,8 @@ test('stopComposedRecorder still accepts a normal safe --rec-id (regression: val
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
-  setActiveSession({ sessionId: 's-rec-id-safe', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: 's-rec-id-safe', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
 
   const fakeServer = await startFakeRecorderServer(socketPath);
   try {
@@ -745,7 +744,7 @@ test('startComposedRecorder rejects when a live recorder.json exists on disk but
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(existingRecDir, 'recorder.json'), existingRecorderJson);
-  setActiveSession({ sessionId: 's-missing-pointer', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveSession({ sessionId: 's-missing-pointer', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
   // Deliberately never call setActiveRecId -- the pointer is unset even though a live recorder.json exists on disk.
   assert.equal(getActiveRecId(), null);
 
@@ -769,7 +768,7 @@ test('startComposedRecorder rejects when a live recorder.json exists on disk but
 
 test('two concurrent startComposedRecorder calls against the same session: exactly one succeeds, the other is rejected as already-active', async () => {
   const sessionDir = freshSessionDir('concurrent-start');
-  setActiveSession({ sessionId: 's-concurrent-start', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveSession({ sessionId: 's-concurrent-start', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
 
   const placeholders: Array<{ pid: number; kill: () => void }> = [];
   const fakeServers: Array<Awaited<ReturnType<typeof startFakeRecorderServer>>> = [];
@@ -858,7 +857,7 @@ test('session-stop reports retained failed-start viewport restoration retries', 
 
 test('a requestRecStart failure during startComposedRecorder leaves no dangling lock/recorder.json, and a subsequent start succeeds cleanly', async () => {
   const sessionDir = freshSessionDir('start-failure-rollback');
-  setActiveSession({ sessionId: 's-start-failure', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveSession({ sessionId: 's-start-failure', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
 
   const failingPlaceholder = spawnPlaceholderChild();
   let failingFakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
@@ -950,8 +949,8 @@ test('stopComposedRecorder falls back to orphan-finalizing (and kills the pid) w
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
-  setActiveSession({ sessionId: 's-wedged-stop', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
-  setActiveRecId(recId);
+  await setActiveSession({ sessionId: 's-wedged-stop', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
 
   try {
     assert.ok(isPidAlive(placeholder.pid), 'placeholder pid must be alive before stop');

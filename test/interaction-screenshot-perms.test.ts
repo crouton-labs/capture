@@ -79,7 +79,7 @@ test('page click auto-screenshot writes the shot 0600 under a 0700 shots/ dir', 
   try {
     fs.mkdirSync(dir, { recursive: true });
     clearActiveSession();
-    setActiveSession({ sessionId: 'sess-t4', dir, harId: null, targetId: null, stepCount: 0 });
+    await setActiveSession({ sessionId: 'sess-t4', dir, harId: null, targetId: null, stepCount: 0 });
 
     await cmdPageClick({ command: 'page', positional: ['ax:Create applet'] } as ParsedArgs, []);
 

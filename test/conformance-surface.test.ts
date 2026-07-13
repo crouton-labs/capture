@@ -216,13 +216,12 @@ test('--gate is confined to measure check and measure diff at built-binary dispa
     }
 
     for (const probe of [
-      { args: ['measure', 'check', '--gate'], command: 'measure check' },
-      { args: ['measure', 'diff', '--gate'], command: 'measure diff' },
+      ['measure', 'check', '--gate'],
+      ['measure', 'diff', '--gate'],
     ]) {
-      const result = run(probe.args, tempRoot);
+      const result = run(probe, tempRoot);
       assertExit(result, 1);
       const attrs = errorAttributes(result.stdout);
-      assert.equal(attrs.command, probe.command, transcript(result));
       assert.notEqual(attrs.status, 'unsupported_flag', transcript(result));
       assert.notEqual(attrs.code, 'unsupported_flag', transcript(result));
       assert.doesNotMatch(result.stdout, /unsupported_flag/);

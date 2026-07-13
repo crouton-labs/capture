@@ -250,7 +250,7 @@ test('motion jank reads finalized recording artifacts through the resolver and r
   writeNdjsonPrivate(path.join(recDir, 'events.jsonl'), events);
   writeJsonPrivate(path.join(recDir, 'markers.json'), markers);
   writeJsonPrivate(path.join(recDir, 'meta.json'), { id: 'rec-fixture', state: 'finalized', frames: 4, durationMs: 80, action: null });
-  setActiveSession({ sessionId: 'u27-session', dir: sessionDir, harId: null, targetId: null, stepCount: 0 });
+  await setActiveSession({ sessionId: 'u27-session', dir: sessionDir, harId: null, targetId: null, stepCount: 0 });
 
   try {
     const result = readMotionJank(resolveRecRef('rec-fixture'));
