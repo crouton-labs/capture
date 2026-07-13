@@ -299,10 +299,16 @@ export async function cmdPageNavigate(parsed: ParsedArgs, _args: string[]): Prom
     // Append to the active session's HAR (parsed.har is the session-filled
     // internal slot — not CLI-settable).
     let appended: NavigatedFacts['appended'];
-    if (parsed.har && result.har.log.entries.length > 0) {
-      appendToHar(parsed.har, result.har.log.entries);
-      appended = { harId: parsed.har, entries: result.har.log.entries.length };
-      console.error(`  [har:${parsed.har}] +${appended.entries} entries`);
+    const appendedBatch = { entries: result.har.log.entries, incompleteLifecycles: result.har.incompleteLifecycles };
+    if (parsed.har && (appendedBatch.entries.length > 0 || appendedBatch.incompleteLifecycles.length > 0)) {
+      await appendToHar(parsed.har, appendedBatch);
+      appended = { harId: parsed.har, entries: appendedBatch.entries.length };
+      console.error(
+        `  [har:${parsed.har}] +${appendedBatch.entries.length} entries` +
+        (appendedBatch.incompleteLifecycles.length > 0
+          ? ` +${appendedBatch.incompleteLifecycles.length} incomplete`
+          : ''),
+      );
     }
 
     emitResult(

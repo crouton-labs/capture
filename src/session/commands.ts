@@ -32,6 +32,7 @@ import {
   FILE_MODE,
   ensurePrivateDir,
   writeJsonPrivate,
+  unlinkPrivateFile,
   type SnapMeta,
   type RecMeta,
 } from './artifacts.js';
@@ -376,7 +377,7 @@ async function start(parsed: ParsedArgs): Promise<void> {
   // Start HAR recording directly.
   let harId: string | null = null;
   try {
-    const harResult = createHarRecording();
+    const harResult = await createHarRecording(dir);
     harId = harResult.id;
   } catch (err) {
     console.error(`Warning: could not start HAR recording: ${err instanceof Error ? err.message : err}`);
@@ -386,9 +387,9 @@ async function start(parsed: ParsedArgs): Promise<void> {
   let pageLoadTimedOut = false;
   let bridgeSocket: string | null = null;
   let bridgePid: number | null = null;
+  let cdpPort: number | null = null;
 
   try {
-    let cdpPort: number | null = null;
     if (url || hold) {
       const { detectCdpPort } = await import('../cdp.js');
       cdpPort = parsed.port ?? await detectCdpPort();
@@ -441,10 +442,20 @@ async function start(parsed: ParsedArgs): Promise<void> {
     // Best-effort so a cleanup failure can't mask the real start error.
     if (harId) {
       try {
-        deleteHarRecording(harId);
+        await deleteHarRecording(harId);
       } catch {
         /* best effort */
       }
+      try {
+        unlinkPrivateFile(harId);
+      } catch {
+        /* best effort */
+      }
+    }
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* best effort */
     }
     const msg = err instanceof Error ? err.message : String(err);
     emitResult({
@@ -624,7 +635,7 @@ interface HarSource {
  * `unavailable` reason instead of a source when the session has no readable
  * HAR (recording never started, or the file is gone).
  */
-function locateSessionHar(session: Session): HarSource | { unavailable: string } {
+async function locateSessionHar(session: Session): Promise<HarSource | { unavailable: string }> {
   const stopped = fs.existsSync(path.join(session.dir, 'bundle.json'));
   if (stopped) {
     const harPath = path.join(session.dir, 'har.json');
@@ -636,11 +647,12 @@ function locateSessionHar(session: Session): HarSource | { unavailable: string }
   if (!session.harId) {
     return { unavailable: 'the running session has no HAR recording (it could not be started with the session)' };
   }
-  const live = readHarRecording(session.harId);
-  if (!live) {
+  try {
+    const live = await readHarRecording(session.harId);
+    return { har: live, path: harFilePath(session.harId), source: 'live' };
+  } catch {
     return { unavailable: `the live HAR recording file is missing: ${harFilePath(session.harId)}` };
   }
-  return { har: live, path: harFilePath(session.harId), source: 'live' };
 }
 
 /** One selection-list row: method, status, URL, body size, start time. Body
@@ -681,7 +693,7 @@ function harEntryDetail(e: HAREntry, index: number): FactLine {
   return lineList(rows);
 }
 
-function har(parsed: ParsedArgs): void {
+async function har(parsed: ParsedArgs): Promise<void> {
   if (parsed.help) {
     console.log(HAR_USAGE);
     return;
@@ -717,7 +729,7 @@ function har(parsed: ParsedArgs): void {
     return;
   }
 
-  const located = locateSessionHar(session);
+  const located = await locateSessionHar(session);
   if ('unavailable' in located) {
     emitResult({
       tag: 'error',
@@ -850,12 +862,12 @@ async function stop(parsed: ParsedArgs): Promise<void> {
   let har: BundleManifest['har'] = null;
   if (session.harId) {
     try {
-      const harData = readHarRecording(session.harId);
+      const harData = await readHarRecording(session.harId);
       if (harData) {
         const harPath = path.join(session.dir, 'har.json');
         writeJsonPrivate(harPath, harData);
         har = { id: session.harId, path: harPath, entryCount: harData.log.entries.length };
-        try { deleteHarRecording(session.harId); } catch { /* best effort */ }
+        try { await deleteHarRecording(session.harId); } catch { /* best effort */ }
       }
     } catch (err) {
       console.error(`Warning: could not read HAR: ${err instanceof Error ? err.message : err}`);

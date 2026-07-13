@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { sessionMain, waitForPageLoad } from '../src/session/commands.js';
 import { getActiveSession, clearActiveSession } from '../src/session-context.js';
-import { HAR_DIR } from '../src/har-manager.js';
+import { CAPTURE_ROOT } from '../src/session/artifacts.js';
 import type { ParsedArgs } from '../src/cdp/types.js';
 
 // Process-scope this file's active-session pointer (node's test runner
@@ -166,11 +166,12 @@ async function spawnHeadlessChrome(): Promise<{ proc: ChildProcess; port: number
   throw new Error(`failed to spawn headless Chrome after 3 attempts: ${String(lastErr)}`);
 }
 
-test('session start failure emits start_failed, sets exitCode 1, and leaves no stray HAR file', async () => {
+test('session start failure emits start_failed, sets exitCode 1, and leaves no stray session HAR', async () => {
   // A url with a port pointing at a closed CDP endpoint forces the openTab
   // CDP connect to fail, reaching the outer start_failed catch after the HAR
   // recording was already created.
-  const before = fs.existsSync(HAR_DIR) ? new Set(fs.readdirSync(HAR_DIR)) : new Set<string>();
+  const captureRoot = CAPTURE_ROOT;
+  const before = fs.existsSync(captureRoot) ? new Set(fs.readdirSync(captureRoot)) : new Set<string>();
   const out = captureStdout();
   try {
     await sessionMain(
@@ -187,9 +188,22 @@ test('session start failure emits start_failed, sets exitCode 1, and leaves no s
   process.exitCode = 0;
 
   // The HAR created during the failed start must be cleaned up: no new file
-  // left behind in the HAR store.
-  const after = fs.existsSync(HAR_DIR) ? new Set(fs.readdirSync(HAR_DIR)) : new Set<string>();
-  const leaked = [...after].filter((f) => !before.has(f));
+  // left behind in any newly created session .har directory.
+  const deadline = Date.now() + 1000;
+  let leaked: string[] = [];
+
+  while (Date.now() < deadline) {
+    const after = fs.existsSync(captureRoot) ? new Set(fs.readdirSync(captureRoot)) : new Set<string>();
+    const newSessions = [...after].filter((name) => !before.has(name));
+    leaked = newSessions.filter((name) => {
+      const harDir = path.join(captureRoot, name, '.har');
+      if (!fs.existsSync(harDir)) return false;
+      return fs.readdirSync(harDir).some((f) => f.endsWith('.json'));
+    });
+    if (leaked.length === 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
   assert.deepEqual(leaked, [], `start failure leaked HAR file(s): ${leaked.join(', ')}`);
 
   // A failed start must not register an active session.

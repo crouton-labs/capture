@@ -209,10 +209,11 @@ export async function withConnection<T>(
         await new Promise((r) => setTimeout(r, settle));
       }
       const har = await harRecorder.finish();
-      if (har.log.entries.length > 0) {
-        appendToHar(parsed.har, har.log.entries);
+      const batch = { entries: har.log.entries, incompleteLifecycles: har.incompleteLifecycles };
+      if (batch.entries.length > 0 || batch.incompleteLifecycles.length > 0) {
+        await appendToHar(parsed.har, batch);
         console.error(
-          `  [har:${parsed.har}] +${har.log.entries.length} entries`,
+          `  [har:${parsed.har}] +${batch.entries.length} entries +${batch.incompleteLifecycles.length} incomplete`,
         );
       }
     }

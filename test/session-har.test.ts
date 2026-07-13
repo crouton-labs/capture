@@ -51,21 +51,68 @@ function entry(over: {
   postData?: string;
   reqHeaders?: Array<{ name: string; value: string }>;
 }): HAREntry {
+  const i = FIXTURE_SEED;
+  FIXTURE_SEED += 1;
+  const requestWallTime = 1783814400 + i;
+  const requestMonotonic = i * 10 + 10;
+  const responseMonotonic = requestMonotonic + 12;
+  const terminalMonotonic = responseMonotonic + 18;
+  const captured = over.body !== undefined || over.postData !== undefined;
+  const bodyText = captured ? over.body ?? '' : '';
+  const capturedBytes = Buffer.byteLength(bodyText, 'utf-8');
+  const content = captured
+    ? { text: bodyText }
+    : {};
+
   return {
-    startedDateTime: '2026-07-12T00:00:00.000Z',
+    startedDateTime: new Date(requestWallTime * 1000).toISOString(),
+    time: (terminalMonotonic - requestMonotonic) * 1000,
     request: {
       method: over.method ?? 'GET',
       url: over.url,
       headers: over.reqHeaders ?? [{ name: 'accept', value: 'application/json' }],
-      ...(over.postData !== undefined ? { postData: { text: over.postData } } : {}),
+      ...(over.postData !== undefined ? { postData: { mimeType: 'application/json', text: over.postData } } : {}),
     },
     response: {
       status: over.status ?? 200,
       headers: [{ name: 'content-type', value: 'application/json' }],
-      content: over.body !== undefined ? { text: over.body } : {},
+      content,
+    },
+    _capture: {
+      schemaVersion: 1,
+      requestId: `req-${i}`,
+      generation: 1,
+      clocks: {
+        requestWallTime,
+        requestMonotonic,
+        responseMonotonic,
+        terminalMonotonic,
+      },
+      terminal: {
+        kind: 'finished',
+        encodedDataLength: capturedBytes,
+      },
+      response: {
+        state: 'received',
+      },
+      body: {
+        state: captured ? 'captured' : 'fetch_failed',
+        ...(captured
+          ? {
+            sourceEncoding: 'text',
+            decodedByteLength: capturedBytes,
+            capturedByteLength: capturedBytes,
+            truncated: false,
+          }
+          : {
+            error: 'not captured',
+          }),
+      },
     },
   };
 }
+
+let FIXTURE_SEED = 0;
 
 const HOSTILE_URL = 'https://api.example.com/x?q=<img src=x onerror=alert(1)>';
 const SECRET_BODY = 'SECRET_BODY_TOKEN_abc123';
@@ -85,7 +132,7 @@ async function startSeededSession(): Promise<{ id: string; dir: string }> {
   const active = getActiveSession();
   assert.ok(active, 'session should be active after start');
   assert.ok(active!.harId, 'session should carry a live HAR recording id');
-  appendToHarRecording(active!.harId!, FIXTURE_ENTRIES);
+  await appendToHarRecording(active!.harId!, { entries: FIXTURE_ENTRIES, incompleteLifecycles: [] });
   return { id: active!.sessionId, dir: active!.dir };
 }
 
@@ -99,8 +146,8 @@ test('session har reads the LIVE accumulating HAR of a running session, with fil
     assert.ok(all.includes('total="4"'), all);
     assert.ok(all.includes('GET 200'), all);
     assert.ok(all.includes('started 2026-07-12T00:00:00.000Z'), all);
-    // The full-fidelity pointer is the live HAR file path.
-    assert.ok(/path="[^"]*capture-har[^"]*\.json"/.test(all), all);
+    // The full-fidelity pointer is the live HAR file path under this session.
+    assert.ok(all.includes(path.join(dir, '.har')), all);
 
     const byUrl = await runSession(['har'], { filterUrl: 'cdn.example' });
     assert.ok(byUrl.includes('entries="1"') && byUrl.includes('total="4"'), byUrl);

@@ -53,7 +53,7 @@ export class TabSession {
     });
     let harId: string | null = null;
     if (options.createHar !== false) {
-      harId = createHarRecording().id;
+      harId = (await createHarRecording()).id;
     }
     return new TabSession(tab.id, harId, port);
   }
@@ -83,6 +83,6 @@ export class TabSession {
     } catch {
       /* best-effort */
     }
-    if (this.harId) deleteHarRecording(this.harId);
+    if (this.harId) await deleteHarRecording(this.harId);
   }
 }
