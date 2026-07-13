@@ -2,14 +2,17 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { PNG } from 'pngjs';
 
 import { checkSnapshot, parseChecks, writeFindingCrop } from '../src/cdp/measure/check.js';
+import { CAPTURE_ROOT } from '../src/session/artifacts.js';
 import type { SnapRef } from '../src/output/artifact.js';
 
-const root = path.join(os.tmpdir(), 'capture-sessions', `measure-check-test-${process.pid}`);
+// Fixtures live under the process-start frozen root: writeFindingCrop persists
+// through writeBinaryPrivate, which enforces assertUnderCaptureRoot, and the
+// spawned CLI children inherit this process's environment (same root).
+const root = path.join(CAPTURE_ROOT, `measure-check-test-${process.pid}`);
 const dir = path.join(root, 'measure', 'snaps', 'snap-check');
 const ref: SnapRef = { kind: 'snap', id: 'snap-check', dir };
 

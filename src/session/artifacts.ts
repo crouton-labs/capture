@@ -14,12 +14,12 @@ const MAX_TIMING_MS = 86_400_000;
 
 type Identity = { dev: number; ino: number };
 export type ArtifactHookOperation = 'root-bootstrap' | 'traversal' | 'final-file' | 'recursive-removal' | 'lock';
-export type ArtifactHookPhase = 'afterComponentLstat' | 'beforeComponentChdir' | 'afterComponentChdirBeforeIdentityCheck' | 'afterRootPinned' | 'afterParentPinned' | 'afterFinalOpen' | 'afterDescriptorValidated' | 'beforeTempCreate' | 'afterTempCreate' | 'beforeRename' | 'beforeUnlink' | 'beforeOwnedCleanupUnlink' | 'afterChildLstat' | 'beforeChildChdir' | 'afterChildChdirBeforeIdentityCheck' | 'beforeChildUnlink' | 'beforeDirectoryRmdir' | 'beforePublishAttempt' | 'afterStageMkdirPinned' | 'beforeStageChdir' | 'afterStageChdirBeforeIdentityCheck' | 'afterOwnerWrite' | 'beforePublishRename' | 'beforeStageCleanup' | 'afterCanonicalOwnerValidation' | 'afterOwnerRemoval' | 'beforeCanonicalRmdir';
+export type ArtifactHookPhase = 'afterComponentLstat' | 'beforeComponentCreate' | 'beforeComponentChdir' | 'afterComponentChdirBeforeIdentityCheck' | 'afterRootPinned' | 'afterParentPinned' | 'afterFinalOpen' | 'afterDescriptorValidated' | 'beforeTempCreate' | 'afterTempCreate' | 'beforeRename' | 'beforeUnlink' | 'beforeOwnedCleanupUnlink' | 'afterChildLstat' | 'beforeChildChdir' | 'afterChildChdirBeforeIdentityCheck' | 'beforeChildUnlink' | 'beforeDirectoryRmdir' | 'beforePublishAttempt' | 'afterStageMkdirPinned' | 'beforeStageChdir' | 'afterStageChdirBeforeIdentityCheck' | 'afterOwnerWrite' | 'beforePublishRename' | 'beforeStageCleanup' | 'afterCanonicalOwnerValidation' | 'afterOwnerRemoval' | 'beforeCanonicalRmdir';
 export interface ArtifactHookDetail { operation: ArtifactHookOperation; phase: ArtifactHookPhase; path: string; component?: string; }
 type Hook = (detail: ArtifactHookDetail) => void;
 export interface ArtifactTestHooks {
   onHook?: Hook;
-  afterComponentLstat?: Hook; beforeComponentChdir?: Hook; afterComponentChdirBeforeIdentityCheck?: Hook; afterRootPinned?: Hook; afterParentPinned?: Hook;
+  afterComponentLstat?: Hook; beforeComponentCreate?: Hook; beforeComponentChdir?: Hook; afterComponentChdirBeforeIdentityCheck?: Hook; afterRootPinned?: Hook; afterParentPinned?: Hook;
   afterFinalOpen?: Hook; afterDescriptorValidated?: Hook; beforeTempCreate?: Hook; afterTempCreate?: Hook; beforeRename?: Hook; beforeUnlink?: Hook; beforeOwnedCleanupUnlink?: Hook;
   afterChildLstat?: Hook; beforeChildChdir?: Hook; afterChildChdirBeforeIdentityCheck?: Hook; beforeChildUnlink?: Hook; beforeDirectoryRmdir?: Hook;
   beforePublishAttempt?: Hook; afterStageMkdirPinned?: Hook; beforeStageChdir?: Hook; afterStageChdirBeforeIdentityCheck?: Hook; afterOwnerWrite?: Hook; beforePublishRename?: Hook; beforeStageCleanup?: Hook; afterCanonicalOwnerValidation?: Hook; afterOwnerRemoval?: Hook; beforeCanonicalRmdir?: Hook;
@@ -144,7 +144,14 @@ function inPinnedDirectory<T>(absoluteDir: string, create: boolean, operation: (
       try { before = fs.lstatSync(component); hook(hookOperation, 'afterComponentLstat', current, component); }
       catch (error) {
         if (!create || !(privateComponent || rootOrAncestor(current)) || !isMissing(error)) throw error;
-        fs.mkdirSync(component, { mode: DIR_MODE }); before = fs.lstatSync(component);
+        hook(hookOperation, 'beforeComponentCreate', current, component);
+        // A concurrent honest bootstrap can create this component between the
+        // ENOENT lstat and this mkdir. Tolerate exactly EEXIST, then re-lstat the
+        // same name: the symlink/non-directory/identity/mode checks below remain
+        // authoritative over whatever won the create.
+        try { fs.mkdirSync(component, { mode: DIR_MODE }); }
+        catch (createError) { if (errno(createError) !== 'EEXIST') throw createError; }
+        before = fs.lstatSync(component);
       }
       // Darwin exposes /var as a kernel-owned alias for /private/var. It is the only
       // host alias accepted before the configured root; all user-controlled components

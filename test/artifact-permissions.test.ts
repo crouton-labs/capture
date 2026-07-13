@@ -326,6 +326,67 @@ test('F-R7 every entry point rejects a post-import root generation replacement',
 });
 
 // ===========================================================================
+// F-R8 — Losing a component create to a concurrent honest bootstrap
+// ===========================================================================
+test('F-R8 a cold-root bootstrap that loses mkdir to a concurrent peer adopts the winner vnode', () => {
+  const base = tmpDir('fr8-cold'); const root = path.join(base, 'root');
+  const result = path.join(coordinator, 'fr8-cold.json');
+  try {
+    // The peer wins the create inside the exact ENOENT→mkdir window of the
+    // module-load bootstrap; the loser must pin the winner's vnode and proceed.
+    const res = child(root, `import fs from 'node:fs'; let winner; globalThis[Symbol.for('capture.artifacts.test-hooks')]={onHook(d){ if(d.operation==='root-bootstrap'&&d.phase==='beforeComponentCreate'&&d.component==='root'&&winner===undefined){ fs.mkdirSync(d.path,{mode:0o700}); winner=fs.lstatSync(d.path).ino; } }}; const a = await import(process.env.ARTIFACT_MODULE); a.writePrivateFile(a.CAPTURE_ROOT + '/w', 'hi'); fs.writeFileSync(${JSON.stringify(result)}, JSON.stringify({ winner, pinned: fs.lstatSync(a.CAPTURE_ROOT).ino }));`);
+    assert.equal(res.status, 0, res.stderr);
+    const rec = JSON.parse(fs.readFileSync(result, 'utf8'));
+    assert.equal(typeof rec.winner, 'number', 'the peer must have won the create inside the race window');
+    assert.equal(rec.pinned, rec.winner, 'the loser must pin the winner vnode, never replace it');
+    assert.equal(fs.readFileSync(path.join(root, 'w'), 'utf8'), 'hi');
+    assert.equal(mode(root), DIR_MODE);
+    const stat = fs.lstatSync(root);
+    assert.ok(stat.isDirectory() && !stat.isSymbolicLink());
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('F-R8 losing a traversal component create re-validates the winner; symlink and file winners are refused', () => {
+  // Honest peer directory wins → the operation succeeds on the winner vnode.
+  {
+    const base = privateBase('fr8-dir'); const target = path.join(base, 'raced');
+    try {
+      let winner: number | undefined;
+      __setArtifactTestHooks(swapAt({ operation: 'traversal', phase: 'beforeComponentCreate', path: target, component: 'raced' }, () => { fs.mkdirSync(target, { mode: 0o700 }); winner = fs.lstatSync(target).ino; }));
+      ensurePrivateDir(target);
+      reset();
+      assert.equal(typeof winner, 'number', 'the peer must have won the create inside the race window');
+      assert.equal(fs.lstatSync(target).ino, winner, 'the loser must pin the winner vnode');
+      assert.equal(mode(target), DIR_MODE);
+    } finally { cleanup(base); }
+  }
+  // Symlink winner → refused; link and its target untouched.
+  {
+    const base = privateBase('fr8-link'); const { outside, before } = outsideFixture(base);
+    const target = path.join(base, 'raced');
+    try {
+      __setArtifactTestHooks(swapAt({ operation: 'traversal', phase: 'beforeComponentCreate', path: target, component: 'raced' }, () => { fs.symlinkSync(outside, target); }));
+      assert.throws(() => ensurePrivateDir(target), /refusing symlinked artifact directory component/);
+      reset();
+      assert.equal(snapshot(target).type, 'link');
+      assertUnchanged(outside, before);
+    } finally { cleanup(base); }
+  }
+  // Regular-file winner → refused; the file stays byte- and mode-exact.
+  {
+    const base = privateBase('fr8-file'); const target = path.join(base, 'raced');
+    try {
+      __setArtifactTestHooks(swapAt({ operation: 'traversal', phase: 'beforeComponentCreate', path: target, component: 'raced' }, () => { fs.writeFileSync(target, 'winner', { mode: 0o644 }); fs.chmodSync(target, 0o644); }));
+      assert.throws(() => ensurePrivateDir(target), /refusing non-directory artifact component/);
+      reset();
+      const s = snapshot(target); assert.equal(s.type, 'file');
+      assert.equal(fs.readFileSync(target, 'utf8'), 'winner');
+      assert.equal(lmode(target), 0o644);
+    } finally { cleanup(base); }
+  }
+});
+
+// ===========================================================================
 // F-C1 — Component pre-chdir swap is rejected for every API
 // ===========================================================================
 test('F-C1 a component pre-chdir swap is rejected for create/read/append/replace/unlink/remove', () => {

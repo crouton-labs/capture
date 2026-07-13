@@ -5,6 +5,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 
+// The process-start frozen root. Spawned CLI children inherit this process's
+// environment, so they resolve the same root and the oneshot leak detector
+// below watches exactly the root those children write to.
+import { CAPTURE_ROOT } from '../src/session/artifacts.js';
+
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-cli-error-'));
 const entry = path.join(tempDir, 'capture.cjs');
 
@@ -20,8 +25,7 @@ function run(
   setup?: (activePath: string, nodeId: string) => void,
 ): ReturnType<typeof spawnSync> {
   const nodeId = `cli-error-${process.pid}-${Math.random().toString(16).slice(2)}`;
-  const active = path.join(os.tmpdir(), 'capture-sessions', `.active-${nodeId}`);
-  fs.mkdirSync(path.dirname(active), { recursive: true });
+  const active = path.join(CAPTURE_ROOT, `.active-${nodeId}`);
   const stale = '{"sessionId":"stale","dir":"/does/not/exist"}\n';
   fs.writeFileSync(active, stale);
   setup?.(active, nodeId);
@@ -109,8 +113,8 @@ test('a session endpoint wins over malformed CDP_PORT before page dispatch', () 
 });
 
 test('leaf grammar rejects before stale-pointer cleanup or one-shot allocation', () => {
-  const root = path.join(os.tmpdir(), 'capture-sessions');
-  const before = new Set(fs.existsSync(root) ? fs.readdirSync(root).filter(name => name.startsWith('oneshot-')) : []);
+  const root = CAPTURE_ROOT;
+  const before = new Set(fs.readdirSync(root).filter(name => name.startsWith('oneshot-')));
   for (const args of [
     ['page', 'navigate', 'not-a-url'],
     ['measure', 'sweep', '--axis', 'width', '--from', 'bogus'],
@@ -120,7 +124,7 @@ test('leaf grammar rejects before stale-pointer cleanup or one-shot allocation',
   ]) {
     assertOneError(args);
   }
-  const after = new Set(fs.existsSync(root) ? fs.readdirSync(root).filter(name => name.startsWith('oneshot-')) : []);
+  const after = new Set(fs.readdirSync(root).filter(name => name.startsWith('oneshot-')));
   assert.deepEqual(after, before);
 });
 

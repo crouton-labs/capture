@@ -138,6 +138,7 @@ function run(args: string[], tempRoot: string) {
     encoding: 'utf8',
     env: {
       ...process.env,
+      CAPTURE_ROOT: path.join(tempRoot, 'capture-sessions'),
       TMPDIR: tempRoot,
       TMP: tempRoot,
       TEMP: tempRoot,
