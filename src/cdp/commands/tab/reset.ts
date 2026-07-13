@@ -2,6 +2,15 @@
  * `capture tab reset <url> [--port <port>]` — abandon a stuck/unresponsive
  * tab by opening a fresh one at the URL, and repoint the active session's
  * target at it so subsequent session-targeted commands drive the new tab.
+ *
+ * Under an active session this is a session-lifecycle transition: it admits
+ * as a session operation, runs under the session's `.lifecycle.lock`, and
+ * REFUSES while a recording is live (a recorder is bound to the old target;
+ * reset never rebinds a live recorder). Reset only clears a dangling recorder
+ * pointer; dead recorders are left for the next stop/start to finalize (their
+ * frames are preserved). The session's `{targetId, port}` pair is published
+ * atomically under the lock.
+ *
  * Emits a `<tab-reset>` block; page-derived strings flow through `data()`
  * (I-9), and "no active session to update" is stated as a fact rather than
  * silently skipped (I-5).
@@ -9,12 +18,19 @@
 import { detectCdpPort } from '../../detect.js';
 import { openTab } from '../../targets.js';
 import { CDPClient } from '../../client.js';
-import { updateActiveSession } from '../../../session-context.js';
+import { getActiveSession, updateSessionState } from '../../../session-context.js';
+import {
+  admitSessionOperation,
+  withSessionLifecycle,
+  scanRecorderHandles,
+  clearDanglingRecorderPointer,
+  type LifecycleSeams,
+} from '../../../session/coordinator.js';
+import { captureError, invalidInput } from '../../../errors.js';
 import { type CDPTarget, type ParsedArgs } from '../../types.js';
 import {
   data,
   emitResult,
-  fact,
   line,
   text,
   type RenderableResult,
@@ -24,10 +40,10 @@ const USAGE = `capture tab reset — abandon a stuck tab and open a fresh one at
 
 input:
   <url>           required — the URL the fresh tab opens at
-  --port <port>   CDP endpoint (default: the auto-discovered preferred endpoint)
+  --port <port>   CDP endpoint (default: the active session's port, else the auto-discovered preferred endpoint)
 
 output: <tab-reset port=… target=…> — the fresh tab's target id and url, plus whether the active session's target was repointed at it.
-effects: opens a new background browser tab (the old tab is left behind, not closed), waits up to 10s for its load event, and updates the active session's target when a session is active.`;
+effects: opens a new background browser tab (the old tab is left behind, not closed) and waits up to 10s for its load event. Under an active session it refuses while a recording is live (stop it first: \`capture motion rec --stop\`), clears a dangling recorder pointer (dead recorders are left for the next stop/start to finalize; their frames are preserved), and updates the session's {target, port} pair together.`;
 
 /** Pure `<tab-reset>` result builder — exported for tests. */
 export function buildTabResetResult(
@@ -51,60 +67,39 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export async function cmdTabReset(parsed: ParsedArgs, _args: string[]): Promise<void> {
-  if (parsed.help) {
-    console.log(USAGE);
-    return;
-  }
+interface TabResetDeps {
+  openTab: typeof openTab;
+  detectCdpPort: typeof detectCdpPort;
+  createClient: (webSocketDebuggerUrl: string) => CDPClient;
+  lifecycle: LifecycleSeams;
+}
 
-  const url = parsed.positional[0];
-  if (!url) {
-    emitResult(
-      {
-        tag: 'error',
-        attrs: { command: 'tab reset', code: 'missing_argument' },
-        summary: text`received: no URL; expected: capture tab reset <url> [--port <port>].`,
-      },
-      { json: parsed.json },
-    );
-    process.exit(1);
-  }
+let deps: TabResetDeps = {
+  openTab,
+  detectCdpPort,
+  createClient: (webSocketDebuggerUrl) => new CDPClient(webSocketDebuggerUrl),
+  lifecycle: {},
+};
 
-  let port: number;
+export function __setTabResetDepsForTest(overrides: Partial<TabResetDeps>): () => void {
+  const previous = deps;
+  deps = { ...deps, ...overrides };
+  return () => { deps = previous; };
+}
+
+async function openTabOrThrow(port: number, url: string): Promise<CDPTarget> {
   try {
-    port = parsed.port ?? (await detectCdpPort());
-  } catch {
-    emitResult(
-      {
-        tag: 'error',
-        attrs: { command: 'tab reset', code: 'no_cdp_endpoint' },
-        summary: text`received: no --port, and no CDP endpoint was discovered on localhost; expected: a running CDP-enabled browser (or an explicit --port <port>).`,
-        followUp: text`capture tab list probes every localhost CDP endpoint.`,
-      },
-      { json: parsed.json },
-    );
-    process.exit(1);
-  }
-
-  let tab: CDPTarget;
-  try {
-    tab = await openTab(port, url);
+    return await deps.openTab(port, url);
   } catch (err) {
-    emitResult(
-      {
-        tag: 'error',
-        attrs: { command: 'tab reset', code: 'open_failed', port },
-        summary: fact`received: \`${url}\`; opening a fresh tab on port ${port} failed: ${errorMessage(err)}`,
-      },
-      { json: parsed.json },
-    );
-    process.exit(1);
+    throw captureError('world', 'open_failed', `received: \`${url}\`; opening a fresh tab on port ${port} failed: ${errorMessage(err)}`);
   }
+}
 
-  // Wait (bounded) for the fresh tab's load event before repointing anything
-  // at it — same 10s tolerance the old reset-tab path used.
-  if (tab.webSocketDebuggerUrl) {
-    const client = new CDPClient(tab.webSocketDebuggerUrl);
+/** Wait (bounded, 10s) for the fresh tab's load event before repointing anything at it. */
+async function boundedLoadWait(tab: CDPTarget): Promise<void> {
+  if (!tab.webSocketDebuggerUrl) return;
+  const client = deps.createClient(tab.webSocketDebuggerUrl);
+  try {
     await client.waitReady();
     await client.send('Page.enable');
     await new Promise<void>((resolve) => {
@@ -114,10 +109,52 @@ export async function cmdTabReset(parsed: ParsedArgs, _args: string[]): Promise<
         resolve();
       });
     });
+  } finally {
     client.close();
   }
+}
 
-  const sessionUpdated = await updateActiveSession({ targetId: tab.id, port }) !== null;
+export async function cmdTabReset(parsed: ParsedArgs, _args: string[]): Promise<void> {
+  if (parsed.help) {
+    console.log(USAGE);
+    return;
+  }
 
-  emitResult(buildTabResetResult(tab, port, sessionUpdated), { json: parsed.json });
+  const url = parsed.positional[0];
+  if (!url) throw invalidInput('received: no URL; expected: capture tab reset <url> [--port <port>].', 'missing_argument');
+
+  const session = getActiveSession();
+  if (!session) {
+    let port: number;
+    try {
+      port = parsed.port ?? (await deps.detectCdpPort());
+    } catch {
+      throw captureError('world', 'no_cdp_endpoint', 'received: no --port, and no CDP endpoint was discovered on localhost; expected: a running CDP-enabled browser (or an explicit --port <port>).');
+    }
+    const tab = await openTabOrThrow(port, url);
+    await boundedLoadWait(tab);
+    emitResult(buildTabResetResult(tab, port, false), { json: parsed.json });
+    return;
+  }
+
+  const op = await admitSessionOperation(session.dir);
+  try {
+    const result = await withSessionLifecycle(session.dir, async () => {
+      const fresh = getActiveSession();
+      if (!fresh || fresh.dir !== session.dir) throw captureError('precondition', 'session_unavailable', 'The active capture session is no longer available.');
+      const scan = scanRecorderHandles(session.dir, deps.lifecycle);
+      if (scan.some(h => h.classification === 'unknown')) throw captureError('world', 'recorder_liveness_unknown', 'Cannot determine recorder liveness; refusing to reset.');
+      if (scan.some(h => h.classification === 'malformed')) throw captureError('precondition', 'recorder_unavailable', 'A malformed recorder handle exists on this session; resolve it before resetting.');
+      if (scan.some(h => h.classification === 'live')) throw captureError('precondition', 'recorder_active', 'A recording is active on this session; stop it first: `capture motion rec --stop`. Reset never rebinds a live recorder.');
+      await clearDanglingRecorderPointer(session.dir, scan);
+      const port = fresh.port ?? parsed.port ?? (await deps.detectCdpPort());
+      const tab = await openTabOrThrow(port, url);
+      await boundedLoadWait(tab);
+      await updateSessionState(session.dir, { targetId: tab.id, port });
+      return buildTabResetResult(tab, port, true);
+    }, deps.lifecycle);
+    emitResult(result, { json: parsed.json });
+  } finally {
+    await op.release();
+  }
 }

@@ -5,14 +5,13 @@ import * as path from 'node:path';
 import * as net from 'node:net';
 import { spawn } from 'node:child_process';
 
-import { CAPTURE_ROOT, ensurePrivateDir, writeJsonPrivate } from '../src/session/artifacts.js';
+import { CAPTURE_ROOT, ensurePrivateDir, writeJsonPrivate, processPidBirthProvider, type PidBirth } from '../src/session/artifacts.js';
 import { listenNdjsonSocket, closeNdjsonSocket } from '../src/cdp/bridge/server.js';
 import { recorderSocketPath } from '../src/cdp/bridge/spawn.js';
 import { setActiveSession, setActiveRecId, getActiveRecId, getActiveSession, clearActiveSession } from '../src/session-context.js';
 import {
   recDirFor,
   teardownAnyLiveRecorderAtSessionStop,
-  isPidAlive,
   type RecorderJson,
 } from '../src/cdp/motion/recorder.js';
 import { sessionMain } from '../src/session/commands.js';
@@ -119,6 +118,20 @@ function spawnPlaceholderChild(): { pid: number; kill: () => void } {
   return { pid, kill: () => { try { child.kill(); } catch { /* already dead */ } } };
 }
 
+/** Reads the real pid-birth identity for a live pid -- every hand-written
+ * recorder.json fixture MUST carry a structurally-valid `birth`, or the scan
+ * classifies it malformed and teardown misbehaves. */
+function birthOf(pid: number): PidBirth {
+  const r = processPidBirthProvider.read(pid);
+  if (r.status !== 'found') throw new Error('no birth for pid ' + pid);
+  return r.identity;
+}
+
+/** Local liveness probe (the deleted bare-pid liveness export's replacement). */
+function pidLive(pid: number): boolean {
+  return processPidBirthProvider.read(pid).status === 'found';
+}
+
 // ---------------------------------------------------------------------------
 // Unit-level: teardownAnyLiveRecorderAtSessionStop against hand-constructed
 // live and dead-pid recorders.
@@ -142,6 +155,7 @@ test('teardownAnyLiveRecorderAtSessionStop gracefully stops a live (socket-reach
     url: 'https://example.com',
     startedAt: new Date().toISOString(),
     state: 'recording',
+    birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
@@ -185,6 +199,7 @@ test('teardownAnyLiveRecorderAtSessionStop best-effort finalizes an orphaned (de
     url: 'https://example.com',
     startedAt: new Date(Date.now() - 1000).toISOString(),
     state: 'recording',
+    birth: birthOf(process.pid),
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
@@ -206,7 +221,7 @@ test('teardownAnyLiveRecorderAtSessionStop best-effort finalizes an orphaned (de
 
 test('teardownAnyLiveRecorderAtSessionStop kills a known-live-but-unresponsive recorder pid before orphan-finalizing it on disk', async () => {
   // Regression for the U14 re-review "Minor teardown leak": the pid answers
-  // isPidAlive() but its socket round trip (rec-stop) fails (e.g. the bridge
+  // pidLive() but its socket round trip (rec-stop) fails (e.g. the bridge
   // process wedged/crashed while its OS process lingers) -- teardown must
   // still SIGTERM the known-live pid while orphan-finalizing on disk, not
   // route it through the null-pid cleanup path and leak it as a zombie.
@@ -217,7 +232,7 @@ test('teardownAnyLiveRecorderAtSessionStop kills a known-live-but-unresponsive r
   const recDir = recDirFor(dir, recId);
   ensurePrivateDir(recDir);
   // Deliberately NEVER start a socket server at this path: the pid is alive
-  // (isPidAlive() sees it) but nothing is listening on its NDJSON socket, so
+  // (pidLive() sees it) but nothing is listening on its NDJSON socket, so
   // requestRecStop()'s connection attempt errors immediately (ENOENT) --
   // forcing teardownAnyLiveRecorderAtSessionStop() into its catch path.
   const socketPath = recorderSocketPath(recDir);
@@ -231,6 +246,7 @@ test('teardownAnyLiveRecorderAtSessionStop kills a known-live-but-unresponsive r
     url: 'https://example.com',
     startedAt: new Date(Date.now() - 1000).toISOString(),
     state: 'recording',
+    birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
@@ -238,7 +254,7 @@ test('teardownAnyLiveRecorderAtSessionStop kills a known-live-but-unresponsive r
   await setActiveRecId(recId);
 
   try {
-    assert.ok(isPidAlive(placeholder.pid), 'placeholder pid must be alive before teardown');
+    assert.ok(pidLive(placeholder.pid), 'placeholder pid must be alive before teardown');
 
     const result = await teardownAnyLiveRecorderAtSessionStop(dir);
 
@@ -252,10 +268,10 @@ test('teardownAnyLiveRecorderAtSessionStop kills a known-live-but-unresponsive r
     // actually be SIGTERM'd, not merely finalized on disk while the process
     // leaks on as a zombie recorder. SIGTERM delivery/exit is async, so poll.
     const deadline = Date.now() + 3000;
-    while (isPidAlive(placeholder.pid) && Date.now() < deadline) {
+    while (pidLive(placeholder.pid) && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 25));
     }
-    assert.equal(isPidAlive(placeholder.pid), false, 'the known-live pid must be killed, not leaked as a zombie recorder process');
+    assert.equal(pidLive(placeholder.pid), false, 'the known-live pid must be killed, not leaked as a zombie recorder process');
   } finally {
     placeholder.kill();
     clearActiveSession();
@@ -302,6 +318,7 @@ test('teardownAnyLiveRecorderAtSessionStop finalizes an on-disk recorder.json ev
     url: 'https://example.com',
     startedAt: new Date().toISOString(),
     state: 'recording',
+    birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
@@ -345,6 +362,7 @@ test('teardownAnyLiveRecorderAtSessionStop finalizes session A\'s on-disk record
     url: 'https://a.example.com',
     startedAt: new Date().toISOString(),
     state: 'recording',
+    birth: birthOf(placeholderA.pid),
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDirA, 'recorder.json'), recorderJsonA);
@@ -409,6 +427,7 @@ test('session stop finalizes an active recording before collecting the bundle, s
     url: 'https://example.com',
     startedAt: new Date().toISOString(),
     state: 'recording',
+    birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);

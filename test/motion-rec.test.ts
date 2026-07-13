@@ -485,7 +485,7 @@ test('cmdMotionRec applies the shared exact viewport grammar before lifecycle ef
 test('cmdMotionRec composed start/stop applies viewport for the recording window and finalizes the same inventory', async () => {
   const root = makeRoot('composed');
   const recDir = path.join(root, 'motion', 'recs', 'rec-composed');
-  let startOpts: { sessionDir: string; targetId: string | null; port?: number; viewport?: { width: number; height: number } } | null = null;
+  let startOpts: { sessionDir: string; viewport?: { width: number; height: number } } | null = null;
   const restore = __setMotionRecDepsForTest({
     getActiveSession: () => ({ sessionId: 'cap-test', dir: root, harId: null, targetId: 'target-1', port: 52621, stepCount: 0, activeRecId: 'rec-composed' }),
     startComposedRecorder: async (opts) => {
@@ -504,8 +504,8 @@ test('cmdMotionRec composed start/stop applies viewport for the recording window
   });
 
   try {
-    await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], start: true, port: 52621, viewport: '390x844' }, []));
-    assert.deepEqual(startOpts, { sessionDir: root, targetId: 'target-1', port: 52621, viewport: { width: 390, height: 844 } }, 'the command passes endpoint and viewport ownership into the lifecycle');
+    await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], start: true, viewport: '390x844' }, []));
+    assert.deepEqual(startOpts, { sessionDir: root, viewport: { width: 390, height: 844 } }, 'the command passes viewport ownership into the lifecycle without mutating CDP itself');
 
     await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], stop: true }, []));
     // The recorder lifecycle owns restoration, including reaps/session-stop;

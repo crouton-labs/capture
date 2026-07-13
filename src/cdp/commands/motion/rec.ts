@@ -432,12 +432,7 @@ async function handleStart(parsed: ParsedArgs, viewport: Viewport | undefined): 
 
   let started: StartRecorderResult;
   try {
-    started = await deps.startComposedRecorder({
-      sessionDir: session.dir,
-      targetId: session.targetId,
-      ...(parsed.port !== undefined ? { port: parsed.port } : {}),
-      viewport,
-    });
+    started = await deps.startComposedRecorder({ sessionDir: session.dir, viewport });
   } catch (err) {
     const viewportRestored = err instanceof StartRecorderError ? err.viewportRestored : null;
     return emitCommandError(

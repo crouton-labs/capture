@@ -26,11 +26,13 @@ export const TAB_USAGE = `capture tab — tab and connection plumbing: discovery
 
 \`tab list\` with no --port performs full endpoint discovery and is the probe
 for whether a CDP-enabled browser is running at all. \`tab reset\` replaces a
-stuck tab with a fresh one and updates the active session's target.
+stuck tab with a fresh one; under an active session it refuses while a
+recording is active (stop it first), reaps dead recorder handles, and updates
+the session's {target, port} pair together.
 
 <subcommand name="list" args="[--port <port>]" whenToUse="discover CDP endpoints and the tabs open on them"/>
 <subcommand name="open" args="<url> [--new] [--port <port>]" whenToUse="open a URL and get its tab id"/>
-<subcommand name="reset" args="<url> [--port <port>]" whenToUse="abandon a stuck tab and open a fresh one (updates the active session's target)"/>
+<subcommand name="reset" args="<url> [--port <port>]" whenToUse="abandon a stuck tab and open a fresh one (refuses while a recording is active; reaps dead recorder handles; updates the active session's {target, port} together)"/>
 <subcommand name="network" args="<offline|online>" whenToUse="toggle connection-level network emulation for a tab"/>
 
 capture tab <leaf> -h    Per-leaf usage`;
