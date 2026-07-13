@@ -93,8 +93,27 @@ import {
   type RecorderClockBaselines,
   type RecCdpRequest,
 } from './bridge/protocol.js';
-import { ensurePrivateDir, appendNdjsonPrivate, writeBinaryPrivate } from '../session/artifacts.js';
+import { ensurePrivateDir, appendNdjsonPrivate, writeBinaryPrivate, writeJsonPrivate } from '../session/artifacts.js';
 import { resolveIndexedObjectIds, describeBackendNodeId } from './measure/collectors/geometry.js';
+import { HARRecorder } from './har-recorder.js';
+import { appendToHarRecording } from '../har-manager.js';
+
+/**
+ * The subset of `RecCdpRequest` that `RecorderSession.handleCdp` actually reads. The one-shot
+ * `rec --do` lane (`commands/motion/rec.ts`'s `recorderLiveClient`) drives `handleCdp` in-proc —
+ * genuinely socket-less, intentionally ungated (the nonce gate lives on the wire in
+ * `runRecorderBridge`'s `handleLine`, which that lane never touches) — so it has no
+ * `reqId`/`type`/`nonce` envelope to supply. This type lets that lane's call sites stay honestly
+ * typed without fabricating envelope fields `handleCdp` never reads, while the wire lane
+ * (`handleRecorderRequest`) keeps passing a full `RecCdpRequest` unchanged.
+ */
+export interface RecCdpCall {
+  method?: string;
+  params?: Record<string, unknown>;
+  mark?: string;
+  waitEvent?: string;
+  timeoutMs?: number;
+}
 
 // ---------------------------------------------------------------------------
 // Artifact record shapes
@@ -542,9 +561,14 @@ export class RecorderSession {
    * `'recording'` (i.e. is `'stopping'` or `'stopped'`) rather than dispatching
    * against a connection that is mid-teardown.
    *
-   * `req` arrives as parsed-JSON cast to `RecCdpRequest` — `runRecorderBridge`
-   * does not validate the wire shape at parse time, so the type-level
-   * guarantee that `RecCdpWaitEventRequest` always carries a nonempty string
+   * `req` arrives as parsed-JSON cast to `RecCdpRequest` (the wire lane, via
+   * `handleRecorderRequest`) or as a bare `RecCdpCall` (the one-shot `rec
+   * --do` lane in `commands/motion/rec.ts`, which drives this method in-proc
+   * — genuinely socket-less, with no `reqId`/`type`/`nonce` to supply and
+   * nothing here to fabricate: the nonce gate lives on the wire in
+   * `runRecorderBridge`'s `handleLine`, which that lane never touches).
+   * Neither shape is validated at parse time, so the type-level guarantee
+   * that `RecCdpWaitEventRequest` always carries a nonempty string
    * `waitEvent` is NOT enforced at runtime. Validate here, before any
    * dispatch: a request must carry EITHER a nonempty string `method`
    * (dispatch, optionally awaiting `waitEvent` too) OR a nonempty string
@@ -562,7 +586,7 @@ export class RecorderSession {
    * FAILURE cancels the wait and throws. A wait-event-ONLY request (no method)
    * that times out still rejects — there is no method result to preserve.
    */
-  async handleCdp(req: RecCdpRequest): Promise<{ result?: unknown; event?: unknown; waitOutcome?: 'observed' | 'bounded-timeout' }> {
+  async handleCdp(req: RecCdpRequest | RecCdpCall): Promise<{ result?: unknown; event?: unknown; waitOutcome?: 'observed' | 'bounded-timeout' }> {
     if (this.state === 'stopping' || this.state === 'stopped') {
       throw new Error(`cannot dispatch cdp request in state "${this.state}"`);
     }
@@ -607,7 +631,13 @@ export class RecorderSession {
         });
         result = bracket.result;
       } else {
-        result = await this.client.send(req.method, req.params ?? {}, req.timeoutMs ?? 60000);
+        // `hasMethod` above already proved `req.method` is a nonempty string for this branch
+        // (mirrors the `req.method!` a few lines up in the `req.mark` branch); widening
+        // `handleCdp`'s parameter to accept the in-proc `RecCdpCall` shape too (see that type's
+        // doc comment) adds a third union member whose `method` is independently optional, which
+        // is enough to stop TS's aliased-condition narrowing from collapsing `req.method` to
+        // `string` here on its own.
+        result = await this.client.send(req.method!, req.params ?? {}, req.timeoutMs ?? 60000);
       }
 
       // The method dispatch succeeded. Resolve the paired wait WITHOUT letting
@@ -1374,20 +1404,90 @@ export interface RunRecorderBridgeOptions {
   socketPath: string;
   targetId: string;
   recDir: string;
+  /** The owning session's live HAR recording id — the streaming `HARRecorder`
+   * installed on the held tab connection appends its evidence there (via
+   * `har-manager.ts`'s `appendToHarRecording`, whose per-HAR-file lock is the
+   * cross-process safety boundary; nothing else is needed here). */
+  harId: string;
   port?: number;
+}
+
+/** Filename of the nonce boot file the recorder writes into `recDir` BEFORE
+ * binding its control socket — the private back-channel that hands the
+ * server-generated admission nonce to the starter. The starter reads,
+ * validates, persists (into `recorder.json`), and DELETES it; `recorder.json`
+ * is the one persistent authority for the nonce afterward. */
+export const RECORDER_NONCE_BOOT_FILE = 'recorder-nonce.json';
+
+/** Constant-time nonce comparison (same pattern as `session/log-tailer.ts`'s
+ * gate): length check + `crypto.timingSafeEqual`, so a probing client learns
+ * nothing about the expected token from response timing. */
+function nonceMatches(expected: string, candidate: unknown): boolean {
+  if (typeof candidate !== 'string') return false;
+  const left = Buffer.from(expected);
+  const right = Buffer.from(candidate);
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+interface RecorderBridgeDeps {
+  createClient: (webSocketDebuggerUrl: string) => CDPClient;
+  findTab: typeof findTabByIdAcrossEndpoints;
+  /** Process-exit seam — injectable so in-proc tests of the authenticated
+   * `rec-stop` self-exit path don't kill the test runner. */
+  exit: (code: number) => void;
+}
+
+const defaultRecorderBridgeDeps: RecorderBridgeDeps = {
+  createClient: (url) => new CDPClient(url),
+  findTab: findTabByIdAcrossEndpoints,
+  exit: (code) => process.exit(code),
+};
+
+let recorderBridgeDeps = defaultRecorderBridgeDeps;
+
+/** Focused tests inject the CDP/tab/exit boundary; production always uses the
+ * real client, resolver, and `process.exit`. Returns a restore function. */
+export function __setRecorderBridgeDepsForTest(overrides: Partial<RecorderBridgeDeps>): () => void {
+  const previous = recorderBridgeDeps;
+  recorderBridgeDeps = { ...recorderBridgeDeps, ...overrides };
+  return () => { recorderBridgeDeps = previous; };
 }
 
 export async function runRecorderBridge(opts: RunRecorderBridgeOptions): Promise<void> {
   const port = opts.port ?? (await resolvePort());
-  const resolved = await findTabByIdAcrossEndpoints(opts.targetId, port);
+  const resolved = await recorderBridgeDeps.findTab(opts.targetId, port);
   if (!resolved?.tab.webSocketDebuggerUrl) {
     throw new Error(`No tab found for target "${opts.targetId}" on port ${port}.`);
   }
 
-  const client = new CDPClient(resolved.tab.webSocketDebuggerUrl);
+  const client = recorderBridgeDeps.createClient(resolved.tab.webSocketDebuggerUrl);
   await client.waitReady();
 
+  // HAR evidence streams from the moment the held connection is ready —
+  // BEFORE the control socket exists, so network activity between recorder
+  // boot and the caller's `rec-start` is already captured. Exactly-once
+  // delivery is the HARRecorder's own contract; cross-process file safety is
+  // har-manager's per-HAR-file lock.
+  const har = new HARRecorder(client, (batch) => appendToHarRecording(opts.harId, batch));
+  await har.start();
+
   const session = new RecorderSession({ client, recDir: opts.recDir });
+
+  // Server-generated control-socket admission token. Written to the private
+  // boot file BEFORE the socket is bound: spawn.ts's socket-file readiness
+  // poll therefore guarantees the starter can read it without racing us.
+  const nonce = crypto.randomBytes(32).toString('hex');
+  writeJsonPrivate(path.join(opts.recDir, RECORDER_NONCE_BOOT_FILE), { nonce });
+
+  let server: net.Server | null = null;
+  const cleanup = (): void => {
+    if (server) closeNdjsonSocket(server, opts.socketPath);
+    try {
+      client.close();
+    } catch {
+      // Already closed.
+    }
+  };
 
   async function handleLine(line: string, socket: net.Socket): Promise<void> {
     let req: RecorderRequest;
@@ -1396,24 +1496,55 @@ export async function runRecorderBridge(opts: RunRecorderBridgeOptions): Promise
     } catch {
       return;
     }
+    // A syntactically valid JSON line can still parse to a non-object
+    // (`null`, a number, a string, a boolean, an array) — `JSON.parse` alone
+    // does not guarantee `RecorderRequest` shape. Drop those the same way as
+    // a parse failure: any property read below (`raw.nonce`, `raw.reqId`,
+    // `raw.type`) on `null`/a primitive would throw inside this async
+    // handler, and `listenNdjsonSocket` invokes handlers as a fire-and-forget
+    // `void handleLine(...)` (src/cdp/bridge/server.ts), so an uncaught throw
+    // here becomes an unhandled rejection that kills the detached bridge
+    // process and orphans the live recording.
+    if (req === null || typeof req !== 'object' || Array.isArray(req)) return;
+    // Admission gate — constant-time nonce check on EVERY request, before any
+    // handler runs. No request type is exempt and there is no compat lane: a
+    // missing/mismatched nonce is answered `unauthorized` with zero side
+    // effects (reqId/type coerced defensively — the line is untrusted input).
+    const raw = req as unknown as Record<string, unknown>;
+    if (!nonceMatches(nonce, raw.nonce)) {
+      const reqId = typeof raw.reqId === 'number' ? (raw.reqId as number) : 0;
+      const type: RecorderRequest['type'] =
+        raw.type === 'rec-start' || raw.type === 'rec-stop' || raw.type === 'cdp' ? raw.type : 'cdp';
+      socket.write(JSON.stringify({ reqId, ok: false, type, error: 'unauthorized' }) + '\n');
+      return;
+    }
     const resp = await handleRecorderRequest(session, req);
+    if (req.type === 'rec-stop' && resp.ok) {
+      // Authenticated, successful rec-stop: this process's work is done.
+      // U11c's drain seam sits HERE — `await har.drain()` will run before the
+      // response write below, so the response only flushes once every HAR
+      // batch has been appended. (`har` is intentionally held in scope for
+      // that seam; today the recorder relies on RecorderSession.stop()'s own
+      // teardown having already quiesced the recording streams.)
+      void har;
+      await new Promise<void>((resolveWrite) => {
+        socket.write(JSON.stringify(resp) + '\n', () => resolveWrite());
+      });
+      socket.end();
+      cleanup();
+      recorderBridgeDeps.exit(0);
+      return;
+    }
     socket.write(JSON.stringify(resp) + '\n');
   }
 
-  const server = await listenNdjsonSocket(opts.socketPath, handleLine);
-  const cleanup = (): void => {
-    closeNdjsonSocket(server, opts.socketPath);
-    try {
-      client.close();
-    } catch {
-      // Already closed.
-    }
-  };
+  server = await listenNdjsonSocket(opts.socketPath, handleLine);
   installProcessCleanup(cleanup, client);
-  // Intentionally does not resolve further: the open server and the live
-  // tab websocket keep this detached process alive until the caller (U14's
-  // lifecycle routing) sends SIGTERM via the same `stopBridge()` used for
-  // the plain held bridge.
+  // Intentionally does not resolve further: the open server and the live tab
+  // websocket keep this detached process alive until an authenticated
+  // `rec-stop` completes (the self-exit above) — the caller waits for that
+  // verified exit and only escalates to an identity-checked SIGTERM
+  // (`stopBridge()`) on timeout.
 }
 
 async function resolvePort(): Promise<number> {

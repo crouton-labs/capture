@@ -1,5 +1,6 @@
 import { runBridgeServer } from '../bridge/server.js';
 import { runRecorderBridge } from '../recorder-bridge.js';
+import { invalidInput } from '../../errors.js';
 import { type ParsedArgs } from '../types.js';
 
 /**
@@ -8,31 +9,36 @@ import { type ParsedArgs } from '../types.js';
  * --start` in recorder mode (`startRecorderBridge()`). Not documented in
  * `capture --help` — nothing calls this directly.
  *
- * Recorder mode is selected by a `recorder <recDir>` positional rather
- * than a new flag, since `src/cdp/args.ts`'s fixed flag set isn't owned by
- * this unit but `parsed.positional` is already generic passthrough:
- *   capture __bridge-serve --socket <path> --port <cdpPort> --target <tabId> recorder <recDir>
+ * Recorder mode is selected by a `recorder <recDir> <harId>` positional
+ * rather than a new flag, since `src/cdp/args.ts`'s fixed flag set isn't
+ * owned by this unit but `parsed.positional` is already generic passthrough:
+ *   capture __bridge-serve --socket <path> --port <cdpPort> --target <tabId> recorder <recDir> <harId>
+ *
+ * Usage errors throw the repo's structured `CaptureError` — the root
+ * boundary in `src/capture.ts` renders it via `failureResult()` and exits
+ * nonzero, same as every other command leaf.
  */
 export async function cmdBridgeServe(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (!parsed.socket) {
-    console.error(
-      'Usage: capture __bridge-serve --socket <path> [--port <cdpPort>] [--target <tabId> recorder <recDir>]',
+    throw invalidInput(
+      'Usage: capture __bridge-serve --socket <path> [--port <cdpPort>] [--target <tabId> recorder <recDir> <harId>]',
+      'bridge_serve_usage',
     );
-    process.exit(1);
   }
 
   if (parsed.positional[0] === 'recorder') {
     const recDir = parsed.positional[1];
-    if (!parsed.target || !recDir) {
-      console.error(
-        'Usage: capture __bridge-serve --socket <path> --port <cdpPort> --target <tabId> recorder <recDir>',
+    const harId = parsed.positional[2];
+    if (!parsed.target || !recDir || !harId) {
+      throw invalidInput(
+        'Usage: capture __bridge-serve --socket <path> --port <cdpPort> --target <tabId> recorder <recDir> <harId>',
+        'bridge_serve_usage',
       );
-      process.exit(1);
     }
-    await runRecorderBridge({ socketPath: parsed.socket, port: parsed.port, targetId: parsed.target, recDir });
+    await runRecorderBridge({ socketPath: parsed.socket, port: parsed.port, targetId: parsed.target, recDir, harId });
     // Deliberately does not exit: the open Unix socket server and the live
-    // tab websocket keep this detached process alive until the caller sends
-    // it SIGTERM (same teardown as the plain held bridge).
+    // tab websocket keep this detached process alive until an authenticated
+    // `rec-stop` completes (self-exit) or the caller escalates with SIGTERM.
     return;
   }
 

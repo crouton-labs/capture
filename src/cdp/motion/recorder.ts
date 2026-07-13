@@ -23,6 +23,8 @@ import * as crypto from 'crypto';
 import {
   ensurePrivateDir,
   writeJsonPrivate,
+  readPrivateFile,
+  unlinkPrivateFile,
   removeArtifactTree,
   processPidBirthProvider,
   type PidBirth,
@@ -33,6 +35,8 @@ import {
   withSessionLifecycle,
   scanRecorderHandles,
   recorderProcessAlive,
+  admitSessionOperation,
+  RECORDER_NONCE,
   type LifecycleSeams,
   type ScannedRecorderHandle,
   type RecorderHandleRecord,
@@ -40,6 +44,7 @@ import {
 import { captureError } from '../../errors.js';
 import { startRecorderBridge, recorderSocketPath, stopBridge } from '../bridge/spawn.js';
 import { requestRecStart, requestRecStop } from '../recorder-client.js';
+import { RECORDER_NONCE_BOOT_FILE } from '../recorder-bridge.js';
 import { detectCdpPort } from '../detect.js';
 import { findTabByIdAcrossEndpoints } from '../targets.js';
 import { CDPClient } from '../client.js';
@@ -316,6 +321,54 @@ function killIfIdentityMatches(record: Pick<RecorderHandleRecord, 'pid' | 'socke
   else stopBridge(null, record.socketPath); // gone/foreign/mismatch: clean socket only, NEVER SIGTERM
 }
 
+/** After a successful authenticated `rec-stop`, the bridge process exits
+ * itself once its response has flushed. The graceful stop paths wait for that
+ * VERIFIED exit (birth-identity check — an absent or recycled/foreign pid
+ * counts as gone and is never signaled) instead of racing it with an
+ * immediate SIGTERM; only a timeout with a STILL-MATCHING identity escalates
+ * to the identity-checked kill. Socket-file hygiene happens either way. */
+async function waitForRecorderExit(
+  record: Pick<RecorderHandleRecord, 'pid' | 'socketPath' | 'birth'>,
+  provider: PidBirthProvider,
+  deps: LifecycleSeams,
+): Promise<void> {
+  const timeoutMs = deps.stopExitTimeoutMs ?? 2000;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (!recorderProcessAlive(record, provider)) {
+      stopBridge(null, record.socketPath); // gone or identity mismatch: clean socket only, NEVER signal
+      return;
+    }
+    if (Date.now() >= deadline) {
+      killIfIdentityMatches(record, provider); // still the same process after the grace window: escalate
+      return;
+    }
+    await sleep(25);
+  }
+}
+
+/** Reads, validates, and CONSUMES the nonce boot file the recorder bridge
+ * wrote into `recDir` before binding its socket (see `recorder-bridge.ts`'s
+ * `RECORDER_NONCE_BOOT_FILE`). The nonce is persisted into `recorder.json`
+ * by the caller — one persistent authority — so the boot file is deleted here
+ * as soon as it is read. Throws factually on a missing/malformed file: there
+ * is no unauthenticated fallback lane. */
+function consumeRecorderNonceBootFile(recDir: string): string {
+  const bootPath = path.join(recDir, RECORDER_NONCE_BOOT_FILE);
+  let nonce: unknown;
+  try {
+    nonce = (JSON.parse(readPrivateFile(bootPath).toString('utf-8')) as { nonce?: unknown }).nonce;
+  } catch (err) {
+    throw new Error(`Recorder bridge did not hand back a control nonce (${err instanceof Error ? err.message : String(err)}).`);
+  }
+  if (typeof nonce !== 'string' || !RECORDER_NONCE.test(nonce)) {
+    throw new Error('Recorder bridge handed back a malformed control nonce.');
+  }
+  unlinkPrivateFile(bootPath);
+  return nonce;
+}
+
 /** Best-effort finalize when the recorder process is dead, or known-alive but
  * unresponsive on its socket: counts whatever `frames/`/lack thereof already
  * made it to disk, computes duration from `recorder.json`'s own `startedAt`,
@@ -391,6 +444,30 @@ export async function startComposedRecorder(
   },
   deps: StartRecorderDeps = {},
 ): Promise<StartRecorderResult> {
+  // Admission into the session's operation coordinator comes FIRST — before
+  // the lifecycle lock and before any session-bound effect. A `session stop`
+  // that has already marked `.operations.json` stopping rejects this start
+  // with zero side effects; a start admitted first holds its token until the
+  // recorder handle is atomically published (or the start fully rolled back),
+  // so a concurrent stop's drain barrier cannot finalize the bundle around a
+  // half-armed recorder. Deadlock-free ordering: stop drains tokens BEFORE
+  // taking `.lifecycle.lock`, while this start holds its token WHILE waiting
+  // on that lock — the two never wait on each other in a cycle.
+  const operation = await admitSessionOperation(opts.sessionDir);
+  try {
+    return await startComposedRecorderAdmitted(opts, deps);
+  } finally {
+    await operation.release();
+  }
+}
+
+async function startComposedRecorderAdmitted(
+  opts: {
+    sessionDir: string;
+    viewport?: RecordingViewport;
+  },
+  deps: StartRecorderDeps = {},
+): Promise<StartRecorderResult> {
   // The lifecycle lock covers the scan, dead-handle reap, endpoint
   // resolution, viewport mutation, and bridge startup. A rejected start
   // therefore cannot touch a live recording's viewport, a stale reap
@@ -407,6 +484,13 @@ export async function startComposedRecorder(
     if (!session || session.dir !== opts.sessionDir) throw new Error('The active capture session is no longer available.');
     if (!session.targetId) throw new Error('The active session has no attached tab to record. Start it with a URL: `capture session start --url <url>`.');
     const targetId = session.targetId;
+    // The owning session's live HAR store — REQUIRED: a session-backed
+    // recorder always has one (session start creates it), and the recorder
+    // bridge streams its network evidence there. No fallback lane.
+    const harId = session.harId;
+    if (typeof harId !== 'string' || harId.length === 0) {
+      throw new Error('The active session has no live HAR recording id (harId); cannot arm a recorder without its HAR evidence store.');
+    }
     const port = session.port ?? await (deps.detectPort ?? detectCdpPort)();
     await updateSessionState(opts.sessionDir, { targetId, port });
 
@@ -421,7 +505,7 @@ export async function startComposedRecorder(
       viewportAttempted = await applyViewportOverride(recDir, targetId, opts.viewport);
       socketPath = recorderSocketPath(recDir);
       const spawnRecorderBridge = deps.spawnRecorderBridge ?? startRecorderBridge;
-      const { pid } = await spawnRecorderBridge(socketPath, port, targetId, recDir);
+      const { pid } = await spawnRecorderBridge(socketPath, port, targetId, recDir, harId);
       const born = provider.read(pid);
       if (born.status !== 'found') {
         // Identity unestablished — never signal a pid we cannot prove is ours.
@@ -429,7 +513,12 @@ export async function startComposedRecorder(
         throw new Error(`Could not establish recorder process identity (${born.status === 'unknown' ? born.reason : 'process absent'}).`);
       }
       established = { pid, socketPath, birth: born.identity };
-      const startResp = await requestRecStart(socketPath);
+      // The bridge wrote its server-generated nonce into recDir before binding
+      // the socket; spawn's readiness poll guarantees it exists here. Read,
+      // validate, and consume it — recorder.json below becomes the one
+      // persistent authority for it.
+      const nonce = consumeRecorderNonceBootFile(recDir);
+      const startResp = await requestRecStart(socketPath, nonce);
 
       const recorderJson: RecorderJson = {
         recId,
@@ -441,6 +530,7 @@ export async function startComposedRecorder(
         state: 'recording',
         birth: born.identity,
         markers: startResp.markers,
+        nonce,
       };
       writeJsonPrivate(recorderJsonPath(recDir), recorderJson);
       await setActiveRecId(recId);
@@ -489,8 +579,11 @@ export async function stopComposedRecorder(opts: {
       return await finalizeOrphaned(record, handle.recDir, opts.sessionDir, provider, false);
     }
     try {
-      const stopResp = await requestRecStop(record.socketPath);
-      killIfIdentityMatches(record, provider);
+      const stopResp = await requestRecStop(record.socketPath, record.nonce);
+      // The bridge self-exits once its authenticated rec-stop response has
+      // flushed — wait for that verified exit; escalate to an identity-checked
+      // SIGTERM only if the same process is still alive after the grace window.
+      await waitForRecorderExit(record, provider, deps);
       return await writeFinalizedArtifacts(opts.sessionDir, handle.recDir, recId, record.url, stopResp.frameCount, stopResp.durationMs, 'finalized', stopResp.markers, stopResp.eventCount, record.targetId);
     } catch {
       // Known-live handle, but the socket round trip failed (wedged/missing
@@ -565,8 +658,10 @@ export async function teardownAnyLiveRecorderAtSessionStop(sessionDir: string, d
         finalized = await finalizeOrphaned(record, h.recDir, sessionDir, provider, false);
       } else {
         try {
-          const stopResp = await requestRecStop(record.socketPath);
-          killIfIdentityMatches(record, provider);
+          const stopResp = await requestRecStop(record.socketPath, record.nonce);
+          // Same verified-exit wait as stopComposedRecorder's graceful path —
+          // never race the bridge's own post-response self-exit with a signal.
+          await waitForRecorderExit(record, provider, deps);
           finalized = await writeFinalizedArtifacts(
             sessionDir,
             h.recDir,

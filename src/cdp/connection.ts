@@ -153,11 +153,12 @@ function connectToActiveRecorder(
   if (
     typeof rj.socketPath !== 'string' || rj.socketPath.length === 0
     || typeof rj.targetId !== 'string' || rj.targetId.length === 0
+    || typeof rj.nonce !== 'string' || !/^[0-9a-f]{64}$/.test(rj.nonce)
   ) {
     throw captureError(
       'precondition',
       'recorder_unavailable',
-      `The active session's recorder handle for "${recId}" is malformed (missing or non-string socketPath/targetId). Recover with: capture motion rec --stop.`,
+      `The active session's recorder handle for "${recId}" is malformed (missing or invalid socketPath/targetId/nonce). Recover with: capture motion rec --stop.`,
     );
   }
   if (rj.state !== 'recording') {
@@ -169,7 +170,7 @@ function connectToActiveRecorder(
   }
 
   const actionLabel = deriveActionLabel(parsed);
-  const client = new RecorderHeldClient({ socketPath: rj.socketPath, actionLabel });
+  const client = new RecorderHeldClient({ socketPath: rj.socketPath, nonce: rj.nonce, actionLabel });
   const tab: CDPTarget = {
     id: rj.targetId,
     title: '',

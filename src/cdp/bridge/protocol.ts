@@ -74,10 +74,21 @@ export interface RecorderClockBaselines {
  * domains, starts `Page.startScreencast` + `Tracing`, injects the
  * Mutation/Resize/Performance observers, and captures the clock baseline.
  * A recorder process only accepts one `rec-start` while `state==="idle"`.
+ *
+ * `nonce` (here and on every other recorder request shape) is the
+ * per-recording control-socket admission token: the recorder bridge process
+ * generates it at boot (64 lowercase hex chars, 256 bits) and hands it back
+ * to its starter over a private boot file; every request line must carry it
+ * verbatim, and the server constant-time-compares it BEFORE any handler
+ * runs. There is no unauthenticated request shape and no compatibility
+ * lane — a missing or mismatched nonce is answered `ok:false error:
+ * 'unauthorized'` with no side effects.
  */
 export interface RecStartRequest {
   reqId: number;
   type: 'rec-start';
+  /** Per-recording control-socket admission token — see the doc comment above. */
+  nonce: string;
 }
 
 export interface RecStartResponseOk {
@@ -97,6 +108,8 @@ export interface RecStartResponseOk {
 export interface RecStopRequest {
   reqId: number;
   type: 'rec-stop';
+  /** Per-recording control-socket admission token — see `RecStartRequest`. */
+  nonce: string;
 }
 
 export interface RecStopResponseOk {
@@ -127,6 +140,8 @@ export interface RecStopResponseOk {
 export interface RecCdpDispatchRequest {
   reqId: number;
   type: 'cdp';
+  /** Per-recording control-socket admission token — see `RecStartRequest`. */
+  nonce: string;
   method: string;
   params?: Record<string, unknown>;
   mark?: string;
@@ -137,6 +152,8 @@ export interface RecCdpDispatchRequest {
 export interface RecCdpWaitEventRequest {
   reqId: number;
   type: 'cdp';
+  /** Per-recording control-socket admission token — see `RecStartRequest`. */
+  nonce: string;
   method?: undefined;
   waitEvent: string;
   timeoutMs?: number;

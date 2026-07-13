@@ -77,16 +77,18 @@ export function sendRecorderRequest(
   });
 }
 
-/** Arms the recorder (`rec-start`). Throws with the recorder's own error message on failure. */
-export async function requestRecStart(socketPath: string): Promise<RecStartResponseOk> {
-  const resp = await sendRecorderRequest(socketPath, { type: 'rec-start' });
+/** Arms the recorder (`rec-start`). `nonce` is the recording's control-socket
+ * admission token (see `protocol.ts`'s `RecStartRequest`); every request must
+ * carry it. Throws with the recorder's own error message on failure. */
+export async function requestRecStart(socketPath: string, nonce: string): Promise<RecStartResponseOk> {
+  const resp = await sendRecorderRequest(socketPath, { type: 'rec-start', nonce });
   if (!resp.ok) throw new Error(`rec-start failed: ${resp.error}`);
   return resp;
 }
 
 /** Finalizes the recorder (`rec-stop`). Throws with the recorder's own error message on failure. */
-export async function requestRecStop(socketPath: string): Promise<RecStopResponseOk> {
-  const resp = await sendRecorderRequest(socketPath, { type: 'rec-stop' });
+export async function requestRecStop(socketPath: string, nonce: string): Promise<RecStopResponseOk> {
+  const resp = await sendRecorderRequest(socketPath, { type: 'rec-stop', nonce });
   if (!resp.ok) throw new Error(`rec-stop failed: ${resp.error}`);
   return resp;
 }
@@ -125,6 +127,10 @@ function isMarkableActionMethod(method: string, params: Record<string, unknown>)
 export interface RecorderHeldClientOptions {
   /** The active recording's socket path (`recorderSocketPath(recDir)`). */
   socketPath: string;
+  /** The recording's control-socket admission token, read from the persisted
+   * recorder handle (`recorder.json.nonce`) — required on every request this
+   * adapter sends; the bridge rejects anything without it. */
+  nonce: string;
   /** Label attached to every marked (`Input.dispatch*`) call from this
    * client instance — one per routed capture command invocation, e.g.
    * `click:Send` or `type:ax:Message`, matching the labeled input landmark
@@ -143,12 +149,14 @@ export interface RecorderHeldClientOptions {
  */
 export class RecorderHeldClient {
   private readonly socketPath: string;
+  private readonly nonce: string;
   private readonly actionLabel: string;
   private readonly defaultTimeoutMs: number;
   private suppressNextMousePressMark = false;
 
   constructor(opts: RecorderHeldClientOptions) {
     this.socketPath = opts.socketPath;
+    this.nonce = opts.nonce;
     this.actionLabel = opts.actionLabel;
     this.defaultTimeoutMs = opts.timeoutMs ?? 60000;
   }
@@ -177,6 +185,7 @@ export class RecorderHeldClient {
   async sendMarked(method: string, params: Record<string, unknown>, mark: string): Promise<unknown> {
     const resp = await sendRecorderRequest(this.socketPath, {
       type: 'cdp',
+      nonce: this.nonce,
       method,
       params,
       mark,
@@ -197,6 +206,7 @@ export class RecorderHeldClient {
   async waitEvent(eventName: string, timeoutMs?: number): Promise<unknown> {
     const resp = await sendRecorderRequest(this.socketPath, {
       type: 'cdp',
+      nonce: this.nonce,
       waitEvent: eventName,
       timeoutMs: timeoutMs ?? this.defaultTimeoutMs,
     });
@@ -239,6 +249,7 @@ export class RecorderHeldClient {
     const mark = !suppressMousePress && isMarkableActionMethod(method, params) ? this.actionLabel : undefined;
     const resp = await sendRecorderRequest(this.socketPath, {
       type: 'cdp',
+      nonce: this.nonce,
       method,
       params,
       mark,

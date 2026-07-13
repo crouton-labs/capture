@@ -6,12 +6,13 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { closeChrome, spawnHeadlessChrome } from './fixtures/chrome.js';
 
 import { CAPTURE_ROOT, ensurePrivateDir, writeJsonPrivate, writeNdjsonPrivate, writeBinaryPrivate } from '../src/session/artifacts.js';
+import { createHarRecording } from '../src/har-manager.js';
 import { setActiveSession, clearActiveSession } from '../src/session-context.js';
 import { startComposedRecorder } from '../src/cdp/motion/recorder.js';
 import { cmdPageType } from '../src/cdp/commands/page/type.js';
 
-async function spawnTestRecorderBridge(socketPath: string, port: number, targetId: string, recDir: string): Promise<{ socketPath: string; pid: number }> {
-  const child = spawn(process.execPath, ['--import', 'tsx', 'src/capture.ts', '__bridge-serve', '--socket', socketPath, '--port', String(port), '--target', targetId, 'recorder', recDir], { cwd: process.cwd(), detached: true, stdio: 'ignore' });
+async function spawnTestRecorderBridge(socketPath: string, port: number, targetId: string, recDir: string, harId: string): Promise<{ socketPath: string; pid: number }> {
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/capture.ts', '__bridge-serve', '--socket', socketPath, '--port', String(port), '--target', targetId, 'recorder', recDir, harId], { cwd: process.cwd(), detached: true, stdio: 'ignore' });
   child.unref();
   if (!child.pid) throw new Error('test recorder bridge did not spawn');
   const deadline = Date.now() + 8000;
@@ -279,11 +280,12 @@ test('motion rec composed lifecycle records a real Chrome routed type action bet
   const root = makeRoot('real-chrome-composed');
   const chrome = await spawnHeadlessChrome();
   const target = await (await fetch(`http://localhost:${chrome.port}/json/new?${encodeURIComponent(`data:text/html,${encodeURIComponent('<input aria-label="Message">')}`)}`, { method: 'PUT' })).json() as { id: string };
-  await setActiveSession({ sessionId: 'real-composed', dir: root, harId: null, targetId: target.id, stepCount: 0 });
+  const har = await createHarRecording(root);
+  await setActiveSession({ sessionId: 'real-composed', dir: root, harId: har.id, targetId: target.id, stepCount: 0 });
   const restore = __setMotionRecDepsForTest({
     startComposedRecorder: (opts) => startComposedRecorder(opts, {
       detectPort: async () => chrome.port,
-      spawnRecorderBridge: (socketPath, port, targetId, recDir) => spawnTestRecorderBridge(socketPath, port, targetId, recDir),
+      spawnRecorderBridge: (socketPath, port, targetId, recDir, harId) => spawnTestRecorderBridge(socketPath, port, targetId, recDir, harId),
     }),
   });
   try {

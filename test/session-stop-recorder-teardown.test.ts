@@ -11,10 +11,13 @@ import { recorderSocketPath } from '../src/cdp/bridge/spawn.js';
 import { setActiveSession, setActiveRecId, getActiveRecId, getActiveSession, clearActiveSession } from '../src/session-context.js';
 import {
   recDirFor,
+  startComposedRecorder,
   teardownAnyLiveRecorderAtSessionStop,
   type RecorderJson,
 } from '../src/cdp/motion/recorder.js';
+import { RECORDER_NONCE_BOOT_FILE } from '../src/cdp/recorder-bridge.js';
 import { sessionMain } from '../src/session/commands.js';
+import { createHarRecording } from '../src/har-manager.js';
 import { type ParsedArgs } from '../src/cdp/types.js';
 import { type RecorderRequest, type RecorderResponse, type RecorderClockBaselines } from '../src/cdp/bridge/protocol.js';
 
@@ -56,6 +59,10 @@ function captureStdout(): { logs: string[]; restore: () => void } {
   };
   return { logs, restore: () => { console.log = originalLog; } };
 }
+
+/** The one recorder-control nonce every fixture in this file uses — 64 hex
+ * chars, matching coordinator.ts's RECORDER_NONCE authority shape. */
+const TEST_NONCE = 'ab'.repeat(32);
 
 const PENDING_MARKERS: RecorderClockBaselines = {
   performanceNowMs: 1,
@@ -157,6 +164,7 @@ test('teardownAnyLiveRecorderAtSessionStop gracefully stops a live (socket-reach
     state: 'recording',
     birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
   await setActiveSession({ sessionId: id, dir, harId: null, targetId: 'target-abc', stepCount: 0 });
@@ -164,7 +172,7 @@ test('teardownAnyLiveRecorderAtSessionStop gracefully stops a live (socket-reach
 
   const fakeServer = await startFakeRecorderServer(socketPath);
   try {
-    const result = await teardownAnyLiveRecorderAtSessionStop(dir);
+    const result = await teardownAnyLiveRecorderAtSessionStop(dir, { stopExitTimeoutMs: 50 });
 
     assert.ok(result);
     assert.equal(result!.state, 'finalized');
@@ -201,13 +209,14 @@ test('teardownAnyLiveRecorderAtSessionStop best-effort finalizes an orphaned (de
     state: 'recording',
     birth: birthOf(process.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
   await setActiveSession({ sessionId: id, dir, harId: null, targetId: 'target-abc', stepCount: 0 });
   await setActiveRecId(recId);
 
   try {
-    const result = await teardownAnyLiveRecorderAtSessionStop(dir);
+    const result = await teardownAnyLiveRecorderAtSessionStop(dir, { stopExitTimeoutMs: 50 });
 
     assert.ok(result);
     assert.equal(result!.state, 'orphaned-finalized');
@@ -248,6 +257,7 @@ test('teardownAnyLiveRecorderAtSessionStop kills a known-live-but-unresponsive r
     state: 'recording',
     birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
   await setActiveSession({ sessionId: id, dir, harId: null, targetId: 'target-abc', stepCount: 0 });
@@ -256,7 +266,7 @@ test('teardownAnyLiveRecorderAtSessionStop kills a known-live-but-unresponsive r
   try {
     assert.ok(pidLive(placeholder.pid), 'placeholder pid must be alive before teardown');
 
-    const result = await teardownAnyLiveRecorderAtSessionStop(dir);
+    const result = await teardownAnyLiveRecorderAtSessionStop(dir, { stopExitTimeoutMs: 50 });
 
     assert.ok(result);
     assert.equal(result!.state, 'orphaned-finalized');
@@ -286,7 +296,7 @@ test('teardownAnyLiveRecorderAtSessionStop is a no-op when there is no active re
   clearActiveSession();
 
   try {
-    const result = await teardownAnyLiveRecorderAtSessionStop(dir);
+    const result = await teardownAnyLiveRecorderAtSessionStop(dir, { stopExitTimeoutMs: 50 });
     assert.equal(result, null);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -320,6 +330,7 @@ test('teardownAnyLiveRecorderAtSessionStop finalizes an on-disk recorder.json ev
     state: 'recording',
     birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
   // Deliberately NO setActiveSession/setActiveRecId -- there is no active
@@ -330,7 +341,7 @@ test('teardownAnyLiveRecorderAtSessionStop finalizes an on-disk recorder.json ev
 
   const fakeServer = await startFakeRecorderServer(socketPath);
   try {
-    const result = await teardownAnyLiveRecorderAtSessionStop(dir);
+    const result = await teardownAnyLiveRecorderAtSessionStop(dir, { stopExitTimeoutMs: 50 });
 
     assert.ok(result, 'a recorder.json on disk with no activeRecId must still be finalized');
     assert.equal(result!.recId, recId);
@@ -364,6 +375,7 @@ test('teardownAnyLiveRecorderAtSessionStop finalizes session A\'s on-disk record
     state: 'recording',
     birth: birthOf(placeholderA.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDirA, 'recorder.json'), recorderJsonA);
 
@@ -377,7 +389,7 @@ test('teardownAnyLiveRecorderAtSessionStop finalizes session A\'s on-disk record
 
   const fakeServerA = await startFakeRecorderServer(socketPathA);
   try {
-    const result = await teardownAnyLiveRecorderAtSessionStop(dirA);
+    const result = await teardownAnyLiveRecorderAtSessionStop(dirA, { stopExitTimeoutMs: 50 });
 
     assert.ok(result, 'session A\'s on-disk recorder must still be finalized');
     assert.equal(result!.recId, recIdA);
@@ -429,6 +441,7 @@ test('session stop finalizes an active recording before collecting the bundle, s
     state: 'recording',
     birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
   await setActiveSession({ sessionId: id, dir, harId: null, targetId: 'target-abc', stepCount: 0 });
@@ -459,6 +472,117 @@ test('session stop finalizes an active recording before collecting the bundle, s
     assert.equal(fs.existsSync(path.join(recDir, 'recorder.json')), false);
     assert.equal(getActiveRecId(), null);
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// U11b deterministic race proof: a start that WINS admission against a
+// concurrent `session stop` holds its operation token until the recorder
+// handle is atomically published, so the stop's token-drain barrier
+// deterministically waits for it — and the stop's own teardown then finalizes
+// the just-published recorder BEFORE the bundle commits. Two windows, both
+// proved: (1) while the admitted start is paused mid-spawn, the stop has
+// marked `.operations.json` stopping but CANNOT proceed; (2) once the start
+// publishes and releases, the stop drains, tears the recorder down, and the
+// finalized bundle contains no live recorder.
+// ---------------------------------------------------------------------------
+
+test('U11b: an admitted start racing a concurrent session stop never leaves a live recorder in the finalized bundle', async () => {
+  const id = freshSessionId('race');
+  const dir = sessionDirFor(id);
+  ensurePrivateDir(dir);
+  writeSessionFixture(id, dir);
+
+  const placeholder = spawnPlaceholderChild();
+  let fakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
+
+  // The start path reads harId/targetId from the active-session pointer under
+  // its lifecycle lock, and setActiveSession also rewrites .session.json with
+  // this same state — which the stop path then reads to collect har.json — so
+  // the harId must name a REAL live HAR store, exactly as `session start`
+  // would have created.
+  const { id: harId } = await createHarRecording(dir);
+  await setActiveSession({ sessionId: id, dir, harId, targetId: 'target-abc', stepCount: 0 });
+
+  // Window 1: the start wins admission, then pauses INSIDE its spawn seam —
+  // its operation token held, no recorder handle published yet.
+  let releaseSpawn!: () => void;
+  const spawnGate = new Promise<void>((r) => { releaseSpawn = r; });
+  let spawnEntered!: () => void;
+  const spawnEnteredGate = new Promise<void>((r) => { spawnEntered = r; });
+
+  const startPromise = startComposedRecorder({ sessionDir: dir }, {
+    detectPort: async () => 9222,
+    spawnRecorderBridge: async (socketPath, _port, _targetId, recDir) => {
+      spawnEntered();
+      await spawnGate;
+      writeJsonPrivate(path.join(recDir, RECORDER_NONCE_BOOT_FILE), { nonce: TEST_NONCE });
+      fakeServer = await startFakeRecorderServer(socketPath);
+      return { socketPath, pid: placeholder.pid };
+    },
+  });
+
+  const out = captureStdout();
+  try {
+    await spawnEnteredGate;
+
+    // Window 2: the REAL session-stop path (`session stop <id>` through
+    // sessionMain — the admission barrier lives in session/commands.ts's
+    // beginSessionStop call) starts concurrently.
+    let stopResolved = false;
+    const stopPromise = sessionMain(
+      { command: 'session', positional: ['stop', id], json: false } as ParsedArgs,
+      [],
+    ).then(() => { stopResolved = true; });
+
+    // While the admitted start is paused: the stop has marked
+    // `.operations.json` stopping=true (rejecting any LATER admissions)…
+    const opsPath = path.join(dir, '.operations.json');
+    const deadline = Date.now() + 3000;
+    for (;;) {
+      const ops = fs.existsSync(opsPath)
+        ? (JSON.parse(fs.readFileSync(opsPath, 'utf-8')) as { stopping?: unknown })
+        : null;
+      if (ops?.stopping === true) break;
+      if (Date.now() > deadline) throw new Error('timed out waiting for .operations.json stopping=true');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    // …but deterministically CANNOT proceed past its token-drain barrier while
+    // the admitted start still holds its token.
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(stopResolved, false, 'session stop must stay pending on its token-drain barrier while the admitted start holds its token');
+
+    // Unblock the spawn: the start completes, atomically publishes its
+    // recorder handle, and releases its token; the stop then drains, tears the
+    // recorder down, and commits the bundle.
+    releaseSpawn();
+    const startResult = await startPromise;
+    assert.equal(startResult.state, 'recording');
+    await stopPromise;
+    assert.equal(stopResolved, true);
+
+    // The finalized bundle contains NO live recorder: the handle the admitted
+    // start published was gracefully stopped and finalized by the stop's own
+    // teardown, before the bundle committed.
+    const bundlePath = path.join(dir, 'bundle.json');
+    assert.ok(fs.existsSync(bundlePath), `bundle.json must be committed by the stop — stop output: ${out.logs.join(' | ')}`);
+    const bundle = JSON.parse(fs.readFileSync(bundlePath, 'utf-8')) as {
+      recs: Array<{ id: string; state: string }>;
+    };
+    assert.equal(bundle.recs.length, 1, 'the raced start\'s recording must appear in the bundle');
+    assert.equal(bundle.recs[0].id, startResult.recId);
+    assert.equal(bundle.recs[0].state, 'finalized', 'the recording must be finalized, never live, in the committed bundle');
+
+    const recDir = recDirFor(dir, startResult.recId);
+    assert.equal(fs.existsSync(path.join(recDir, 'recorder.json')), false, 'no live-recorder handle may survive into the finalized session');
+    assert.ok(fs.existsSync(path.join(recDir, 'meta.json')), 'the recording must be finalized on disk');
+    assert.equal(getActiveRecId(), null, 'no active-recording pointer may survive the stop');
+  } finally {
+    out.restore();
+    fakeServer?.close();
+    placeholder.kill();
+    clearActiveSession();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

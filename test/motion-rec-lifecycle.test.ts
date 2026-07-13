@@ -26,6 +26,8 @@ import {
   type RecorderJson,
 } from '../src/cdp/motion/recorder.js';
 import { connectForCommand } from '../src/cdp/connection.js';
+import { RECORDER_NONCE_BOOT_FILE } from '../src/cdp/recorder-bridge.js';
+import { beginSessionStop } from '../src/session/coordinator.js';
 import { isRecorderHeldClient } from '../src/cdp/recorder-client.js';
 import { type RecorderRequest, type RecorderResponse, type RecorderClockBaselines } from '../src/cdp/bridge/protocol.js';
 import { type ParsedArgs } from '../src/cdp/types.js';
@@ -56,6 +58,13 @@ const PENDING_MARKERS: RecorderClockBaselines = {
   firstTraceEventTsUs: null,
   baselinesPending: true,
 };
+
+/** A structurally valid 64-hex recorder control nonce shared by every fixture
+ * in this file — the fake servers do not enforce it (the gate lives in the
+ * real bridge's handleLine), but parseRecorderHandle requires it on every
+ * recorder.json, and the fake spawn seams hand it to the starter via the
+ * recorder-nonce.json boot file exactly the way the real bridge does. */
+const TEST_NONCE = 'ab'.repeat(32);
 
 function defaultResponseFor(req: RecorderRequest): RecorderResponse {
   switch (req.type) {
@@ -140,7 +149,7 @@ function mutateBirth(b: PidBirth): PidBirth {
 
 test('startComposedRecorder writes recorder.json + frames/, arms activeRecId, returns recDir/state', async () => {
   const sessionDir = freshSessionDir('start');
-  await setActiveSession({ sessionId: 's-start', dir: sessionDir, harId: null, targetId: 'target-abc', port: 52621, stepCount: 0 });
+  await setActiveSession({ sessionId: 's-start', dir: sessionDir, harId: 'har-test-start', targetId: 'target-abc', port: 52621, stepCount: 0 });
   const placeholder = spawnPlaceholderChild();
 
   let fakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
@@ -150,8 +159,9 @@ test('startComposedRecorder writes recorder.json + frames/, arms activeRecId, re
       { sessionDir },
       {
         detectPort: async () => { throw new Error('session endpoint must bypass discovery'); },
-        spawnRecorderBridge: async (socketPath, port) => {
+        spawnRecorderBridge: async (socketPath, port, _targetId, recDir) => {
           spawnedPort = port;
+          writeJsonPrivate(path.join(recDir, RECORDER_NONCE_BOOT_FILE), { nonce: TEST_NONCE });
           fakeServer = await startFakeRecorderServer(socketPath);
           return { socketPath, pid: placeholder.pid };
         },
@@ -199,6 +209,7 @@ test('connectForCommand routes through the active recorder, marking Input.dispat
     state: 'recording',
     birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
   await setActiveSession({ sessionId: 's-routed', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
@@ -237,7 +248,7 @@ test('a composed routed click emits exactly one coherent input landmark', async 
   ensurePrivateDir(recDir);
   const socketPath = recorderSocketPath(recDir);
   const placeholder = spawnPlaceholderChild();
-  writeJsonPrivate(path.join(recDir, 'recorder.json'), { recId, pid: placeholder.pid, socketPath, targetId: 'target-abc', url: 'https://example.com', startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(placeholder.pid), markers: PENDING_MARKERS } satisfies RecorderJson);
+  writeJsonPrivate(path.join(recDir, 'recorder.json'), { recId, pid: placeholder.pid, socketPath, targetId: 'target-abc', url: 'https://example.com', startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(placeholder.pid), markers: PENDING_MARKERS, nonce: TEST_NONCE } satisfies RecorderJson);
   await setActiveSession({ sessionId: 's-routed-click', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
   await setActiveRecId(recId);
   const fakeServer = await startFakeRecorderServer(socketPath, {
@@ -281,6 +292,7 @@ test('a composed routed `type --into` emits one insertion landmark, never a dupl
     state: 'recording',
     birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
   await setActiveSession({ sessionId: 's-routed-type', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
@@ -343,6 +355,7 @@ test('connectForCommand derives a safe `type` mark even without --into (never fa
     state: 'recording',
     birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
   await setActiveSession({ sessionId: 's-routed-type-noninto', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
@@ -381,7 +394,7 @@ test('composed lifecycle restores viewport on stale reap and session-stop, remov
   const staleDir = recDirFor(sessionDir, staleId);
   ensurePrivateDir(staleDir);
   const deadPid = await spawnAndWaitDead();
-  writeJsonPrivate(path.join(staleDir, 'recorder.json'), { recId: staleId, pid: deadPid, socketPath: recorderSocketPath(staleDir), targetId: 'target-stale', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(process.pid), markers: PENDING_MARKERS } satisfies RecorderJson);
+  writeJsonPrivate(path.join(staleDir, 'recorder.json'), { recId: staleId, pid: deadPid, socketPath: recorderSocketPath(staleDir), targetId: 'target-stale', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(process.pid), markers: PENDING_MARKERS, nonce: TEST_NONCE } satisfies RecorderJson);
   recordViewportOverride(staleDir);
   try {
     const reaped = await startComposedRecorder({ sessionDir }).catch(() => null);
@@ -394,11 +407,11 @@ test('composed lifecycle restores viewport on stale reap and session-stop, remov
     ensurePrivateDir(liveDir);
     const placeholder = spawnPlaceholderChild();
     const socketPath = recorderSocketPath(liveDir);
-    writeJsonPrivate(path.join(liveDir, 'recorder.json'), { recId: liveId, pid: placeholder.pid, socketPath, targetId: 'target-live', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(placeholder.pid), markers: PENDING_MARKERS } satisfies RecorderJson);
+    writeJsonPrivate(path.join(liveDir, 'recorder.json'), { recId: liveId, pid: placeholder.pid, socketPath, targetId: 'target-live', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(placeholder.pid), markers: PENDING_MARKERS, nonce: TEST_NONCE } satisfies RecorderJson);
     recordViewportOverride(liveDir);
     const server = await startFakeRecorderServer(socketPath);
     try {
-      await teardownAnyLiveRecorderAtSessionStop(sessionDir);
+      await teardownAnyLiveRecorderAtSessionStop(sessionDir, { stopExitTimeoutMs: 50 });
       assert.equal(fs.existsSync(path.join(liveDir, 'viewport-override.json')), false);
       assert.equal(JSON.parse(fs.readFileSync(path.join(liveDir, 'meta.json'), 'utf8')).viewportRestored, true);
     } finally { server.close(); placeholder.kill(); }
@@ -420,7 +433,7 @@ test('viewport restoration failure is preserved and recorded factually', async (
   const recDir = recDirFor(sessionDir, recId);
   ensurePrivateDir(recDir);
   const deadPid = await spawnAndWaitDead();
-  writeJsonPrivate(path.join(recDir, 'recorder.json'), { recId, pid: deadPid, socketPath: recorderSocketPath(recDir), targetId: 'target-failure', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(process.pid), markers: PENDING_MARKERS } satisfies RecorderJson);
+  writeJsonPrivate(path.join(recDir, 'recorder.json'), { recId, pid: deadPid, socketPath: recorderSocketPath(recDir), targetId: 'target-failure', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(process.pid), markers: PENDING_MARKERS, nonce: TEST_NONCE } satisfies RecorderJson);
   recordViewportOverride(recDir);
   try {
     await stopComposedRecorder({ sessionDir, recId });
@@ -458,6 +471,7 @@ test('stopComposedRecorder finalizes: writes markers.json/meta.json from the rec
     state: 'recording',
     birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
   await setActiveSession({ sessionId: 's-stop', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
@@ -476,7 +490,7 @@ test('stopComposedRecorder finalizes: writes markers.json/meta.json from the rec
   });
 
   try {
-    const result = await stopComposedRecorder({ sessionDir, recId });
+    const result = await stopComposedRecorder({ sessionDir, recId }, { stopExitTimeoutMs: 50 });
 
     assert.equal(result.state, 'finalized');
     assert.equal(result.frames, 7);
@@ -523,6 +537,7 @@ test('startComposedRecorder reaps a stale (dead-pid) recorder.json before arming
     state: 'recording',
     birth: birthOf(process.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(staleRecDir, 'recorder.json'), staleRecorderJson);
   recordViewportOverride(staleRecDir);
@@ -531,7 +546,7 @@ test('startComposedRecorder reaps a stale (dead-pid) recorder.json before arming
     findTarget: async (targetId: string) => ({ port: 9222, tab: { id: targetId, title: '', url: '', type: 'page', webSocketDebuggerUrl: 'ws://viewport' } }),
     createClient: () => ({ waitReady: async () => {}, send: async (method: string) => { viewportEvents.push(method); }, close: () => {} }) as never,
   });
-  await setActiveSession({ sessionId: 's-reap', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveSession({ sessionId: 's-reap', dir: sessionDir, harId: 'har-test-reap', targetId: 'target-abc', stepCount: 0 });
   await setActiveRecId(staleRecId);
 
   let fakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
@@ -541,7 +556,8 @@ test('startComposedRecorder reaps a stale (dead-pid) recorder.json before arming
       { sessionDir, viewport: { width: 390, height: 844 } },
       {
         detectPort: async () => 9222,
-        spawnRecorderBridge: async (socketPath) => {
+        spawnRecorderBridge: async (socketPath, _port, _targetId, recDir) => {
+          writeJsonPrivate(path.join(recDir, RECORDER_NONCE_BOOT_FILE), { nonce: TEST_NONCE });
           fakeServer = await startFakeRecorderServer(socketPath);
           return { socketPath, pid: placeholder.pid };
         },
@@ -596,6 +612,7 @@ test('stopComposedRecorder best-effort finalizes an orphaned (dead-pid) recordin
     state: 'recording',
     birth: birthOf(process.pid),
     markers,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
   await setActiveSession({ sessionId: 's-orphan-stop', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
@@ -627,7 +644,7 @@ test('stopComposedRecorder best-effort finalizes an orphaned (dead-pid) recordin
 test('Fix 7: a token-shaped .session.json url is preserved through recorder.json and meta.json', async () => {
   const sessionDir = freshSessionDir('url-evidence');
   const secretUrl = 'https://example.com/?token=github_pat_' + '1'.repeat(40);
-  await setActiveSession({ sessionId: 's-url-evidence', dir: sessionDir, harId: null, url: secretUrl, targetId: 'target-abc', stepCount: 0 });
+  await setActiveSession({ sessionId: 's-url-evidence', dir: sessionDir, harId: 'har-test-url', url: secretUrl, targetId: 'target-abc', stepCount: 0 });
   const placeholder = spawnPlaceholderChild();
 
   let fakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
@@ -636,7 +653,8 @@ test('Fix 7: a token-shaped .session.json url is preserved through recorder.json
       { sessionDir },
       {
         detectPort: async () => 9222,
-        spawnRecorderBridge: async (socketPath) => {
+        spawnRecorderBridge: async (socketPath, _port, _targetId, recDir) => {
+          writeJsonPrivate(path.join(recDir, RECORDER_NONCE_BOOT_FILE), { nonce: TEST_NONCE });
           fakeServer = await startFakeRecorderServer(socketPath);
           return { socketPath, pid: placeholder.pid };
         },
@@ -647,7 +665,7 @@ test('Fix 7: a token-shaped .session.json url is preserved through recorder.json
     assert.ok(rj);
     assert.equal(rj!.url, secretUrl, 'recorder.json preserves the exact session URL');
 
-    const stopResult = await stopComposedRecorder({ sessionDir, recId: result.recId });
+    const stopResult = await stopComposedRecorder({ sessionDir, recId: result.recId }, { stopExitTimeoutMs: 50 });
     const metaRaw = fs.readFileSync(path.join(stopResult.recDir, 'meta.json'), 'utf-8');
     assert.ok(metaRaw.includes(secretUrl), 'meta.json preserves the exact session URL');
     const meta = JSON.parse(metaRaw) as { url: string | null };
@@ -703,6 +721,7 @@ test('stopComposedRecorder still accepts a normal safe --rec-id (regression: val
     state: 'recording',
     birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
   await setActiveSession({ sessionId: 's-rec-id-safe', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
@@ -710,7 +729,7 @@ test('stopComposedRecorder still accepts a normal safe --rec-id (regression: val
 
   const fakeServer = await startFakeRecorderServer(socketPath);
   try {
-    const result = await stopComposedRecorder({ sessionDir, recId });
+    const result = await stopComposedRecorder({ sessionDir, recId }, { stopExitTimeoutMs: 50 });
     assert.equal(result.state, 'finalized');
     assert.equal(result.recId, recId);
   } finally {
@@ -736,8 +755,8 @@ test('a rejected start with live and stale handles leaves both viewport owners u
   ensurePrivateDir(staleDir);
   const live = spawnPlaceholderChild();
   const deadPid = await spawnAndWaitDead();
-  writeJsonPrivate(path.join(liveDir, 'recorder.json'), { recId: 'rec-live', pid: live.pid, socketPath: recorderSocketPath(liveDir), targetId: 'live-target', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(live.pid), markers: PENDING_MARKERS } satisfies RecorderJson);
-  writeJsonPrivate(path.join(staleDir, 'recorder.json'), { recId: 'rec-stale', pid: deadPid, socketPath: recorderSocketPath(staleDir), targetId: 'stale-target', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(process.pid), markers: PENDING_MARKERS } satisfies RecorderJson);
+  writeJsonPrivate(path.join(liveDir, 'recorder.json'), { recId: 'rec-live', pid: live.pid, socketPath: recorderSocketPath(liveDir), targetId: 'live-target', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(live.pid), markers: PENDING_MARKERS, nonce: TEST_NONCE } satisfies RecorderJson);
+  writeJsonPrivate(path.join(staleDir, 'recorder.json'), { recId: 'rec-stale', pid: deadPid, socketPath: recorderSocketPath(staleDir), targetId: 'stale-target', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(process.pid), markers: PENDING_MARKERS, nonce: TEST_NONCE } satisfies RecorderJson);
   recordViewportOverride(staleDir);
   const mutations: string[] = [];
   const restoreViewportDeps = __setViewportLifecycleDepsForTest({
@@ -773,6 +792,7 @@ test('startComposedRecorder rejects when a live recorder.json exists on disk but
     state: 'recording',
     birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(existingRecDir, 'recorder.json'), existingRecorderJson);
   await setActiveSession({ sessionId: 's-missing-pointer', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
@@ -799,16 +819,17 @@ test('startComposedRecorder rejects when a live recorder.json exists on disk but
 
 test('two concurrent startComposedRecorder calls against the same session: exactly one succeeds, the other is rejected as already-active', async () => {
   const sessionDir = freshSessionDir('concurrent-start');
-  await setActiveSession({ sessionId: 's-concurrent-start', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveSession({ sessionId: 's-concurrent-start', dir: sessionDir, harId: 'har-test-concurrent', targetId: 'target-abc', stepCount: 0 });
 
   const placeholders: Array<{ pid: number; kill: () => void }> = [];
   const fakeServers: Array<Awaited<ReturnType<typeof startFakeRecorderServer>>> = [];
 
   const makeDeps = () => ({
     detectPort: async () => 9222,
-    spawnRecorderBridge: async (socketPath: string) => {
+    spawnRecorderBridge: async (socketPath: string, _port: number, _targetId: string, recDir: string) => {
       const placeholder = spawnPlaceholderChild();
       placeholders.push(placeholder);
+      writeJsonPrivate(path.join(recDir, RECORDER_NONCE_BOOT_FILE), { nonce: TEST_NONCE });
       const fakeServer = await startFakeRecorderServer(socketPath);
       fakeServers.push(fakeServer);
       return { socketPath, pid: placeholder.pid };
@@ -847,7 +868,7 @@ test('two concurrent startComposedRecorder calls against the same session: exact
 
 test('a viewport target failure before set never clears an override', async () => {
   const sessionDir = freshSessionDir('viewport-before-set');
-  await setActiveSession({ sessionId: 's-viewport-before-set', dir: sessionDir, harId: null, targetId: 'target-before-set', port: 9222, stepCount: 0 });
+  await setActiveSession({ sessionId: 's-viewport-before-set', dir: sessionDir, harId: 'har-test-vbs', targetId: 'target-before-set', port: 9222, stepCount: 0 });
   const viewportEvents: string[] = [];
   const restoreDeps = __setViewportLifecycleDepsForTest({
     findTarget: async () => { throw new Error('target lookup failed'); },
@@ -890,7 +911,7 @@ test('session-stop reports retained failed-start viewport restoration retries', 
 
 test('a requestRecStart failure during startComposedRecorder leaves no dangling lock/recorder.json, and a subsequent start succeeds cleanly', async () => {
   const sessionDir = freshSessionDir('start-failure-rollback');
-  await setActiveSession({ sessionId: 's-start-failure', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveSession({ sessionId: 's-start-failure', dir: sessionDir, harId: 'har-test-rollback', targetId: 'target-abc', stepCount: 0 });
 
   const failingPlaceholder = spawnPlaceholderChild();
   let failingFakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
@@ -901,7 +922,8 @@ test('a requestRecStart failure during startComposedRecorder leaves no dangling 
           { sessionDir },
           {
             detectPort: async () => 9222,
-            spawnRecorderBridge: async (socketPath) => {
+            spawnRecorderBridge: async (socketPath, _port, _targetId, recDir) => {
+              writeJsonPrivate(path.join(recDir, RECORDER_NONCE_BOOT_FILE), { nonce: TEST_NONCE });
               failingFakeServer = await startFakeRecorderServer(socketPath, {
                 'rec-start': (req) => ({ reqId: req.reqId, ok: false, type: 'rec-start', error: 'boom' }),
               });
@@ -929,7 +951,8 @@ test('a requestRecStart failure during startComposedRecorder leaves no dangling 
         { sessionDir },
         {
           detectPort: async () => 9222,
-          spawnRecorderBridge: async (socketPath) => {
+          spawnRecorderBridge: async (socketPath, _port, _targetId, recDir) => {
+            writeJsonPrivate(path.join(recDir, RECORDER_NONCE_BOOT_FILE), { nonce: TEST_NONCE });
             fakeServer = await startFakeRecorderServer(socketPath);
             return { socketPath, pid: placeholder.pid };
           },
@@ -981,6 +1004,7 @@ test('stopComposedRecorder falls back to orphan-finalizing (and kills the pid) w
     state: 'recording',
     birth: birthOf(placeholder.pid),
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
   await setActiveSession({ sessionId: 's-wedged-stop', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
@@ -1018,7 +1042,7 @@ test('stopComposedRecorder falls back to orphan-finalizing (and kills the pid) w
 
 test('proof 8: startComposedRecorder retires a dead .lifecycle.lock owner and arms', async () => {
   const sessionDir = freshSessionDir('killed-holder-start');
-  await setActiveSession({ sessionId: 's-killed-start', dir: sessionDir, harId: null, targetId: 'target-abc', port: 9222, stepCount: 0 });
+  await setActiveSession({ sessionId: 's-killed-start', dir: sessionDir, harId: 'har-test-p8', targetId: 'target-abc', port: 9222, stepCount: 0 });
   const realBirth = birthOf(process.pid);
   const birthB = mutateBirth(realBirth);
   let phase: 'A' | 'B' = 'A';
@@ -1031,7 +1055,7 @@ test('proof 8: startComposedRecorder retires a dead .lifecycle.lock owner and ar
   const placeholder = spawnPlaceholderChild();
   let fakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
   try {
-    const result = await startComposedRecorder({ sessionDir }, { pidBirthProvider: provider, nowNs, detectPort: async () => 9222, spawnRecorderBridge: async (sp) => { fakeServer = await startFakeRecorderServer(sp); return { socketPath: sp, pid: placeholder.pid }; } });
+    const result = await startComposedRecorder({ sessionDir }, { pidBirthProvider: provider, nowNs, detectPort: async () => 9222, spawnRecorderBridge: async (sp, _po, _t, recDir) => { writeJsonPrivate(path.join(recDir, RECORDER_NONCE_BOOT_FILE), { nonce: TEST_NONCE }); fakeServer = await startFakeRecorderServer(sp); return { socketPath: sp, pid: placeholder.pid }; } });
     assert.equal(result.state, 'recording');
     assert.equal(getActiveRecId(), result.recId);
   } finally {
@@ -1045,12 +1069,12 @@ test('proof 8: startComposedRecorder retires a dead .lifecycle.lock owner and ar
 
 test('proof 9: startComposedRecorder binds the under-lock target, not a stale pre-lock snapshot', async () => {
   const sessionDir = freshSessionDir('stale-pre-lock-target');
-  await setActiveSession({ sessionId: 's-stale-target', dir: sessionDir, harId: null, targetId: 'target-old', port: 9222, stepCount: 0 });
+  await setActiveSession({ sessionId: 's-stale-target', dir: sessionDir, harId: 'har-test-p9', targetId: 'target-old', port: 9222, stepCount: 0 });
   const holder = await acquirePrivateLock(path.join(sessionDir, '.lifecycle.lock'), { acquireTimeoutMs: 30_000, leaseMs: 30_000 });
   const placeholder = spawnPlaceholderChild();
   let fakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
   try {
-    const startPromise = startComposedRecorder({ sessionDir }, { detectPort: async () => 9222, spawnRecorderBridge: async (sp) => { fakeServer = await startFakeRecorderServer(sp); return { socketPath: sp, pid: placeholder.pid }; } });
+    const startPromise = startComposedRecorder({ sessionDir }, { detectPort: async () => 9222, spawnRecorderBridge: async (sp, _po, _t, recDir) => { writeJsonPrivate(path.join(recDir, RECORDER_NONCE_BOOT_FILE), { nonce: TEST_NONCE }); fakeServer = await startFakeRecorderServer(sp); return { socketPath: sp, pid: placeholder.pid }; } });
     await new Promise((r) => setTimeout(r, 50)); // start blocks on the lock
     await updateSessionState(sessionDir, { targetId: 'target-new' });
     holder.release();
@@ -1066,16 +1090,16 @@ test('proof 9: startComposedRecorder binds the under-lock target, not a stale pr
 
 test('proof 10: a live foreign pid with a mismatched birth classifies dead, is reaped, and receives no signal', async () => {
   const sessionDir = freshSessionDir('fake-pid-reuse');
-  await setActiveSession({ sessionId: 's-fake-pid', dir: sessionDir, harId: null, targetId: 'target-abc', port: 9222, stepCount: 0 });
+  await setActiveSession({ sessionId: 's-fake-pid', dir: sessionDir, harId: 'har-test-p10', targetId: 'target-abc', port: 9222, stepCount: 0 });
   const foreign = spawnPlaceholderChild();
   const foreignRecId = 'rec-foreign';
   const foreignDir = recDirFor(sessionDir, foreignRecId);
   ensurePrivateDir(foreignDir);
-  writeJsonPrivate(path.join(foreignDir, 'recorder.json'), { recId: foreignRecId, pid: foreign.pid, socketPath: recorderSocketPath(foreignDir), targetId: 'target-abc', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(process.pid), markers: PENDING_MARKERS });
+  writeJsonPrivate(path.join(foreignDir, 'recorder.json'), { recId: foreignRecId, pid: foreign.pid, socketPath: recorderSocketPath(foreignDir), targetId: 'target-abc', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(process.pid), markers: PENDING_MARKERS, nonce: TEST_NONCE });
   const placeholder = spawnPlaceholderChild();
   let fakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
   try {
-    const result = await startComposedRecorder({ sessionDir }, { detectPort: async () => 9222, spawnRecorderBridge: async (sp) => { fakeServer = await startFakeRecorderServer(sp); return { socketPath: sp, pid: placeholder.pid }; } });
+    const result = await startComposedRecorder({ sessionDir }, { detectPort: async () => 9222, spawnRecorderBridge: async (sp, _po, _t, recDir) => { writeJsonPrivate(path.join(recDir, RECORDER_NONCE_BOOT_FILE), { nonce: TEST_NONCE }); fakeServer = await startFakeRecorderServer(sp); return { socketPath: sp, pid: placeholder.pid }; } });
     assert.ok(result.reapedStale);
     assert.equal(result.reapedStale!.recId, foreignRecId);
     assert.equal(fs.existsSync(path.join(foreignDir, 'recorder.json')), false);
@@ -1097,13 +1121,136 @@ test('proof 13: an unknown recorder liveness read refuses to start and reaps/sig
   const recId = 'rec-unknown';
   const recDir = recDirFor(sessionDir, recId);
   ensurePrivateDir(recDir);
-  writeJsonPrivate(path.join(recDir, 'recorder.json'), { recId, pid: placeholder.pid, socketPath: recorderSocketPath(recDir), targetId: 'target-abc', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(placeholder.pid), markers: PENDING_MARKERS });
+  writeJsonPrivate(path.join(recDir, 'recorder.json'), { recId, pid: placeholder.pid, socketPath: recorderSocketPath(recDir), targetId: 'target-abc', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(placeholder.pid), markers: PENDING_MARKERS, nonce: TEST_NONCE });
   const provider: PidBirthProvider = { read: (pid) => pid === placeholder.pid ? { status: 'unknown', reason: 'test forced' } : processPidBirthProvider.read(pid) };
   try {
     await assert.rejects(() => startComposedRecorder({ sessionDir }, { pidBirthProvider: provider }), /liveness|Cannot determine/i);
     assert.equal(fs.existsSync(path.join(recDir, 'recorder.json')), true, 'unknown liveness reaps nothing');
     assert.equal(pidLive(placeholder.pid), true, 'unknown liveness signals nothing');
   } finally {
+    placeholder.kill();
+    clearActiveSession();
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// U11b — recorder-start admission, nonce-malformed handles, and the graceful
+// stop's verified-exit wait.
+// ---------------------------------------------------------------------------
+
+test('U11b: a start admitted after beginSessionStop is rejected session_stopping with zero side effects', async () => {
+  const sessionDir = freshSessionDir('admission-stopping');
+  await setActiveSession({ sessionId: 's-admission-stopping', dir: sessionDir, harId: 'har-test-admission', targetId: 'target-abc', stepCount: 0 });
+  const admission = await beginSessionStop(sessionDir);
+  let spawnCalled = false;
+  try {
+    await assert.rejects(
+      () => startComposedRecorder({ sessionDir }, {
+        detectPort: async () => 9222,
+        spawnRecorderBridge: async (socketPath, _port, _targetId, recDir) => {
+          spawnCalled = true;
+          writeJsonPrivate(path.join(recDir, RECORDER_NONCE_BOOT_FILE), { nonce: TEST_NONCE });
+          return { socketPath, pid: process.pid };
+        },
+      }),
+      (err: unknown) => (err as { descriptor?: { code?: string } }).descriptor?.code === 'session_stopping',
+      'the rejection must be the structured session_stopping precondition error',
+    );
+    assert.equal(spawnCalled, false, 'a stopping-rejected start must never spawn a bridge');
+    assert.equal(fs.existsSync(path.join(sessionDir, 'motion', 'recs')), false, 'no recDir may be created');
+    const ops = JSON.parse(fs.readFileSync(path.join(sessionDir, '.operations.json'), 'utf-8')) as { tokens: unknown[] };
+    assert.equal(ops.tokens.length, 0, 'the rejected admission must leave no token behind');
+  } finally {
+    await admission.finish(true);
+    clearActiveSession();
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('U11b: a recorder.json without a structurally valid nonce is malformed — connectForCommand refuses and sends nothing', async () => {
+  const sessionDir = freshSessionDir('missing-nonce');
+  const recId = 'rec-no-nonce';
+  const recDir = recDirFor(sessionDir, recId);
+  ensurePrivateDir(recDir);
+  const socketPath = recorderSocketPath(recDir);
+  const placeholder = spawnPlaceholderChild();
+  // Deliberately NO nonce field — parseRecorderHandle/connection.ts must
+  // classify this handle malformed; there is no unauthenticated compat lane.
+  writeJsonPrivate(path.join(recDir, 'recorder.json'), { recId, pid: placeholder.pid, socketPath, targetId: 'target-abc', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(placeholder.pid), markers: PENDING_MARKERS });
+  await setActiveSession({ sessionId: 's-missing-nonce', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
+  const fakeServer = await startFakeRecorderServer(socketPath);
+  try {
+    await assert.rejects(
+      () => connectForCommand(minimalParsedArgs('click', { positional: ['Send'] })),
+      (err: unknown) => (err as { descriptor?: { code?: string } }).descriptor?.code === 'recorder_unavailable',
+    );
+    assert.equal(fakeServer.received.length, 0, 'no request may reach the recorder socket for a malformed handle');
+  } finally {
+    fakeServer.close();
+    placeholder.kill();
+    clearActiveSession();
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('U11b: graceful stop waits for the bridge self-exit — a handler-killed bridge finalizes without escalation', async () => {
+  const sessionDir = freshSessionDir('stop-self-exit');
+  const recId = 'rec-self-exit';
+  const recDir = recDirFor(sessionDir, recId);
+  ensurePrivateDir(recDir);
+  const socketPath = recorderSocketPath(recDir);
+  const placeholder = spawnPlaceholderChild();
+  writeJsonPrivate(path.join(recDir, 'recorder.json'), { recId, pid: placeholder.pid, socketPath, targetId: 'target-abc', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(placeholder.pid), markers: PENDING_MARKERS, nonce: TEST_NONCE } satisfies RecorderJson);
+  await setActiveSession({ sessionId: 's-stop-self-exit', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
+  // The fake bridge "self-exits" right after answering rec-stop, the way the
+  // real one does after its response flushes.
+  const fakeServer = await startFakeRecorderServer(socketPath, {
+    'rec-stop': (req) => {
+      placeholder.kill();
+      return { reqId: req.reqId, ok: true, type: 'rec-stop', frameCount: 0, eventCount: 0, durationMs: 0, markers: PENDING_MARKERS };
+    },
+  });
+  try {
+    const stopExitTimeoutMs = 10_000; // generous: finishing well under it proves the wait saw the exit, so no SIGTERM race
+    const before = Date.now();
+    const result = await stopComposedRecorder({ sessionDir, recId }, { stopExitTimeoutMs });
+    const elapsed = Date.now() - before;
+    assert.equal(result.state, 'finalized');
+    assert.ok(elapsed < stopExitTimeoutMs / 2, `stop must return on the verified exit, not the escalation deadline (took ${elapsed}ms)`);
+    assert.equal(pidLive(placeholder.pid), false);
+  } finally {
+    fakeServer.close();
+    placeholder.kill();
+    clearActiveSession();
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('U11b: a bridge that never exits after rec-stop is escalated to an identity-checked SIGTERM at the grace deadline', async () => {
+  const sessionDir = freshSessionDir('stop-escalate');
+  const recId = 'rec-escalate';
+  const recDir = recDirFor(sessionDir, recId);
+  ensurePrivateDir(recDir);
+  const socketPath = recorderSocketPath(recDir);
+  const placeholder = spawnPlaceholderChild();
+  writeJsonPrivate(path.join(recDir, 'recorder.json'), { recId, pid: placeholder.pid, socketPath, targetId: 'target-abc', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(placeholder.pid), markers: PENDING_MARKERS, nonce: TEST_NONCE } satisfies RecorderJson);
+  await setActiveSession({ sessionId: 's-stop-escalate', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
+  const fakeServer = await startFakeRecorderServer(socketPath); // answers rec-stop ok but the placeholder never exits
+  try {
+    const result = await stopComposedRecorder({ sessionDir, recId }, { stopExitTimeoutMs: 100 });
+    assert.equal(result.state, 'finalized');
+    // SIGTERM delivery is async — poll briefly for the escalated kill to land.
+    const deadline = Date.now() + 3000;
+    while (pidLive(placeholder.pid) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    assert.equal(pidLive(placeholder.pid), false, 'the still-matching identity must be SIGTERMed at the deadline');
+  } finally {
+    fakeServer.close();
     placeholder.kill();
     clearActiveSession();
     fs.rmSync(sessionDir, { recursive: true, force: true });

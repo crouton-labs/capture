@@ -17,6 +17,12 @@ import {
 } from '../src/cdp/recorder-bridge.js';
 import { type RecorderRequest, type RecorderResponse } from '../src/cdp/bridge/protocol.js';
 
+// U11b: `RecorderRequest` requires a control-socket admission nonce. These tests
+// exercise `handleRecorderRequest` / `RecorderSession.handleCdp` directly (the
+// nonce gate lives upstream in `runRecorderBridge`'s socket handleLine), so any
+// well-formed 64-hex value satisfies the type contract.
+const TEST_NONCE = 'ab'.repeat(32);
+
 // A 1x1 transparent PNG, base64-encoded — stands in for a screencast frame's `data`.
 const ONE_PIXEL_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
@@ -260,6 +266,7 @@ test('a marked cdp request brackets the dispatch and appends an input landmark t
     const { result } = await session.handleCdp({
       reqId: 1,
       type: 'cdp',
+      nonce: TEST_NONCE,
       method: 'Input.dispatchMouseEvent',
       params: { type: 'mousePressed', x: 10, y: 20 },
       mark: 'input_click',
@@ -284,7 +291,7 @@ test('a marked cdp request brackets the dispatch and appends an input landmark t
     assert.ok(inputEvents[0].endPerformanceNow! >= inputEvents[0].startPerformanceNow!);
 
     // An unmarked cdp request does NOT get logged as an input landmark.
-    await session.handleCdp({ reqId: 2, type: 'cdp', method: 'DOM.enable' });
+    await session.handleCdp({ reqId: 2, type: 'cdp', nonce: TEST_NONCE, method: 'DOM.enable' });
     const afterUnmarked = readNdjson(session.eventsPath).filter((e) => (e as { kind: string }).kind === 'input');
     assert.equal(afterUnmarked.length, 1);
   } finally {
@@ -333,7 +340,7 @@ test('rec-stop stops screencast/tracing, tears down observers, and returns frame
     await session.start();
     client.fire('Page.screencastFrame', { data: ONE_PIXEL_PNG_BASE64, metadata: { timestamp: 1 }, sessionId: 1 });
     await tick();
-    await session.handleCdp({ reqId: 1, type: 'cdp', method: 'Input.dispatchMouseEvent', mark: 'input_click' });
+    await session.handleCdp({ reqId: 1, type: 'cdp', nonce: TEST_NONCE, method: 'Input.dispatchMouseEvent', mark: 'input_click' });
 
     const summary = await session.stop();
 
@@ -386,13 +393,13 @@ test('handleRecorderRequest dispatches rec-start/cdp/rec-stop with matching reqI
   const session = new RecorderSession({ client, recDir });
 
   try {
-    const badStop = await handleRecorderRequest(session, { reqId: 9, type: 'rec-stop' });
+    const badStop = await handleRecorderRequest(session, { reqId: 9, type: 'rec-stop', nonce: TEST_NONCE });
     assert.equal(badStop.ok, false);
     assert.equal(badStop.type, 'rec-stop');
     assert.equal(badStop.reqId, 9);
     assert.match((badStop as { error: string }).error, /cannot stop/i);
 
-    const started = await handleRecorderRequest(session, { reqId: 1, type: 'rec-start' });
+    const started = await handleRecorderRequest(session, { reqId: 1, type: 'rec-start', nonce: TEST_NONCE });
     assert.equal(started.ok, true);
     assert.equal(started.type, 'rec-start');
     assert.equal(started.reqId, 1);
@@ -401,13 +408,14 @@ test('handleRecorderRequest dispatches rec-start/cdp/rec-stop with matching reqI
     const cdp = await handleRecorderRequest(session, {
       reqId: 2,
       type: 'cdp',
+      nonce: TEST_NONCE,
       method: 'DOM.enable',
     });
     assert.equal(cdp.ok, true);
     assert.equal(cdp.type, 'cdp');
     assert.equal(cdp.reqId, 2);
 
-    const stopped = await handleRecorderRequest(session, { reqId: 3, type: 'rec-stop' });
+    const stopped = await handleRecorderRequest(session, { reqId: 3, type: 'rec-stop', nonce: TEST_NONCE });
     assert.equal(stopped.ok, true);
     assert.equal(stopped.type, 'rec-stop');
     assert.ok('frameCount' in stopped);
@@ -451,7 +459,7 @@ test('the recorder speaks the same one-request-per-connection NDJSON wire shape 
   }
 
   try {
-    const startResp = await sendOverSocket({ reqId: 1, type: 'rec-start' });
+    const startResp = await sendOverSocket({ reqId: 1, type: 'rec-start', nonce: TEST_NONCE });
     assert.equal(startResp.ok, true);
     assert.equal(startResp.type, 'rec-start');
     assert.equal(startResp.reqId, 1);
@@ -459,6 +467,7 @@ test('the recorder speaks the same one-request-per-connection NDJSON wire shape 
     const cdpResp = await sendOverSocket({
       reqId: 2,
       type: 'cdp',
+      nonce: TEST_NONCE,
       method: 'Input.dispatchMouseEvent',
       mark: 'input_click',
     });
@@ -466,7 +475,7 @@ test('the recorder speaks the same one-request-per-connection NDJSON wire shape 
     assert.equal(cdpResp.type, 'cdp');
     assert.equal(cdpResp.reqId, 2);
 
-    const stopResp = await sendOverSocket({ reqId: 3, type: 'rec-stop' });
+    const stopResp = await sendOverSocket({ reqId: 3, type: 'rec-stop', nonce: TEST_NONCE });
     assert.equal(stopResp.ok, true);
     assert.equal(stopResp.type, 'rec-stop');
     assert.equal(stopResp.reqId, 3);
@@ -982,7 +991,7 @@ test('a routed cdp request arriving after stop() has flipped state is rejected, 
     assert.equal(session.state, 'stopping');
 
     await assert.rejects(
-      () => session.handleCdp({ reqId: 1, type: 'cdp', method: 'DOM.enable' }),
+      () => session.handleCdp({ reqId: 1, type: 'cdp', nonce: TEST_NONCE, method: 'DOM.enable' }),
       /cannot dispatch cdp/i,
       'a cdp request arriving once the recorder has left "recording" must be rejected, not dispatched against a connection mid-teardown',
     );
@@ -1002,7 +1011,7 @@ test('handleCdp on an idle (unstarted) session proceeds to protocol/wait handlin
 
     // A wait-event-only request on an idle session registers and resolves once the event
     // fires — it must reach wait-registration, not throw a state error first.
-    const pending = session.handleCdp({ reqId: 1, type: 'cdp', waitEvent: 'Foo.bar', timeoutMs: 2000 });
+    const pending = session.handleCdp({ reqId: 1, type: 'cdp', nonce: TEST_NONCE, waitEvent: 'Foo.bar', timeoutMs: 2000 });
     await tick(10);
     client.fire('Foo.bar', { hello: 'world' });
     const outcome = await pending;
@@ -1012,7 +1021,7 @@ test('handleCdp on an idle (unstarted) session proceeds to protocol/wait handlin
     // error — the teardown-window guard only rejects once stop() has begun, so an idle session
     // reaches shape validation instead of a state rejection.
     await assert.rejects(
-      () => session.handleCdp({ reqId: 2, type: 'cdp' }),
+      () => session.handleCdp({ reqId: 2, type: 'cdp', nonce: TEST_NONCE } as never),
       /requires a nonempty string "method".*or "waitEvent"/i,
       'an idle session must reach protocol/shape validation, not a state rejection',
     );
@@ -1042,6 +1051,7 @@ test('recorder bridge arms its unscoped event wait before synchronous send and p
     const outcome = await session.handleCdp({
       reqId: 1,
       type: 'cdp',
+      nonce: TEST_NONCE,
       method: 'Page.reload',
       waitEvent: 'Page.loadEventFired',
       timeoutMs: 100,
@@ -1049,6 +1059,7 @@ test('recorder bridge arms its unscoped event wait before synchronous send and p
     assert.deepEqual(outcome, {
       result: { reloaded: true },
       event: { scope: 'recorder-tab' },
+      waitOutcome: 'observed',
     });
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
@@ -1073,6 +1084,7 @@ test('recorder bridge preserves a delayed method failure after the event deadlin
       session.handleCdp({
         reqId: 1,
         type: 'cdp',
+        nonce: TEST_NONCE,
         method: 'Page.reload',
         waitEvent: 'Page.loadEventFired',
         timeoutMs: 10,
@@ -1102,6 +1114,7 @@ test('marked recorder bridge preserves a delayed wrapper failure after the event
       session.handleCdp({
         reqId: 1,
         type: 'cdp',
+        nonce: TEST_NONCE,
         method: 'Page.reload',
         mark: 'reload',
         waitEvent: 'Page.loadEventFired',
@@ -1125,7 +1138,7 @@ test('a routed cdp request dispatched once stop() has flipped state to "stopped"
     assert.equal(session.state, 'stopped');
 
     await assert.rejects(
-      () => session.handleCdp({ reqId: 1, type: 'cdp', method: 'DOM.enable' }),
+      () => session.handleCdp({ reqId: 1, type: 'cdp', nonce: TEST_NONCE, method: 'DOM.enable' }),
       /cannot dispatch cdp/i,
       'a cdp request dispatched once the recorder is fully stopped must still be rejected by the narrowed teardown-window guard',
     );
@@ -1362,6 +1375,7 @@ test('navigation URL and structurally hostile mark label survive JSON artifact e
     await session.handleCdp({
       reqId: 1,
       type: 'cdp',
+      nonce: TEST_NONCE,
       method: 'Input.dispatchMouseEvent',
       mark,
     });
@@ -1387,6 +1401,7 @@ test('a secret-shaped mark label is retained as input evidence while its structu
     await session.handleCdp({
       reqId: 1,
       type: 'cdp',
+      nonce: TEST_NONCE,
       method: 'Input.dispatchMouseEvent',
       mark: SECRET_TOKEN,
     });
@@ -1813,6 +1828,7 @@ test('a marked cdp request never evaluates performance.mark(...) into the page, 
     await session.handleCdp({
       reqId: 1,
       type: 'cdp',
+      nonce: TEST_NONCE,
       method: 'Input.dispatchMouseEvent',
       params: { type: 'mousePressed', x: 1, y: 2 },
       mark: 'input_click',

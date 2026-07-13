@@ -111,15 +111,27 @@ export function stopBridge(pid: number | null | undefined, socketPath: string | 
  * (U14's lifecycle routing) tears it down with the same `stopBridge()`
  * used for the plain held bridge.
  *
- * Recorder mode is selected via a positional (`recorder <recDir>`) rather
- * than a new flag — `capture`'s CLI arg parser (`src/cdp/args.ts`) is not
- * owned by this unit, but `positional` is already generic passthrough.
+ * Recorder mode is selected via a positional (`recorder <recDir> <harId>`)
+ * rather than a new flag — `capture`'s CLI arg parser (`src/cdp/args.ts`) is
+ * not owned by this unit, but `positional` is already generic passthrough.
+ *
+ * `harId` is the owning session's live HAR recording id (`.session.json`'s
+ * `harId`) — the recorder bridge installs a streaming `HARRecorder` on its
+ * held tab connection and appends network evidence to that store, so the id
+ * must travel to the spawned process. Required: a session-backed recorder
+ * always has one (the caller throws before spawning if it doesn't).
+ *
+ * The socket-file readiness poll below doubles as the nonce-boot-file
+ * guarantee: the recorder writes `{recDir}/recorder-nonce.json` BEFORE it
+ * binds the socket (see `../recorder-bridge.ts`), so once this resolves the
+ * caller can read the nonce without racing the child.
  */
 export async function startRecorderBridge(
   socketPath: string,
   port: number,
   targetId: string,
   recDir: string,
+  harId: string,
   timeoutMs = 5000,
 ): Promise<{ socketPath: string; pid: number }> {
   const scriptPath = process.argv[1];
@@ -136,6 +148,7 @@ export async function startRecorderBridge(
       targetId,
       'recorder',
       recDir,
+      harId,
     ],
     { detached: true, stdio: 'ignore' },
   );
