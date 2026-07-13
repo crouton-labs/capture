@@ -88,6 +88,7 @@ function cssScrollHandlers(resultingScrollTop: number): Handlers {
     }),
     'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
     'Runtime.callFunctionOn': () => ({ result: { value: resultingScrollTop } }),
+    'Runtime.releaseObject': () => ({}),
   };
 }
 

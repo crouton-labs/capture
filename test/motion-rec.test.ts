@@ -333,23 +333,52 @@ test('one-shot scroll drives the shared scrollResolved helper and carries the ac
   const scrollCall = recorder.calls.find((c) => c.method === 'Runtime.callFunctionOn');
   assert.ok(scrollCall, 'scroll dispatches through Runtime.callFunctionOn on the resolved node');
   assert.equal(scrollCall!.mark, 'scroll:.pane,to=bottom', 'the one mutating call carries the action landmark');
+  const releases = recorder.calls.filter((c) => c.method === 'Runtime.releaseObject');
+  assert.equal(releases.length, 1, 'the scroll container object is released exactly once');
+  assert.equal(releases[0].mark, null, 'the release is incidental cleanup, never a landmark');
+  assert.ok(
+    recorder.calls.findIndex((c) => c.method === 'Runtime.releaseObject') > recorder.calls.findIndex((c) => c.method === 'Runtime.callFunctionOn'),
+    'the release follows the mutating call',
+  );
 });
 
-test('one-shot scroll rejects in-page exceptions and missing scroll payloads', async () => {
+test('one-shot scroll rejects in-page exceptions and missing scroll payloads, releasing the object on both paths', async () => {
+  const exceptionRecorder = stubRecorder({
+    ...SINGLE_PANE_RESOLUTION,
+    'Runtime.callFunctionOn': () => ({ exceptionDetails: { text: 'bad target' } }),
+  });
   await assert.rejects(
-    () => driveOneShotAction(stubRecorder({
-      ...SINGLE_PANE_RESOLUTION,
-      'Runtime.callFunctionOn': () => ({ exceptionDetails: { text: 'bad target' } }),
-    }) as never, 'scroll:.pane,to=bottom'),
+    () => driveOneShotAction(exceptionRecorder as never, 'scroll:.pane,to=bottom'),
     /threw in-page/,
   );
+  assert.equal(exceptionRecorder.calls.filter((c) => c.method === 'Runtime.releaseObject').length, 1);
+
+  const malformedRecorder = stubRecorder({
+    ...SINGLE_PANE_RESOLUTION,
+    'Runtime.callFunctionOn': () => ({ result: { value: 'nope' } }),
+  });
   await assert.rejects(
-    () => driveOneShotAction(stubRecorder({
-      ...SINGLE_PANE_RESOLUTION,
-      'Runtime.callFunctionOn': () => ({ result: { value: 'nope' } }),
-    }) as never, 'scroll:.pane,to=bottom'),
+    () => driveOneShotAction(malformedRecorder as never, 'scroll:.pane,to=bottom'),
     /valid scrollTop payload/,
   );
+  assert.equal(malformedRecorder.calls.filter((c) => c.method === 'Runtime.releaseObject').length, 1);
+});
+
+test('one-shot click with a short content quad rejects as target_not_clickable through the shared dispatcher without input', async () => {
+  const recorder = stubRecorder({
+    ...SINGLE_PANE_RESOLUTION,
+    'DOM.getBoxModel': () => ({ model: { content: [0, 0, 10, 0] } }),
+  });
+  await assert.rejects(
+    () => driveOneShotAction(recorder as never, 'click:.pane'),
+    (err: unknown) => {
+      assert.ok(err instanceof DoActionError);
+      assert.equal(err.status, 'target_not_clickable');
+      assert.match(err.message, /backend:201/);
+      return true;
+    },
+  );
+  assert.equal(recorder.calls.filter((c) => c.method === 'Input.dispatchMouseEvent').length, 0, 'no input is dispatched on an unclickable target');
 });
 
 test('one-shot click:ax:<name> resolves by case-insensitive substring over live AX names', async () => {

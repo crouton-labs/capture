@@ -23,6 +23,7 @@
  */
 
 import { readFullAXTree, type FullAXNode } from './cdp/a11y.js';
+import { captureError } from './errors.js';
 import { parseSelectorInput, type SelectorInputKind } from './output/selector.js';
 
 /**
@@ -225,6 +226,11 @@ async function resolveLiveCss(
   };
 }
 
+/** The 8-number `[x1,y1 … x4,y4]` content quad a click center derives from. */
+function isContentQuad(value: unknown): value is number[] {
+  return Array.isArray(value) && value.length >= 8 && value.slice(0, 8).every((n) => typeof n === 'number' && Number.isFinite(n));
+}
+
 async function backendNodeIdFor(client: LiveClient, nodeId: number): Promise<number> {
   const { node } = (await client.send('DOM.describeNode', { nodeId })) as { node: { backendNodeId: number } };
   return node.backendNodeId;
@@ -275,23 +281,46 @@ async function axIdentityFor(
 
 /**
  * Clicks a resolved target: scroll into view → box model → center-point
- * `Input.dispatchMouseEvent` press/release pair.
+ * `Input.dispatchMouseEvent` press/release pair. When the caller supplies
+ * `opts.mark` and the transport records landmarks
+ * ({@link LiveClient.sendMarked}), the INITIATING PRESS alone carries the
+ * label — one logical click is one landmark, never two (the release and every
+ * incidental call stay unmarked). Without a marked lane the press degrades to
+ * a plain `send` (nothing is recording landmarks).
  */
-export async function clickResolved(client: LiveClient, resolved: ResolvedTarget): Promise<ClickDispatch> {
+export async function clickResolved(
+  client: LiveClient,
+  resolved: ResolvedTarget,
+  opts: { mark?: string } = {},
+): Promise<ClickDispatch> {
   const { backendNodeId } = resolved;
 
   await client.send('DOM.scrollIntoViewIfNeeded', { backendNodeId });
 
-  const { model } = (await client.send('DOM.getBoxModel', { backendNodeId })) as {
-    model: { content: number[] };
-  };
+  const boxResponse = (await client.send('DOM.getBoxModel', { backendNodeId })) as
+    | { model?: { content?: unknown } }
+    | undefined;
 
-  // Content quad is [x1,y1, x2,y2, x3,y3, x4,y4] — calculate center
-  const quad = model.content;
+  // Content quad is [x1,y1, x2,y2, x3,y3, x4,y4] — validated here, once, for
+  // every click consumer (page click and motion rec's one-shot alike).
+  const quad = boxResponse?.model?.content;
+  if (!isContentQuad(quad)) {
+    throw captureError(
+      'world',
+      'target_not_clickable',
+      `Resolved target backend:${backendNodeId} has no box model to click.`,
+      { method: 'DOM.getBoxModel', response: boxResponse },
+    );
+  }
   const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
   const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
 
-  await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+  const pressParams = { type: 'mousePressed', x, y, button: 'left', clickCount: 1 };
+  if (opts.mark !== undefined && client.sendMarked) {
+    await client.sendMarked('Input.dispatchMouseEvent', pressParams, opts.mark);
+  } else {
+    await client.send('Input.dispatchMouseEvent', pressParams);
+  }
   await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
 
   return {
@@ -342,7 +371,11 @@ export async function scrollResolved(
   opts: { mark?: string } = {},
 ): Promise<ScrollDispatch> {
   if (to !== 'top' && to !== 'bottom' && !Number.isFinite(Number(to))) {
-    throw new Error(`Invalid scroll destination "${to}" — expected top, bottom, or a pixel offset.`);
+    throw captureError(
+      'invocation',
+      'invalid_scroll_destination',
+      `Invalid scroll destination "${to}" — expected top, bottom, or a pixel offset.`,
+    );
   }
 
   const { backendNodeId } = resolved;
@@ -351,29 +384,72 @@ export async function scrollResolved(
   };
   const objectId = object?.objectId;
   if (!objectId) {
-    throw new Error(`Could not resolve backend node ${backendNodeId} to a live object for scrolling.`);
+    throw captureError(
+      'world',
+      'target_not_scrollable',
+      `Could not resolve backend node ${backendNodeId} to a live object for scrolling.`,
+    );
   }
 
-  const params: Record<string, unknown> = {
-    objectId,
-    functionDeclaration:
-      'function(to) { const n = to === "top" ? 0 : to === "bottom" ? this.scrollHeight : Number(to); this.scrollTop = n; return this.scrollTop; }',
-    arguments: [{ value: to }],
-    returnByValue: true,
-  };
-  const result = (
-    opts.mark !== undefined && client.sendMarked
-      ? await client.sendMarked('Runtime.callFunctionOn', params, opts.mark)
-      : await client.send('Runtime.callFunctionOn', params)
-  ) as { result?: { value?: unknown }; exceptionDetails?: { text?: string } } | undefined;
+  // The runtime object is owned from this line on: every post-resolution exit
+  // (success, transport rejection, in-page exception, malformed payload —
+  // marked or unmarked) releases it exactly once in the finally below, so a
+  // held recorder connection never accumulates leaked handles.
+  let primaryFailed = false;
+  let primaryError: unknown;
+  try {
+    const params: Record<string, unknown> = {
+      objectId,
+      functionDeclaration:
+        'function(to) { const n = to === "top" ? 0 : to === "bottom" ? this.scrollHeight : Number(to); this.scrollTop = n; return this.scrollTop; }',
+      arguments: [{ value: to }],
+      returnByValue: true,
+    };
+    const result = (
+      opts.mark !== undefined && client.sendMarked
+        ? await client.sendMarked('Runtime.callFunctionOn', params, opts.mark)
+        : await client.send('Runtime.callFunctionOn', params)
+    ) as { result?: { value?: unknown }; exceptionDetails?: { text?: string } } | undefined;
 
-  if (result?.exceptionDetails) {
-    throw new Error(`Scroll dispatch threw in-page: ${result.exceptionDetails.text ?? 'unknown error'}.`);
-  }
-  const scrollTop = result?.result?.value;
-  if (typeof scrollTop !== 'number') {
-    throw new Error('Scroll did not return a valid scrollTop payload.');
-  }
+    if (result?.exceptionDetails) {
+      throw captureError(
+        'world',
+        'scroll_dispatch_failed',
+        `Scroll dispatch threw in-page: ${result.exceptionDetails.text ?? 'unknown error'}.`,
+      );
+    }
+    const scrollTop = result?.result?.value;
+    if (typeof scrollTop !== 'number') {
+      throw captureError('world', 'malformed_protocol', 'Scroll did not return a valid scrollTop payload.', {
+        method: 'Runtime.callFunctionOn',
+        response: result,
+      });
+    }
 
-  return { backendNodeId, role: resolved.role, name: resolved.name, to, scrollTop };
+    return { backendNodeId, role: resolved.role, name: resolved.name, to, scrollTop };
+  } catch (error) {
+    primaryFailed = true;
+    primaryError = error;
+    throw error;
+  } finally {
+    // Release is incidental cleanup, never a landmark — always the plain lane.
+    try {
+      await client.send('Runtime.releaseObject', { objectId });
+    } catch (error) {
+      const cleanupError = captureError(
+        'cleanup',
+        'scroll_object_release_failed',
+        `Runtime.releaseObject failed for the scroll container object of backend node ${backendNodeId}.`,
+        error,
+      );
+      if (primaryFailed) {
+        throw new AggregateError(
+          [primaryError, cleanupError],
+          'Scroll dispatch failed and runtime-object release also failed.',
+          { cause: primaryError },
+        );
+      }
+      throw cleanupError;
+    }
+  }
 }

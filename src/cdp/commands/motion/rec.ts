@@ -27,12 +27,13 @@ import {
   type FinalizedRecording,
 } from '../../motion/recorder.js';
 import {
+  clickResolved,
   resolveLiveTarget,
   scrollResolved,
   type LiveClient,
-  type ResolvedTarget,
   type ResolutionFailure,
 } from '../../../interact.js';
+import { CaptureError } from '../../../errors.js';
 
 interface RecCommandDeps {
   detectCdpPort: typeof detectCdpPort;
@@ -228,38 +229,30 @@ function resolutionError(failure: ResolutionFailure): DoActionError {
 }
 
 /** Drives the one-shot action: resolves the target via the unified live
- * grammar (exactly one match), then dispatches through the recorder so the
- * initiating input carries its labeled landmark. */
+ * grammar (exactly one match), then dispatches through the shared
+ * interact.ts helpers — the adapter's `sendMarked` carries the labeled
+ * landmark (the initiating press for click, the one mutating call for
+ * scroll) into `events.jsonl`, identical to the `page click`/`page scroll`
+ * mechanics. */
 export async function driveOneShotAction(recorder: Pick<RecorderSession, 'handleCdp'>, action: string): Promise<void> {
   const parsedAction = parseDoAction(action);
   const live = recorderLiveClient(recorder);
   const resolved = await resolveLiveTarget(live, parsedAction.target);
   if (!resolved.ok) throw resolutionError(resolved);
   if (parsedAction.verb === 'click') {
-    await clickResolvedMarked(recorder, resolved, action);
+    try {
+      await clickResolved(live, resolved, { mark: action });
+    } catch (err) {
+      // interact.ts owns the quad validation; this leaf only classifies its
+      // typed outcome into the one-shot's precise `<error>` status.
+      if (err instanceof CaptureError && err.descriptor.code === 'target_not_clickable') {
+        throw new DoActionError(err.message, 'target_not_clickable');
+      }
+      throw err;
+    }
     return;
   }
-  // Scroll drives through the shared helper so the landmark behavior is
-  // identical to `page scroll` (the adapter's sendMarked carries the label).
   await scrollResolved(live, resolved, parsedAction.to, { mark: action });
-}
-
-/** Click dispatch with the one-shot's labeled landmark on the initiating
- * press — the same mechanics as interact.ts's `clickResolved` (scroll into
- * view → box model → center press/release), routed through the recorder so
- * the mark lands in `events.jsonl`. */
-async function clickResolvedMarked(recorder: Pick<RecorderSession, 'handleCdp'>, resolved: ResolvedTarget, mark: string): Promise<void> {
-  const { backendNodeId } = resolved;
-  await recorder.handleCdp({ method: 'DOM.scrollIntoViewIfNeeded', params: { backendNodeId } });
-  const box = (await recorder.handleCdp({ method: 'DOM.getBoxModel', params: { backendNodeId } })).result as { model?: { content?: number[] } } | undefined;
-  const quad = box?.model?.content;
-  if (!quad || quad.length < 8) {
-    throw new DoActionError(`Resolved target backend:${backendNodeId} has no box model to click.`, 'target_not_clickable');
-  }
-  const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
-  const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
-  await recorder.handleCdp({ method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }, mark });
-  await recorder.handleCdp({ method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 } });
 }
 
 /** Exported for the focused artifact-layout test. This is the one-shot

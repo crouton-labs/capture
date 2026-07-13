@@ -510,6 +510,76 @@ test('clickResolved: scrollIntoView → box model → press/release at the conte
       ['mouseReleased', 20, 15],
     ],
   );
+  assert.ok(client.calls.every((c) => c.mark === undefined), 'an unmarked click never touches the marked lane');
+});
+
+test('clickResolved: an initiating-press mark rides the marked lane; the release and incidental calls stay unmarked', async () => {
+  const client = stubClient(dispatchHandlers(), { withMarkedLane: true });
+  const dispatch = await clickResolved(client, RESOLVED_BUTTON, { mark: 'click:ax:Send' });
+
+  assert.deepEqual(dispatch, { backendNodeId: 201, role: 'button', name: 'Send', x: 20, y: 15 });
+  assert.deepEqual(
+    client.calls.map((c) => [c.method, c.mark ?? null]),
+    [
+      ['DOM.scrollIntoViewIfNeeded', null],
+      ['DOM.getBoxModel', null],
+      ['Input.dispatchMouseEvent', 'click:ax:Send'],
+      ['Input.dispatchMouseEvent', null],
+    ],
+    'exactly one landmark: the initiating press',
+  );
+  const mouse = client.calls.filter((c) => c.method === 'Input.dispatchMouseEvent');
+  assert.deepEqual(
+    mouse.map((c) => [c.params.type, c.params.x, c.params.y]),
+    [
+      ['mousePressed', 20, 15],
+      ['mouseReleased', 20, 15],
+    ],
+    'the marked press carries the same dispatch params as the unmarked path',
+  );
+});
+
+test('clickResolved: a marked click degrades to plain send when the transport has no marked lane', async () => {
+  const client = stubClient(dispatchHandlers());
+  const dispatch = await clickResolved(client, RESOLVED_BUTTON, { mark: 'click:ax:Send' });
+  assert.deepEqual(dispatch, { backendNodeId: 201, role: 'button', name: 'Send', x: 20, y: 15 });
+  assert.deepEqual(client.calls.map((c) => c.method), [
+    'DOM.scrollIntoViewIfNeeded',
+    'DOM.getBoxModel',
+    'Input.dispatchMouseEvent',
+    'Input.dispatchMouseEvent',
+  ]);
+  assert.ok(client.calls.every((c) => c.mark === undefined));
+});
+
+test('clickResolved: a missing, short, or non-numeric content quad is a typed target_not_clickable failure with no input dispatched', async () => {
+  const malformedBoxes = [
+    undefined,
+    {},
+    { model: {} },
+    { model: { content: [10, 10, 30, 10] } },
+    { model: { content: [10, 10, 30, 10, 30, 20, 10, 'oops'] } },
+    { model: { content: [10, 10, 30, 10, 30, 20, 10, Number.NaN] } },
+  ];
+  for (const box of malformedBoxes) {
+    for (const opts of [{}, { mark: 'click:ax:Send' }]) {
+      const client = stubClient({
+        'DOM.scrollIntoViewIfNeeded': () => ({}),
+        'DOM.getBoxModel': () => box,
+      }, { withMarkedLane: true });
+      const error = await caught(() => clickResolved(client, RESOLVED_BUTTON, opts));
+      assert.ok(error instanceof CaptureError, `box ${JSON.stringify(box)} must fail typed`);
+      assert.equal(error.descriptor.kind, 'world');
+      assert.equal(error.descriptor.code, 'target_not_clickable');
+      assert.match(error.descriptor.message, /backend:201/);
+      assert.deepEqual(error.descriptor.cause, { method: 'DOM.getBoxModel', response: box });
+      assert.equal(
+        client.calls.filter((c) => c.method === 'Input.dispatchMouseEvent').length,
+        0,
+        'a short/malformed quad must never dispatch input, marked or unmarked',
+      );
+    }
+  }
 });
 
 test('focusAndType: suppresses the focus-click mark, clicks, then inserts the text', async () => {
@@ -543,7 +613,20 @@ function scrollHandlers(resultingScrollTop: number): Record<string, (params: Rec
   return {
     'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
     'Runtime.callFunctionOn': () => ({ result: { value: resultingScrollTop } }),
+    'Runtime.releaseObject': () => ({}),
   };
+}
+
+/** Asserts the scroll container object was released exactly once, after the
+ * mutating call, with the resolved object id, on the plain (unmarked) lane. */
+function assertReleasedExactlyOnce(client: LiveClient & { calls: RecordedCall[] }): void {
+  const releases = client.calls.filter((c) => c.method === 'Runtime.releaseObject');
+  assert.equal(releases.length, 1, 'Runtime.releaseObject must run exactly once');
+  assert.deepEqual(releases[0].params, { objectId: 'obj-1' });
+  assert.equal(releases[0].mark, undefined, 'release is incidental cleanup — never marked');
+  const callIndex = client.calls.findIndex((c) => c.method === 'Runtime.callFunctionOn');
+  const releaseIndex = client.calls.findIndex((c) => c.method === 'Runtime.releaseObject');
+  assert.ok(releaseIndex > callIndex, 'the release follows the mutating call');
 }
 
 test('scrollResolved: resolves the node to an object and drives scrollTop with the destination as data', async () => {
@@ -551,6 +634,7 @@ test('scrollResolved: resolves the node to an object and drives scrollTop with t
   const dispatch = await scrollResolved(client, RESOLVED_BUTTON, 'bottom');
 
   assert.deepEqual(dispatch, { backendNodeId: 201, role: 'button', name: 'Send', to: 'bottom', scrollTop: 640 });
+  assertReleasedExactlyOnce(client);
 
   const resolveCall = client.calls.find((c) => c.method === 'DOM.resolveNode');
   assert.ok(resolveCall);
@@ -591,6 +675,7 @@ test('scrollResolved: carries the recorder landmark on the one mutating call whe
   assert.equal(resolveCall?.mark, undefined, 'node resolution is incidental — never marked');
   const scrollCall = client.calls.find((c) => c.method === 'Runtime.callFunctionOn');
   assert.equal(scrollCall?.mark, 'scroll:.feed,to=bottom', 'the scrollTop mutation carries the landmark');
+  assertReleasedExactlyOnce(client);
 });
 
 test('scrollResolved: a marked call degrades to plain send when the transport has no marked lane', async () => {
@@ -598,12 +683,87 @@ test('scrollResolved: a marked call degrades to plain send when the transport ha
   const dispatch = await scrollResolved(client, RESOLVED_BUTTON, 'top', { mark: 'scroll:.feed,to=top' });
   assert.equal(dispatch.scrollTop, 5);
   assert.ok(client.calls.every((c) => c.mark === undefined));
+  assertReleasedExactlyOnce(client);
 });
 
-test('scrollResolved: an in-page exception surfaces as an error', async () => {
+test('scrollResolved: an in-page exception surfaces as an error and still releases the object exactly once', async () => {
   const client = stubClient({
     'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
     'Runtime.callFunctionOn': () => ({ exceptionDetails: { text: 'boom' } }),
+    'Runtime.releaseObject': () => ({}),
   });
   await assert.rejects(() => scrollResolved(client, RESOLVED_BUTTON, 'top'), /boom/);
+  assertReleasedExactlyOnce(client);
+});
+
+test('scrollResolved: a transport rejection of the mutating call still releases the object and preserves the primary error', async () => {
+  const primary = new Error('websocket torn down mid-call');
+  const client = stubClient({
+    'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
+    'Runtime.callFunctionOn': () => { throw primary; },
+    'Runtime.releaseObject': () => ({}),
+  });
+  const error = await caught(() => scrollResolved(client, RESOLVED_BUTTON, 'top'));
+  assert.equal(error, primary, 'a clean release must not replace the primary failure');
+  assertReleasedExactlyOnce(client);
+});
+
+test('scrollResolved: a malformed scrollTop payload fails typed and still releases the object exactly once', async () => {
+  const client = stubClient({
+    'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
+    'Runtime.callFunctionOn': () => ({ result: { value: 'nope' } }),
+    'Runtime.releaseObject': () => ({}),
+  }, { withMarkedLane: true });
+  const error = await caught(() => scrollResolved(client, RESOLVED_BUTTON, 'top', { mark: 'scroll:.feed,to=top' }));
+  assert.ok(error instanceof CaptureError);
+  assert.equal(error.descriptor.code, 'malformed_protocol');
+  assertReleasedExactlyOnce(client);
+});
+
+test('scrollResolved: no resolved object id means nothing to release', async () => {
+  for (const resolveResponse of [{}, { object: {} }]) {
+    const client = stubClient({ 'DOM.resolveNode': () => resolveResponse });
+    const error = await caught(() => scrollResolved(client, RESOLVED_BUTTON, 'top'));
+    assert.ok(error instanceof CaptureError);
+    assert.equal(error.descriptor.code, 'target_not_scrollable');
+    assert.equal(
+      client.calls.filter((c) => c.method === 'Runtime.releaseObject').length,
+      0,
+      'a release without an obtained object id would be an invented call',
+    );
+  }
+});
+
+test('scrollResolved: a release failure after a successful scroll surfaces as a typed cleanup failure', async () => {
+  const releaseFailure = new Error('release transport failed');
+  const client = stubClient({
+    'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
+    'Runtime.callFunctionOn': () => ({ result: { value: 640 } }),
+    'Runtime.releaseObject': () => { throw releaseFailure; },
+  });
+  const error = await caught(() => scrollResolved(client, RESOLVED_BUTTON, 'bottom'));
+  assert.ok(error instanceof CaptureError);
+  assert.equal(error.descriptor.kind, 'cleanup');
+  assert.equal(error.descriptor.code, 'scroll_object_release_failed');
+  assert.equal(error.descriptor.cause, releaseFailure);
+  assert.equal(client.calls.filter((c) => c.method === 'Runtime.releaseObject').length, 1);
+});
+
+test('scrollResolved: dual scroll and release failures retain primary and cleanup facts', async () => {
+  const primary = new Error('scroll transport failed');
+  const releaseFailure = new Error('release also failed');
+  const client = stubClient({
+    'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
+    'Runtime.callFunctionOn': () => { throw primary; },
+    'Runtime.releaseObject': () => { throw releaseFailure; },
+  });
+  const error = await caught(() => scrollResolved(client, RESOLVED_BUTTON, 'bottom'));
+  assert.ok(error instanceof AggregateError);
+  assert.equal(error.cause, primary);
+  assert.equal(error.errors[0], primary);
+  assert.ok(error.errors[1] instanceof CaptureError);
+  assert.equal(error.errors[1].descriptor.kind, 'cleanup');
+  assert.equal(error.errors[1].descriptor.code, 'scroll_object_release_failed');
+  assert.equal(error.errors[1].descriptor.cause, releaseFailure);
+  assert.equal(client.calls.filter((c) => c.method === 'Runtime.releaseObject').length, 1);
 });
