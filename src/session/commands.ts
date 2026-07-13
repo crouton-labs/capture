@@ -19,8 +19,6 @@ import { type ParsedArgs, type CDPTarget } from '../cdp/types.js';
 import { startBridge, stopBridge } from '../cdp/bridge/spawn.js';
 import { normalizeFailure, failureResult } from '../errors.js';
 import {
-  MAX_LOG_LABEL_BYTES,
-  rejectLogLabel,
   startSessionLogTailer,
   stopSessionLogTailers,
 } from './log-tailer.js';
@@ -37,8 +35,10 @@ import {
 } from '../output/render.js';
 import {
   CAPTURE_ROOT,
+  MAX_LOG_LABEL_BYTES,
   acquirePrivateLock,
   ensurePrivateDir,
+  rejectLogLabel,
   writeJsonPrivate,
   readPrivateFile,
   removeArtifactTree,
@@ -684,11 +684,14 @@ async function logTail(parsed: ParsedArgs): Promise<void> {
       name,
       register: async record => {
         const current = readSession(session.sessionId);
-        // The persisted tailer record is richer than session-context's LogPid
-        // summary type; its strict shape is enforced at the point of use by
-        // parseRegisteredLogTailer, which fails closed on anything weaker.
         await updateSessionState(session.dir, {
-          logPids: [...(current.logPids ?? []), record] as unknown as ActiveSessionState['logPids'],
+          logPids: [...(current.logPids ?? []), record],
+        });
+      },
+      unregister: async record => {
+        const current = readSession(session.sessionId);
+        await updateSessionState(session.dir, {
+          logPids: (current.logPids ?? []).filter(entry => entry.nonce !== record.nonce || entry.pid !== record.pid),
         });
       },
     }));
@@ -987,7 +990,7 @@ async function stop(parsed: ParsedArgs): Promise<void> {
       // bundle is committed: a live writer into logs/ would falsify the immutable
       // bundle. A verified-alive tailer that cannot be drained or terminated
       // throws here and fails the stop, preserving the failure.
-      await stopSessionLogTailers((session.logPids ?? []) as unknown[]);
+      await stopSessionLogTailers(session.logPids ?? []);
       if (session.bridgePid || session.bridgeSocket) stopBridge(session.bridgePid, session.bridgeSocket);
 
       let recorderTeardown: Awaited<ReturnType<typeof teardownAnyLiveRecorderAtSessionStop>> | null = null;

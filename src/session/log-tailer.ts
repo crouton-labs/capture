@@ -19,36 +19,23 @@ import * as path from 'node:path';
 import * as readline from 'node:readline';
 import { captureError } from '../errors.js';
 import {
-  CAPTURE_ROOT,
   ensurePrivateDir,
-  exactKeys,
+  LOG_TAILER_NONCE,
+  LOG_TAILER_SOCKET_DIR,
+  LOG_TAILER_SOCKET_TOKEN,
   openPrivateAppendFd,
-  parseBirth,
+  parseRegisteredLogTailer,
   processPidBirthProvider,
   sameBirth,
   type PidBirth,
   type PidBirthProvider,
+  type RegisteredLogTailer,
 } from './artifacts.js';
 
 const READINESS_FD = 3;
-const SOCKET_TOKEN = /^[0-9a-f]{16}$/;
-const NONCE = /^[0-9a-f]{48}$/;
-const DECIMAL_IDENTITY = /^(?:0|[1-9][0-9]*)$/;
 const CONFIRM_TIMEOUT = /^[1-9][0-9]{0,6}$/;
 const CONTROL_MESSAGE_LIMIT = 4096;
 const WORKER_CHILD_EXIT_TIMEOUT_MS = 2_000;
-export const MAX_LOG_LABEL_BYTES = 64;
-
-export interface RegisteredLogTailer {
-  pid: number;
-  name: string;
-  sourcePath: string;
-  birth: PidBirth;
-  socketPath: string;
-  socketDev: string;
-  socketIno: string;
-  nonce: string;
-}
 
 export interface LogTailWorld {
   /** Node argv before the hidden route token. */
@@ -74,57 +61,20 @@ export function __setLogTailWorld(next?: Partial<LogTailWorld>): void {
   world = next ? { ...productionWorld, ...next } : productionWorld;
 }
 
-/** Returns a diagnostic for an invalid destination component, otherwise null. */
-export function rejectLogLabel(label: string): string | null {
-  if (label.length === 0) return 'empty';
-  if (label === '.' || label === '..') return `\`${label}\` is not a filename`;
-  if (label.includes('/') || label.includes('\\')) return 'contains a path separator';
-  if (label.includes('\0')) return 'contains a NUL byte';
-  if (Buffer.byteLength(label, 'utf-8') > MAX_LOG_LABEL_BYTES) return `exceeds ${MAX_LOG_LABEL_BYTES} bytes`;
-  return null;
-}
-
 function socketDir(create: boolean): string {
-  const dir = path.join(CAPTURE_ROOT, 'sock');
-  return create ? ensurePrivateDir(dir) : dir;
+  return create ? ensurePrivateDir(LOG_TAILER_SOCKET_DIR) : LOG_TAILER_SOCKET_DIR;
 }
 
 function socketPathForToken(token: string, createDir: boolean): string {
-  if (!SOCKET_TOKEN.test(token)) throw new Error('invalid log tailer socket token');
+  if (!LOG_TAILER_SOCKET_TOKEN.test(token)) throw new Error('invalid log tailer socket token');
   return path.join(socketDir(createDir), `${token}.sock`);
 }
 
-function parseRegisteredLogTailer(value: unknown): RegisteredLogTailer {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw captureError('artifact', 'invalid_log_tailer_record', 'Session metadata contains an invalid log tailer registration.');
-  }
-  const record = value as Record<string, unknown>;
-  const birth = parseBirth(record.birth);
-  const valid = exactKeys(record, ['pid', 'name', 'sourcePath', 'birth', 'socketPath', 'socketDev', 'socketIno', 'nonce'])
-    && Number.isSafeInteger(record.pid) && (record.pid as number) > 0
-    && typeof record.name === 'string' && rejectLogLabel(record.name) === null
-    && typeof record.sourcePath === 'string' && path.isAbsolute(record.sourcePath)
-    && typeof record.socketPath === 'string'
-    && path.dirname(record.socketPath) === socketDir(false)
-    && SOCKET_TOKEN.test(path.basename(record.socketPath, '.sock'))
-    && path.extname(record.socketPath) === '.sock'
-    && typeof record.socketDev === 'string' && DECIMAL_IDENTITY.test(record.socketDev)
-    && typeof record.socketIno === 'string' && DECIMAL_IDENTITY.test(record.socketIno)
-    && typeof record.nonce === 'string' && NONCE.test(record.nonce)
-    && birth !== undefined;
-  if (!valid) {
-    throw captureError('artifact', 'invalid_log_tailer_record', 'Session metadata contains an invalid log tailer registration.');
-  }
-  return {
-    pid: record.pid as number,
-    name: record.name as string,
-    sourcePath: record.sourcePath as string,
-    birth,
-    socketPath: record.socketPath as string,
-    socketDev: record.socketDev as string,
-    socketIno: record.socketIno as string,
-    nonce: record.nonce as string,
-  };
+/** The throwing point-of-use gate over the neutral strict parser in artifacts. */
+function requireRegisteredLogTailer(value: unknown): RegisteredLogTailer {
+  const record = parseRegisteredLogTailer(value);
+  if (!record) throw captureError('artifact', 'invalid_log_tailer_record', 'Session metadata contains an invalid log tailer registration.');
+  return record;
 }
 
 function readRequiredBirth(provider: PidBirthProvider, pid: number): PidBirth {
@@ -188,18 +138,22 @@ async function terminateOwnedGroup(child: ChildProcess, pid: number, birth: PidB
     if (!birth) return child.exitCode === null && child.signalCode === null;
     return ownership({ pid, birth }, provider) === 'same';
   };
-  if (canSignal()) {
-    try { process.kill(-pid, 'SIGTERM'); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
-  }
+  // A failed group signal is never proof of a live worker: a group whose only
+  // member is already a zombie yields EPERM on macOS. The exit/birth
+  // convergence checks below are the authority — a signal error surfaces only
+  // if the group never proves gone.
+  let signalError: unknown;
+  const signalGroup = (signal: NodeJS.Signals): void => {
+    if (!canSignal()) return;
+    try { process.kill(-pid, signal); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') signalError = error; }
+  };
+  signalGroup('SIGTERM');
   if (await awaitChildExit(child, 1_000)) return;
-  if (canSignal()) {
-    try { process.kill(-pid, 'SIGKILL'); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
-  }
+  signalGroup('SIGKILL');
   if (await awaitChildExit(child, 2_000)) return;
   if (birth && ownership({ pid, birth }, provider) === 'gone') return;
-  throw captureError('cleanup', 'log_tailer_rollback_failed', `Could not reap log tailer process group ${pid}.`);
+  throw captureError('cleanup', 'log_tailer_rollback_failed', `Could not reap log tailer process group ${pid}.`, signalError);
 }
 
 function awaitReadiness(child: ChildProcess, timeoutMs: number): Promise<string> {
@@ -246,6 +200,8 @@ export interface StartSessionLogTailerOptions {
   sourcePath: string;
   name: string;
   register(record: RegisteredLogTailer): Promise<void>;
+  /** Removes exactly this registered handle again when startup fails after registration. */
+  unregister(record: RegisteredLogTailer): Promise<void>;
 }
 
 /** Starts and registers a worker, rolling its owned process group back on failure. */
@@ -260,6 +216,7 @@ export async function startSessionLogTailer(options: StartSessionLogTailerOption
   let child: ChildProcess | undefined;
   let pid: number | undefined;
   let birth: PidBirth | undefined;
+  let registered: RegisteredLogTailer | undefined;
   try {
     destFd = openPrivateAppendFd(destPath);
     child = spawn(
@@ -300,6 +257,7 @@ export async function startSessionLogTailer(options: StartSessionLogTailerOption
       nonce,
     };
     await options.register(record);
+    registered = record;
     // Confirm the durable registration to the worker; a worker never confirmed
     // self-terminates at its deadline instead of tailing as an unowned orphan
     // (the shape a parent killed between spawn and registration would leave).
@@ -313,8 +271,17 @@ export async function startSessionLogTailer(options: StartSessionLogTailerOption
     return { destPath, pid };
   } catch (primary) {
     const cleanup: unknown[] = [];
+    let workerGone = true;
     if (child && pid) {
       try { await terminateOwnedGroup(child, pid, birth, world.pidBirthProvider); }
+      catch (error) { workerGone = false; cleanup.push(error); }
+    }
+    // A handle registered but never confirmed is unpublished with its worker:
+    // once the owned group is provably gone, exactly that record is removed so
+    // no phantom registration survives the failure. A worker that could not be
+    // reaped keeps its record — the handle is how `session stop` drains it.
+    if (registered && workerGone) {
+      try { await options.unregister(registered); }
       catch (error) { cleanup.push(error); }
     }
     if (destFd !== undefined) {
@@ -402,7 +369,7 @@ export async function stopSessionLogTailers(entries: unknown[]): Promise<void> {
   const failures: unknown[] = [];
   for (const value of entries) {
     let record: RegisteredLogTailer;
-    try { record = parseRegisteredLogTailer(value); }
+    try { record = requireRegisteredLogTailer(value); }
     catch (error) { failures.push(error); continue; }
     try { await stopOne(record, world.pidBirthProvider); }
     catch (error) { failures.push(error); }
@@ -439,7 +406,7 @@ function parseWorkerArgs(argv: string[]): WorkerArgs {
     }
   }
   if (!sourcePath || !socketToken || !confirmTimeout || argv.length !== 6
-      || !SOCKET_TOKEN.test(socketToken) || !CONFIRM_TIMEOUT.test(confirmTimeout)) {
+      || !LOG_TAILER_SOCKET_TOKEN.test(socketToken) || !CONFIRM_TIMEOUT.test(confirmTimeout)) {
     throw new Error(usage);
   }
   return { sourcePath, socketToken, confirmTimeoutMs: Number(confirmTimeout) };
@@ -522,7 +489,7 @@ export async function runLogTailer(argv: string[]): Promise<void> {
   try {
     const args = parseWorkerArgs(argv);
     const nonce = process.env.CAPTURE_LOG_TAIL_NONCE;
-    if (!nonce || !NONCE.test(nonce)) throw new Error('missing or invalid control nonce');
+    if (!nonce || !LOG_TAILER_NONCE.test(nonce)) throw new Error('missing or invalid control nonce');
     socketPath = socketPathForToken(args.socketToken, true);
 
     let stopReason: 'drain' | 'tail-exit' | 'fatal' | undefined;

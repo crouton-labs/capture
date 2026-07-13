@@ -6,6 +6,7 @@ import {
   acquirePrivateLock,
   assertUnderCaptureRoot,
   readPrivateFile,
+  sameBirth,
   writeJsonPrivate,
   processPidBirthProvider,
   type PidBirth,
@@ -52,12 +53,6 @@ function isOperationOwner(value: unknown): value is OperationOwner {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const owner = value as Record<string, unknown>;
   return typeof owner.token === 'string' && Number.isSafeInteger(owner.pid) && (owner.pid as number) > 0 && isBirth(owner.birth);
-}
-
-function sameBirth(left: PidBirth, right: PidBirth): boolean {
-  return left.provider === right.provider && (left.provider === 'linux-proc-v1'
-    ? left.bootId === (right as Extract<PidBirth, { provider: 'linux-proc-v1' }>).bootId && left.startTicks === (right as Extract<PidBirth, { provider: 'linux-proc-v1' }>).startTicks
-    : left.startSec === (right as Extract<PidBirth, { provider: 'darwin-kern-proc-v1' }>).startSec && left.startUsec === (right as Extract<PidBirth, { provider: 'darwin-kern-proc-v1' }>).startUsec);
 }
 
 function readState(sessionDir: string): OperationState {

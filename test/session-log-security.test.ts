@@ -17,7 +17,7 @@ import * as net from 'node:net';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { sessionMain } from '../src/session/commands.js';
-import { __setLogTailWorld } from '../src/session/log-tailer.js';
+import { __setLogTailWorld, stopSessionLogTailers } from '../src/session/log-tailer.js';
 import { getActiveSession, clearActiveSession, updateSessionState } from '../src/session-context.js';
 import {
   CAPTURE_ROOT,
@@ -298,23 +298,34 @@ test('6 — weak registrations fail closed, while a mismatched birth is gone and
   const decoyPid = decoy.pid!;
   assert.ok(await pollUntil(() => isAlive(decoyPid)), 'decoy must start');
   try {
-    await updateSessionState(dir, {
-      logPids: [{ pid: decoyPid, name: 'weak', sourcePath: '/x' }] as unknown as never,
-    });
+    // The honest logPids type is enforced at the session-state write boundary:
+    // an identity-free record cannot even be persisted through updateSessionState.
+    await assert.rejects(
+      updateSessionState(dir, { logPids: [{ pid: decoyPid, name: 'weak', sourcePath: '/x' }] as unknown as never }),
+      /invalid session metadata update/,
+    );
+    // The point-of-use drain gate fails closed on the same weak shape.
+    await assert.rejects(stopSessionLogTailers([{ pid: decoyPid, name: 'weak', sourcePath: '/x' }]), AggregateError);
+    assert.ok(isAlive(decoyPid), 'weak drain rejection must never authorize a signal');
+
+    // Out-of-band corruption is the only remaining path for a weak record; plant one raw.
+    const metaPath = path.join(dir, '.session.json');
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as Record<string, unknown>;
+    meta.logPids = [{ pid: decoyPid, name: 'weak', sourcePath: '/x' }];
+    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
     process.exitCode = 0;
     const weak = await runSession(['stop', id], { json: true });
     assert.ok(weak.includes('stop_failed'), `identity-free registration must fail stop: ${weak}`);
     assert.ok(!fs.existsSync(path.join(dir, 'bundle.json')), 'a weak writer record cannot be bundled as immutable truth');
     assert.ok(isAlive(decoyPid), 'weak registration must never authorize a signal');
 
-    await updateSessionState(dir, {
-      logPids: [{
-        pid: decoyPid, name: 'decoy', sourcePath: '/x',
-        socketPath: path.join(CAPTURE_ROOT, 'sock', '0000000000000000.sock'),
-        socketDev: '0', socketIno: '0', nonce: 'd'.repeat(48),
-        birth: mismatchedBirth(decoyPid),
-      }] as unknown as never,
-    });
+    meta.logPids = [{
+      pid: decoyPid, name: 'decoy', sourcePath: '/x',
+      socketPath: path.join(CAPTURE_ROOT, 'sock', '0000000000000000.sock'),
+      socketDev: '0', socketIno: '0', nonce: 'd'.repeat(48),
+      birth: mismatchedBirth(decoyPid),
+    }];
+    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
     process.exitCode = 0;
     const stopped = await runSession(['stop', id], { json: true });
     assert.ok(stopped.includes('session-stopped'), `mismatched birth is already gone: ${stopped}`);
@@ -438,7 +449,7 @@ test('9 — unknown PID identity fails stop without authorizing a signal', async
         socketPath: path.join(CAPTURE_ROOT, 'sock', '1111111111111111.sock'),
         socketDev: '0', socketIno: '0', nonce: 'd'.repeat(48),
         birth: (birth as { identity: PidBirth }).identity,
-      }] as unknown as never,
+      }],
     });
     process.exitCode = 0;
     const out = await runSession(['stop', id], { json: true });
@@ -572,5 +583,74 @@ test('11 — a worker never confirmed after readiness self-terminates; a confirm
     try { process.kill(-orphanPid, 'SIGKILL'); } catch { /* already gone */ }
     useProductionWorker();
     fs.rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test('12 — a failed registration confirmation removes exactly its own registered handle and reaps its worker', async () => {
+  useProductionWorker();
+  const { id, dir } = await startSession();
+  const work = tmpDir('confirm-rollback');
+  const keeperSrc = path.join(work, 'keeper.log');
+  const failingSrc = path.join(work, 'failing.log');
+  fs.writeFileSync(keeperSrc, 'keeper\n');
+  fs.writeFileSync(failingSrc, 'failing\n');
+  try {
+    // A healthy tailer registered first must survive its neighbor's rollback.
+    // Its persisted record is the full identity-bearing handle — typed field
+    // access here is the compile-time proof of the honest logPids type.
+    await runSession(['log', keeperSrc], { name: 'keeper' });
+    const keeper = getActiveSession()!.logPids![0];
+    assert.equal(keeper.nonce.length, 48, 'the persisted record carries its control nonce');
+    assert.ok(keeper.birth.provider.length > 0, 'the persisted record carries its birth identity');
+
+    // Fail the confirmation deterministically: the worker's confirm deadline is
+    // 1ms and the registration rename is held far past it, so the parent's
+    // confirm request can only find a dead deadline (ok:false) or a torn-down
+    // socket — either way startup must roll back.
+    useProductionWorker({ confirmTimeoutMs: 1 });
+    let midFlight: unknown[] | undefined;
+    let sessionRenames = 0;
+    __setArtifactTestHooks({
+      beforeRename(detail) {
+        if (!detail.path.endsWith(`${path.sep}.session.json`)) return;
+        sessionRenames += 1;
+        if (sessionRenames === 1) {
+          const until = Date.now() + 200;
+          while (Date.now() < until) { /* hold the registration past the confirm deadline */ }
+        } else if (sessionRenames === 2) {
+          midFlight = (JSON.parse(fs.readFileSync(path.join(dir, '.session.json'), 'utf-8')) as { logPids: unknown[] }).logPids;
+        }
+      },
+    });
+    process.exitCode = 0;
+    const out = await runSession(['log', failingSrc], { name: 'failing' });
+    __setArtifactTestHooks();
+    assert.ok(out.includes('log_tailer_confirm_failed'), `confirm failure must surface as the primary error: ${out}`);
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+
+    // The failing handle was really registered (visible at the unregister write)…
+    assert.ok(midFlight, 'rollback must rewrite session state after registration');
+    assert.equal(midFlight!.length, 2, 'the failing handle must have been registered before rollback');
+    const failing = (midFlight as Array<{ pid: number; nonce: string }>).find(entry => entry.nonce !== keeper.nonce);
+    assert.ok(failing, 'the mid-flight state holds the failing record');
+    // …and exactly that handle is gone afterward: no phantom record, keeper intact.
+    const after = readMeta(dir).logPids as Array<{ pid: number; nonce: string }>;
+    assert.equal(after.length, 1, 'only the failed registration is removed');
+    assert.equal(after[0].nonce, keeper.nonce, 'the keeper handle survives untouched');
+    assert.ok(await waitForBirthAbsent(failing!.pid), 'the failed worker group must be reaped');
+
+    // The keeper worker is untouched and still tailing.
+    assert.ok(isAlive(keeper.pid), 'the keeper must survive its neighbor\u2019s rollback');
+    fs.appendFileSync(keeperSrc, 'after rollback\n');
+    const keeperDest = path.join(dir, 'logs', 'keeper.log');
+    assert.ok(await pollUntil(() => fs.existsSync(keeperDest) && fs.readFileSync(keeperDest, 'utf-8').includes('after rollback')), 'the keeper is still tailing');
+  } finally {
+    __setArtifactTestHooks();
+    useProductionWorker();
+    await runSession(['stop', id], { json: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(work, { recursive: true, force: true });
+    clearActiveSession();
   }
 });

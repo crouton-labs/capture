@@ -13,11 +13,13 @@ import {
   acquirePrivateLock,
   assertUnderCaptureRoot,
   ensurePrivateDir,
+  parseRegisteredLogTailer,
   readPrivateFile,
   removeArtifactTree,
   unlinkPrivateFile,
   writeJsonPrivate,
   type RecMeta,
+  type RegisteredLogTailer,
   type SnapMeta,
 } from './session/artifacts.js';
 
@@ -38,12 +40,6 @@ interface ActiveSessionIndex {
   dir: string;
 }
 
-export interface LogPid {
-  pid: number;
-  name: string;
-  sourcePath: string;
-}
-
 /** The sole authoritative mutable record stored in `<dir>/.session.json`. */
 export interface ActiveSessionState {
   sessionId: string;
@@ -53,7 +49,8 @@ export interface ActiveSessionState {
   url?: string | null;
   targetId: string | null;
   stepCount: number;
-  logPids?: LogPid[];
+  /** Identity-bearing registered log tailer handles owned by this session. */
+  logPids?: RegisteredLogTailer[];
   /**
    * Optional CDP endpoint socket port used by this session.
    * Session index files never keep this; it is only in `.session.json`.
@@ -120,11 +117,8 @@ function isActiveStateCandidate(value: unknown): value is ActiveSessionState {
   const record = value as Record<string, unknown>;
   const nullableString = (field: unknown): boolean => field === undefined || field === null || typeof field === 'string';
   const nullablePid = (field: unknown): boolean => field === undefined || field === null || (Number.isSafeInteger(field) && (field as number) > 0);
-  const validLogs = record.logPids === undefined || (Array.isArray(record.logPids) && record.logPids.every(item => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
-    const log = item as Record<string, unknown>;
-    return Number.isSafeInteger(log.pid) && (log.pid as number) > 0 && typeof log.name === 'string' && typeof log.sourcePath === 'string';
-  }));
+  const validLogs = record.logPids === undefined
+    || (Array.isArray(record.logPids) && record.logPids.every(item => parseRegisteredLogTailer(item) !== undefined));
   return typeof record.sessionId === 'string' && record.sessionId.length > 0
     && typeof record.dir === 'string'
     && (record.harId === null || typeof record.harId === 'string')

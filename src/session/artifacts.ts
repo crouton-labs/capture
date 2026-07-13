@@ -281,6 +281,45 @@ export function parseBirth(value: unknown): PidBirth | undefined {
   if (b.provider === 'darwin-kern-proc-v1' && exactKeys(b, ['provider', 'startSec', 'startUsec']) && typeof b.startSec === 'string' && /^[1-9][0-9]*$/.test(b.startSec) && typeof b.startUsec === 'number' && Number.isInteger(b.startUsec) && b.startUsec >= 0 && b.startUsec < 1_000_000) return { provider: 'darwin-kern-proc-v1', startSec: b.startSec, startUsec: b.startUsec };
   return undefined;
 }
+export const MAX_LOG_LABEL_BYTES = 64;
+/** Returns a diagnostic for an invalid log destination filename component, otherwise null. */
+export function rejectLogLabel(label: string): string | null {
+  if (label.length === 0) return 'empty';
+  if (label === '.' || label === '..') return `\`${label}\` is not a filename`;
+  if (label.includes('/') || label.includes('\\')) return 'contains a path separator';
+  if (label.includes('\0')) return 'contains a NUL byte';
+  if (Buffer.byteLength(label, 'utf-8') > MAX_LOG_LABEL_BYTES) return `exceeds ${MAX_LOG_LABEL_BYTES} bytes`;
+  return null;
+}
+export const LOG_TAILER_SOCKET_TOKEN = /^[0-9a-f]{16}$/;
+export const LOG_TAILER_NONCE = /^[0-9a-f]{48}$/;
+/** Private control-socket directory shared by every session log tailer. */
+export const LOG_TAILER_SOCKET_DIR = path.join(CAPTURE_ROOT, 'sock');
+const DECIMAL_IDENTITY = /^(?:0|[1-9][0-9]*)$/;
+/** An identity-bearing registered log tailer — exactly the persisted `logPids` record shape. */
+export interface RegisteredLogTailer { pid: number; name: string; sourcePath: string; birth: PidBirth; socketPath: string; socketDev: string; socketIno: string; nonce: string; }
+/** Strictly parses a persisted log tailer registration; anything weaker is undefined. */
+export function parseRegisteredLogTailer(value: unknown): RegisteredLogTailer | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const birth = parseBirth(record.birth);
+  const valid = birth !== undefined
+    && exactKeys(record, ['pid', 'name', 'sourcePath', 'birth', 'socketPath', 'socketDev', 'socketIno', 'nonce'])
+    && Number.isSafeInteger(record.pid) && (record.pid as number) > 0
+    && typeof record.name === 'string' && rejectLogLabel(record.name) === null
+    && typeof record.sourcePath === 'string' && path.isAbsolute(record.sourcePath)
+    && typeof record.socketPath === 'string'
+    && path.dirname(record.socketPath) === LOG_TAILER_SOCKET_DIR
+    && LOG_TAILER_SOCKET_TOKEN.test(path.basename(record.socketPath, '.sock'))
+    && path.extname(record.socketPath) === '.sock'
+    && typeof record.socketDev === 'string' && DECIMAL_IDENTITY.test(record.socketDev)
+    && typeof record.socketIno === 'string' && DECIMAL_IDENTITY.test(record.socketIno)
+    && typeof record.nonce === 'string' && LOG_TAILER_NONCE.test(record.nonce);
+  // `valid` already implies a parsed birth, but the explicit disjunct is what
+  // narrows `birth` for the return type — do not "simplify" it away.
+  if (!valid || birth === undefined) return undefined;
+  return { pid: record.pid as number, name: record.name as string, sourcePath: record.sourcePath as string, birth, socketPath: record.socketPath as string, socketDev: record.socketDev as string, socketIno: record.socketIno as string, nonce: record.nonce as string };
+}
 export interface DarwinKernProcValidationContext { arch: string; selfPid: number; selfStartSeconds: number; nowSeconds: number; }
 export function parseDarwinKernProc(snapshot: Buffer, pid: number, context: DarwinKernProcValidationContext = { arch: process.arch, selfPid: process.pid, selfStartSeconds: Math.floor(Date.now() / 1000 - process.uptime()), nowSeconds: Math.floor(Date.now() / 1000) }): PidBirthRead {
   if (!['arm64', 'x64'].includes(context.arch) || !Number.isSafeInteger(pid) || pid <= 0 || !snapshot.length || snapshot.length % 648) return unknown('unexpected kern.proc layout');
