@@ -19,6 +19,13 @@
  *  - `rec-stop` — stops screencast + tracing, flushes/tears down the
  *    injected observers, and returns frame/event counts + duration for the
  *    caller's `meta.json` (this module does not write that file either).
+ *  - `har-flush` — the non-attributing action-return HAR health barrier: a
+ *    recorder-routed page action awaits it before claiming success, so every
+ *    HAR entry/body/append the streaming collector had already completed is
+ *    durably in the owning session's live HAR first (health only, no counts
+ *    — see `./bridge/protocol.ts`'s `RecHarFlushRequest`). Served directly in
+ *    the wire lane (`runRecorderBridge`'s `handleLine`), because the collector
+ *    is owned by this process body, not by `RecorderSession`.
  *
  * Frames land as PNGs under `{recDir}/frames/`; per-frame element rects
  * append to `{recDir}/rects.jsonl`; trace batches, observer entries, input
@@ -93,6 +100,7 @@ import {
   type RecorderClockBaselines,
   type RecCdpRequest,
   type RecStopRequest,
+  type RecHarFlushRequest,
 } from './bridge/protocol.js';
 import { ensurePrivateDir, appendNdjsonPrivate, writeBinaryPrivate, writeJsonPrivate } from '../session/artifacts.js';
 import { resolveIndexedObjectIds, describeBackendNodeId } from './measure/collectors/geometry.js';
@@ -1362,9 +1370,15 @@ function structuralMarkLabel(action: string): string {
 // convention the plain bridge uses (see ./bridge/server.ts).
 // ---------------------------------------------------------------------------
 
+/**
+ * Session-scoped request dispatch. `har-flush` is deliberately absent from
+ * the accepted union: the streaming HAR collector lives in `runRecorderBridge`'s
+ * process body, so `handleLine` serves that request there and never forwards
+ * it here.
+ */
 export async function handleRecorderRequest(
   session: RecorderSession,
-  req: RecorderRequest,
+  req: Exclude<RecorderRequest, RecHarFlushRequest>,
 ): Promise<RecorderResponse> {
   try {
     switch (req.type) {
@@ -1567,8 +1581,48 @@ export async function runRecorderBridge(opts: RunRecorderBridgeOptions): Promise
     if (!nonceMatches(nonce, raw.nonce)) {
       const reqId = typeof raw.reqId === 'number' ? (raw.reqId as number) : 0;
       const type: RecorderRequest['type'] =
-        raw.type === 'rec-start' || raw.type === 'rec-stop' || raw.type === 'cdp' ? raw.type : 'cdp';
+        raw.type === 'rec-start' || raw.type === 'rec-stop' || raw.type === 'cdp' || raw.type === 'har-flush'
+          ? raw.type
+          : 'cdp';
       socket.write(JSON.stringify({ reqId, ok: false, type, error: 'unauthorized' }) + '\n');
+      return;
+    }
+    // U12 har-flush health barrier — served here, in the wire lane, because
+    // the streaming HAR collector (`har`) is owned by this process body, not
+    // by RecorderSession. Non-attributing: `har.flush()` waits for every body
+    // fetch in flight and every sink append queued at call time, then throws
+    // the latched fatal store error if any of that work failed — so `ok:true`
+    // is a health/completion fact, never an action entry count. It creates no
+    // collector and takes no ownership: `har` stays the one collector for the
+    // bridge's whole life regardless of how many flush sockets open and close.
+    // A latched fatal answers `ok:false` with the exact primary error but does
+    // NOT tear the bridge down — terminal authority (drain, final response,
+    // cleanup, exit) belongs exclusively to the rec-stop latch below, and once
+    // that latch is claimed a later flush gets a deterministic rejection
+    // rather than sharing or re-driving the drain.
+    if (req.type === 'har-flush') {
+      let resp: RecorderResponse;
+      if (terminalStopClaimed) {
+        resp = {
+          reqId: req.reqId,
+          ok: false,
+          type: 'har-flush',
+          error: 'recorder is stopping — HAR finalization is owned by the terminal rec-stop',
+        };
+      } else {
+        try {
+          await har.flush();
+          resp = { reqId: req.reqId, ok: true, type: 'har-flush' };
+        } catch (err) {
+          resp = {
+            reqId: req.reqId,
+            ok: false,
+            type: 'har-flush',
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }
+      socket.write(JSON.stringify(resp) + '\n');
       return;
     }
     // Terminal admission cut (U11c). `har.drain()`'s own first synchronous

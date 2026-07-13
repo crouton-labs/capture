@@ -128,6 +128,9 @@ function installSeams(overrides: Partial<ConnectionSeams> = {}, client = makeStu
       log.push('append');
       appendCalls.push(batch);
     }) as never,
+    flushRecorderHar: async () => {
+      log.push('har-flush');
+    },
     now: () => clock,
     sleep: async (ms: number) => {
       log.push(`sleep:${ms}`);
@@ -252,6 +255,7 @@ test('withPageAction: a recorder-routed action starts no local collectors but st
     socketPath: path.join(sessionDir, 'rec.sock'),
     targetId: 'tab-rec',
     url: null,
+    nonce: 'a'.repeat(64),
     startedAt: new Date().toISOString(),
     state: 'recording',
     markers: {},
@@ -276,8 +280,10 @@ test('withPageAction: a recorder-routed action starts no local collectors but st
       },
     );
     assert.equal(result, 'routed');
-    // Settle still runs; but no direct client was created and no HAR appended.
-    assert.deepEqual(h.log, ['callback', 'sleep:2500']);
+    // Settle still runs, then the recorder's har-flush health barrier fires
+    // BEFORE success output; no direct client was created and no local HAR
+    // appended (the routed action's traffic lives in the session HAR).
+    assert.deepEqual(h.log, ['callback', 'sleep:2500', 'har-flush']);
     assert.equal(createSpy.length, 0, 'routed lane must not open a direct connection');
     assert.equal(h.appendCalls.length, 0);
     assert.deepEqual(settle, { requestedMs: 2500, waitedMs: 2500, completed: true });

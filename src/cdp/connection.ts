@@ -38,6 +38,12 @@ export interface ConnectionSeams {
   resolveTab: (parsed: ParsedArgs) => Promise<{ port: number; tab: CDPTarget } | null>;
   createClient: (wsUrl: string) => CDPClient;
   appendHar: typeof appendToHar;
+  /** Recorder-routed actions only: the recorder bridge's `har-flush` health
+   * barrier (`RecorderHeldClient.flushHar()`) — resolves once every HAR
+   * entry/body/append the recorder's streaming collector had completed at
+   * call time is durably in the owning session's live HAR; throws on a
+   * latched fatal store failure. Never invoked for a non-recorder action. */
+  flushRecorderHar: (client: RecorderHeldClient) => Promise<void>;
   /** Monotonic clock (ms) — measured settle facts derive from it, never from wall time. */
   now: () => number;
   sleep: (ms: number) => Promise<void>;
@@ -55,6 +61,7 @@ let seams: ConnectionSeams = {
   resolveTab: defaultResolveTab,
   createClient: (wsUrl) => new CDPClient(wsUrl),
   appendHar: appendToHar,
+  flushRecorderHar: (client) => client.flushHar(),
   now: () => performance.now(),
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
@@ -288,7 +295,7 @@ async function startCollectors(parsed: ParsedArgs, client: CDPClient): Promise<C
 
   if (routed) {
     console.error(
-      '  [recorder] console/HAR live capture skipped while routed through the active recording.',
+      '  [recorder] local console/HAR collectors skipped while routed — traffic streams into the session HAR via the recording\'s held connection.',
     );
   }
 
@@ -369,10 +376,18 @@ export interface SettleFacts {
  *
  * The settle is measured, not echoed: `requestedMs` is the caller's window,
  * `waitedMs` is what the injected `now()`/`sleep()` observed. A callback
- * rejection propagates WITHOUT any settle, HAR finish, or settle claim — the
- * action failed, so there is no settle to report. Zero settle skips the sleep
- * but still reports a measured (`0`) wait, keeping the fact ordered and
+ * rejection propagates WITHOUT any settle, HAR finish, flush, or settle claim
+ * — the action failed, so there is no settle to report. Zero settle skips the
+ * sleep but still reports a measured (`0`) wait, keeping the fact ordered and
  * truthful.
+ *
+ * Recorder-routed actions add one step after the settle: the recorder
+ * bridge's non-attributing `har-flush` health barrier, awaited BEFORE success
+ * output so traffic completed by action+settle time is durably in the session
+ * HAR when the command returns. A flush failure fails the command with the
+ * distinct `recorder_har_flush_failed` code — the page action itself had
+ * already succeeded, and the error says so, preserving the primary-action-
+ * failure vs fatal-HAR-failure distinction.
  */
 export async function withPageAction<T>(
   parsed: ParsedArgs,
@@ -394,6 +409,23 @@ export async function withPageAction<T>(
     }
     const waitedMs = seams.now() - t0;
     const settle: SettleFacts = { requestedMs, waitedMs, completed: true };
+
+    // Recorder-routed action: await the recorder's har-flush health barrier
+    // AFTER the settle window, so its traffic is durably in the session HAR
+    // before this command claims success. Non-recorder actions never send
+    // this request.
+    if (collectors.routed) {
+      try {
+        await seams.flushRecorderHar(client as unknown as RecorderHeldClient);
+      } catch (err) {
+        throw captureError(
+          'artifact',
+          'recorder_har_flush_failed',
+          `The page action completed, but the active recording's HAR flush failed — completed network evidence for this action is not verifiably appended to the session HAR: ${err instanceof Error ? err.message : String(err)}`,
+          err,
+        );
+      }
+    }
 
     // Local HAR drain happens AFTER settle so the settle window's traffic is
     // captured (only when this action owns a local HAR recording; a routed

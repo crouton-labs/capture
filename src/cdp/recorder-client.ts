@@ -13,15 +13,18 @@
  * websocket: `.send()` round-trips a CDP call through the recorder's held
  * connection, `.close()` is a no-op (the recorder owns the connection until
  * `motion rec --stop`, not the leaf command that borrowed it), and
- * `.on()`/`.onDisconnect()` are documented no-ops — the recorder's own event
- * subscriptions (screencast/tracing/observers, see `../recorder-bridge.ts`)
- * are already the authoritative live-event record for an active recording,
- * written incrementally to `events.jsonl`; a routed command's own
+ * `.on()`/`.onDisconnect()` are documented no-ops — a routed command's own
  * `ConsoleRecorder`/`HARRecorder` would only ever see zero events through
  * this adapter (nothing pushes unsolicited events back over the
- * one-request-one-response socket), so `../connection.ts`'s `withConnection`
- * skips wiring them entirely when routed, rather than silently reporting an
- * empty console/HAR summary as if it were real.
+ * one-request-one-response socket), so `../connection.ts` skips wiring them
+ * entirely when routed, rather than silently reporting an empty console/HAR
+ * summary as if it were real. HTTP evidence for a routed action is NOT lost:
+ * the recorder bridge holds the one streaming `HARRecorder` on its held tab
+ * connection, appending each completed entry into the owning session's live
+ * HAR continuously, and `../connection.ts`'s action wrapper awaits this
+ * adapter's `flushHar()` health barrier before claiming success, so traffic
+ * completed by action+settle time is durably in the session HAR when the
+ * command returns.
  */
 
 import * as net from 'net';
@@ -286,11 +289,25 @@ export class RecorderHeldClient {
     return { result: resp.result, event: resp.event, waitOutcome: resp.waitOutcome };
   }
 
+  /**
+   * The action-return HAR flush/health barrier (`har-flush` — see
+   * `./bridge/protocol.ts`'s `RecHarFlushRequest`). Resolves once every HAR
+   * entry/body/append the recorder's streaming collector had completed at
+   * request time is durably in the owning session's live HAR and no fatal
+   * store error is latched. Non-attributing: success carries no counts and
+   * claims nothing about which entries this action caused. Throws when the
+   * bridge answers `ok:false` (a latched fatal store failure, or the terminal
+   * rec-stop already owns finalization) or on a transport failure.
+   */
+  async flushHar(): Promise<void> {
+    const resp = await sendRecorderRequest(this.socketPath, { type: 'har-flush', nonce: this.nonce });
+    if (!resp.ok) throw new Error(`recorder har-flush failed: ${resp.error}`);
+  }
+
   /** Documented no-op — see this file's header comment. */
   on(_event: string, _handler: (params: unknown) => void): void {
     // Intentionally does nothing: nothing pushes unsolicited events back
-    // over the recorder's one-request-one-response socket. The recorder's
-    // own subscriptions are the live-event record (events.jsonl).
+    // over the recorder's one-request-one-response socket.
   }
 
   /** Documented no-op — the recorder owns the connection's lifetime, not this borrowed handle. */

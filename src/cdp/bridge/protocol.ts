@@ -180,7 +180,35 @@ export interface RecCdpResponseOk {
   waitOutcome?: 'observed' | 'bounded-timeout';
 }
 
-export type RecorderRequest = RecStartRequest | RecStopRequest | RecCdpRequest;
+/**
+ * The action-return HAR flush/health barrier. A recorder-routed page action
+ * (`click`, `type`, `scroll`, `exec`, `navigate`) sends this after its settle
+ * window and before claiming success, so every HAR entry/body/append the
+ * recorder's streaming collector had already completed by then is durably in
+ * the owning session's live HAR first. Deliberately NON-attributing: the
+ * response reports store health only — `ok:true` means "all work completed at
+ * request time has appended and no fatal store error is latched"; it never
+ * says which entries belong to which action and carries no counts (the
+ * collector cannot truthfully attribute concurrent traffic to one action).
+ * Once the terminal `rec-stop` latch is claimed, HAR finalization belongs to
+ * that one owner and a later `har-flush` is answered with a deterministic
+ * `ok:false` rejection instead of sharing or re-driving the drain.
+ */
+export interface RecHarFlushRequest {
+  reqId: number;
+  type: 'har-flush';
+  /** Per-recording control-socket admission token — see `RecStartRequest`. */
+  nonce: string;
+}
+
+/** Health-only: success carries no result fields beyond the envelope — see `RecHarFlushRequest`. */
+export interface RecHarFlushResponseOk {
+  reqId: number;
+  ok: true;
+  type: 'har-flush';
+}
+
+export type RecorderRequest = RecStartRequest | RecStopRequest | RecCdpRequest | RecHarFlushRequest;
 
 export interface RecorderResponseErr {
   reqId: number;
@@ -192,4 +220,5 @@ export interface RecorderResponseErr {
 export type RecStartResponse = RecStartResponseOk | RecorderResponseErr;
 export type RecStopResponse = RecStopResponseOk | RecorderResponseErr;
 export type RecCdpResponse = RecCdpResponseOk | RecorderResponseErr;
-export type RecorderResponse = RecStartResponse | RecStopResponse | RecCdpResponse;
+export type RecHarFlushResponse = RecHarFlushResponseOk | RecorderResponseErr;
+export type RecorderResponse = RecStartResponse | RecStopResponse | RecCdpResponse | RecHarFlushResponse;
