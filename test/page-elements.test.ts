@@ -19,6 +19,8 @@ import {
 } from '../src/cdp/commands/page/elements.js';
 import { renderResult, toJsonResult } from '../src/output/render.js';
 import { INTERACTIVE_ROLES } from '../src/cdp/a11y.js';
+import { resolveLiveTarget } from '../src/interact.js';
+import { CaptureError } from '../src/errors.js';
 
 interface RecordedCall {
   method: string;
@@ -61,7 +63,6 @@ function axHandlers(nodes: unknown[]): Record<string, (params: Record<string, un
   return {
     'Accessibility.enable': () => ({}),
     'Accessibility.disable': () => ({}),
-    'DOM.enable': () => ({}),
     'Accessibility.getFullAXTree': () => ({ nodes }),
   };
 }
@@ -117,13 +118,48 @@ test('read-only: the fetch makes only CDP-side accessibility reads, no page-obse
   // proves no other call was made; the log pins the exact read set.
   assert.deepEqual(
     client.calls.map((c) => c.method),
-    ['Accessibility.enable', 'DOM.enable', 'Accessibility.getFullAXTree', 'Accessibility.disable'],
+    ['Accessibility.enable', 'Accessibility.getFullAXTree', 'Accessibility.disable'],
   );
 });
 
 // ---------------------------------------------------------------------------
 // --all: the full exposed tree
 // ---------------------------------------------------------------------------
+
+test('elements and live resolver consume the same full-AX evidence through the same lifecycle', async () => {
+  const elementsClient = stubClient(axHandlers(AX_FIXTURE_NODES));
+  const resolverClient = stubClient(axHandlers(AX_FIXTURE_NODES));
+
+  const records = await collectElements(elementsClient);
+  const resolved = await resolveLiveTarget(resolverClient, 'ax:LATER');
+  assert.ok(resolved.ok);
+  const matchingRecord = records.find((record) => record.backendNodeId === resolved.backendNodeId);
+  assert.deepEqual(matchingRecord, {
+    role: resolved.role,
+    name: resolved.name,
+    backendNodeId: resolved.backendNodeId,
+  });
+  const expectedCalls = ['Accessibility.enable', 'Accessibility.getFullAXTree', 'Accessibility.disable'];
+  assert.deepEqual(elementsClient.calls.map((call) => call.method), expectedCalls);
+  assert.deepEqual(resolverClient.calls.map((call) => call.method), expectedCalls);
+});
+
+test('elements rejects malformed full-AX nodes through the shared typed protocol boundary', async () => {
+  const client = stubClient(axHandlers([null]));
+  await assert.rejects(
+    () => collectElements(client),
+    (error: unknown) => {
+      assert.ok(error instanceof CaptureError);
+      assert.equal(error.descriptor.kind, 'world');
+      assert.equal(error.descriptor.code, 'malformed_protocol');
+      return true;
+    },
+  );
+  assert.deepEqual(
+    client.calls.map((call) => call.method),
+    ['Accessibility.enable', 'Accessibility.getFullAXTree', 'Accessibility.disable'],
+  );
+});
 
 test('--all returns the full exposed tree, including non-interactive and non-DOM-backed nodes', async () => {
   const client = stubClient(axHandlers(AX_FIXTURE_NODES));

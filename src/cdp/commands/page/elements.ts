@@ -18,7 +18,7 @@
  */
 import { type ParsedArgs } from '../../types.js';
 import { withConnection } from '../../connection.js';
-import { INTERACTIVE_ROLES } from '../../a11y.js';
+import { INTERACTIVE_ROLES, readFullAXTree } from '../../a11y.js';
 import {
   emitResult,
   fact,
@@ -51,15 +51,6 @@ export interface ElementsClient {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
 }
 
-/** Raw `Accessibility.getFullAXTree` node shape (the fields this leaf reads). */
-interface RawAXNode {
-  nodeId: string;
-  backendDOMNodeId?: number;
-  ignored?: boolean;
-  role?: { value: string };
-  name?: { value: string };
-}
-
 /** One listed element. `backendNodeId` is always present on the default
  * (interactive) records — the drivability discriminator — and `null` only
  * for `--all` tree nodes the browser exposes without a DOM node. */
@@ -79,10 +70,7 @@ export async function collectElements(
   client: ElementsClient,
   opts: { all?: boolean } = {},
 ): Promise<ElementRecord[]> {
-  await client.send('Accessibility.enable');
-  await client.send('DOM.enable');
-  const { nodes } = (await client.send('Accessibility.getFullAXTree')) as { nodes: RawAXNode[] };
-  await client.send('Accessibility.disable');
+  const nodes = await readFullAXTree(client);
 
   const records: ElementRecord[] = [];
   for (const node of nodes) {

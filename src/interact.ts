@@ -22,6 +22,7 @@
  * complex pages (7000+ AX nodes) when given the DOM root nodeId.
  */
 
+import { readFullAXTree, type FullAXNode } from './cdp/a11y.js';
 import { parseSelectorInput, type SelectorInputKind } from './output/selector.js';
 
 /**
@@ -108,15 +109,6 @@ export interface ScrollDispatch {
   readonly scrollTop: number;
 }
 
-interface FullAXNode {
-  nodeId: string;
-  backendDOMNodeId?: number;
-  ignored?: boolean;
-  role?: { value: string };
-  name?: { value: string };
-  childIds?: string[];
-}
-
 // ---------------------------------------------------------------------------
 // Resolution
 // ---------------------------------------------------------------------------
@@ -149,7 +141,7 @@ export async function resolveLiveTarget(
       return { ok: true, kind: 'backend', backendNodeId: id, role, name };
     }
     case 'ax': {
-      const nodes = await fetchLiveAxNodes(client);
+      const nodes = await readFullAXTree(client);
       const needle = normalizeAccessibleName(parsed.value);
       const matches = nodes.filter(
         (n) =>
@@ -160,21 +152,13 @@ export async function resolveLiveTarget(
       return settleAxMatches('ax', input, matches);
     }
     case 'axid': {
-      const nodes = await fetchLiveAxNodes(client);
+      const nodes = await readFullAXTree(client);
       const matches = nodes.filter((n) => n.nodeId === parsed.value && n.backendDOMNodeId !== undefined);
       return settleAxMatches('axid', input, matches);
     }
     case 'css':
       return resolveLiveCss(client, input, parsed.value);
   }
-}
-
-async function fetchLiveAxNodes(client: LiveClient): Promise<FullAXNode[]> {
-  await client.send('Accessibility.enable');
-  await client.send('DOM.enable');
-  const { nodes } = (await client.send('Accessibility.getFullAXTree')) as { nodes: FullAXNode[] };
-  await client.send('Accessibility.disable');
-  return nodes;
 }
 
 function settleAxMatches(

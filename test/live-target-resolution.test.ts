@@ -17,6 +17,7 @@ import {
   type LiveClient,
   type ResolvedTarget,
 } from '../src/interact.js';
+import { CaptureError } from '../src/errors.js';
 
 interface RecordedCall {
   method: string;
@@ -71,9 +72,17 @@ function axHandlers(): Record<string, (params: Record<string, unknown>) => unkno
   return {
     'Accessibility.enable': () => ({}),
     'Accessibility.disable': () => ({}),
-    'DOM.enable': () => ({}),
     'Accessibility.getFullAXTree': () => ({ nodes: AX_FIXTURE_NODES }),
   };
+}
+
+async function caught(action: () => Promise<unknown>): Promise<unknown> {
+  try {
+    await action();
+  } catch (error) {
+    return error;
+  }
+  assert.fail('expected action to reject');
 }
 
 // Fixture DOM for CSS queries: `.btn` matches two nodes, `#send` one.
@@ -157,6 +166,10 @@ test('ax: substring with a single live match resolves (case-insensitive)', async
   const result = await resolveLiveTarget(client, 'ax:LATER');
   assert.ok(result.ok);
   assert.deepEqual(result, { ok: true, kind: 'ax', backendNodeId: 202, role: 'button', name: 'Send later' });
+  assert.deepEqual(
+    client.calls.map((call) => call.method),
+    ['Accessibility.enable', 'Accessibility.getFullAXTree', 'Accessibility.disable'],
+  );
 });
 
 test('ax: zero matches fails with no-match', async () => {
@@ -181,6 +194,98 @@ test('axid: resolves by AX node id from the same live fetch', async () => {
   const result = await resolveLiveTarget(client, 'axid:7');
   assert.ok(result.ok);
   assert.deepEqual(result, { ok: true, kind: 'axid', backendNodeId: 203, role: 'textbox', name: 'Message' });
+});
+
+test('full AX lifecycle: an enable response loss still disables and preserves the primary failure', async () => {
+  const primary = new Error('enable response lost');
+  const client = stubClient({
+    'Accessibility.enable': () => { throw primary; },
+    'Accessibility.disable': () => ({}),
+  });
+
+  const error = await caught(() => resolveLiveTarget(client, 'ax:Send'));
+  assert.equal(error, primary);
+  assert.deepEqual(
+    client.calls.map((call) => call.method),
+    ['Accessibility.enable', 'Accessibility.disable'],
+  );
+});
+
+test('full AX lifecycle: a tree rejection disables and preserves the primary failure', async () => {
+  const primary = new Error('tree transport failed');
+  const client = stubClient({
+    'Accessibility.enable': () => ({}),
+    'Accessibility.getFullAXTree': () => { throw primary; },
+    'Accessibility.disable': () => ({}),
+  });
+
+  const error = await caught(() => resolveLiveTarget(client, 'ax:Send'));
+  assert.equal(error, primary);
+  assert.deepEqual(
+    client.calls.map((call) => call.method),
+    ['Accessibility.enable', 'Accessibility.getFullAXTree', 'Accessibility.disable'],
+  );
+});
+
+test('full AX lifecycle: malformed nodes throw typed malformed_protocol after cleanup', async () => {
+  const response = { nodes: [{ nodeId: 1, role: { value: 'button' } }] };
+  const client = stubClient({
+    'Accessibility.enable': () => ({}),
+    'Accessibility.getFullAXTree': () => response,
+    'Accessibility.disable': () => ({}),
+  });
+
+  const error = await caught(() => resolveLiveTarget(client, 'ax:Send'));
+  assert.ok(error instanceof CaptureError);
+  assert.equal(error.descriptor.kind, 'world');
+  assert.equal(error.descriptor.code, 'malformed_protocol');
+  assert.deepEqual(error.descriptor.cause, { method: 'Accessibility.getFullAXTree', response });
+  assert.deepEqual(
+    client.calls.map((call) => call.method),
+    ['Accessibility.enable', 'Accessibility.getFullAXTree', 'Accessibility.disable'],
+  );
+});
+
+test('full AX lifecycle: a disable failure prevents success as a typed cleanup failure', async () => {
+  const cleanup = new Error('disable failed');
+  const client = stubClient({
+    'Accessibility.enable': () => ({}),
+    'Accessibility.getFullAXTree': () => ({ nodes: AX_FIXTURE_NODES }),
+    'Accessibility.disable': () => { throw cleanup; },
+  });
+
+  const error = await caught(() => resolveLiveTarget(client, 'ax:LATER'));
+  assert.ok(error instanceof CaptureError);
+  assert.equal(error.descriptor.kind, 'cleanup');
+  assert.equal(error.descriptor.code, 'accessibility_cleanup_failed');
+  assert.equal(error.descriptor.cause, cleanup);
+  assert.deepEqual(
+    client.calls.map((call) => call.method),
+    ['Accessibility.enable', 'Accessibility.getFullAXTree', 'Accessibility.disable'],
+  );
+});
+
+test('full AX lifecycle: dual tree and disable failures retain primary and cleanup facts', async () => {
+  const primary = new Error('tree failed');
+  const cleanup = new Error('disable failed');
+  const client = stubClient({
+    'Accessibility.enable': () => ({}),
+    'Accessibility.getFullAXTree': () => { throw primary; },
+    'Accessibility.disable': () => { throw cleanup; },
+  });
+
+  const error = await caught(() => resolveLiveTarget(client, 'ax:Send'));
+  assert.ok(error instanceof AggregateError);
+  assert.equal(error.cause, primary);
+  assert.equal(error.errors[0], primary);
+  assert.ok(error.errors[1] instanceof CaptureError);
+  assert.equal(error.errors[1].descriptor.kind, 'cleanup');
+  assert.equal(error.errors[1].descriptor.code, 'accessibility_cleanup_failed');
+  assert.equal(error.errors[1].descriptor.cause, cleanup);
+  assert.deepEqual(
+    client.calls.map((call) => call.method),
+    ['Accessibility.enable', 'Accessibility.getFullAXTree', 'Accessibility.disable'],
+  );
 });
 
 test('backend: resolves by identity, enriched with best-effort AX role/name', async () => {
