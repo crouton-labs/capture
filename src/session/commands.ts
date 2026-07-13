@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn } from 'child_process';
 import {
   createHarRecording,
   readHarRecording,
@@ -18,7 +17,13 @@ import {
 } from '../session-context.js';
 import { type ParsedArgs, type CDPTarget } from '../cdp/types.js';
 import { startBridge, stopBridge } from '../cdp/bridge/spawn.js';
-import { normalizeFailure } from '../errors.js';
+import { normalizeFailure, failureResult } from '../errors.js';
+import {
+  MAX_LOG_LABEL_BYTES,
+  rejectLogLabel,
+  startSessionLogTailer,
+  stopSessionLogTailers,
+} from './log-tailer.js';
 import { teardownAnyLiveRecorderAtSessionStop } from '../cdp/motion/recorder.js';
 import {
   emitResult,
@@ -32,7 +37,6 @@ import {
 } from '../output/render.js';
 import {
   CAPTURE_ROOT,
-  FILE_MODE,
   acquirePrivateLock,
   ensurePrivateDir,
   writeJsonPrivate,
@@ -41,7 +45,7 @@ import {
   type SnapMeta,
   type RecMeta,
 } from './artifacts.js';
-import { beginSessionStop } from './coordinator.js';
+import { beginSessionStop, admitSessionOperation, withSessionLifecycle } from './coordinator.js';
 
 type Session = ActiveSessionState;
 
@@ -336,8 +340,10 @@ effects:
 const LOG_USAGE = `capture session log <path> [--name <label>] [--session <id>] — tail an external log file into a session's logs/ dir.
 
 input:
-  <path>          log file to follow (must exist)
-  --name <label>  destination label; default is the source file's basename
+  <path>          log file to follow (must exist). Any filename is accepted — it
+                  is only ever passed to \`tail\` as an argv element, never a shell.
+  --name <label>  destination label; default is the source file's basename. One
+                  bounded path component: no \`/\`, no \`.\`/\`..\`, no NUL, ≤ ${MAX_LOG_LABEL_BYTES} bytes.
   --session <id>  target session; defaults to the active session
 
 output:
@@ -345,9 +351,11 @@ output:
   path, and tailer pid. --json mirrors the same fields.
 
 effects:
-  Spawns a detached tail process appending timestamped lines to the session's
-  logs/<name>.log until \`session stop\` kills it; registers the tailer pid in
-  the session metadata.`;
+  Self-spawns one detached, identity-owned worker (its own process group) that
+  runs \`tail -f\` and appends ISO-8601-timestamped lines to the session's
+  contained logs/<name>.log. \`session stop\` drains it over its nonce-authenticated
+  control socket so its buffered output lands before the bundle is committed;
+  the identity-bearing tailer record is registered in the session metadata.`;
 
 function printSessionHelp(): void {
   console.log(`capture session — the artifact container: opens a tab, records HAR, bundles every artifact.
@@ -577,6 +585,10 @@ async function rollbackStart(acquired: Acquisition[], parsed: ParsedArgs, primar
   process.exitCode = 1;
 }
 
+// ============================================================================
+// session log — shell-free, contained, identity-owned log tailing (C2)
+// ============================================================================
+
 async function logTail(parsed: ParsedArgs): Promise<void> {
   if (parsed.help) {
     console.log(LOG_USAGE);
@@ -594,12 +606,29 @@ async function logTail(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
-  const resolved = path.resolve(sourcePath);
-  if (!fs.existsSync(resolved)) {
+  const source = path.resolve(sourcePath);
+  const name = parsed.name ?? path.basename(source, path.extname(source));
+  const labelReason = rejectLogLabel(name);
+  if (labelReason) {
+    const labelHint = parsed.name === undefined && labelReason === `exceeds ${MAX_LOG_LABEL_BYTES} bytes`
+      ? ' Pass `--name <short>` to choose a shorter destination label.'
+      : '';
+    emitResult({
+      tag: 'error',
+      attrs: { command: 'session log', code: 'invalid_label' },
+      summary: fact`invalid destination label (${labelReason}); expected one bounded filename component.${labelHint}`,
+    }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
+  }
+
+  // Source symlinks are valid caller selections; the path is passed only as one
+  // argv element to `tail` after the worker's `--` option terminator.
+  if (!fs.existsSync(source)) {
     emitResult({
       tag: 'error',
       attrs: { command: 'session log', code: 'log_file_not_found' },
-      summary: fact`received: ${resolved}; expected an existing log file to follow.`,
+      summary: fact`received: ${source}; expected an existing log file to follow.`,
     }, { json: parsed.json });
     process.exitCode = 1;
     return;
@@ -635,41 +664,52 @@ async function logTail(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
-  const name = parsed.name ?? path.basename(resolved, path.extname(resolved));
+  // Finalized truth is checked before operation admission, directory creation,
+  // descriptor open, process spawn, socket creation, or metadata replacement.
+  if (isSessionStopped(session)) {
+    emitResult({
+      tag: 'error',
+      attrs: { command: 'session log', code: 'session_stopped' },
+      summary: fact`session ${session.sessionId} is finalized; its bundle is immutable and cannot accept a new log tailer.`,
+    }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
+  }
 
-  const logsDir = path.join(session.dir, 'logs');
-  ensurePrivateDir(logsDir);
+  const operation = await admitSessionOperation(session.dir);
+  try {
+    const result = await withSessionLifecycle(session.dir, async () => startSessionLogTailer({
+      sessionDir: session.dir,
+      sourcePath: source,
+      name,
+      register: async record => {
+        const current = readSession(session.sessionId);
+        // The persisted tailer record is richer than session-context's LogPid
+        // summary type; its strict shape is enforced at the point of use by
+        // parseRegisteredLogTailer, which fails closed on anything weaker.
+        await updateSessionState(session.dir, {
+          logPids: [...(current.logPids ?? []), record] as unknown as ActiveSessionState['logPids'],
+        });
+      },
+    }));
 
-  const destPath = path.join(logsDir, `${name}.log`);
-  const outFd = fs.openSync(destPath, 'a', FILE_MODE);
-  fs.chmodSync(destPath, FILE_MODE);
-
-  const child = spawn(
-    'sh',
-    // BEGIN{$|=1} autoflushes per line — without it perl block-buffers into
-    // the file fd and a short-lived session's lines die in the buffer when
-    // `session stop` SIGTERMs the tailer.
-    ['-c', `tail -f "${resolved}" | perl -MPOSIX -ne 'BEGIN{$|=1} print strftime("%Y-%m-%dT%H:%M:%SZ",gmtime())." ".$_'`],
-    { detached: true, stdio: ['ignore', outFd, 'ignore'] },
-  );
-  child.unref();
-  fs.closeSync(outFd);
-
-  const pid = child.pid!;
-  const logPids = [...(session.logPids ?? []), { pid, name, sourcePath: resolved }];
-  session = await updateSessionState(session.dir, { logPids });
-
-  emitResult({
-    tag: 'log-tail',
-    attrs: { session: session.sessionId, path: destPath },
-    summary: fact`Tailing ${resolved} into the session logs/ dir.`,
-    sections: [lineList([
-      fact`name: ${name}`,
-      fact`source: ${resolved}`,
-      fact`dest: ${destPath}`,
-      fact`tailer pid: ${pid} — killed at \`session stop\``,
-    ])],
-  }, { json: parsed.json });
+    emitResult({
+      tag: 'log-tail',
+      attrs: { session: session.sessionId, path: result.destPath },
+      summary: fact`Tailing ${source} into the session logs/ dir.`,
+      sections: [lineList([
+        fact`name: ${name}`,
+        fact`source: ${source}`,
+        fact`dest: ${result.destPath}`,
+        fact`tailer pid: ${result.pid} — drained at \`session stop\``,
+      ])],
+    }, { json: parsed.json });
+  } catch (error) {
+    emitResult(failureResult(error), { json: parsed.json });
+    process.exitCode = 1;
+  } finally {
+    await operation.release();
+  }
 }
 
 // ============================================================================
@@ -943,10 +983,11 @@ async function stop(parsed: ParsedArgs): Promise<void> {
       const startMs = new Date(session.startedAt ?? stoppedAt).getTime();
       const duration = Date.now() - startMs;
 
-      for (const lp of session.logPids ?? []) {
-        try { process.kill(-lp.pid, 'SIGTERM'); } catch { /* already dead */ }
-      }
-      if (session.logPids?.length) await new Promise(resolve => setTimeout(resolve, 200));
+      // Drain/terminate every registered log tailer identity-first BEFORE the
+      // bundle is committed: a live writer into logs/ would falsify the immutable
+      // bundle. A verified-alive tailer that cannot be drained or terminated
+      // throws here and fails the stop, preserving the failure.
+      await stopSessionLogTailers((session.logPids ?? []) as unknown[]);
       if (session.bridgePid || session.bridgeSocket) stopBridge(session.bridgePid, session.bridgeSocket);
 
       let recorderTeardown: Awaited<ReturnType<typeof teardownAnyLiveRecorderAtSessionStop>> | null = null;

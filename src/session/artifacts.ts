@@ -202,6 +202,13 @@ export function createPrivateFile(filePath: string, data: string | Buffer = ''):
 }); }
 function readFd(fd: number): Buffer { const chunks: Buffer[] = []; const chunk = Buffer.allocUnsafe(65536); for (;;) { const n = fs.readSync(fd, chunk, 0, chunk.length, null); if (!n) return Buffer.concat(chunks); chunks.push(Buffer.from(chunk.subarray(0, n))); } }
 export function readPrivateFile(filePath: string): Buffer { return pinnedParent(filePath, name => { const fd = openRegular(name, fs.constants.O_RDONLY); let value: Buffer | undefined; let primary: unknown; try { value = readFd(fd); } catch (error) { primary = error; } try { closeDescriptor(fd, 'artifact-temp-close'); } catch (closeError) { if (primary) combineFailure(primary, closeError, 'private artifact read failed'); throw closeError; } if (primary) throw primary; return value!; }); }
+/** Opens a contained, no-follow, append descriptor the caller owns and must close.
+ * Reuses the pinned-parent transaction and fchmod-on-descriptor private mode, so a
+ * planted symlink at the final component fails the open (O_NOFOLLOW) and the target's
+ * bytes/mode are never touched. */
+export function openPrivateAppendFd(filePath: string): number {
+  return pinnedParent(filePath, name => openRegular(name, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT, true));
+}
 export function appendPrivateFile(filePath: string, data: string | Buffer): void { pinnedParent(filePath, name => { const fd = openRegular(name, fs.constants.O_WRONLY | fs.constants.O_APPEND); let primary: unknown; try { writeAll(fd, data); syscall('artifact-temp-fsync', () => fs.fsyncSync(fd)); } catch (error) { primary = error; } try { closeDescriptor(fd, 'artifact-temp-close'); } catch (closeError) { if (primary) combineFailure(primary, closeError, 'private artifact append failed'); throw closeError; } if (primary) throw primary; }); }
 function cleanupOwnedFile(name: string, expected?: Identity): void {
   if (!expected) return;
@@ -264,8 +271,10 @@ export type PidBirthRead = { status: 'found'; identity: PidBirth } | { status: '
 export interface PidBirthProvider { read(pid: number): PidBirthRead; }
 function unknown(reason: string): PidBirthRead { return { status: 'unknown', reason }; }
 const BOOT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-function exactKeys(value: Record<string, unknown>, keys: string[]): boolean { const actual = Object.keys(value).sort(); return actual.length === keys.length && actual.every((key, index) => key === keys.slice().sort()[index]); }
-function parseBirth(value: unknown): PidBirth | undefined {
+/** True when `value` carries exactly `keys` — the strict-record shape gate shared with the log tailer. */
+export function exactKeys(value: Record<string, unknown>, keys: string[]): boolean { const actual = Object.keys(value).sort(); return actual.length === keys.length && actual.every((key, index) => key === keys.slice().sort()[index]); }
+/** Strictly parses a persisted PID-birth identity; anything malformed is undefined. */
+export function parseBirth(value: unknown): PidBirth | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const b = value as Record<string, unknown>;
   if (b.provider === 'linux-proc-v1' && exactKeys(b, ['provider', 'bootId', 'startTicks']) && typeof b.bootId === 'string' && BOOT_ID.test(b.bootId) && typeof b.startTicks === 'string' && /^[1-9][0-9]*$/.test(b.startTicks)) return { provider: 'linux-proc-v1', bootId: b.bootId, startTicks: b.startTicks };
@@ -303,7 +312,8 @@ function abs(value: bigint): bigint { return value < 0n ? -value : value; }
 interface LockOwner { version: 1; token: string; pid: number; birth: PidBirth; leaseDeadlineNs: string; }
 export interface PrivateLockHandle { readonly token: string; readonly ownerBirth: PidBirth; release(): void; }
 export interface PrivateLockOptions { acquireTimeoutMs: number; leaseMs: number; pidBirthProvider?: PidBirthProvider; nowNs?: () => bigint; sleep?: (ms: number) => Promise<void>; token?: () => string; afterOwnerValidated?: () => void; afterOwnerRemoved?: () => void; beforeCanonicalRmdir?: () => void; beforePublishRename?: () => void; }
-function sameBirth(a: PidBirth, b: PidBirth): boolean { return a.provider === b.provider && (a.provider === 'linux-proc-v1' ? a.bootId === (b as Extract<PidBirth, { provider: 'linux-proc-v1' }>).bootId && a.startTicks === (b as Extract<PidBirth, { provider: 'linux-proc-v1' }>).startTicks : a.startSec === (b as Extract<PidBirth, { provider: 'darwin-kern-proc-v1' }>).startSec && a.startUsec === (b as Extract<PidBirth, { provider: 'darwin-kern-proc-v1' }>).startUsec); }
+/** Field-exact birth-identity equality — the gate before any signal is authorized. */
+export function sameBirth(a: PidBirth, b: PidBirth): boolean { return a.provider === b.provider && (a.provider === 'linux-proc-v1' ? a.bootId === (b as Extract<PidBirth, { provider: 'linux-proc-v1' }>).bootId && a.startTicks === (b as Extract<PidBirth, { provider: 'linux-proc-v1' }>).startTicks : a.startSec === (b as Extract<PidBirth, { provider: 'darwin-kern-proc-v1' }>).startSec && a.startUsec === (b as Extract<PidBirth, { provider: 'darwin-kern-proc-v1' }>).startUsec); }
 function sameOwner(a: LockOwner, b: LockOwner): boolean { return a.token === b.token && a.pid === b.pid && a.leaseDeadlineNs === b.leaseDeadlineNs && sameBirth(a.birth, b.birth); }
 function parseOwner(value: Buffer): LockOwner | undefined { try { const o = JSON.parse(value.toString('utf8')) as Record<string, unknown>; const birth = parseBirth(o?.birth); if (!o || Array.isArray(o) || !exactKeys(o, ['version', 'token', 'pid', 'birth', 'leaseDeadlineNs']) || o.version !== 1 || typeof o.token !== 'string' || !/^[0-9a-f]{32,}$/.test(o.token) || !Number.isSafeInteger(o.pid) || (o.pid as number) <= 0 || typeof o.leaseDeadlineNs !== 'string' || !/^(0|[1-9][0-9]*)$/.test(o.leaseDeadlineNs) || !birth) return undefined; BigInt(o.leaseDeadlineNs); return { version: 1, token: o.token, pid: o.pid as number, birth, leaseDeadlineNs: o.leaseDeadlineNs }; } catch { return undefined; } }
 type OwnerState = { kind: 'missing' } | { kind: 'valid'; owner: LockOwner } | { kind: 'malformed' };

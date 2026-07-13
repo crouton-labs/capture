@@ -2,8 +2,8 @@
  * capture — browser automation and UI measurement over CDP.
  *
  * Root router: seven visible roots (session, page, tab, measure, motion,
- * cdp, lib) plus the hidden `__bridge-serve` internal, all dispatched
- * through `cdpMain()`. Root help is assembled from each branch's exported
+ * cdp, lib) plus the hidden `__bridge-serve` and `__log-tail-serve`
+ * internals, all dispatched below. Root help is assembled from each branch's exported
  * `COMMAND_BLOCK` — the parent walks its children, it never hardcodes a
  * child's description. An unknown first token is a structured
  * `<error code="unknown_command">` (exit 1), never help text.
@@ -77,6 +77,13 @@ async function main(): Promise<void> {
   if (command === undefined || command === '-h') {
     console.log(rootHelp());
     return;
+  }
+
+  if (command === '__log-tail-serve') {
+    // Internal self-spawn target for `session log`'s detached tailer worker.
+    // Not a visible root: absent from ROOTS, help, and every COMMAND_BLOCK.
+    const { runLogTailer } = await import('./session/log-tailer.js');
+    return runLogTailer(process.argv.slice(3));
   }
 
   if ((ROOTS as readonly string[]).includes(command) || command === '__bridge-serve') {

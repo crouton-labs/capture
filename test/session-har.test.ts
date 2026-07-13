@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { sessionMain } from '../src/session/commands.js';
+import { __setLogTailWorld } from '../src/session/log-tailer.js';
 import { appendToHarRecording, type HAREntry } from '../src/har-manager.js';
 import { getActiveSession, clearActiveSession } from '../src/session-context.js';
 import type { ParsedArgs } from '../src/cdp/types.js';
@@ -19,16 +20,31 @@ import type { ParsedArgs } from '../src/cdp/types.js';
 // Process-scope this file's active-session pointer.
 process.env.CRTR_NODE_ID = `u15-har-test-${process.pid}-${Date.now()}`;
 
+// `session log` self-spawns the hidden `__log-tail-serve` route; under the test
+// runner the built bin's default entry (process.argv[1]) is not capture.ts, so
+// point the tailer world's entry at the real source (empty execArgv in the
+// built bin resolves the same way).
+const CAPTURE_SRC = path.resolve('src/capture.ts');
+__setLogTailWorld({ entryArgv: () => [...process.execArgv, CAPTURE_SRC] });
+
 function sessionArgs(positional: string[], extra: Partial<ParsedArgs> = {}): ParsedArgs {
   return { command: 'session', positional, json: false, ...extra } as ParsedArgs;
 }
 
 function captureStdout(): { logs: string[]; restore: () => void } {
+  // Capture the command's string output, but forward every Buffer write: under
+  // `node --test`, the child reports test events as V8-serialized Buffers on
+  // fd 1, and swallowing those starves the parent of other tests' events.
   const logs: string[] = [];
   const originalWrite = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((chunk: unknown) => {
-    logs.push(typeof chunk === 'string' ? chunk : String(chunk));
-    return true;
+  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+    if (typeof chunk === 'string') {
+      logs.push(chunk);
+      const cb = rest.find((a) => typeof a === 'function') as ((err?: Error) => void) | undefined;
+      if (cb) cb();
+      return true;
+    }
+    return (originalWrite as (c: unknown, ...r: unknown[]) => boolean)(chunk, ...rest);
   }) as typeof process.stdout.write;
   return { logs, restore: () => { process.stdout.write = originalWrite; } };
 }
