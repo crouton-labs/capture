@@ -14,6 +14,7 @@ import * as path from 'node:path';
 // exec.ts's `__setPageExecDepsForTest`.
 
 import { cmdPageExec, __setPageExecDepsForTest } from '../src/cdp/commands/page/exec.js';
+import { captureError, CaptureError } from '../src/errors.js';
 import { createOneshotSession, type OneshotSession } from '../src/session/commands.js';
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
 import type { ParsedArgs, CDPTarget } from '../src/cdp/types.js';
@@ -76,10 +77,16 @@ function installDeps(
 ): InstalledDeps {
   const state: InstalledDeps = { settleSeen: undefined, commandSeen: undefined, oneshots: [], restore: () => {} };
   state.restore = __setPageExecDepsForTest({
-    withConnection: (async (parsed: ParsedArgs, fn: (c: unknown, t: CDPTarget) => Promise<unknown>, o?: { settle?: number }) => {
-      state.settleSeen = o?.settle;
+    withPageAction: (async (
+      parsed: ParsedArgs,
+      opts: { settleMs: number },
+      fn: (c: unknown, t: CDPTarget) => Promise<unknown>,
+    ) => {
+      state.settleSeen = opts?.settleMs;
       state.commandSeen = parsed.command;
-      return fn(client, FAKE_TAB);
+      const result = await fn(client, FAKE_TAB);
+      const waitedMs = opts.settleMs === 0 ? 0 : opts.settleMs + 7;
+      return { result, settle: { requestedMs: opts.settleMs, waitedMs, completed: true } };
     }) as never,
     getActiveSession: () => opts.session ?? null,
     createOneshotSession: ((kind: 'measure' | 'motion' | 'page') => {
@@ -166,8 +173,36 @@ test('page exec: a small result renders whole inline with no spill file', async 
     assert.equal(deps.commandSeen, 'exec');
     // Default settle is 3000ms.
     assert.equal(deps.settleSeen, 3000);
+    // The block reports the MEASURED settle (waited 3007 != requested 3000),
+    // proving it renders the measured wait rather than echoing the option.
+    assert.match(stdout, /settle: requested 3000ms, waited 3007ms/);
   } finally {
     deps.restore();
+  }
+});
+
+test('page exec: a typed CaptureError from the wrapper (recorder_unavailable) propagates unrelabeled, not exec_failed', async () => {
+  const baseDeps = installDeps({ send: async () => ({}) });
+  const restore = __setPageExecDepsForTest({
+    withPageAction: (async () => {
+      throw captureError('precondition', 'recorder_unavailable', 'the recorder handle is gone');
+    }) as never,
+  });
+  try {
+    let thrown: unknown;
+    const { stdout } = await runCmd(async () => {
+      try {
+        await cmdPageExec(parsedFor(['1'], { target: 'tab-1' }), []);
+      } catch (err) {
+        thrown = err;
+      }
+    });
+    assert.ok(thrown instanceof CaptureError, 'the typed failure must propagate to the root boundary');
+    assert.equal((thrown as CaptureError).descriptor.code, 'recorder_unavailable');
+    assert.ok(!stdout.includes('exec_failed'), 'a recorder_unavailable must never be relabeled exec_failed');
+  } finally {
+    restore();
+    baseDeps.restore();
   }
 });
 
@@ -323,7 +358,7 @@ test('page exec: missing code, code+--file together, and an unreadable --file ar
 test('page exec: a connection failure is a structured exec_failed error', async () => {
   const deps = installDeps({ send: async () => ({}) });
   const restore = __setPageExecDepsForTest({
-    withConnection: (async () => {
+    withPageAction: (async () => {
       throw new Error('No tab found for target "nope"');
     }) as never,
   });

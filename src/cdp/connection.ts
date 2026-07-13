@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { performance } from 'node:perf_hooks';
 import { CDPClient } from './client.js';
 import { findTabByIdAcrossEndpoints, findTabByUrlAcrossEndpoints } from './targets.js';
 import { type CDPTarget, type ParsedArgs } from './types.js';
@@ -11,6 +12,7 @@ import {
 import { getActiveSession, updateActiveSession, type ActiveSessionState } from '../session-context.js';
 import { RecorderHeldClient, isRecorderHeldClient } from './recorder-client.js';
 import { recDirFor, readRecorderJson } from './motion/recorder.js';
+import { captureError } from '../errors.js';
 
 function getPortFromWebSocketDebuggerUrl(url?: string): number | null {
   if (!url) return null;
@@ -19,6 +21,48 @@ function getPortFromWebSocketDebuggerUrl(url?: string): number | null {
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Injectable seams — the external effects `connectForCommand`/`withConnection`/
+// `withPageAction` depend on, gathered into one module-level object so the
+// deterministic tests (`test/connection-settle-har.test.ts`) can drive the
+// full lifecycle against fake clocks, a spy metadata writer, and a stub CDP
+// client without any wall-time waits or real sockets. Production uses the
+// defaults; only tests call `__setConnectionSeamsForTest`.
+// ---------------------------------------------------------------------------
+
+export interface ConnectionSeams {
+  getActiveSession: () => ActiveSessionState | null;
+  updateActiveSession: (patch: Partial<ActiveSessionState>) => Promise<ActiveSessionState | null>;
+  resolveTab: (parsed: ParsedArgs) => Promise<{ port: number; tab: CDPTarget } | null>;
+  createClient: (wsUrl: string) => CDPClient;
+  appendHar: typeof appendToHar;
+  /** Monotonic clock (ms) — measured settle facts derive from it, never from wall time. */
+  now: () => number;
+  sleep: (ms: number) => Promise<void>;
+}
+
+function defaultResolveTab(parsed: ParsedArgs): Promise<{ port: number; tab: CDPTarget } | null> {
+  return parsed.target
+    ? findTabByIdAcrossEndpoints(parsed.target, parsed.port)
+    : findTabByUrlAcrossEndpoints(parsed.url!, parsed.port);
+}
+
+let seams: ConnectionSeams = {
+  getActiveSession: () => getActiveSession(),
+  updateActiveSession,
+  resolveTab: defaultResolveTab,
+  createClient: (wsUrl) => new CDPClient(wsUrl),
+  appendHar: appendToHar,
+  now: () => performance.now(),
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+};
+
+export function __setConnectionSeamsForTest(overrides: Partial<ConnectionSeams>): () => void {
+  const previous = seams;
+  seams = { ...seams, ...overrides };
+  return () => { seams = previous; };
 }
 
 /**
@@ -67,28 +111,62 @@ function deriveActionLabel(parsed: ParsedArgs): string {
 }
 
 /**
- * Routes a command's connection through an ACTIVE composed recording
- * (`motion rec --start` ... `--stop`) instead of opening a fresh tab
- * websocket — the "session-tab commands route through the recorder's held
- * socket" mechanism the design calls for. Returns `null` (falling back to
- * the plain path below) when there is no active recording, an explicit
- * `--url` names a different (parallel) tab, an explicit `--target` names a
- * tab other than the recorder's own, or the recorder's live-state handle
- * (`recorder.json`) is missing/not currently `recording` (already reaped or
- * mid-teardown — fall back rather than fail the whole command).
+ * Does this command MUST route through the session's active composed
+ * recording (`motion rec --start` ... `--stop`)? True when the session has a
+ * live recording AND the caller did not explicitly divert to a parallel tab
+ * (`--url`) or a distinct target (`--target` naming a tab other than the
+ * recorder's own). When true, `connectToActiveRecorder` is authoritative and
+ * NEVER falls back to a fresh direct connection — a missing/malformed/
+ * wrong-state recorder handle is a structured `recorder_unavailable`, not a
+ * silent direct-CDP substitution (A2).
+ */
+function shouldRouteToRecorder(session: ActiveSessionState, parsed: ParsedArgs): boolean {
+  if (!session.activeRecId) return false;
+  if (parsed.url) return false;
+  if (parsed.target && parsed.target !== session.targetId) return false;
+  return true;
+}
+
+/**
+ * Connects a must-route command through the ACTIVE recording's held socket.
+ * The caller (`connectForCommand`) has already decided this command must
+ * route (`shouldRouteToRecorder`), so any failure to obtain a usable
+ * recorder handle is surfaced as `recorder_unavailable` and the command is
+ * refused — it is NEVER answered by a direct CDP connection that would
+ * silently escape the recording.
  */
 function connectToActiveRecorder(
   session: ActiveSessionState,
   parsed: ParsedArgs,
-): { client: CDPClient; tab: CDPTarget } | null {
-  const recId = session.activeRecId;
-  if (!recId) return null;
-  if (parsed.url) return null;
-  if (parsed.target && parsed.target !== session.targetId) return null;
-
+): { client: CDPClient; tab: CDPTarget } {
+  const recId = session.activeRecId!;
   const recDir = recDirFor(session.dir, recId);
   const rj = readRecorderJson(recDir);
-  if (!rj || rj.state !== 'recording') return null;
+
+  if (!rj) {
+    throw captureError(
+      'precondition',
+      'recorder_unavailable',
+      `The active session claims recording "${recId}" but its live-recorder handle (recorder.json) is missing — it was already finalized or reaped. Recover with: capture motion rec --stop.`,
+    );
+  }
+  if (
+    typeof rj.socketPath !== 'string' || rj.socketPath.length === 0
+    || typeof rj.targetId !== 'string' || rj.targetId.length === 0
+  ) {
+    throw captureError(
+      'precondition',
+      'recorder_unavailable',
+      `The active session's recorder handle for "${recId}" is malformed (missing or non-string socketPath/targetId). Recover with: capture motion rec --stop.`,
+    );
+  }
+  if (rj.state !== 'recording') {
+    throw captureError(
+      'precondition',
+      'recorder_unavailable',
+      `The active session's recorder "${recId}" is not currently recording (state: ${rj.state}) — it is finalized or mid-teardown. Recover with: capture motion rec --stop.`,
+    );
+  }
 
   const actionLabel = deriveActionLabel(parsed);
   const client = new RecorderHeldClient({ socketPath: rj.socketPath, actionLabel });
@@ -112,25 +190,21 @@ function connectToActiveRecorder(
 export async function connectForCommand(
   parsed: ParsedArgs,
 ): Promise<{ client: CDPClient; tab: CDPTarget }> {
-  const activeSession = getActiveSession();
-  if (activeSession?.activeRecId) {
+  const activeSession = seams.getActiveSession();
+  if (activeSession && shouldRouteToRecorder(activeSession, parsed)) {
     const routed = connectToActiveRecorder(activeSession, parsed);
-    if (routed) {
-      // The recorder bridge owns its own persistent target connection, so
-      // the persisted offline/online state must be reissued here too — the
-      // ephemeral connection that ran `network offline` has since closed.
-      await applyActiveSessionNetworkConditions(routed.client, activeSession, routed.tab.id);
-      return routed;
-    }
+    // The recorder bridge owns its own persistent target connection, so
+    // the persisted offline/online state must be reissued here too — the
+    // ephemeral connection that ran `network offline` has since closed.
+    await applyActiveSessionNetworkConditions(routed.client, activeSession, routed.tab.id);
+    return routed;
   }
 
   if (!parsed.target && !parsed.url) {
     throw new Error('Use --target <tabId> or --url <pattern> to target a tab. Run "capture tab list" to see available tabs.');
   }
 
-  const resolved = parsed.target
-    ? await findTabByIdAcrossEndpoints(parsed.target, parsed.port)
-    : await findTabByUrlAcrossEndpoints(parsed.url!, parsed.port);
+  const resolved = await seams.resolveTab(parsed);
   const tab = resolved?.tab ?? null;
 
   if (!tab) {
@@ -144,20 +218,27 @@ export async function connectForCommand(
     throw new Error('Tab has no WebSocket debugger URL');
   }
 
-  // Lazy-populate targetId in active session if not yet set
+  // Derive the endpoint port once, from the authoritative resolution result
+  // (falling back to the debugger URL) — never from ambient env, which
+  // endpoint precedence already resolved before this leaf ran.
+  const port = resolved?.port ?? getPortFromWebSocketDebuggerUrl(tab.webSocketDebuggerUrl);
+
+  // Lazy target establishment: publish `{targetId, port}` as one atomic pair
+  // through U03's metadata helper so a subsequent command finds both together.
   if (activeSession && !activeSession.targetId) {
-    await updateActiveSession({ targetId: tab.id, port: resolved?.port ?? null });
+    await seams.updateActiveSession({ targetId: tab.id, port: port ?? null });
   }
 
-  const port = resolved?.port ?? getPortFromWebSocketDebuggerUrl(tab.webSocketDebuggerUrl);
   console.error(
     `Using target ${tab.id.slice(0, 8)}${port ? ` on port ${port}` : ''}${tab.url ? ` (${tab.url})` : ''}`,
   );
 
-  const client = new CDPClient(tab.webSocketDebuggerUrl);
+  const client = seams.createClient(tab.webSocketDebuggerUrl);
   try {
     await client.waitReady();
-    await applyActiveSessionNetworkConditions(client, getActiveSession(), tab.id);
+    // Reissue the session's persisted offline/online state on this fresh
+    // connection — network emulation belongs to a connection, not the tab.
+    await applyActiveSessionNetworkConditions(client, seams.getActiveSession(), tab.id);
     return { client, tab };
   } catch (err) {
     client.close();
@@ -165,12 +246,20 @@ export async function connectForCommand(
   }
 }
 
-export async function withConnection<T>(
-  parsed: ParsedArgs,
-  fn: (client: CDPClient, tab: CDPTarget) => Promise<T>,
-  opts: { settle?: number } = {},
-): Promise<T> {
-  const { client, tab } = await connectForCommand(parsed);
+// ---------------------------------------------------------------------------
+// Shared collector plumbing — the console/local-HAR capture both the
+// observational wrapper (`withConnection`) and the action wrapper
+// (`withPageAction`) start and finish. Extracted so there is exactly one
+// implementation of each concern (no duplicate wrapper logic).
+// ---------------------------------------------------------------------------
+
+interface Collectors {
+  routed: boolean;
+  consoleRecorder?: ConsoleRecorder;
+  harRecorder?: HARRecorder;
+}
+
+async function startCollectors(parsed: ParsedArgs, client: CDPClient): Promise<Collectors> {
   const routed = isRecorderHeldClient(client);
 
   let consoleRecorder: ConsoleRecorder | undefined;
@@ -181,13 +270,16 @@ export async function withConnection<T>(
 
   let harRecorder: HARRecorder | undefined;
   if (parsed.har && !routed) {
-    // Validate HAR ID exists before starting recording
+    // Validate the local HAR recording file exists before starting capture —
+    // a missing file is a structured precondition failure the root boundary
+    // renders, never a process-wide exit.
     const harPath = harFilePath(parsed.har);
     if (!fs.existsSync(harPath)) {
-      console.error(
-        `ERROR: the active session's HAR recording file ("${parsed.har}") is missing on disk — traffic cannot be appended.`,
+      throw captureError(
+        'precondition',
+        'har_missing',
+        `The active session's HAR recording file ("${parsed.har}") is missing on disk — traffic cannot be appended.`,
       );
-      process.exit(1);
     }
     harRecorder = new HARRecorder(client);
     await harRecorder.start();
@@ -195,34 +287,120 @@ export async function withConnection<T>(
 
   if (routed) {
     console.error(
-      '  [recorder] console/HAR live capture skipped while routed through the active recording \u2014 see events.jsonl for the equivalent record.',
+      '  [recorder] console/HAR live capture skipped while routed through the active recording.',
     );
   }
+
+  return { routed, consoleRecorder, harRecorder };
+}
+
+/** Finishes and appends this action's own local HAR, when it owns one. */
+async function finishLocalHar(parsed: ParsedArgs, collectors: Collectors): Promise<void> {
+  if (!collectors.harRecorder || !parsed.har) return;
+  const har = await collectors.harRecorder.finish();
+  const batch = { entries: har.log.entries, incompleteLifecycles: har.incompleteLifecycles };
+  if (batch.entries.length > 0 || batch.incompleteLifecycles.length > 0) {
+    await seams.appendHar(parsed.har, batch);
+    console.error(
+      `  [har:${parsed.har}] +${batch.entries.length} entries +${batch.incompleteLifecycles.length} incomplete`,
+    );
+  }
+}
+
+function finishConsole(collectors: Collectors): void {
+  if (collectors.consoleRecorder) {
+    printConsoleSummary(collectors.consoleRecorder.finish());
+  }
+}
+
+/**
+ * Observational connection wrapper — used by the read-only commands
+ * (`page elements`/`page shot`, `measure snap`/`sweep`, `tab network`). These
+ * never settle on their own account (each passes `{ settle: 0 }`); the only
+ * network wait here is the HAR-branch drain when a caller explicitly holds a
+ * local HAR recording open across the observation.
+ */
+export async function withConnection<T>(
+  parsed: ParsedArgs,
+  fn: (client: CDPClient, tab: CDPTarget) => Promise<T>,
+  opts: { settle?: number } = {},
+): Promise<T> {
+  const { client, tab } = await connectForCommand(parsed);
+  const collectors = await startCollectors(parsed, client);
 
   try {
     const result = await fn(client, tab);
 
-    // Wait for network activity triggered by the action, then append to HAR
-    if (harRecorder && parsed.har) {
+    if (collectors.harRecorder && parsed.har) {
       const settle = opts.settle !== undefined ? opts.settle : 3000;
       if (settle > 0) {
         await new Promise((r) => setTimeout(r, settle));
       }
-      const har = await harRecorder.finish();
-      const batch = { entries: har.log.entries, incompleteLifecycles: har.incompleteLifecycles };
-      if (batch.entries.length > 0 || batch.incompleteLifecycles.length > 0) {
-        await appendToHar(parsed.har, batch);
-        console.error(
-          `  [har:${parsed.har}] +${batch.entries.length} entries +${batch.incompleteLifecycles.length} incomplete`,
-        );
-      }
+      await finishLocalHar(parsed, collectors);
     }
 
-    if (consoleRecorder) {
-      printConsoleSummary(consoleRecorder.finish());
-    }
-
+    finishConsole(collectors);
     return result;
+  } finally {
+    client.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Action lifecycle wrapper — the ONE settle/HAR lifecycle, used solely by the
+// four mutating page verbs (`click`, `type`, `scroll`, `exec`).
+// ---------------------------------------------------------------------------
+
+/** Measured settle provenance returned to the leaf — requested is what the
+ * caller asked for, waited is what the injected monotonic clock actually
+ * observed elapsing, completed marks that the settle ran to completion. */
+export interface SettleFacts {
+  requestedMs: number;
+  waitedMs: number;
+  completed: boolean;
+}
+
+/**
+ * Runs one mutating page action with its settle/HAR lifecycle. Success
+ * ordering is exact and tested: connect → start collectors → action callback
+ * → unconditional injected settle → local HAR finish/append (when this action
+ * owns local HAR) → console summary → return.
+ *
+ * The settle is measured, not echoed: `requestedMs` is the caller's window,
+ * `waitedMs` is what the injected `now()`/`sleep()` observed. A callback
+ * rejection propagates WITHOUT any settle, HAR finish, or settle claim — the
+ * action failed, so there is no settle to report. Zero settle skips the sleep
+ * but still reports a measured (`0`) wait, keeping the fact ordered and
+ * truthful.
+ */
+export async function withPageAction<T>(
+  parsed: ParsedArgs,
+  opts: { settleMs: number },
+  fn: (client: CDPClient, tab: CDPTarget) => Promise<T>,
+): Promise<{ result: T; settle: SettleFacts }> {
+  const { client, tab } = await connectForCommand(parsed);
+  const collectors = await startCollectors(parsed, client);
+
+  try {
+    // Action callback first — a rejection here claims no settle.
+    const result = await fn(client, tab);
+
+    // Unconditional, measured settle.
+    const requestedMs = opts.settleMs;
+    const t0 = seams.now();
+    if (requestedMs > 0) {
+      await seams.sleep(requestedMs);
+    }
+    const waitedMs = seams.now() - t0;
+    const settle: SettleFacts = { requestedMs, waitedMs, completed: true };
+
+    // Local HAR drain happens AFTER settle so the settle window's traffic is
+    // captured (only when this action owns a local HAR recording; a routed
+    // action owns none — its traffic lands in the recording's own stream).
+    await finishLocalHar(parsed, collectors);
+    finishConsole(collectors);
+
+    return { result, settle };
   } finally {
     client.close();
   }

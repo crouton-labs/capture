@@ -10,7 +10,7 @@
  * `scroll.ts` import these rather than duplicating them.
  */
 import { type ParsedArgs } from '../../types.js';
-import { withConnection } from '../../connection.js';
+import { withPageAction } from '../../connection.js';
 import { autoScreenshot } from '../../screenshot.js';
 import { getActiveSession } from '../../../session-context.js';
 import {
@@ -34,12 +34,12 @@ import {
 // ---------------------------------------------------------------------------
 
 export interface PageInputDeps {
-  withConnection: typeof withConnection;
+  withPageAction: typeof withPageAction;
   getActiveSession: typeof getActiveSession;
   autoScreenshot: typeof autoScreenshot;
 }
 
-let deps: PageInputDeps = { withConnection, getActiveSession, autoScreenshot };
+let deps: PageInputDeps = { withPageAction, getActiveSession, autoScreenshot };
 
 /** Swap the connection/session/screenshot seams for the CDP-stub tests. */
 export function __setPageInputDepsForTest(overrides: Partial<PageInputDeps>): () => void {
@@ -133,7 +133,7 @@ input:
   --settle <ms>     network-settle window applied after the click (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <clicked backend-node-id=… role=… name=…> — resolved identity, dispatched coordinates, settle applied, screenshot artifact path; --json mirrors the same fields
+  <clicked backend-node-id=… role=… name=…> — resolved identity, dispatched coordinates, the measured settle (requested/waited), screenshot artifact path; --json mirrors the same fields
 effects:
   scrolls the target into view, then dispatches a real mouse press/release at its center; writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
 
@@ -155,8 +155,9 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
   // connection.ts derives the recorder landmark label from parsed.command,
   // which the router leaves as the branch token 'page' — restore the verb so
   // a routed click's landmark stays `click:<target>`.
-  const outcome = await deps.withConnection(
+  const { result: outcome, settle: settleFacts } = await deps.withPageAction(
     { ...parsed, command: 'click' },
+    { settleMs: settle },
     async (client) => {
       const live = client as unknown as LiveClient;
       const resolved = await resolveLiveTarget(live, target);
@@ -165,7 +166,6 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
       const screenshot = await deps.autoScreenshot(client, 'click', target, parsed.noScreenshot);
       return { dispatch, screenshot } as const;
     },
-    { settle },
   );
 
   if ('failure' in outcome) {
@@ -175,7 +175,7 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
   const { dispatch, screenshot } = outcome;
   const rows: FactLine[] = [
     fact`clicked ${dispatch.role ?? 'unknown'} "${dispatch.name ?? ''}" (backend:${dispatch.backendNodeId}) at x=${dispatch.x} y=${dispatch.y}`,
-    fact`settle: ${settle}ms`,
+    fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`,
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
 

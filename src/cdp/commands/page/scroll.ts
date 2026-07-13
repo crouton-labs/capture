@@ -25,7 +25,7 @@ input:
   --settle <ms>     network-settle window applied after the scroll (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <scrolled backend-node-id=… role=… name=…> — resolved identity, destination, the container's resulting scrollTop, settle applied, screenshot artifact path; --json mirrors the same fields
+  <scrolled backend-node-id=… role=… name=…> — resolved identity, destination, the container's resulting scrollTop, the measured settle (requested/waited), screenshot artifact path; --json mirrors the same fields
 effects:
   assigns the container's scrollTop in-page (may trigger lazy-load network); writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
 
@@ -67,8 +67,9 @@ export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promis
   // connection.ts derives the recorder landmark label from parsed.command,
   // which the router leaves as the branch token 'page' — restore the verb so
   // a routed scroll's connection-level label stays `scroll:<target>`.
-  const outcome = await deps.withConnection(
+  const { result: outcome, settle: settleFacts } = await deps.withPageAction(
     { ...parsed, command: 'scroll' },
+    { settleMs: settle },
     async (client) => {
       const live = client as unknown as LiveClient;
       const resolved = await resolveLiveTarget(live, target);
@@ -79,7 +80,6 @@ export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promis
       const screenshot = await deps.autoScreenshot(client, 'scroll', target, parsed.noScreenshot);
       return { dispatch, screenshot } as const;
     },
-    { settle },
   );
 
   if ('failure' in outcome) {
@@ -89,7 +89,7 @@ export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promis
   const { dispatch, screenshot } = outcome;
   const rows: FactLine[] = [
     fact`scrolled ${dispatch.role ?? 'unknown'} "${dispatch.name ?? ''}" (backend:${dispatch.backendNodeId}) to ${dispatch.to} — scrollTop now ${dispatch.scrollTop}`,
-    fact`settle: ${settle}ms`,
+    fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`,
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
 

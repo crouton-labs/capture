@@ -31,7 +31,7 @@ input:
   --settle <ms>     network-settle window applied after typing (default: 500; 1500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <typed> — the typed text, the resolved field identity (backend-node-id, role, name) and focus-click coordinates when --into was given, settle applied, screenshot artifact path; --json mirrors the same fields
+  <typed> — the typed text, the resolved field identity (backend-node-id, role, name) and focus-click coordinates when --into was given, the measured settle (requested/waited), screenshot artifact path; --json mirrors the same fields
 effects:
   dispatches a real focus click (when --into) followed by real text insertion; writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
 
@@ -55,8 +55,9 @@ export async function cmdPageType(parsed: ParsedArgs, _args: string[]): Promise<
   // restoring the verb here is what engages deriveActionLabel's type-guard,
   // so a routed type's landmark is `type:<field>` and NEVER the typed text
   // (positional[0], which the generic label branch would otherwise use).
-  const outcome = await deps.withConnection(
+  const { result: outcome, settle: settleFacts } = await deps.withPageAction(
     { ...parsed, command: 'type' },
+    { settleMs: settle },
     async (client) => {
       const live = client as unknown as LiveClient;
       let dispatch: ClickDispatch | null = null;
@@ -71,7 +72,6 @@ export async function cmdPageType(parsed: ParsedArgs, _args: string[]): Promise<
       const screenshot = await deps.autoScreenshot(client, 'type', parsed.into ?? 'focused element', parsed.noScreenshot);
       return { dispatch, screenshot } as const;
     },
-    { settle },
   );
 
   if ('failure' in outcome) {
@@ -83,7 +83,7 @@ export async function cmdPageType(parsed: ParsedArgs, _args: string[]): Promise<
     dispatch
       ? fact`typed "${textArg}" into ${dispatch.role ?? 'unknown'} "${dispatch.name ?? ''}" (backend:${dispatch.backendNodeId}), focus click at x=${dispatch.x} y=${dispatch.y}`
       : fact`typed "${textArg}" into the focused element`,
-    fact`settle: ${settle}ms`,
+    fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`,
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
 

@@ -17,7 +17,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { type ParsedArgs } from '../../types.js';
-import { withConnection } from '../../connection.js';
+import { withPageAction, type SettleFacts } from '../../connection.js';
+import { CaptureError } from '../../../errors.js';
 import { buildExecExpression } from '../../exec-expression.js';
 import { getActiveSession } from '../../../session-context.js';
 import { createOneshotSession } from '../../../session/commands.js';
@@ -46,7 +47,7 @@ const USAGE = `capture page exec <code> | --file <path> — run arbitrary JavaSc
 input:
   <code>           JS source as one argument (exactly one of <code> / --file)
   --file <path>    read the JS source from a file instead of inline
-  --settle <ms>    network-settle window after execution so an active session's HAR captures the requests the code triggers (default: ${DEFAULT_SETTLE_MS}; 0 disables)
+  --settle <ms>    network-settle window after execution so an active session's HAR captures the requests the code triggers (default: ${DEFAULT_SETTLE_MS}; 0 disables); the block reports the measured requested/waited settle
   --target <id>    target a tab explicitly (default: the active session tab; with no active session, --target or --url is required)
   --url <pattern>  target the first tab whose URL matches <pattern>
 output:
@@ -60,12 +61,12 @@ effects:
 // ---------------------------------------------------------------------------
 
 export interface PageExecDeps {
-  withConnection: typeof withConnection;
+  withPageAction: typeof withPageAction;
   getActiveSession: typeof getActiveSession;
   createOneshotSession: typeof createOneshotSession;
 }
 
-let deps: PageExecDeps = { withConnection, getActiveSession, createOneshotSession };
+let deps: PageExecDeps = { withPageAction, getActiveSession, createOneshotSession };
 
 /** Swap the connection/session seams for the CDP-stub tests. */
 export function __setPageExecDepsForTest(overrides: Partial<PageExecDeps>): () => void {
@@ -156,13 +157,15 @@ export async function cmdPageExec(parsed: ParsedArgs, _args: string[]): Promise<
   const settle = parsed.settle ?? DEFAULT_SETTLE_MS;
 
   let evalResult: EvalResult;
+  let settleFacts: SettleFacts;
   try {
     // connection.ts derives its per-invocation label from parsed.command,
     // which the router leaves as the branch token 'page' — restore the verb
     // so a routed exec is labeled `exec:…`. Runtime.evaluate is never a
     // markable method, so the routed call stays unmarked in events.jsonl.
-    evalResult = await deps.withConnection(
+    const outcome = await deps.withPageAction(
       { ...parsed, command: 'exec' },
+      { settleMs: settle },
       async (client) => {
         // Emulate focus so network requests the code triggers aren't
         // deferred by the browser, without foregrounding the tab.
@@ -178,9 +181,14 @@ export async function cmdPageExec(parsed: ParsedArgs, _args: string[]): Promise<
           returnByValue: true,
         })) as EvalResult;
       },
-      { settle },
     );
+    evalResult = outcome.result;
+    settleFacts = outcome.settle;
   } catch (err) {
+    // A typed failure (e.g. `recorder_unavailable` from strict A2 routing, or
+    // `har_missing`) crosses the boundary unrelabeled — only a genuinely
+    // untyped connection error is the exec-specific `exec_failed`.
+    if (err instanceof CaptureError) throw err;
     return emitExecError(
       parsed,
       'exec_failed',
@@ -210,6 +218,7 @@ export async function cmdPageExec(parsed: ParsedArgs, _args: string[]): Promise<
   if (spillPath) {
     sections.push(fact`full result (${payload.length} chars) written whole to ${spillPath}`);
   }
+  sections.push(fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`);
 
   emitResult(
     {

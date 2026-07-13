@@ -119,10 +119,20 @@ function installDeps(
 ): InstalledDeps {
   const state: InstalledDeps = { settleSeen: undefined, commandSeen: undefined, shots: [], restore: () => {} };
   state.restore = __setPageInputDepsForTest({
-    withConnection: (async (parsed: ParsedArgs, fn: (c: unknown, t: CDPTarget) => Promise<unknown>, o?: { settle?: number }) => {
-      state.settleSeen = o?.settle;
+    // The fake action wrapper reports a MEASURED settle whose waited value is
+    // deliberately distinct from the requested one (requested+7), so a leaf
+    // that echoed the requested option instead of rendering the measured wait
+    // would be caught. A zero request measures a zero wait.
+    withPageAction: (async (
+      parsed: ParsedArgs,
+      opts: { settleMs: number },
+      fn: (c: unknown, t: CDPTarget) => Promise<unknown>,
+    ) => {
+      state.settleSeen = opts?.settleMs;
       state.commandSeen = parsed.command;
-      return fn(client, FAKE_TAB);
+      const result = await fn(client, FAKE_TAB);
+      const waitedMs = opts.settleMs === 0 ? 0 : opts.settleMs + 7;
+      return { result, settle: { requestedMs: opts.settleMs, waitedMs, completed: true } };
     }) as never,
     getActiveSession: () => (opts.session ? FAKE_SESSION : null),
     autoScreenshot: (async (_c: unknown, action: string, label: string, noScreenshot?: boolean) => {
@@ -208,6 +218,54 @@ test('page click: `ax:…` substring-resolves a single match and dispatches at t
     // The connection is opened as the VERB so a routed click's landmark
     // label derives as `click:<target>`, never `page:<target>`.
     assert.equal(deps.commandSeen, 'click');
+  } finally {
+    deps.restore();
+  }
+});
+
+test('page click: renders the MEASURED settle facts (waited != requested), never the requested option', async () => {
+  const client = stubClient({ ...axHandlers(), ...clickDispatchHandlers() });
+  const deps = installDeps(client, { session: true }); // requested 2500 -> fake waited 2507
+  try {
+    const { stdout } = await runCmd(() => cmdPageClick(parsedFor(['ax:later']), []));
+    assert.match(stdout, /settle: requested 2500ms, waited 2507ms/);
+    assert.ok(!/settle: 2500ms(?!,)/.test(stdout), 'must not echo the requested option verbatim');
+  } finally {
+    deps.restore();
+  }
+});
+
+test('page type/scroll render the measured settle facts too', async () => {
+  // type in-session requests 1500 -> fake waited 1507
+  {
+    const client = stubClient(clickDispatchHandlers());
+    const deps = installDeps(client, { session: true });
+    try {
+      const { stdout } = await runCmd(() => cmdPageType(parsedFor(['hi']), []));
+      assert.match(stdout, /settle: requested 1500ms, waited 1507ms/);
+    } finally {
+      deps.restore();
+    }
+  }
+  // scroll standalone requests 1000 -> fake waited 1007
+  {
+    const client = stubClient(cssScrollHandlers(100));
+    const deps = installDeps(client);
+    try {
+      const { stdout } = await runCmd(() => cmdPageScroll(parsedFor(['.feed'], { to: 'bottom' }), []));
+      assert.match(stdout, /settle: requested 1000ms, waited 1007ms/);
+    } finally {
+      deps.restore();
+    }
+  }
+});
+
+test('page click: --settle 0 renders a measured zero wait, not a claimed one', async () => {
+  const client = stubClient({ ...axHandlers(), ...clickDispatchHandlers() });
+  const deps = installDeps(client, { session: true });
+  try {
+    const { stdout } = await runCmd(() => cmdPageClick(parsedFor(['ax:later'], { settle: 0 }), []));
+    assert.match(stdout, /settle: requested 0ms, waited 0ms/);
   } finally {
     deps.restore();
   }
