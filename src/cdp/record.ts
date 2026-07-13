@@ -5,40 +5,12 @@ import {
   openTab,
   type CDPTarget,
 } from './targets.js';
-import { captureError } from '../errors.js';
-
-export interface NavigateAndRecordOptions {
-  port?: number;
-  url: string;
-  targetId?: string;
-  settle?: number;
-}
-
-export interface NavigateAndRecordResult {
-  entryCount: number;
-  har: { log: { entries: unknown[] } };
-  tab: CDPTarget;
-  timedOut: boolean;
-}
 
 /**
- * REMOVED. `page navigate` no longer resolves its source or opens tabs by
- * destination heuristics — it uses ordinary page targeting (`--target` /
- * `--url` / the session tab) through `connectForCommand`, and `tab open` is
- * the sole tab-creating verb (see `../commands/page/navigate.ts`). This
- * named export survives only so the `../cdp.ts` barrel keeps compiling until
- * that barrel line is removed; it must never be called.
+ * Opens (or reuses) a tab for `url` and waits for its load event — `tab open`'s
+ * load-wait helper. Navigation of an existing tab lives in
+ * `./commands/page/navigate.ts` via ordinary page targeting.
  */
-export async function navigateAndRecord(
-  _options: NavigateAndRecordOptions,
-): Promise<NavigateAndRecordResult> {
-  throw captureError(
-    'invocation',
-    'navigate_api_removed',
-    'page navigate resolves its source through ordinary page targeting (--target / --url / the session tab); tab open alone creates tabs.',
-  );
-}
-
 export async function navigateAndWait(
   port: number,
   url: string,

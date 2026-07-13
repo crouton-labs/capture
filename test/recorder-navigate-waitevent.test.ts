@@ -58,6 +58,8 @@ function defaultResponseFor(req: RecorderRequest): RecorderResponse {
       };
     case 'cdp':
       return { reqId: req.reqId, ok: true, type: 'cdp', result: {} };
+    case 'har-flush':
+      return { reqId: req.reqId, ok: true, type: 'har-flush' };
   }
 }
 
@@ -115,6 +117,7 @@ async function armActiveRecording(
     pid: placeholder.pid,
     socketPath,
     targetId: 'target-abc',
+    nonce: 'a'.repeat(64), // valid 64-hex control nonce
     url: 'https://example.com',
     startedAt: new Date().toISOString(),
     state: 'recording',
