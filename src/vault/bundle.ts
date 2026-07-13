@@ -20,6 +20,7 @@ import {
   vaultLibsDir,
   vaultRepoRoot,
 } from "./paths.js";
+import { buildExecExpression } from "../cdp/exec-expression.js";
 
 // Sentinel the post-bundle return-insert anchors on. esbuild with minify:false
 // never renames top-level identifiers, and no first-party lib references
@@ -79,17 +80,24 @@ function preflightLibs(imports: string): void {
   }
 }
 
-// Hoist the imports to module top level (so esbuild resolves & tree-shakes them)
-// and wrap the body in a result-capturing async IIFE bound to the sentinel. The
-// trailing `.then()` is a preserved no-op call → DCE-safe anchor for the
-// post-bundle return insert (a bare `__CAPTURE_RESULT;` statement can be dropped
-// by tree-shaking; a call survives).
+// Hoist the imports to module top level (so esbuild resolves & tree-shakes
+// them) and bind the post-import body's VALUE to the sentinel. The body's
+// semantics are owned by `buildExecExpression` — the same single authority
+// plain (import-free) exec uses — so a natural final expression, explicit
+// top-level return, top-level await, and a thrown exception behave
+// identically with and without imports. `Promise.resolve` normalizes the
+// built expression's value (a bare expression evaluates to a plain value,
+// the wrapped forms to a promise) so the trailing `.then()` — a preserved
+// no-op call → DCE-safe anchor for the post-bundle return insert (a bare
+// `__CAPTURE_RESULT;` statement can be dropped by tree-shaking; a call
+// survives) — always exists. The inner parens keep a comma expression one
+// argument.
 function buildEntry(code: string): string {
   const { imports, body } = splitLeadingImports(code);
-  const expr = body.trim().replace(/;+\s*$/, "");
+  const expression = buildExecExpression(body);
   return [
     imports,
-    `const ${SENTINEL} = (async () => { ${expr} })();`,
+    `const ${SENTINEL} = Promise.resolve((${expression}));`,
     `${SENTINEL}.then();`,
   ].join("\n");
 }

@@ -8,7 +8,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hasImports } from "../src/vault/bundle.js";
+import { hasImports, bundleExec } from "../src/vault/bundle.js";
 
 test("leading static import is detected", () => {
   assert.equal(
@@ -37,4 +37,50 @@ test("a leading dynamic import() CALL is NOT a static import", () => {
 test("plain code has no imports", () => {
   assert.equal(hasImports("document.title"), false);
   assert.equal(hasImports("return 1 + 1"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Real bundle + evaluate (M20): the string bundleExec returns is a complete
+// IIFE whose completion value is the sentinel promise — exactly what CDP's
+// Runtime.evaluate({awaitPromise:true}) awaits. Evaluating it under Node with
+// `eval` mirrors that: the bundle inlines the forked `libs/day` source and its
+// zod dependency, so the script is self-contained and safe under Node eval.
+// Each case references the `day` namespace so tree-shaking cannot drop the
+// import that forces esbuild to actually resolve the lib. Needs the dev
+// checkout (vault/libs + esbuild), both present here.
+// ---------------------------------------------------------------------------
+
+test("bundle: a declaration + natural final expression resolves to the final value (M20 regression)", async () => {
+  // Old code inserted the body as raw statements into a returnless IIFE, so a
+  // natural final expression evaluated to undefined. It must now be the value.
+  const bundled = await bundleExec(
+    "import * as day from 'libs/day'; const f = () => typeof day; f()",
+  );
+  assert.equal(await eval(bundled), "object");
+});
+
+test("bundle: an explicit top-level return carries its value through the bundle path", async () => {
+  const bundled = await bundleExec("import * as day from 'libs/day'; return 6 * 7");
+  assert.equal(await eval(bundled), 42);
+});
+
+test("bundle: a top-level await resolves through the sentinel promise", async () => {
+  const bundled = await bundleExec(
+    "import * as day from 'libs/day'; const p = Promise.resolve(7); await p",
+  );
+  assert.equal(await eval(bundled), 7);
+});
+
+test("bundle: a thrown exception rejects the sentinel promise", async () => {
+  const bundled = await bundleExec(
+    "import * as day from 'libs/day'; throw new Error('boom')",
+  );
+  await assert.rejects(eval(bundled), /boom/);
+});
+
+test("bundle: an unknown lib fails deterministically before esbuild runs", async () => {
+  // A bogus specifier whose binding is unreferenced would tree-shake away
+  // before esbuild's resolver ever sees it; preflightLibs guarantees the
+  // Unknown lib error up front regardless.
+  await assert.rejects(bundleExec("import x from 'libs/nope'; x"), /Unknown lib/);
 });

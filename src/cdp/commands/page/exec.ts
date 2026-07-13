@@ -18,11 +18,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { type ParsedArgs } from '../../types.js';
 import { withPageAction, type SettleFacts } from '../../connection.js';
-import { CaptureError } from '../../../errors.js';
+import { CaptureError, captureError } from '../../../errors.js';
 import { buildExecExpression } from '../../exec-expression.js';
 import { getActiveSession } from '../../../session-context.js';
 import { createOneshotSession } from '../../../session/commands.js';
-import { writePrivateFile } from '../../../session/artifacts.js';
+import { writePrivateFile, acquirePrivateLock } from '../../../session/artifacts.js';
+import { isRecorderHeldClient } from '../../recorder-client.js';
 import { hasImports, bundleExec } from '../../../vault/bundle.js';
 import {
   capped,
@@ -53,7 +54,7 @@ input:
 output:
   <exec-result result-chars=…> — the JSON-serialized return value inline, escaped and capped at ${GENEROUS_RESULT_CAP} chars; a larger result is also written whole to a private artifact file (the active session's page/ dir, else a one-shot artifact dir) whose absolute path appears in the block. --json mirrors the same block with the value at full fidelity.
 effects:
-  runs the code in the page with full DOM/JS access — whatever the code mutates, it mutates; enables focus emulation on the tab for the call; writes the oversize-result artifact file when the inline cap is exceeded`;
+  runs the code in the page with full DOM/JS access — whatever the code mutates, it mutates; emulates focus on the tab for the duration of the call (disabled again before the command returns); writes the oversize-result artifact file when the inline cap is exceeded`;
 
 // ---------------------------------------------------------------------------
 // Test-injectable dependency seam (repo CDP-stub pattern — see
@@ -64,9 +65,10 @@ export interface PageExecDeps {
   withPageAction: typeof withPageAction;
   getActiveSession: typeof getActiveSession;
   createOneshotSession: typeof createOneshotSession;
+  isRecorderHeldClient: typeof isRecorderHeldClient;
 }
 
-let deps: PageExecDeps = { withPageAction, getActiveSession, createOneshotSession };
+let deps: PageExecDeps = { withPageAction, getActiveSession, createOneshotSession, isRecorderHeldClient };
 
 /** Swap the connection/session seams for the CDP-stub tests. */
 export function __setPageExecDepsForTest(overrides: Partial<PageExecDeps>): () => void {
@@ -101,6 +103,97 @@ function spillWholeResult(payload: string): string {
 interface EvalResult {
   result?: { value?: unknown };
   exceptionDetails?: { exception?: { description?: string } };
+}
+
+/** The structural client surface the focus/evaluation scope drives — the
+ * subset of `CDPClient` both a direct connection and the recorder-held
+ * adapter satisfy. */
+interface ExecClient {
+  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+}
+
+/**
+ * The one focus-emulation state transaction: focus true → evaluate → focus
+ * false. A lost enable response does not prove Chrome rejected the override,
+ * so restoration ownership is claimed BEFORE the enable is awaited and the
+ * matching disable is always sent exactly once in `finally`. A disable
+ * failure prevents success: alone it throws a typed cleanup failure; paired
+ * with a primary failure it throws an `AggregateError` preserving both.
+ */
+async function focusScopedEvaluate(client: ExecClient, expression: string): Promise<EvalResult> {
+  let ownsFocusOverride = false;
+  let primaryFailed = false;
+  let primaryError: unknown;
+  try {
+    // Emulate focus so network requests the code triggers aren't deferred
+    // by the browser, without foregrounding the tab.
+    ownsFocusOverride = true;
+    await client.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    return (await client.send('Runtime.evaluate', {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+    })) as EvalResult;
+  } catch (error) {
+    primaryFailed = true;
+    primaryError = error;
+    throw error;
+  } finally {
+    if (ownsFocusOverride) {
+      try {
+        await client.send('Emulation.setFocusEmulationEnabled', { enabled: false });
+      } catch (error) {
+        const cleanupError = captureError(
+          'cleanup',
+          'focus_cleanup_failed',
+          'Emulation.setFocusEmulationEnabled(false) failed after page exec — the tab may retain a focus-emulation override.',
+          error,
+        );
+        if (primaryFailed) {
+          throw new AggregateError(
+            [primaryError, cleanupError],
+            'page exec failed and focus-emulation cleanup also failed.',
+            { cause: primaryError },
+          );
+        }
+        throw cleanupError;
+      }
+    }
+  }
+}
+
+/**
+ * Runs the focus/evaluation scope, serialized when the connection is the
+ * recorder-held one. The recorder holds ONE persistent tab connection whose
+ * focus-emulation state outlives any single command, so two concurrent
+ * routed execs could otherwise clear one another's live override; the
+ * entire three-request scope therefore runs under the owning session's
+ * private cross-process lock (`.focus-scope.lock`, the shared
+ * `acquirePrivateLock` authority every session lock uses). A direct
+ * connection needs no lock — its emulation state is scoped to its own
+ * websocket session, which closes with the command.
+ */
+async function evaluateWithFocusEmulation(client: ExecClient, expression: string): Promise<EvalResult> {
+  if (!deps.isRecorderHeldClient(client)) {
+    return focusScopedEvaluate(client, expression);
+  }
+  const session = deps.getActiveSession();
+  if (!session) {
+    throw captureError(
+      'internal',
+      'recorder_session_missing',
+      'page exec was routed through a recorder-held connection but no active session exists to serialize its focus scope.',
+    );
+  }
+  const lock = await acquirePrivateLock(path.join(session.dir, '.focus-scope.lock'), {
+    acquireTimeoutMs: 120_000,
+    leaseMs: 60_000,
+  });
+  try {
+    return await focusScopedEvaluate(client, expression);
+  } finally {
+    lock.release();
+  }
 }
 
 export async function cmdPageExec(parsed: ParsedArgs, _args: string[]): Promise<void> {
@@ -156,6 +249,11 @@ export async function cmdPageExec(parsed: ParsedArgs, _args: string[]): Promise<
 
   const settle = parsed.settle ?? DEFAULT_SETTLE_MS;
 
+  // A prebuilt bundle is already a complete IIFE returning the user's
+  // promise; otherwise buildExecExpression wraps statement bodies. Pure
+  // string work — built before any connection is opened.
+  const expression = buildExecExpression(code, prebuilt);
+
   let evalResult: EvalResult;
   let settleFacts: SettleFacts;
   try {
@@ -166,33 +264,29 @@ export async function cmdPageExec(parsed: ParsedArgs, _args: string[]): Promise<
     const outcome = await deps.withPageAction(
       { ...parsed, command: 'exec' },
       { settleMs: settle },
-      async (client) => {
-        // Emulate focus so network requests the code triggers aren't
-        // deferred by the browser, without foregrounding the tab.
-        await client.send('Emulation.setFocusEmulationEnabled', { enabled: true });
-
-        // A prebuilt bundle is already a complete IIFE returning the user's
-        // promise; otherwise buildExecExpression wraps statement bodies.
-        const expression = buildExecExpression(code, prebuilt);
-
-        return (await client.send('Runtime.evaluate', {
-          expression,
-          awaitPromise: true,
-          returnByValue: true,
-        })) as EvalResult;
-      },
+      (client) => evaluateWithFocusEmulation(client, expression),
     );
     evalResult = outcome.result;
     settleFacts = outcome.settle;
   } catch (err) {
-    // A typed failure (e.g. `recorder_unavailable` from strict A2 routing, or
-    // `har_missing`) crosses the boundary unrelabeled — only a genuinely
-    // untyped connection error is the exec-specific `exec_failed`.
+    // A typed failure (e.g. `recorder_unavailable` from strict A2 routing,
+    // `har_missing`, or a lone `focus_cleanup_failed`) crosses the boundary
+    // unrelabeled — only a genuinely untyped error is the exec-specific
+    // `exec_failed`.
     if (err instanceof CaptureError) throw err;
+    if (err instanceof AggregateError && err.errors.length === 2) {
+      // The primary+disable dual failure — preserve both facts distinctly.
+      const message = (value: unknown) => (value instanceof Error ? value.message : String(value));
+      return emitExecError(
+        parsed,
+        'exec_failed',
+        fact`execution failed (${message(err.errors[0])}) and focus-emulation cleanup also failed (${message(err.errors[1])})`,
+      );
+    }
     return emitExecError(
       parsed,
       'exec_failed',
-      fact`execution failed before the code ran: ${err instanceof Error ? err.message : String(err)}`,
+      fact`execution failed: ${err instanceof Error ? err.message : String(err)}`,
       text`Check a CDP-enabled browser is running and a tab is targetable (probe: capture tab list).`,
     );
   }
