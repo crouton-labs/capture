@@ -77,6 +77,25 @@ export interface CdpScopeClient {
   close(): void;
 }
 
+/** The browser-level one-shot client surface: the same shape as {@link CdpScopeClient}
+ * plus the flattened-session `send(..., timeout, sessionId)` overload. Satisfied
+ * by `CDPClient`; the injectable `deps` on `runBrowserScope` lets tests drive
+ * this without a live browser. */
+export interface BrowserScopeClient extends CdpScopeClient {
+  send(method: string, params?: Record<string, unknown>, timeout?: number, sessionId?: string): Promise<unknown>;
+}
+
+/** Seams `runBrowserScope` reaches the browser through — real by default,
+ * injectable in `test/cdp-command.test.ts`. */
+export interface BrowserScopeDeps {
+  sendBridgeRequest: typeof sendBridgeRequest;
+  getBrowserClient: (port: number) => Promise<{ client: BrowserScopeClient }>;
+  findTabById: (port: number, targetId: string) => Promise<{ id: string } | null>;
+  detectCdpPort: typeof detectCdpPort;
+}
+
+const DEFAULT_BROWSER_DEPS: BrowserScopeDeps = { sendBridgeRequest, getBrowserClient, findTabById, detectCdpPort };
+
 export interface CdpResultOptions {
   method?: string;
   waitEvent?: string;
@@ -173,7 +192,7 @@ export async function cmdCdp(parsed: ParsedArgs, _args: string[]): Promise<void>
   const timeoutMs = parsed.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   if (parsed.browser) {
-    await runBrowserScope(method, params, parsed, timeoutMs);
+    await runBrowserScope(method, params, parsed, timeoutMs, DEFAULT_BROWSER_DEPS);
     return;
   }
 
@@ -192,18 +211,29 @@ function invocationLabel(method: string | undefined, waitEvent: string | undefin
   return method ?? `--wait-event ${waitEvent}`;
 }
 
-async function runBrowserScope(
+/**
+ * Exported for `test/cdp-command.test.ts`. Browser-scope CDP is connection-
+ * level, so a target is only meaningful when the caller *explicitly* asked for
+ * one with `--target` (`parsed.targetSource === 'flag'`). Session/env target
+ * autofill exists to scope ordinary PAGE commands and must never silently
+ * flatten a browser-level call onto some other tab — so this reads the flag-
+ * sourced target directly instead of inferring provenance from the final
+ * string.
+ */
+export async function runBrowserScope(
   method: string | undefined,
   params: Record<string, unknown> | undefined,
   parsed: ParsedArgs,
   timeoutMs: number,
+  deps: BrowserScopeDeps = DEFAULT_BROWSER_DEPS,
 ): Promise<void> {
+  const flagTarget = parsed.targetSource === 'flag' ? parsed.target : undefined;
   const session = getActiveSession();
   if (session?.bridgeSocket && fs.existsSync(session.bridgeSocket)) {
-    const resp = await sendBridgeRequest(session.bridgeSocket, {
+    const resp = await deps.sendBridgeRequest(session.bridgeSocket, {
       method,
       params,
-      targetId: parsed.target,
+      targetId: flagTarget,
       waitEvent: parsed.waitEvent,
       timeoutMs,
     });
@@ -211,7 +241,7 @@ async function runBrowserScope(
       emitCdpError({
         code: 'cdp_failed',
         summary: fact`\`${invocationLabel(method, parsed.waitEvent)}\` failed over the held connection: ${resp.error ?? 'unknown bridge error'}`,
-        followUp: parsed.target ? undefined : TAB_SCOPE_RECOVERY,
+        followUp: flagTarget ? undefined : TAB_SCOPE_RECOVERY,
         json: parsed.json,
       });
     }
@@ -219,7 +249,7 @@ async function runBrowserScope(
       method,
       waitEvent: parsed.waitEvent,
       scope: 'browser',
-      target: parsed.target,
+      target: flagTarget,
       result: resp.result,
       event: resp.event,
       json: parsed.json,
@@ -233,19 +263,19 @@ async function runBrowserScope(
       'so any browser-level grant or target enablement made here reverts immediately after.',
   );
 
-  const port = parsed.port ?? (await detectCdpPort());
-  const { client } = await getBrowserClient(port);
+  const port = parsed.port ?? (await deps.detectCdpPort());
+  const { client } = await deps.getBrowserClient(port);
   try {
     let sessionId: string | undefined;
-    if (parsed.target) {
+    if (flagTarget) {
       // Accept the same 8-char-prefix targeting every other capture command
       // promises (see the root help's targeting contract) instead of
       // requiring the full 32-char target id here.
-      const tab = await findTabById(port, parsed.target);
+      const tab = await deps.findTabById(port, flagTarget);
       if (!tab) {
         emitCdpError({
           code: 'target_not_found',
-          summary: fact`received: --target ${parsed.target} with no matching target on port ${port}; expected: an existing target id (8-char prefix accepted).`,
+          summary: fact`received: --target ${flagTarget} with no matching target on port ${port}; expected: an existing target id (8-char prefix accepted).`,
           followUp: text`\`capture tab list\` shows available targets.`,
           json: parsed.json,
         });
@@ -263,7 +293,7 @@ async function runBrowserScope(
       method,
       waitEvent: parsed.waitEvent,
       scope: 'browser',
-      target: parsed.target,
+      target: flagTarget,
       result,
       event,
       json: parsed.json,
@@ -272,7 +302,7 @@ async function runBrowserScope(
     emitCdpError({
       code: 'cdp_failed',
       summary: fact`\`${invocationLabel(method, parsed.waitEvent)}\` failed on the one-shot browser connection: ${err instanceof Error ? err.message : String(err)}`,
-      followUp: parsed.target ? undefined : TAB_SCOPE_RECOVERY,
+      followUp: flagTarget ? undefined : TAB_SCOPE_RECOVERY,
       json: parsed.json,
     });
   } finally {

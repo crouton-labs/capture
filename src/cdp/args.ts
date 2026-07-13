@@ -220,7 +220,7 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
     else if (arg === '--settle') { parsed.settle = integer(valueFor(arg, next), '--settle', 0, 2_147_483_647); i++; }
     else if (arg === '--file') { parsed.file = valueFor(arg, next); i++; }
     else if (arg === '--new') parsed.new = true;
-    else if (arg === '--target') { parsed.target = valueFor(arg, next); i++; }
+    else if (arg === '--target') { parsed.target = valueFor(arg, next); parsed.targetSource = 'flag'; i++; }
     else if (arg === '--url') { const value = valueFor(arg, next); parsed.url = value; (parsed.urls ??= []).push(value); i++; }
     else if (arg === '--into') { parsed.into = valueFor(arg, next); i++; }
     else if (arg === '--no-screenshot') parsed.noScreenshot = true;
@@ -309,7 +309,7 @@ export function resolveCliContext(parsed: ParsedArgs): ParsedArgs {
     if (!parsed.har && session.harId) parsed.har = session.harId;
     // An explicit --url picks a different (parallel) tab than the session's
     // own — don't let the session's targetId clobber that choice.
-    if (!parsed.target && !parsed.url && session.targetId) parsed.target = session.targetId;
+    if (!parsed.target && !parsed.url && session.targetId) { parsed.target = session.targetId; parsed.targetSource = 'session'; }
     // A session target is inseparable from the endpoint that created it.
     // Prefer that endpoint over ambient CDP_PORT, but retain an explicit
     // --port override for deliberate multi-browser work.
@@ -321,7 +321,7 @@ export function resolveCliContext(parsed: ParsedArgs): ParsedArgs {
   // Preserve historical stale-index cleanup once endpoint validation has
   // succeeded; only the malformed-env throw path deliberately leaves it alone.
   if (!session) getActiveSession();
-  if (!parsed.target && !parsed.url && process.env.CDP_TARGET) parsed.target = process.env.CDP_TARGET;
+  if (!parsed.target && !parsed.url && process.env.CDP_TARGET) { parsed.target = process.env.CDP_TARGET; parsed.targetSource = 'env'; }
   return parsed;
 }
 

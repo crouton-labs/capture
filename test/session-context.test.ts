@@ -325,6 +325,44 @@ test('real source entrypoint rejects malformed leaf input before touching a stal
   }
 });
 
+test('resolveCliContext records target provenance for env, session, and explicit override (U14)', async () => {
+  const { setActiveSession, clearActiveSession } = await import('../src/session-context.js');
+  const { parseCliArgs, resolveCliContext } = await import('../src/cdp/args.js');
+
+  const prevNodeId = process.env.CRTR_NODE_ID;
+  const prevTarget = process.env.CDP_TARGET;
+  const dir = fs.mkdtempSync(path.join(CAPTURE_ROOT, 'capture-test-provenance-'));
+
+  try {
+    process.env.CRTR_NODE_ID = 'test-node-provenance';
+
+    // env source: no active session, CDP_TARGET fills → 'env'.
+    clearActiveSession();
+    process.env.CDP_TARGET = 'env-target';
+    const envParsed = resolveCliContext(parseCliArgs(['click', 'Sign in']));
+    assert.equal(envParsed.target, 'env-target');
+    assert.equal(envParsed.targetSource, 'env');
+
+    // session source: active-session target outranks the stale env → 'session'.
+    await setActiveSession({ sessionId: 'sess-prov', dir, harId: null, targetId: 'session-target', stepCount: 0 });
+    const sessionParsed = resolveCliContext(parseCliArgs(['click', 'Create applet']));
+    assert.equal(sessionParsed.target, 'session-target');
+    assert.equal(sessionParsed.targetSource, 'session');
+
+    // explicit override: --target beats both session and env → 'flag'.
+    const flagParsed = resolveCliContext(parseCliArgs(['click', 'Create applet', '--target', 'explicit-target']));
+    assert.equal(flagParsed.target, 'explicit-target');
+    assert.equal(flagParsed.targetSource, 'flag');
+  } finally {
+    clearActiveSession();
+    if (prevNodeId === undefined) delete process.env.CRTR_NODE_ID;
+    else process.env.CRTR_NODE_ID = prevNodeId;
+    if (prevTarget === undefined) delete process.env.CDP_TARGET;
+    else process.env.CDP_TARGET = prevTarget;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('clearActiveSessionIf removes active pointer only for matching ids', async () => {
   const { setActiveSession, clearActiveSessionIf, getActiveSession, clearActiveSession } = await import('../src/session-context.js');
 

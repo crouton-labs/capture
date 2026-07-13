@@ -1,7 +1,48 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { parseCliArgs, resolveCliContext } from '../src/cdp/args.js';
 import { findTabByIdInPorts, requireTargetId, scoreTabUrlMatch } from '../src/cdp/targets.js';
+import { CAPTURE_ROOT } from '../src/session/artifacts.js';
+
+// U14 — target provenance is recorded at the assignment point as
+// `targetSource: 'flag' | 'session' | 'env'`, never inferred later by
+// comparing final strings.
+
+test('a bare invocation with no target records no provenance', () => {
+  const parsed = parseCliArgs(['click', 'Sign in']);
+  assert.equal(parsed.target, undefined);
+  assert.equal(parsed.targetSource, undefined);
+});
+
+test('an explicit --target records flag provenance at parse time', () => {
+  const parsed = parseCliArgs(['click', 'Sign in', '--target', 'abc123']);
+  assert.equal(parsed.target, 'abc123');
+  assert.equal(parsed.targetSource, 'flag');
+});
+
+test('an ordinary page command retains active-session target autofill tagged session', async () => {
+  const { setActiveSession, clearActiveSession } = await import('../src/session-context.js');
+  const prevNodeId = process.env.CRTR_NODE_ID;
+  const prevTarget = process.env.CDP_TARGET;
+  const dir = fs.mkdtempSync(path.join(CAPTURE_ROOT, 'u14-page-autofill-'));
+  try {
+    process.env.CRTR_NODE_ID = 'u14-page-autofill';
+    delete process.env.CDP_TARGET;
+    await setActiveSession({ sessionId: 'sess-page', dir, harId: null, targetId: 'session-target', stepCount: 0 });
+    const parsed = resolveCliContext(parseCliArgs(['click', 'Create applet']));
+    assert.equal(parsed.target, 'session-target', 'page scope keeps ordinary session autofill');
+    assert.equal(parsed.targetSource, 'session');
+  } finally {
+    clearActiveSession();
+    if (prevNodeId === undefined) delete process.env.CRTR_NODE_ID;
+    else process.env.CRTR_NODE_ID = prevNodeId;
+    if (prevTarget === undefined) delete process.env.CDP_TARGET;
+    else process.env.CDP_TARGET = prevTarget;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('CDP_PORT env fills the default port when --port is omitted', () => {
   const previous = process.env.CDP_PORT;

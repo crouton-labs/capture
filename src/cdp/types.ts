@@ -21,6 +21,12 @@ export interface ParsedArgs {
   har?: string;
   new?: boolean;
   target?: string;
+  /** Where `target` was assigned from: an actual `--target` flag, active-session
+   * autofill, or the ambient `CDP_TARGET` env var. Recorded at the assignment
+   * point — browser-scope CDP (`cdp --browser`) attaches a flattened target
+   * session only when this is `'flag'`; provenance is never inferred later by
+   * comparing final strings. */
+  targetSource?: 'flag' | 'session' | 'env';
   url?: string;
   into?: string;
   noScreenshot?: boolean;
