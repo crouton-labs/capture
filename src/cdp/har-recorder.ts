@@ -1,5 +1,6 @@
 import {
   type BodyProvenance,
+  type HarAppendBatch,
   type HarFile,
   type HAREntry,
   type HarRequest,
@@ -8,6 +9,7 @@ import {
   type IncompleteLifecycle,
   type WebSocketHAREntry,
   type WebSocketMessage,
+  validateHarAppendBatch,
   validateHarFile,
 } from '../har-manager.js';
 import { type CDPClient } from './client.js';
@@ -132,12 +134,35 @@ function strictBase64(text: string): Buffer {
   return Buffer.from(text, 'base64');
 }
 
-/** Assembles validated Network events into one immutable HAR snapshot. It owns no file or bridge lifecycle. */
+/**
+ * A streaming recorder's append authority: receives each materialized value
+ * exactly once as a single-value validated batch. The recorder serializes
+ * calls (never two in flight) and latches the first rejection as its fatal
+ * store error — it never retries or re-emits a batch.
+ */
+export type HarSink = (batch: HarAppendBatch) => Promise<void>;
+
+/**
+ * Assembles validated Network events into HAR evidence. It owns no file or
+ * bridge lifecycle, and admits every request — there is no URL, extension, or
+ * domain filtering.
+ *
+ * Two exclusive modes, chosen at construction:
+ * - **Snapshot** (no sink): values accumulate internally; `finish()` /
+ *   `finishPartial()` return one immutable validated `HarFile`.
+ * - **Streaming** (sink provided): each completed entry or incomplete
+ *   lifecycle is emitted exactly once, in completion order, through the sink;
+ *   nothing accumulates. `flush()` is the health/completion barrier and
+ *   `drain()` is the finalizer whose first synchronous line cuts admission.
+ */
 export class HARRecorder {
   private phase: 'new' | 'starting' | 'recording' | 'finalizing' | 'finalized' | 'failed' = 'new';
   private admissionOpen = false;
   private readonly nextGenerationByRequestId = new Map<string, number>();
   private readonly activeByRequestId = new Map<string, Generation>();
+  /** Exactly-once guard for both modes: a key is recorded at most once. */
+  private readonly recordedKeys = new Set<string>();
+  /** Snapshot mode only — streaming mode retains no materialized values. */
   private readonly materializedByKey = new Map<string, Materialized>();
   /** Last terminal remains comparable until this CDP id opens its next generation. */
   private readonly closedTerminals = new Map<string, Terminal>();
@@ -145,16 +170,21 @@ export class HARRecorder {
   private readonly webSockets = new Map<string, WebSocketConnection>();
   private readonly bodyTasks = new Set<Promise<void>>();
   private nextOrder = 0;
+  private entryCount = 0;
   private fatalError: Error | null = null;
   private finalResult: HarFile | null = null;
   private finalizing: Promise<HarFile> | null = null;
+  /** Streaming mode: serialized sink appends, in emission order. */
+  private sinkChain: Promise<void> = Promise.resolve();
+  private draining: Promise<void> | null = null;
 
-  constructor(private readonly client: CDPClient) {}
+  constructor(
+    private readonly client: CDPClient,
+    private readonly sink?: HarSink,
+  ) {}
 
   get responseCount(): number {
-    let count = 0;
-    for (const { value } of this.materializedByKey.values()) if (!('kind' in value)) count++;
-    return count;
+    return this.entryCount;
   }
 
   async start(): Promise<void> {
@@ -419,12 +449,49 @@ export class HARRecorder {
   }
 
   private install(current: Generation, value: HAREntry | IncompleteLifecycle): void {
-    if (!this.materializedByKey.has(current.key)) this.materializedByKey.set(current.key, { order: current.order, value });
+    if (!this.recordedKeys.has(current.key)) {
+      this.recordedKeys.add(current.key);
+      if (!('kind' in value)) this.entryCount++;
+      if (this.sink) this.emit(value);
+      else this.materializedByKey.set(current.key, { order: current.order, value });
+    }
     this.deleteActive(current);
   }
 
+  /**
+   * Streaming mode: queue one exactly-once single-value batch onto the
+   * serialized sink chain. The batch is validated and frozen before the sink
+   * sees it; a validation or sink failure latches as the fatal store error and
+   * stops all later sink calls — the store is never reset or retried.
+   */
+  private emit(value: HAREntry | IncompleteLifecycle): void {
+    let batch: HarAppendBatch;
+    try {
+      batch = deepFreeze(
+        validateHarAppendBatch(
+          'kind' in value
+            ? { entries: [], incompleteLifecycles: [value] }
+            : { entries: [value], incompleteLifecycles: [] },
+          'HARRecorder stream batch',
+        ),
+      );
+    } catch (error) {
+      this.latchFatal(error);
+      return;
+    }
+    const sink = this.sink!;
+    this.sinkChain = this.sinkChain
+      .then(async () => {
+        if (this.fatalError) return;
+        await sink(batch);
+      })
+      .catch((error) => {
+        this.latchFatal(error);
+      });
+  }
+
   private materialize(current: Generation, body: BodyProvenance, content: HarResponse['content'] = {}): void {
-    if (!current.terminal || this.materializedByKey.has(current.key)) return;
+    if (!current.terminal || this.recordedKeys.has(current.key)) return;
     const response = current.redirectResponse ?? current.response;
     const invalid = this.clockViolation(current, current.redirectResponse ? null : current.response?.timestamp ?? null);
     if (invalid) this.install(current, this.invalidClock(current, invalid));
@@ -481,7 +548,9 @@ export class HARRecorder {
   }
 
   private stoppedDuringBody(current: Generation): IncompleteLifecycle {
-    const terminal = current.terminal!;
+    // Sole call site guards `terminal.kind === 'finished'` — only a finished
+    // terminal carries a pending body fetch.
+    const terminal = current.terminal as Extract<Terminal, { kind: 'finished' }>;
     const response = current.response!;
     return {
       kind: 'stopped_during_body', requestId: current.requestId, generation: current.generation, startedDateTime: current.startedDateTime, request: current.request,
@@ -517,7 +586,60 @@ export class HARRecorder {
     if (this.fatalError) throw this.fatalError;
   }
 
+  /**
+   * Streaming health/completion barrier: waits for every body fetch in flight
+   * at call time, then for every sink append queued through that point, and
+   * throws the latched fatal store error if any work has failed. Work admitted
+   * after the call is deliberately not awaited, so the barrier terminates
+   * under continuous traffic.
+   */
+  async flush(): Promise<void> {
+    if (!this.sink) throw new Error('flush() requires a streaming HAR recorder (constructed with a sink)');
+    this.throwFatal();
+    const pending = [...this.bodyTasks];
+    if (pending.length > 0) await Promise.all(pending);
+    await this.sinkChain;
+    this.throwFatal();
+  }
+
+  /**
+   * Streaming finalizer. Its first synchronous line closes Network-event
+   * admission — events arriving after the call cannot allocate, mutate, or
+   * append. It then drains pre-cut body work, finalizes the frozen active map
+   * exactly once as incomplete lifecycle evidence through the sink, drains
+   * those appends, and rejects with the fatal store error if any append or
+   * assembly failed. Idempotent: repeat calls settle with the first outcome.
+   */
+  async drain(): Promise<void> {
+    if (!this.sink) throw new Error('drain() requires a streaming HAR recorder (constructed with a sink)');
+    this.admissionOpen = false;
+    if (this.draining) return this.draining;
+    this.throwFatal();
+    this.phase = 'finalizing';
+    this.draining = (async () => {
+      try {
+        while (this.bodyTasks.size > 0) await Promise.all([...this.bodyTasks]);
+        this.throwFatal();
+        for (const current of [...this.activeByRequestId.values()]) {
+          if (!current.terminal) this.install(current, this.stopped(current));
+          else if (!this.recordedKeys.has(current.key)) this.install(current, this.invalidClock(current, this.clockViolation(current, current.response?.timestamp ?? null)!));
+        }
+        // WebSocket evidence is finalized exactly once, here — snapshot()
+        // covers the snapshot-mode finalizers, so the streaming finalizer
+        // must emit each socket's entry through the sink itself.
+        for (const entry of this.buildWebSocketEntries()) this.emit(entry);
+        await this.sinkChain;
+        this.throwFatal();
+        this.phase = 'finalized';
+      } catch (error) {
+        throw this.latchFatal(error);
+      }
+    })();
+    return this.draining;
+  }
+
   async finish(): Promise<HarFile> {
+    if (this.sink) throw new Error('finish() is snapshot-only — a streaming HAR recorder finalizes with drain()');
     if (this.finalResult) return this.finalResult;
     this.admissionOpen = false;
     this.throwFatal();
@@ -529,7 +651,7 @@ export class HARRecorder {
         this.throwFatal();
         for (const current of [...this.activeByRequestId.values()]) {
           if (!current.terminal) this.install(current, this.stopped(current));
-          else if (!this.materializedByKey.has(current.key)) this.install(current, this.invalidClock(current, this.clockViolation(current, current.response?.timestamp ?? null)!));
+          else if (!this.recordedKeys.has(current.key)) this.install(current, this.invalidClock(current, this.clockViolation(current, current.response?.timestamp ?? null)!));
         }
         this.finalResult = this.freezeValidated(this.snapshot(false));
         this.phase = 'finalized';
@@ -542,6 +664,7 @@ export class HARRecorder {
   }
 
   finishPartial(): HarFile {
+    if (this.sink) throw new Error('finishPartial() is snapshot-only — a streaming HAR recorder finalizes with drain()');
     if (this.finalResult) return this.finalResult;
     this.admissionOpen = false;
     this.throwFatal();

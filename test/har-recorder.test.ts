@@ -78,6 +78,25 @@ for (const [label, value] of [['missing', undefined], ['string', '1'], ['NaN', N
   });
 }
 
+test('retains png, font, and analytics-like requests without URL/extension/domain filtering', async () => {
+  const { client, recorder: har } = await recorder();
+  client.body = { body: 'payload', base64Encoded: false };
+  const urls = [
+    'https://cdn.example.test/img/logo.png',
+    'https://fonts.gstatic.example/s/roboto/v30/font.woff2',
+    'https://www.google-analytics.example/collect?v=1&t=pageview',
+  ];
+  urls.forEach((url, index) => {
+    const id = `asset-${index}`;
+    client.fire('Network.requestWillBeSent', request(id, { request: { method: 'GET', url, headers: {} } }));
+    client.fire('Network.responseReceived', response(id));
+    client.fire('Network.loadingFinished', finished(id));
+  });
+  const result = await har.finish();
+  assert.deepEqual(result.log.entries.map((entry) => entry.request.url), urls);
+  assert.equal(result.incompleteLifecycles.length, 0);
+});
+
 test('redirects form independent request generations and do not fetch redirect bodies', async () => {
   const { client, recorder: har } = await recorder();
   client.body = { body: 'next', base64Encoded: false };
