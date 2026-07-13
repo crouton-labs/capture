@@ -1,7 +1,6 @@
 ---
 kind: knowledge
-when-and-why-to-read: When working in capture, this knowledge should be read
-  because it is the project's operating guide.
+when-and-why-to-read: When working in capture, this knowledge should be read because its esbuild single-bundle build and publish-on-main rules keep changes buildable and stop a hand-bumped version from colliding with CI.
 short-form: capture
 system-prompt-visibility: content
 file-read-visibility: content
