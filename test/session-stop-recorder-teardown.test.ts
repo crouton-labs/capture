@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as net from 'node:net';
+import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 
 import { CAPTURE_ROOT, ensurePrivateDir, writeJsonPrivate, processPidBirthProvider, type PidBirth } from '../src/session/artifacts.js';
@@ -15,9 +16,17 @@ import {
   teardownAnyLiveRecorderAtSessionStop,
   type RecorderJson,
 } from '../src/cdp/motion/recorder.js';
-import { RECORDER_NONCE_BOOT_FILE } from '../src/cdp/recorder-bridge.js';
+import {
+  RECORDER_NONCE_BOOT_FILE,
+  runRecorderBridge,
+  __setRecorderBridgeDepsForTest,
+  OBSERVER_INSTALLED_SENTINEL,
+  type RecorderCdpClient,
+} from '../src/cdp/recorder-bridge.js';
 import { sessionMain } from '../src/session/commands.js';
-import { createHarRecording } from '../src/har-manager.js';
+import { createHarRecording, readHarRecording, deleteHarRecording } from '../src/har-manager.js';
+import { type CDPClient } from '../src/cdp/client.js';
+import { type findTabByIdAcrossEndpoints } from '../src/cdp/targets.js';
 import { type ParsedArgs } from '../src/cdp/types.js';
 import { type RecorderRequest, type RecorderResponse, type RecorderClockBaselines } from '../src/cdp/bridge/protocol.js';
 
@@ -584,5 +593,284 @@ test('U11b: an admitted start racing a concurrent session stop never leaves a li
     placeholder.kill();
     clearActiveSession();
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// U11c: a terminal (authenticated `ok:false`) rec-stop during `session stop`
+// must escape the warn-and-continue teardown catch and reach the outer
+// `stop_failed` lane -- no bundle commit, live HAR/handle intact, `stopping`
+// reset, admission released. This is the session-level counterpart to
+// `test/motion-rec-lifecycle.test.ts`'s `stopComposedRecorder`-level proof.
+// ---------------------------------------------------------------------------
+
+test('U11c: a terminal (authenticated ok:false) rec-stop during session stop reaches the outer stop_failed lane -- no bundle commit, live HAR/handle intact, stopping reset, admission released', async () => {
+  const id = freshSessionId('terminal-fail');
+  const dir = sessionDirFor(id);
+  ensurePrivateDir(dir);
+  writeSessionFixture(id, dir);
+
+  const recId = 'rec-terminal-fail';
+  const recDir = recDirFor(dir, recId);
+  ensurePrivateDir(recDir);
+  const socketPath = recorderSocketPath(recDir);
+  const placeholder = spawnPlaceholderChild();
+  const { id: harId } = await createHarRecording(dir);
+
+  const recorderJson: RecorderJson = {
+    recId, pid: placeholder.pid, socketPath, targetId: 'target-abc', url: 'https://example.com',
+    startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(placeholder.pid),
+    markers: PENDING_MARKERS, nonce: TEST_NONCE,
+  };
+  writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
+  await setActiveSession({ sessionId: id, dir, harId, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
+
+  const fakeServer = await startFakeRecorderServer(socketPath, {
+    'rec-stop': (req) => {
+      placeholder.kill();
+      return { reqId: req.reqId, ok: false, type: 'rec-stop', error: 'Malformed owned Network event: timestamp' };
+    },
+  });
+  const out = captureStdout();
+  const originalExitCode = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    await sessionMain({ command: 'session', positional: ['stop', id], json: false } as ParsedArgs, []);
+    assert.equal(process.exitCode, 1, `a terminal rec-stop failure must fail the whole session stop (exit code 1) -- stop output: ${out.logs.join(' | ')}`);
+  } finally {
+    process.exitCode = originalExitCode;
+    out.restore();
+    fakeServer.close();
+    placeholder.kill();
+  }
+
+  try {
+    assert.equal(fs.existsSync(path.join(dir, 'bundle.json')), false, 'no bundle may be committed when the recorder teardown fails terminally');
+    assert.equal(fs.existsSync(path.join(recDir, 'recorder.json')), true, 'the live recorder handle must survive -- never deleted as finalized');
+    assert.equal(fs.existsSync(path.join(recDir, 'meta.json')), false, 'no finalized meta.json may be written on a terminal failure');
+
+    const harAfter = await readHarRecording(harId);
+    assert.ok(harAfter, 'the live HAR recording must survive -- never deleted on a terminal teardown failure');
+
+    const sessionRaw = JSON.parse(fs.readFileSync(path.join(dir, '.session.json'), 'utf-8')) as { stopping?: unknown; stoppedAt?: unknown };
+    assert.equal(sessionRaw.stopping, false, 'stopping must reset back to false after the failed stop');
+    assert.equal(sessionRaw.stoppedAt, undefined, 'a failed stop must never mark the session stopped');
+
+    const opsRaw = JSON.parse(fs.readFileSync(path.join(dir, '.operations.json'), 'utf-8')) as { stopping?: unknown };
+    assert.equal(opsRaw.stopping, false, 'admission must release (committed === false) after a failed stop, so a later operation can be admitted again');
+
+    assert.equal(getActiveRecId(), recId, 'the active-recording pointer must survive -- never cleared on a terminal teardown failure');
+  } finally {
+    await deleteHarRecording(harId).catch(() => {});
+    clearActiveSession();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// U11c: session-bundle-ordering proof against a REAL recorder bridge (the
+// fake NDJSON server above cannot own a real HARRecorder, so it cannot prove
+// append-settlement ordering). Boots `runRecorderBridge` in-process (same
+// pattern as `test/recorder-har-integration.test.ts`'s `bootBridge`), wires a
+// real session dir + real `recorder.json` handle at it, gates a body fetch so
+// a pre-cut append is still pending, and proves `session stop` cannot resolve
+// -- and therefore cannot read/commit the bundle -- until that gated append
+// settles.
+// ---------------------------------------------------------------------------
+
+/** Minimal `RecorderCdpClient` stub for a REAL in-process `runRecorderBridge`
+ * -- trimmed to exactly what one gated Network lifecycle over one rec-start/
+ * rec-stop round trip needs. Mirrors `recorder-har-integration.test.ts`'s
+ * `StubCdpClient`, duplicated here (test-only) rather than imported, since
+ * that file does not export it. */
+class GatedStubCdpClient extends EventEmitter implements RecorderCdpClient {
+  private perfNow = 100;
+  private nextIsolatedWorldContextId = 1000;
+  /** When set, `Network.getResponseBody` awaits this before resolving -- a
+   * deterministic barrier for proving the session-stop path blocks through a
+   * pending body fetch/append, with no wall-clock race. */
+  bodyGate: Promise<void> | null = null;
+
+  async waitReady(): Promise<void> {
+    // The real client resolves once its websocket is open; the stub is born ready.
+  }
+
+  async send(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+    switch (method) {
+      case 'Page.getFrameTree':
+        return { frameTree: { frame: { id: 'stub-frame-1' } } };
+      case 'Page.createIsolatedWorld':
+        return { executionContextId: this.nextIsolatedWorldContextId++ };
+      case 'Network.getResponseBody':
+        if (this.bodyGate) await this.bodyGate;
+        return { body: 'stub-response-body', base64Encoded: false };
+      case 'Runtime.evaluate': {
+        const expression = String((params as { expression?: unknown }).expression ?? '');
+        if (expression.includes('MutationObserver')) return { result: { value: OBSERVER_INSTALLED_SENTINEL } };
+        if (expression.includes('performanceNowMs: performance.now()')) {
+          this.perfNow += 1;
+          return { result: { value: { performanceNowMs: this.perfNow, wallClockMs: 1_700_000_000_000 + this.perfNow } } };
+        }
+        if (expression === 'performance.now()') {
+          this.perfNow += 1;
+          return { result: { value: this.perfNow } };
+        }
+        if (expression.includes('querySelectorAll')) return { result: { value: [] } };
+        return { result: {} };
+      }
+      case 'Tracing.end':
+        this.emit('Tracing.tracingComplete', {});
+        return {};
+      default:
+        return {};
+    }
+  }
+
+  onDisconnect(handler: () => void): void {
+    super.on('__disconnect', handler);
+  }
+
+  close(): void {
+    // No-op for the stub.
+  }
+
+  fire(event: string, params: unknown, sessionId?: string): void {
+    this.emit(event, params, sessionId);
+  }
+}
+
+/** One request per connection over the real unix control socket -- the exact
+ * wire shape production `recorder-client.ts` speaks. Duplicated locally (this
+ * file has no such helper; `recorder-har-integration.test.ts` does not export
+ * its own copy). */
+function sendOverRealBridgeSocket(socketPath: string, req: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    let buffer = '';
+    socket.on('connect', () => socket.write(JSON.stringify(req) + '\n'));
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('utf-8');
+      const idx = buffer.indexOf('\n');
+      if (idx < 0) return;
+      socket.end();
+      resolve(JSON.parse(buffer.slice(0, idx)) as Record<string, unknown>);
+    });
+    socket.on('error', reject);
+  });
+}
+
+function readRealBridgeBootNonce(recDir: string): string {
+  const raw = JSON.parse(fs.readFileSync(path.join(recDir, RECORDER_NONCE_BOOT_FILE), 'utf-8')) as { nonce?: unknown };
+  assert.equal(typeof raw.nonce, 'string');
+  return raw.nonce as string;
+}
+
+/** Fires one complete request/response/finished Network lifecycle -- exactly
+ * what the held connection would deliver from a live tab. */
+function fireGatedNetworkLifecycle(stub: GatedStubCdpClient, requestId: string, url: string): void {
+  stub.fire('Network.requestWillBeSent', {
+    requestId,
+    request: { method: 'GET', url, headers: { accept: 'text/html' } },
+    timestamp: 10.0,
+    wallTime: 1_700_000_000,
+  });
+  stub.fire('Network.responseReceived', {
+    requestId,
+    response: { url, status: 200, headers: { 'content-type': 'text/html' } },
+    timestamp: 10.5,
+  });
+  stub.fire('Network.loadingFinished', { requestId, timestamp: 11.0, encodedDataLength: 1234 });
+}
+
+test('U11c: session stop blocks the whole bundle commit through a deferred pre-cut append settling on the REAL recorder bridge -- bundle.json/har.json are never read while an admitted append is still pending', async () => {
+  const id = freshSessionId('bundle-order-real-bridge');
+  const dir = sessionDirFor(id);
+  ensurePrivateDir(dir);
+  writeSessionFixture(id, dir);
+
+  const recId = 'rec-bundle-order1';
+  const recDir = recDirFor(dir, recId);
+  ensurePrivateDir(recDir);
+  const socketPath = recorderSocketPath(recDir);
+
+  const { id: harId } = await createHarRecording(dir);
+  await setActiveSession({ sessionId: id, dir, harId, targetId: 'target-abc', stepCount: 0 });
+
+  // A real, live, harmless process stands in for the bridge's OS pid (the
+  // identity the teardown path's liveness/exit checks operate on) -- the
+  // NDJSON socket itself is served by the REAL `runRecorderBridge`, IN this
+  // test process, via the injected CDP-client/exit seams below (decoupling
+  // "the pid recorded" from "who answers the socket", same as
+  // `recorder-har-integration.test.ts`'s bridge tests).
+  const placeholder = spawnPlaceholderChild();
+  const stub = new GatedStubCdpClient();
+  const restoreDeps = __setRecorderBridgeDepsForTest({
+    createClient: () => stub as unknown as CDPClient,
+    findTab: (async () => ({
+      port: 9222,
+      tab: { id: 'target-abc', webSocketDebuggerUrl: 'ws://stub' },
+    })) as unknown as typeof findTabByIdAcrossEndpoints,
+    // The real bridge process would exit at this point; here it kills the
+    // placeholder pid instead, so `waitForRecorderExit`'s identity-verified
+    // poll observes a genuine process death at the same logical moment,
+    // rather than idling out to its multi-second escalation timeout.
+    exit: () => { placeholder.kill(); },
+  });
+
+  try {
+    await runRecorderBridge({ socketPath, targetId: 'target-abc', recDir, harId, port: 9222 });
+
+    const nonce = readRealBridgeBootNonce(recDir);
+    const started = await sendOverRealBridgeSocket(socketPath, { reqId: 1, type: 'rec-start', nonce });
+    assert.equal(started.ok, true, 'the real bridge must accept the authenticated rec-start');
+
+    const recorderJson: RecorderJson = {
+      recId, pid: placeholder.pid, socketPath, targetId: 'target-abc', url: 'https://example.com',
+      startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(placeholder.pid),
+      markers: PENDING_MARKERS, nonce,
+    };
+    writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
+    await setActiveRecId(recId);
+
+    let releaseGate!: () => void;
+    stub.bodyGate = new Promise((resolve) => { releaseGate = resolve; });
+
+    // Pre-cut lifecycle whose body fetch is deliberately held open -- an
+    // admitted append that must still be pending when `session stop` fires.
+    fireGatedNetworkLifecycle(stub, 'gated', 'https://example.com/gated');
+
+    const out = captureStdout();
+    let stopResolved = false;
+    const stopPromise = sessionMain({ command: 'session', positional: ['stop', id], json: false } as ParsedArgs, [])
+      .then(() => { stopResolved = true; });
+
+    // The stop command has ample time to reach the real bridge's rec-stop
+    // handler, trip the synchronous admission cut, and start draining -- but
+    // it must not resolve (and therefore must not have read/committed the
+    // bundle) while the gate is closed.
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(stopResolved, false, 'session stop must not resolve while a pre-cut admitted append is still pending on the real bridge');
+    assert.equal(fs.existsSync(path.join(dir, 'bundle.json')), false, 'bundle.json must not exist while the gated append is still pending');
+
+    releaseGate();
+    await stopPromise;
+    out.restore();
+    assert.equal(stopResolved, true);
+
+    assert.ok(fs.existsSync(path.join(dir, 'bundle.json')), 'bundle.json must be written once the gated append settles and the stop resolves');
+    const bundle = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf-8')) as { har: { entryCount: number } | null };
+    assert.equal(bundle.har?.entryCount, 1);
+
+    const harOnDisk = JSON.parse(fs.readFileSync(path.join(dir, 'har.json'), 'utf-8')) as { log: { entries: Array<{ request: { url: string }; response: { content: { text?: string } } }> } };
+    assert.equal(harOnDisk.log.entries.length, 1);
+    assert.equal(harOnDisk.log.entries[0].request.url, 'https://example.com/gated');
+    assert.equal(harOnDisk.log.entries[0].response.content.text, 'stub-response-body', 'the gated body must settle with its real content before the bundle read, not fetch_failed');
+  } finally {
+    restoreDeps();
+    placeholder.kill();
+    clearActiveSession();
+    fs.rmSync(dir, { recursive: true, force: true });
+    await deleteHarRecording(harId).catch(() => {});
   }
 });

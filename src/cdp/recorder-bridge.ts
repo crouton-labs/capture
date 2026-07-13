@@ -92,6 +92,7 @@ import {
   type RecorderResponse,
   type RecorderClockBaselines,
   type RecCdpRequest,
+  type RecStopRequest,
 } from './bridge/protocol.js';
 import { ensurePrivateDir, appendNdjsonPrivate, writeBinaryPrivate, writeJsonPrivate } from '../session/artifacts.js';
 import { resolveIndexedObjectIds, describeBackendNodeId } from './measure/collectors/geometry.js';
@@ -1489,6 +1490,58 @@ export async function runRecorderBridge(opts: RunRecorderBridgeOptions): Promise
     }
   };
 
+  // One-owner terminal-rec-stop latch (U11c). `listenNdjsonSocket` fire-and-
+  // forgets every line (`void handleLine(...)`) and does not serialize them,
+  // so more than one authenticated `rec-stop` line can reach `handleLine`
+  // before the first has finished. This flag is read and set in the SAME
+  // synchronous prefix as the nonce gate and `session.state` check below (no
+  // `await` between the read and the set), so exactly one authenticated,
+  // stoppable-state `rec-stop` ever claims the HAR admission cut, drain
+  // settlement, response, cleanup, and exit. Every other rec-stop line (a
+  // repeat, a concurrent loser, or one that arrives while the session is
+  // already `idle`/`stopping`) falls through to the ordinary
+  // `handleRecorderRequest` path below, which resolves it through
+  // `RecorderSession.stop()`'s own state guard into the existing
+  // deterministic `ok:false` rejection — never a second drain/exit.
+  let terminalStopClaimed = false;
+
+  /**
+   * Settles the one authenticated, stoppable-state `rec-stop` that claimed
+   * the terminal latch. `RecorderSession.stop()` (screencast/tracing/observer
+   * teardown, best-effort and independent of the HAR store) runs to
+   * completion first; only then is the already-initiated `drainSettlement`
+   * awaited, so the response is withheld until every pre-cut HAR body fetch,
+   * the exactly-once frozen-lifecycle finalization, and every U02 append have
+   * settled (U11c's success ordering). A latched fatal HAR drain (sink/store
+   * rejection, or any unexpected assembly/validation failure) is terminal and
+   * authoritative: it overrides even a successful `RecorderSession.stop()`
+   * with an explicit `ok:false` response carrying the exact primary error —
+   * the recorder never claims success once its evidence store is fatally
+   * broken, and the HAR store itself is never reset. Response is flushed
+   * (write completion callback) before the socket ends, cleanup runs, and the
+   * injected exit seam fires non-zero on fatal / zero on success.
+   */
+  async function settleTerminalRecStop(req: RecStopRequest, socket: net.Socket, drainSettlement: Promise<void>): Promise<void> {
+    const stopResp = await handleRecorderRequest(session, req);
+    let finalResp: RecorderResponse = stopResp;
+    try {
+      await drainSettlement;
+    } catch (err) {
+      finalResp = {
+        reqId: req.reqId,
+        ok: false,
+        type: 'rec-stop',
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    await new Promise<void>((resolveWrite) => {
+      socket.write(JSON.stringify(finalResp) + '\n', () => resolveWrite());
+    });
+    socket.end();
+    cleanup();
+    recorderBridgeDeps.exit(finalResp.ok ? 0 : 1);
+  }
+
   async function handleLine(line: string, socket: net.Socket): Promise<void> {
     let req: RecorderRequest;
     try {
@@ -1518,23 +1571,34 @@ export async function runRecorderBridge(opts: RunRecorderBridgeOptions): Promise
       socket.write(JSON.stringify({ reqId, ok: false, type, error: 'unauthorized' }) + '\n');
       return;
     }
-    const resp = await handleRecorderRequest(session, req);
-    if (req.type === 'rec-stop' && resp.ok) {
-      // Authenticated, successful rec-stop: this process's work is done.
-      // U11c's drain seam sits HERE — `await har.drain()` will run before the
-      // response write below, so the response only flushes once every HAR
-      // batch has been appended. (`har` is intentionally held in scope for
-      // that seam; today the recorder relies on RecorderSession.stop()'s own
-      // teardown having already quiesced the recording streams.)
-      void har;
-      await new Promise<void>((resolveWrite) => {
-        socket.write(JSON.stringify(resp) + '\n', () => resolveWrite());
+    // Terminal admission cut (U11c). `har.drain()`'s own first synchronous
+    // line closes Network-event admission (see har-recorder.ts's `drain()`),
+    // so initiating it HERE — after the nonce gate and `rec-stop` recognition,
+    // synchronously before `handleRecorderRequest`'s first internal await —
+    // guarantees no Network event arriving after this authenticated rec-stop
+    // can allocate, mutate, or append. The cut only fires for a rec-stop that
+    // will actually proceed (`session.state === 'recording'`) and only for the
+    // first such request (`terminalStopClaimed`); an idle/already-stopping
+    // rec-stop and a losing concurrent/repeat rec-stop take zero side effects
+    // here and fall through to the ordinary dispatch below. A rejection
+    // handler is attached to `drainSettlement` in this same synchronous frame
+    // so a fatal drain can never surface as an unhandled rejection through
+    // `listenNdjsonSocket`'s fire-and-forget `void handleLine(...)`,
+    // regardless of when the awaited settlement inside
+    // `settleTerminalRecStop` actually runs.
+    if (req.type === 'rec-stop' && session.state === 'recording' && !terminalStopClaimed) {
+      terminalStopClaimed = true;
+      const drainSettlement = har.drain();
+      drainSettlement.catch(() => {
+        // Handled below via settleTerminalRecStop's own await; this no-op
+        // catch only prevents Node from ever treating this promise as an
+        // unhandled rejection.
       });
-      socket.end();
-      cleanup();
-      recorderBridgeDeps.exit(0);
+      await settleTerminalRecStop(req, socket, drainSettlement);
       return;
     }
+
+    const resp = await handleRecorderRequest(session, req);
     socket.write(JSON.stringify(resp) + '\n');
   }
 

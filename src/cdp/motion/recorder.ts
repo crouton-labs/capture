@@ -43,7 +43,7 @@ import {
 } from '../../session/coordinator.js';
 import { captureError } from '../../errors.js';
 import { startRecorderBridge, recorderSocketPath, stopBridge } from '../bridge/spawn.js';
-import { requestRecStart, requestRecStop } from '../recorder-client.js';
+import { requestRecStart, requestRecStop, RecStopBridgeFailure } from '../recorder-client.js';
 import { RECORDER_NONCE_BOOT_FILE } from '../recorder-bridge.js';
 import { detectCdpPort } from '../detect.js';
 import { findTabByIdAcrossEndpoints } from '../targets.js';
@@ -348,6 +348,55 @@ async function waitForRecorderExit(
   }
 }
 
+/**
+ * Shared tail for a TERMINAL `rec-stop` failure — the bridge authenticated
+ * the request and explicitly answered `ok:false` (`RecStopBridgeFailure`,
+ * e.g. a fatal HAR drain: sink/store rejection or assembly/validation
+ * failure), as opposed to a wedged/unreachable bridge. That fatal bridge
+ * self-exits non-zero once its response has flushed (see
+ * `../recorder-bridge.ts`'s terminal rec-stop latch), so waiting through the
+ * SAME identity-verified `waitForRecorderExit` the success path uses
+ * resolves rather than timing out — there is no wedged process to escalate
+ * against. This path takes NO identity-kill first resort and produces NO
+ * orphan-finalize success: it always re-throws the primary bridge failure,
+ * never a finalized recording. `waitForRecorderExit` itself does not throw
+ * in its ordinary outcomes (gone/mismatched identity resolves normally; a
+ * still-matching identity after timeout escalates to a kill and still
+ * resolves) — if it somehow does throw, that fact is folded in alongside the
+ * primary error via `AggregateError` (same precedent as
+ * `../../session/artifacts.ts`'s `combineFailure`) rather than masking the
+ * primary with a generic fallback.
+ */
+async function propagateTerminalRecStopFailure(
+  record: Pick<RecorderHandleRecord, 'pid' | 'socketPath' | 'birth'>,
+  provider: PidBirthProvider,
+  deps: LifecycleSeams,
+  primary: RecStopBridgeFailure,
+): Promise<never> {
+  try {
+    await waitForRecorderExit(record, provider, deps);
+  } catch (cleanupErr) {
+    throw new AggregateError([primary, cleanupErr], primary.message);
+  }
+  throw primary;
+}
+
+/**
+ * True for the designated fatal teardown error `../../session/commands.ts`'s
+ * `session stop` must let escape its warn-and-continue recorder-teardown
+ * catch and route to the outer `stop_failed` lane instead — a terminal
+ * `rec-stop` failure thrown by `propagateTerminalRecStopFailure` above,
+ * whether that's the bare `RecStopBridgeFailure` or one wrapped alongside a
+ * cleanup fact in an `AggregateError`. Any OTHER teardown failure (dead-handle
+ * noise, liveness-unknown, a malformed handle) keeps the existing
+ * warn-and-continue policy — only an authenticated, explicit bridge refusal
+ * is fatal to the whole session stop.
+ */
+export function isTerminalRecStopFailure(err: unknown): boolean {
+  if (err instanceof RecStopBridgeFailure) return true;
+  return err instanceof AggregateError && err.errors.some((e) => e instanceof RecStopBridgeFailure);
+}
+
 /** Reads, validates, and CONSUMES the nonce boot file the recorder bridge
  * wrote into `recDir` before binding its socket (see `recorder-bridge.ts`'s
  * `RECORDER_NONCE_BOOT_FILE`). The nonce is persisted into `recorder.json`
@@ -585,7 +634,13 @@ export async function stopComposedRecorder(opts: {
       // SIGTERM only if the same process is still alive after the grace window.
       await waitForRecorderExit(record, provider, deps);
       return await writeFinalizedArtifacts(opts.sessionDir, handle.recDir, recId, record.url, stopResp.frameCount, stopResp.durationMs, 'finalized', stopResp.markers, stopResp.eventCount, record.targetId);
-    } catch {
+    } catch (err) {
+      if (err instanceof RecStopBridgeFailure) {
+        // The bridge authenticated the request and explicitly refused — a
+        // terminal recorder failure, NOT a wedged bridge. No identity-kill,
+        // no orphan-finalize success: propagate the primary error.
+        await propagateTerminalRecStopFailure(record, provider, deps, err);
+      }
       // Known-live handle, but the socket round trip failed (wedged/missing
       // bridge) — identity-verified kill and best-effort finalize from
       // whatever made it to disk, same fallback teardown uses.
@@ -674,7 +729,17 @@ export async function teardownAnyLiveRecorderAtSessionStop(sessionDir: string, d
             stopResp.eventCount,
             record.targetId,
           );
-        } catch {
+        } catch (err) {
+          if (err instanceof RecStopBridgeFailure) {
+            // Terminal recorder-stop failure during whole-session teardown —
+            // the bridge authenticated the request and explicitly refused
+            // (e.g. fatal HAR drain). This must escape the caller's
+            // warn-and-continue teardown catch (`../../session/commands.ts`)
+            // and reach the outer `stop_failed` lane: no bundle commit, no
+            // live-HAR deletion, no handle deletion-as-finalized. Propagate
+            // rather than falling into the dead-handle fallback below.
+            await propagateTerminalRecStopFailure(record, provider, deps, err);
+          }
           // The handle classified live but the socket round trip itself
           // failed (e.g. mid-teardown race) — identity-verified kill plus the
           // same best-effort path a dead handle takes, rather than leaving

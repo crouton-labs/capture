@@ -30,6 +30,10 @@ class StubCdpClient extends EventEmitter implements RecorderCdpClient {
   private perfNow = 100;
   private nextIsolatedWorldContextId = 1000;
   lastIsolatedWorldContextId = 0;
+  /** U11c: when set, `Network.getResponseBody` awaits this before resolving —
+   * a deterministic barrier for proving drain()/the rec-stop response wait
+   * through a pending body fetch, with no wall-clock race. */
+  bodyGate: Promise<void> | null = null;
 
   async waitReady(): Promise<void> {
     // The real client resolves once its websocket is open; the stub is born ready.
@@ -44,6 +48,7 @@ class StubCdpClient extends EventEmitter implements RecorderCdpClient {
         this.lastIsolatedWorldContextId = this.nextIsolatedWorldContextId;
         return { executionContextId: this.nextIsolatedWorldContextId++ };
       case 'Network.getResponseBody':
+        if (this.bodyGate) await this.bodyGate;
         return { body: 'stub-response-body', base64Encoded: false };
       case 'Runtime.evaluate': {
         const expression = String((params as { expression?: unknown }).expression ?? '');
@@ -373,5 +378,201 @@ test('U11b fix: a JSON `null` (or other scalar) line is dropped rather than cras
     throw error;
   } finally {
     process.off('unhandledRejection', onRejection);
+  }
+});
+
+test('U11c: the terminal admission cut takes effect synchronously with the authenticated rec-stop — a pre-cut open lifecycle finalizes as exactly one incomplete lifecycle, and post-cut traffic (a late terminal for that same request, plus a brand-new request) is never admitted', async () => {
+  const booted = await bootBridge('admission-cut');
+  try {
+    const nonce = readBootNonce(booted.recDir);
+    const started = await sendOverSocket(booted.socketPath, { reqId: 1, type: 'rec-start', nonce });
+    assert.equal(started.ok, true);
+
+    // Open at cut time: request + response observed, no terminal yet. The cut
+    // must freeze it and drain() must finalize it exactly once as an
+    // incomplete `stopped_before_terminal` lifecycle — it never reaches a HAR
+    // entry because its terminal event arrives (deliberately) after the cut.
+    booted.stub.fire('Network.requestWillBeSent', {
+      requestId: 'open-at-cut',
+      request: { method: 'GET', url: 'https://example.com/open-at-cut', headers: { accept: 'text/html' } },
+      timestamp: 10.0,
+      wallTime: 1_700_000_000,
+    });
+    booted.stub.fire('Network.responseReceived', {
+      requestId: 'open-at-cut',
+      response: { url: 'https://example.com/open-at-cut', status: 200, headers: { 'content-type': 'text/html' } },
+      timestamp: 10.5,
+    });
+
+    const stopped = await sendOverSocket(booted.socketPath, { reqId: 2, type: 'rec-stop', nonce });
+    assert.equal(stopped.ok, true, 'no fatal drain error is latched in this case, so rec-stop must succeed');
+
+    const before = await readHarRecording(booted.harId);
+    assert.equal(before.log.entries.length, 0, 'the pre-cut open lifecycle never reached a terminal before the cut, so it produces no HAR entry');
+    assert.equal(before.incompleteLifecycles.length, 1, 'the pre-cut open lifecycle finalizes as exactly one incomplete lifecycle via the cut-triggered drain');
+    assert.equal(before.incompleteLifecycles[0].kind, 'stopped_before_terminal');
+    assert.equal(before.incompleteLifecycles[0].request.url, 'https://example.com/open-at-cut');
+
+    // Post-cut traffic — admission is already synchronously closed by the time
+    // the rec-stop response was even written, so neither of these can ever be
+    // admitted regardless of exactly when they fire; the store must be
+    // byte-identical before and after.
+    booted.stub.fire('Network.loadingFinished', { requestId: 'open-at-cut', timestamp: 11.0, encodedDataLength: 10 });
+    fireNetworkLifecycle(booted.stub, 'post-cut-new', 'https://example.com/post-cut-new');
+    await new Promise((r) => setTimeout(r, 50));
+    const after = await readHarRecording(booted.harId);
+    assert.deepEqual(after, before, 'post-cut traffic (a late terminal for the frozen request, and a brand-new request) must never be admitted after the cut');
+
+    await teardownBridge(booted, { alreadyStopped: true });
+  } catch (error) {
+    await teardownBridge(booted);
+    throw error;
+  }
+});
+
+test('U11c: a frozen open lifecycle at rec-stop finalizes as exactly one incomplete lifecycle — not duplicated on re-read after settlement', async () => {
+  const booted = await bootBridge('exactly-once-incomplete');
+  try {
+    const nonce = readBootNonce(booted.recDir);
+    await sendOverSocket(booted.socketPath, { reqId: 1, type: 'rec-start', nonce });
+
+    booted.stub.fire('Network.requestWillBeSent', {
+      requestId: 'frozen-open',
+      request: { method: 'GET', url: 'https://example.com/frozen-open', headers: {} },
+      timestamp: 5.0,
+      wallTime: 1_700_000_100,
+    });
+
+    const stopped = await sendOverSocket(booted.socketPath, { reqId: 2, type: 'rec-stop', nonce });
+    assert.equal(stopped.ok, true);
+
+    const first = await readHarRecording(booted.harId);
+    assert.equal(first.incompleteLifecycles.length, 1);
+    assert.equal(first.incompleteLifecycles[0].kind, 'stopped_before_terminal');
+    assert.equal(first.incompleteLifecycles[0].request.url, 'https://example.com/frozen-open');
+
+    await new Promise((r) => setTimeout(r, 100));
+    const settled = await readHarRecording(booted.harId);
+    assert.deepEqual(settled, first, 'the frozen lifecycle must finalize exactly once — no further mutation after settlement');
+
+    await teardownBridge(booted, { alreadyStopped: true });
+  } catch (error) {
+    await teardownBridge(booted);
+    throw error;
+  }
+});
+
+test('U11c: a delayed body fetch settles before the rec-stop success response — no response is written while an admitted append is still pending', async () => {
+  const booted = await bootBridge('delayed-body');
+  try {
+    const nonce = readBootNonce(booted.recDir);
+    await sendOverSocket(booted.socketPath, { reqId: 1, type: 'rec-start', nonce });
+
+    let releaseGate!: () => void;
+    booted.stub.bodyGate = new Promise((resolve) => { releaseGate = resolve; });
+
+    // Pre-cut lifecycle whose body fetch is deliberately held open.
+    fireNetworkLifecycle(booted.stub, 'gated', 'https://example.com/gated');
+
+    const stopPromise = sendOverSocket(booted.socketPath, { reqId: 2, type: 'rec-stop', nonce });
+    let stopSettled = false;
+    stopPromise.then(() => { stopSettled = true; });
+
+    // The rec-stop line has ample time to reach the bridge, trip the
+    // admission cut, and start draining — but the response must not resolve
+    // while the gate is closed (the 'gated' append is still pending).
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(stopSettled, false, 'the rec-stop response must not be written while an admitted body fetch/append is still pending');
+
+    releaseGate();
+    const stopped = await stopPromise;
+    assert.equal(stopped.ok, true);
+
+    const har = await readHarRecording(booted.harId);
+    assert.equal(har.log.entries.length, 1);
+    assert.equal(har.log.entries[0].request.url, 'https://example.com/gated');
+    assert.equal(har.log.entries[0].response.content.text, 'stub-response-body', 'the gated body must settle with its real content, not fetch_failed');
+
+    await teardownBridge(booted, { alreadyStopped: true });
+  } catch (error) {
+    await teardownBridge(booted);
+    throw error;
+  }
+});
+
+test('U11c: two concurrent authenticated rec-stop requests produce exactly one drain/finalize/cleanup/exit — the loser gets the deterministic state-rejection, never a second success', async () => {
+  const booted = await bootBridge('concurrent-stop');
+  try {
+    const nonce = readBootNonce(booted.recDir);
+    await sendOverSocket(booted.socketPath, { reqId: 1, type: 'rec-start', nonce });
+
+    const [first, second] = await Promise.all([
+      sendOverSocket(booted.socketPath, { reqId: 2, type: 'rec-stop', nonce }),
+      sendOverSocket(booted.socketPath, { reqId: 3, type: 'rec-stop', nonce }),
+    ]);
+
+    const responses = [first, second];
+    const successes = responses.filter((r) => r.ok === true);
+    const failures = responses.filter((r) => r.ok === false);
+    assert.equal(successes.length, 1, 'exactly one of the two concurrent rec-stop requests must succeed');
+    assert.equal(failures.length, 1, 'the loser must get a deterministic ok:false state rejection, never a second success');
+    assert.equal(failures[0].type, 'rec-stop');
+    assert.match(String(failures[0].error), /cannot stop recorder in state/);
+
+    await pollUntil('the injected exit seam to fire', async () => booted.exitCalls.length, (n) => n >= 1, 1000);
+    assert.deepEqual(booted.exitCalls, [0], 'exactly one drain/finalize/cleanup/exit must occur across both concurrent rec-stop requests, not two');
+
+    await teardownBridge(booted, { alreadyStopped: true });
+  } catch (error) {
+    await teardownBridge(booted);
+    throw error;
+  }
+});
+
+test('U11c: a latched fatal HAR store/assembly failure overrides even a successful RecorderSession.stop() — rec-stop responds ok:false with the exact primary error, the bridge exits non-zero, and the HAR store is not reset', async () => {
+  const booted = await bootBridge('fatal-drain');
+  try {
+    const nonce = readBootNonce(booted.recDir);
+    await sendOverSocket(booted.socketPath, { reqId: 1, type: 'rec-start', nonce });
+
+    // A well-formed pre-fatal entry the store already holds — used below to
+    // confirm the store is never reset/emptied by the fatal path.
+    fireNetworkLifecycle(booted.stub, 'good', 'https://example.com/good');
+    await pollUntil('the good entry to land before the fatal event', () => readHarRecording(booted.harId), (h) => h.log.entries.length >= 1);
+
+    // A malformed OWNED terminal event (a `requestWillBeSent` with no matching
+    // `responseReceived`, followed by a `loadingFinished` carrying a
+    // non-finite `timestamp`) makes `finite()` throw synchronously inside
+    // `admit()`, which har-recorder.ts's `start()`-installed listener catches
+    // and latches as `fatalError` WITHOUT rethrowing to this call site (same
+    // trick as `test/har-recorder-stream.test.ts`'s "malformed owned traffic
+    // latches fatal" case) — so `fire()` below returns normally; the fatal
+    // only surfaces once `drain()` is called, which the authenticated
+    // rec-stop below triggers.
+    booted.stub.fire('Network.requestWillBeSent', {
+      requestId: 'malformed',
+      request: { method: 'GET', url: 'https://example.com/malformed', headers: {} },
+      timestamp: 12.0,
+      wallTime: 1_700_000_050,
+    });
+    booted.stub.fire('Network.loadingFinished', { requestId: 'malformed', timestamp: 'bad', encodedDataLength: 1 });
+
+    const stopped = await sendOverSocket(booted.socketPath, { reqId: 2, type: 'rec-stop', nonce });
+    assert.equal(stopped.ok, false, 'a latched fatal drain must override even a successful RecorderSession.stop()');
+    assert.equal(stopped.type, 'rec-stop');
+    assert.equal(stopped.reqId, 2);
+    assert.match(String(stopped.error), /Malformed owned Network event/);
+
+    await pollUntil('the injected exit seam to fire', async () => booted.exitCalls.length, (n) => n >= 1, 1000);
+    assert.deepEqual(booted.exitCalls, [1], 'a fatal drain must exit non-zero, exactly once, never hanging');
+
+    const har = await readHarRecording(booted.harId);
+    assert.equal(har.log.entries.length, 1, 'the HAR store must not be reset/emptied by the fatal path — the pre-fatal entry survives');
+    assert.equal(har.log.entries[0].request.url, 'https://example.com/good');
+
+    await teardownBridge(booted, { alreadyStopped: true });
+  } catch (error) {
+    await teardownBridge(booted);
+    throw error;
   }
 });

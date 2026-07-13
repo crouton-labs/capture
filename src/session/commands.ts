@@ -23,7 +23,7 @@ import {
   startSessionLogTailer,
   stopSessionLogTailers,
 } from './log-tailer.js';
-import { teardownAnyLiveRecorderAtSessionStop } from '../cdp/motion/recorder.js';
+import { teardownAnyLiveRecorderAtSessionStop, isTerminalRecStopFailure } from '../cdp/motion/recorder.js';
 import {
   emitResult,
   fact,
@@ -1055,6 +1055,14 @@ async function stop(parsed: ParsedArgs): Promise<void> {
       try {
         recorderTeardown = await teardownAnyLiveRecorderAtSessionStop(session.dir);
       } catch (error) {
+        // A terminal `rec-stop` failure (the bridge authenticated the request
+        // and explicitly refused — e.g. a fatal HAR drain) must NOT be
+        // swallowed into a warning: it escapes to the outer `stop_failed`
+        // lane below, so no bundle is committed and no live HAR/recorder
+        // handle is deleted while admitted append work may still be lost.
+        // Non-fatal teardown noise (dead handle, liveness-unknown, malformed
+        // handle) keeps the existing warn-and-continue policy.
+        if (isTerminalRecStopFailure(error)) throw error;
         console.error(`Warning: could not finalize active recording: ${error instanceof Error ? error.message : error}`);
       }
 

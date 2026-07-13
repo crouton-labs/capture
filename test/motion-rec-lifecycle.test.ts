@@ -23,10 +23,12 @@ import {
   recordViewportOverride,
   __setViewportLifecycleDepsForTest,
   teardownAnyLiveRecorderAtSessionStop,
+  isTerminalRecStopFailure,
   type RecorderJson,
 } from '../src/cdp/motion/recorder.js';
 import { connectForCommand } from '../src/cdp/connection.js';
 import { RECORDER_NONCE_BOOT_FILE } from '../src/cdp/recorder-bridge.js';
+import { RecStopBridgeFailure } from '../src/cdp/recorder-client.js';
 import { beginSessionStop } from '../src/session/coordinator.js';
 import { isRecorderHeldClient } from '../src/cdp/recorder-client.js';
 import { type RecorderRequest, type RecorderResponse, type RecorderClockBaselines } from '../src/cdp/bridge/protocol.js';
@@ -1249,6 +1251,57 @@ test('U11b: a bridge that never exits after rec-stop is escalated to an identity
       await new Promise((r) => setTimeout(r, 25));
     }
     assert.equal(pidLive(placeholder.pid), false, 'the still-matching identity must be SIGTERMed at the deadline');
+  } finally {
+    fakeServer.close();
+    placeholder.kill();
+    clearActiveSession();
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('U11c: an authenticated ok:false rec-stop is a terminal recorder failure — stopComposedRecorder waits through the bridge self-exit, propagates the exact primary error, and never orphan-finalizes', async () => {
+  const sessionDir = freshSessionDir('stop-terminal-fail');
+  const recId = 'rec-terminal-fail';
+  const recDir = recDirFor(sessionDir, recId);
+  ensurePrivateDir(recDir);
+  const socketPath = recorderSocketPath(recDir);
+  const placeholder = spawnPlaceholderChild();
+  writeJsonPrivate(path.join(recDir, 'recorder.json'), { recId, pid: placeholder.pid, socketPath, targetId: 'target-abc', url: null, startedAt: new Date().toISOString(), state: 'recording', birth: birthOf(placeholder.pid), markers: PENDING_MARKERS, nonce: TEST_NONCE } satisfies RecorderJson);
+  await setActiveSession({ sessionId: 's-stop-terminal-fail', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
+  await setActiveRecId(recId);
+  // The fake bridge authenticates the rec-stop and explicitly refuses (mirrors
+  // a fatal HAR drain), then self-exits right after answering — exactly the
+  // way the real bridge's terminal-rec-stop latch does on a fatal drain.
+  const fakeServer = await startFakeRecorderServer(socketPath, {
+    'rec-stop': (req) => {
+      placeholder.kill();
+      return { reqId: req.reqId, ok: false, type: 'rec-stop', error: 'Malformed owned Network event: timestamp' };
+    },
+  });
+  try {
+    const stopExitTimeoutMs = 10_000; // generous: finishing well under it proves the wait saw the self-exit, not the escalation deadline
+    const before = Date.now();
+    await assert.rejects(
+      () => stopComposedRecorder({ sessionDir, recId }, { stopExitTimeoutMs }),
+      (err: unknown) => {
+        assert.ok(err instanceof RecStopBridgeFailure, 'the thrown error must be (or wrap) the typed bridge-refusal error');
+        assert.equal((err as RecStopBridgeFailure).message, 'rec-stop failed: Malformed owned Network event: timestamp');
+        assert.ok(isTerminalRecStopFailure(err), 'isTerminalRecStopFailure must classify this as terminal');
+        return true;
+      },
+    );
+    const elapsed = Date.now() - before;
+    assert.ok(elapsed < stopExitTimeoutMs / 2, `stopComposedRecorder must return once the verified self-exit is observed, not the escalation deadline (took ${elapsed}ms)`);
+
+    // No orphan-success artifacts: recorder.json is untouched (not deleted as
+    // finalized) and no meta.json/finalized-success artifact was written.
+    assert.equal(fs.existsSync(path.join(recDir, 'recorder.json')), true, 'a terminal bridge refusal must never delete recorder.json as finalized');
+    assert.equal(fs.existsSync(path.join(recDir, 'meta.json')), false, 'a terminal bridge refusal must never write a finalized meta.json (no orphan-success)');
+
+    // The self-exit already happened (the handler killed the placeholder
+    // immediately after answering) — the wait resolved on that verified exit,
+    // not by escalating a redundant SIGTERM to an already-dead pid.
+    assert.equal(pidLive(placeholder.pid), false);
   } finally {
     fakeServer.close();
     placeholder.kill();

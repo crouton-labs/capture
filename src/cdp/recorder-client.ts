@@ -86,10 +86,32 @@ export async function requestRecStart(socketPath: string, nonce: string): Promis
   return resp;
 }
 
-/** Finalizes the recorder (`rec-stop`). Throws with the recorder's own error message on failure. */
+/**
+ * Thrown by `requestRecStop` when the bridge actually answered with an
+ * authenticated `ok:false` response — an explicit, terminal recorder-stop
+ * failure (fatal HAR drain, or any other authoritative rejection the bridge
+ * itself produced), as opposed to a transport/no-response failure (socket
+ * connect/timeout error), which `sendRecorderRequest` still rejects with a
+ * plain `Error`. Callers that only read `.message` see the exact same
+ * `rec-stop failed: ${error}` text as before this type existed; callers that
+ * need to distinguish "the bridge answered and refused" from "the bridge
+ * never answered" (`../motion/recorder.ts`'s terminal-vs-transport
+ * classification) narrow with `instanceof RecStopBridgeFailure` and read
+ * `.responseError` for the bridge's raw, unwrapped error string.
+ */
+export class RecStopBridgeFailure extends Error {
+  readonly responseError: string;
+  constructor(responseError: string) {
+    super(`rec-stop failed: ${responseError}`);
+    this.name = 'RecStopBridgeFailure';
+    this.responseError = responseError;
+  }
+}
+
+/** Finalizes the recorder (`rec-stop`). Throws `RecStopBridgeFailure` (preserving the recorder's own error message) when the bridge answers `ok:false`; a transport/no-response failure still throws a plain `Error`. */
 export async function requestRecStop(socketPath: string, nonce: string): Promise<RecStopResponseOk> {
   const resp = await sendRecorderRequest(socketPath, { type: 'rec-stop', nonce });
-  if (!resp.ok) throw new Error(`rec-stop failed: ${resp.error}`);
+  if (!resp.ok) throw new RecStopBridgeFailure(resp.error);
   return resp;
 }
 
