@@ -85,6 +85,11 @@ async function caught(action: () => Promise<unknown>): Promise<unknown> {
   assert.fail('expected action to reject');
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  return { promise: new Promise<T>((done) => { resolve = done; }), resolve };
+}
+
 // Fixture DOM for CSS queries: `.btn` matches two nodes, `#send` one.
 function cssHandlers(matches: number[]): Record<string, (params: Record<string, unknown>) => unknown> {
   const backendByNodeId: Record<number, number> = { 11: 111, 12: 112, 13: 113 };
@@ -130,6 +135,87 @@ test('css: `.btn` matching two nodes fails with two candidates, each carrying it
   const methods = client.calls.map((c) => c.method);
   assert.ok(methods.includes('DOM.getDocument'));
   assert.ok(methods.includes('DOM.querySelectorAll'));
+});
+
+test('css: capped candidate enrichment starts together and preserves DOM order despite reverse completion', async () => {
+  const nodeIds = Array.from({ length: 11 }, (_, index) => index + 1);
+  const describeBarriers = Array.from({ length: 10 }, () => deferred<{ node: { backendNodeId: number } }>());
+  const axBarriers = Array.from({ length: 10 }, () => deferred<{
+    nodes: Array<{
+      nodeId: string;
+      backendDOMNodeId: number;
+      role: { value: string };
+      name: { value: string };
+    }>;
+  }>());
+  const describeStarts: number[] = [];
+  const partialStarts: number[] = [];
+  const completionOrder: number[] = [];
+  const describeCompletions = new Set<number>();
+  const dependencyViolations: number[] = [];
+  const client = stubClient({
+    'DOM.enable': () => ({}),
+    'DOM.getDocument': () => ({ root: { nodeId: 1 } }),
+    'DOM.querySelectorAll': () => ({ nodeIds }),
+    'DOM.describeNode': (params) => {
+      const nodeId = params.nodeId as number;
+      describeStarts.push(nodeId);
+      return describeBarriers[nodeId - 1].promise.then((response) => {
+        describeCompletions.add(response.node.backendNodeId);
+        return response;
+      });
+    },
+    'Accessibility.getPartialAXTree': (params) => {
+      const backendNodeId = params.backendNodeId as number;
+      partialStarts.push(backendNodeId);
+      if (!describeCompletions.has(backendNodeId)) dependencyViolations.push(backendNodeId);
+      const index = backendNodeId - 1001;
+      return axBarriers[index].promise.then((response) => {
+        completionOrder.push(backendNodeId);
+        return response;
+      });
+    },
+  });
+
+  const pending = resolveLiveTarget(client, '.eleven');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const describeCountBeforeRelease = describeStarts.length;
+  const partialCountBeforeRelease = partialStarts.length;
+
+  for (let index = 9; index >= 0; index--) {
+    const backendNodeId = 1001 + index;
+    describeBarriers[index].resolve({ node: { backendNodeId } });
+  }
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const partialCountBeforeAxRelease = partialStarts.length;
+  for (let index = 9; index >= 0; index--) {
+    const backendNodeId = 1001 + index;
+    axBarriers[index].resolve({
+      nodes: [{
+        nodeId: `ax-${backendNodeId}`,
+        backendDOMNodeId: backendNodeId,
+        role: { value: 'button' },
+        name: { value: `Candidate ${index + 1}` },
+      }],
+    });
+  }
+
+  const result = await pending;
+  assert.equal(describeCountBeforeRelease, 10, 'all capped describe calls start before any is released');
+  assert.equal(partialCountBeforeRelease, 0, 'AX enrichment waits for its candidate describe call');
+  assert.equal(partialCountBeforeAxRelease, 10);
+  assert.deepEqual(describeStarts, nodeIds.slice(0, 10));
+  assert.deepEqual(dependencyViolations, []);
+  assert.deepEqual(completionOrder, Array.from({ length: 10 }, (_, index) => 1010 - index));
+  assert.equal(describeCompletions.size, 10);
+  assert.ok(!result.ok);
+  assert.equal(result.code, 'ambiguous');
+  assert.equal(result.matchCount, 11);
+  assert.deepEqual(result.candidates, Array.from({ length: 10 }, (_, index) => ({
+    backendNodeId: 1001 + index,
+    role: 'button',
+    name: `Candidate ${index + 1}`,
+  })));
 });
 
 test('css: a single live match resolves with backend id, role, and name', async () => {
@@ -288,8 +374,9 @@ test('full AX lifecycle: dual tree and disable failures retain primary and clean
   );
 });
 
-test('backend: resolves by identity, enriched with best-effort AX role/name', async () => {
+test('backend: resolves only after exact live identity, then enriches with best-effort AX role/name', async () => {
   const client = stubClient({
+    'DOM.describeNode': () => ({ node: { backendNodeId: 42 } }),
     'Accessibility.getPartialAXTree': () => ({
       nodes: [{ nodeId: 'ax-42', backendDOMNodeId: 42, role: { value: 'button' }, name: { value: 'Send' } }],
     }),
@@ -297,10 +384,15 @@ test('backend: resolves by identity, enriched with best-effort AX role/name', as
   const result = await resolveLiveTarget(client, 'backend:42');
   assert.ok(result.ok);
   assert.deepEqual(result, { ok: true, kind: 'backend', backendNodeId: 42, role: 'button', name: 'Send' });
+  assert.deepEqual(client.calls, [
+    { method: 'DOM.describeNode', params: { backendNodeId: 42, depth: 0 } },
+    { method: 'Accessibility.getPartialAXTree', params: { backendNodeId: 42, fetchRelatives: false } },
+  ]);
 });
 
-test('backend: identity survives a failing AX enrichment (role/name null)', async () => {
+test('backend: live identity survives a failing AX enrichment with null role/name', async () => {
   const client = stubClient({
+    'DOM.describeNode': () => ({ node: { backendNodeId: 99 } }),
     'Accessibility.getPartialAXTree': () => {
       throw new Error('No AX node for this backend id');
     },
@@ -308,14 +400,67 @@ test('backend: identity survives a failing AX enrichment (role/name null)', asyn
   const result = await resolveLiveTarget(client, 'backend:99');
   assert.ok(result.ok);
   assert.deepEqual(result, { ok: true, kind: 'backend', backendNodeId: 99, role: null, name: null });
+  assert.deepEqual(client.calls.map((call) => call.method), [
+    'DOM.describeNode',
+    'Accessibility.getPartialAXTree',
+  ]);
 });
 
-test('backend: a non-numeric id fails as no-match without any CDP call', async () => {
-  const client = stubClient({});
-  const result = await resolveLiveTarget(client, 'backend:abc');
-  assert.ok(!result.ok);
-  assert.equal(result.code, 'no-match');
-  assert.equal(client.calls.length, 0);
+test('backend: stale describe rejection is no-match and never calls AX', async () => {
+  const client = stubClient({
+    'DOM.describeNode': () => { throw new Error('No node with given id'); },
+  });
+  const result = await resolveLiveTarget(client, 'backend:42');
+  assert.deepEqual(result, {
+    ok: false,
+    code: 'no-match',
+    input: 'backend:42',
+    kind: 'backend',
+    matchCount: 0,
+    candidates: [],
+  });
+  assert.deepEqual(client.calls.map((call) => call.method), ['DOM.describeNode']);
+});
+
+test('backend: missing, malformed, or mismatched described identity is no-match and never calls AX', async () => {
+  const responses = [
+    {},
+    { node: null },
+    { node: { backendNodeId: '42' } },
+    { node: { backendNodeId: 43 } },
+  ];
+  for (const response of responses) {
+    const client = stubClient({ 'DOM.describeNode': () => response });
+    const result = await resolveLiveTarget(client, 'backend:42');
+    assert.deepEqual(result, {
+      ok: false,
+      code: 'no-match',
+      input: 'backend:42',
+      kind: 'backend',
+      matchCount: 0,
+      candidates: [],
+    });
+    assert.deepEqual(client.calls.map((call) => call.method), ['DOM.describeNode']);
+  }
+});
+
+test('backend: malformed or non-positive-safe ids fail as no-match without any CDP call', async () => {
+  for (const input of [
+    'backend:',
+    'backend:abc',
+    'backend:0',
+    'backend:-1',
+    'backend:1.5',
+    'backend:1e2',
+    'backend: 42',
+    `backend:${Number.MAX_SAFE_INTEGER + 1}`,
+  ]) {
+    const client = stubClient({});
+    const result = await resolveLiveTarget(client, input);
+    assert.ok(!result.ok);
+    assert.equal(result.code, 'no-match');
+    assert.equal(client.calls.length, 0);
+  }
 });
 
 test('text: is rejected with a typed failure naming the accepted prefixes, without any CDP call', async () => {

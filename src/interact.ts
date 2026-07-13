@@ -133,8 +133,8 @@ export async function resolveLiveTarget(
     case 'text':
       return { ok: false, code: 'unsupported-prefix', input, acceptedPrefixes: ACCEPTED_LIVE_PREFIXES };
     case 'backend': {
-      const id = Number(parsed.value);
-      if (!Number.isFinite(id)) {
+      const id = parseBackendNodeId(parsed.value);
+      if (id === null || !(await isLiveBackendNode(client, id))) {
         return { ok: false, code: 'no-match', input, kind: 'backend', matchCount: 0, candidates: [] };
       }
       const { role, name } = await axIdentityFor(client, id);
@@ -208,12 +208,13 @@ async function resolveLiveCss(
     return { ok: true, kind: 'css', backendNodeId, role, name };
   }
 
-  const candidates: TargetCandidate[] = [];
-  for (const nodeId of nodeIds.slice(0, CANDIDATE_LIMIT)) {
-    const backendNodeId = await backendNodeIdFor(client, nodeId);
-    const { role, name } = await axIdentityFor(client, backendNodeId);
-    candidates.push({ backendNodeId, role, name });
-  }
+  const candidates = await Promise.all(
+    nodeIds.slice(0, CANDIDATE_LIMIT).map(async (nodeId): Promise<TargetCandidate> => {
+      const backendNodeId = await backendNodeIdFor(client, nodeId);
+      const { role, name } = await axIdentityFor(client, backendNodeId);
+      return { backendNodeId, role, name };
+    }),
+  );
   return {
     ok: false,
     code: nodeIds.length === 0 ? 'no-match' : 'ambiguous',
@@ -229,12 +230,28 @@ async function backendNodeIdFor(client: LiveClient, nodeId: number): Promise<num
   return node.backendNodeId;
 }
 
+function parseBackendNodeId(value: string): number | null {
+  if (!/^\d+$/.test(value)) return null;
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+async function isLiveBackendNode(client: LiveClient, backendNodeId: number): Promise<boolean> {
+  try {
+    const response = await client.send('DOM.describeNode', { backendNodeId, depth: 0 });
+    if (response === null || typeof response !== 'object' || Array.isArray(response)) return false;
+    const node = (response as { node?: unknown }).node;
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return false;
+    return (node as { backendNodeId?: unknown }).backendNodeId === backendNodeId;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Best-effort AX role/name for a backend node id via a one-shot
- * `Accessibility.getPartialAXTree`. Identity facts enrich the resolved
- * record; a node with no AX presence (or a stale id) yields nulls rather
- * than failing resolution — `backend:<id>` resolution is identity, and a
- * stale id surfaces at dispatch time.
+ * Best-effort AX role/name for a live backend node id via a one-shot
+ * `Accessibility.getPartialAXTree`. A node with no AX presence still resolves
+ * with null enrichment.
  */
 async function axIdentityFor(
   client: LiveClient,
