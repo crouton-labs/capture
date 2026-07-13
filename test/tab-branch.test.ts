@@ -176,27 +176,35 @@ test('bin: `tab list --port <unreachable>` exits 0 with an endpoints-unreachable
     assert.ok(result.stdout.includes('<tabs '), result.stdout);
     assert.ok(result.stdout.includes(`endpoints-unreachable: port ${port}`), result.stdout);
     assert.ok(result.stdout.includes('unreachable="1"'), result.stdout);
-    assert.deepEqual(readdirSync(tempRoot), [], 'tab list must be read-only');
+    // The private artifact substrate ensures its (empty) capture root while
+    // resolving the active-session index; tab list must create nothing else —
+    // no session directory, pointer, or artifact.
+    const entries = readdirSync(tempRoot).filter((name) => name !== 'capture-sessions');
+    assert.deepEqual(entries, [], 'tab list must create no artifacts');
+    const rootDir = path.join(tempRoot, 'capture-sessions');
+    if (readdirSync(tempRoot).includes('capture-sessions')) {
+      assert.deepEqual(readdirSync(rootDir), [], 'tab list must leave the capture root empty');
+    }
   });
 });
 
-test('bin: `tab open` with no URL is a structured <error code="missing_argument">, exit 1', () => {
+// Cardinality (U16): missing/surplus positionals are rejected by the pure
+// invocation validator as one <error code="invalid_input"> before any effect.
+test('bin: `tab open` with no URL is a structured <error code="invalid_input">, exit 1', () => {
   withTempRoot((tempRoot) => {
     const result = run(['tab', 'open'], tempRoot);
     assert.equal(result.status, 1);
-    assert.ok(result.stdout.includes('<error '), result.stdout);
-    assert.ok(result.stdout.includes('missing_argument'), result.stdout);
-    assert.ok(result.stdout.includes('tab open'), result.stdout);
+    assert.ok(result.stdout.includes('<error code="invalid_input"'), result.stdout);
+    assert.ok(result.stdout.includes('tab open received 0 positional argument(s); expected exactly 1'), result.stdout);
   });
 });
 
-test('bin: `tab reset` with no URL is a structured <error code="missing_argument">, exit 1', () => {
+test('bin: `tab reset` with no URL is a structured <error code="invalid_input">, exit 1', () => {
   withTempRoot((tempRoot) => {
     const result = run(['tab', 'reset'], tempRoot);
     assert.equal(result.status, 1);
-    assert.ok(result.stdout.includes('<error '), result.stdout);
-    assert.ok(result.stdout.includes('missing_argument'), result.stdout);
-    assert.ok(result.stdout.includes('tab reset'), result.stdout);
+    assert.ok(result.stdout.includes('<error code="invalid_input"'), result.stdout);
+    assert.ok(result.stdout.includes('tab reset received 0 positional argument(s); expected exactly 1'), result.stdout);
   });
 });
 
@@ -204,9 +212,8 @@ test('bin: `tab network bogus` is a structured <error> naming the accepted value
   withTempRoot((tempRoot) => {
     const result = run(['tab', 'network', 'bogus'], tempRoot);
     assert.equal(result.status, 1);
-    assert.ok(result.stdout.includes('<error '), result.stdout);
-    assert.ok(result.stdout.includes('invalid_argument'), result.stdout);
-    assert.ok(result.stdout.includes('offline|online'), result.stdout);
+    assert.ok(result.stdout.includes('<error code="invalid_input"'), result.stdout);
+    assert.ok(result.stdout.includes('offline or online'), result.stdout);
   });
 });
 

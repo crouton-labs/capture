@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cmdCdp, runPageScope, runBrowserScope, type CdpScopeClient, type BrowserScopeClient, type BrowserScopeDeps } from '../src/cdp/commands/cdp.js';
+import { CaptureError } from '../src/errors.js';
 import type { ParsedArgs } from '../src/cdp/types.js';
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
 import { setActiveSession, clearActiveSession } from '../src/session-context.js';
@@ -92,44 +93,67 @@ function stubConnect(client: CdpScopeClient): (parsed: ParsedArgs) => Promise<{ 
 }
 
 // ---------------------------------------------------------------------------
-// Both method and --wait-event absent → structured <error>, exit 1.
+// Invocation failures cross the boundary as typed CaptureErrors (U16/A4):
+// the leaf never renders an error block or exits — capture.ts owns both.
 // ---------------------------------------------------------------------------
 
-test('cdp with neither <Domain.method> nor --wait-event emits a structured <error> and exits 1', async () => {
-  const { exitCode, stdout } = await withCapturedOutput(() => cmdCdp(parsedArgs(), []));
-  assert.equal(exitCode, 1);
-  assert.match(stdout, /<error /);
-  assert.match(stdout, /code="missing_method_and_event"/);
-  assert.match(stdout, /at least one/);
-});
+async function assertCaptureRejection(run: () => Promise<void>, code: string): Promise<{ stdout: string }> {
+  let stdoutSeen = '';
+  await assert.rejects(
+    async () => {
+      const { stdout } = await withCapturedOutput(run);
+      stdoutSeen = stdout;
+    },
+    (error: unknown) => {
+      assert.ok(error instanceof CaptureError, `expected CaptureError, got ${String(error)}`);
+      assert.equal(error.descriptor.code, code);
+      return true;
+    },
+  );
+  return { stdout: stdoutSeen };
+}
 
-test('cdp both-absent error mirrors as JSON under --json', async () => {
-  const { exitCode, stdout } = await withCapturedOutput(() => cmdCdp(parsedArgs({ json: true }), []));
-  assert.equal(exitCode, 1);
-  const output = JSON.parse(stdout) as { tag: string; attrs: Record<string, unknown> };
-  assert.equal(output.tag, 'error');
-  assert.equal(output.attrs.code, 'missing_method_and_event');
+test('cdp with neither <Domain.method> nor --wait-event throws a typed missing_method_and_event without rendering or exiting', async () => {
+  const originalWrite = process.stdout.write;
+  let stdout = '';
+  process.stdout.write = ((chunk: unknown) => { stdout += String(chunk); return true; }) as typeof process.stdout.write;
+  try {
+    await assert.rejects(
+      () => cmdCdp(parsedArgs(), []),
+      (error: unknown) => {
+        assert.ok(error instanceof CaptureError);
+        assert.equal(error.descriptor.code, 'missing_method_and_event');
+        assert.equal(error.descriptor.kind, 'invocation');
+        assert.match(error.descriptor.message, /at least one/);
+        return true;
+      },
+    );
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  assert.equal(stdout, '', 'the leaf must not render the error itself');
 });
 
 test('cdp wait-only invocation passes the both-absent gate (its failure is a connection error, never missing_method_and_event)', async () => {
   // No injectable connect at the cmdCdp level: with no session/target the
   // page-scope connection fails deterministically offline — proving the gate
   // let the wait-only invocation through to the connection attempt.
-  const { exitCode, stdout } = await withCapturedOutput(() =>
-    cmdCdp(parsedArgs({ waitEvent: 'ServiceWorker.workerRegistrationUpdated', timeoutMs: 200 }), []),
+  await assert.rejects(
+    () => withCapturedOutput(() => cmdCdp(parsedArgs({ waitEvent: 'ServiceWorker.workerRegistrationUpdated', timeoutMs: 200 }), [])),
+    (error: unknown) => {
+      assert.ok(error instanceof CaptureError);
+      assert.equal(error.descriptor.code, 'cdp_failed');
+      assert.doesNotMatch(error.descriptor.message, /missing_method_and_event/);
+      return true;
+    },
   );
-  assert.equal(exitCode, 1);
-  assert.match(stdout, /code="cdp_failed"/);
-  assert.doesNotMatch(stdout, /missing_method_and_event/);
 });
 
-test('cdp with invalid --params JSON emits a structured <error code="invalid_params_json"> and exits 1', async () => {
-  const { exitCode, stdout } = await withCapturedOutput(() =>
-    cmdCdp(parsedArgs({ positional: ['Browser.getVersion'], params: '{not-json' }), []),
+test('cdp with invalid --params JSON throws a typed invalid_params_json', async () => {
+  await assertCaptureRejection(
+    () => cmdCdp(parsedArgs({ positional: ['Browser.getVersion'], params: '{not-json' }), []),
+    'invalid_params_json',
   );
-  assert.equal(exitCode, 1);
-  assert.match(stdout, /<error /);
-  assert.match(stdout, /code="invalid_params_json"/);
 });
 
 // ---------------------------------------------------------------------------
@@ -392,7 +416,7 @@ test('cdp -h states the at-least-one-of input constraint and the inline --params
   } finally {
     console.log = originalLog;
   }
-  assert.equal(exitCode, 0);
+  assert.equal(exitCode, undefined, 'help must return, never call process.exit');
   assert.match(helpText, /At least one of <Domain\.method> \/ --wait-event is required/);
   assert.match(helpText, /Spec deviation: params stay inline JSON/);
   assert.match(helpText, /Output:/);

@@ -18,6 +18,7 @@
  */
 
 import * as fs from 'fs';
+import { CaptureError, captureError, invalidInput } from '../../errors.js';
 import { getActiveSession } from '../../session-context.js';
 import { connectForCommand } from '../connection.js';
 import { getBrowserClient, findTabById } from '../targets.js';
@@ -29,7 +30,6 @@ import {
   capped,
   data,
   emitResult,
-  fact,
   line,
   text,
   type FactLine,
@@ -137,43 +137,33 @@ export function emitCdpResult(opts: CdpResultOptions): void {
   );
 }
 
-function emitCdpError(opts: {
-  code: string;
-  summary: FactLine;
-  followUp?: FactLine;
-  json?: boolean;
-}): never {
-  emitResult(
-    {
-      tag: 'error',
-      attrs: { command: 'cdp', code: opts.code },
-      summary: opts.summary,
-      followUp: opts.followUp,
-    },
-    { json: opts.json },
-  );
-  process.exit(1);
-}
-
 /** Recovery line for a rejected bare (target-less) protocol call: many CDP
  * domains are tab-scoped, and Chrome often rejects them with only "Internal
  * error" when sent on the bare browser connection. */
-const TAB_SCOPE_RECOVERY = text`Many CDP domains (Storage.*, Page.*, DOM.*, Emulation.*, ...) are tab-scoped, not connection-scoped — re-run with --target <tabId> (\`capture tab list\` shows available tabs).`;
+const TAB_SCOPE_RECOVERY =
+  'Many CDP domains (Storage.*, Page.*, DOM.*, Emulation.*, ...) are tab-scoped, not connection-scoped — re-run with --target <tabId> (`capture tab list` shows available tabs).';
+
+/** Appends the tab-scope recovery hint when the failed call was target-less. */
+function cdpFailed(message: string, flagTarget: string | undefined, cause?: unknown): CaptureError {
+  return captureError('world', 'cdp_failed', flagTarget ? message : `${message} ${TAB_SCOPE_RECOVERY}`, cause);
+}
 
 export async function cmdCdp(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
     console.log(HELP);
-    process.exit(0);
+    return;
   }
 
+  // Positional cardinality (0..1, where 0 requires --wait-event) is enforced
+  // by `validateCliInvocation` before dispatch reaches this leaf; this guard
+  // covers direct programmatic callers only. Failures cross the boundary as
+  // typed CaptureErrors — capture.ts is the sole renderer/exit-status owner.
   const method = parsed.positional[0];
   if (!method && !parsed.waitEvent) {
-    emitCdpError({
-      code: 'missing_method_and_event',
-      summary: text`received: neither a <Domain.method> positional nor --wait-event; expected: at least one of the two.`,
-      followUp: text`Run \`capture cdp -h\` for the input schema.`,
-      json: parsed.json,
-    });
+    throw invalidInput(
+      'received: neither a <Domain.method> positional nor --wait-event; expected: at least one of the two. Run `capture cdp -h` for the input schema.',
+      'missing_method_and_event',
+    );
   }
 
   let params: Record<string, unknown> | undefined;
@@ -181,11 +171,10 @@ export async function cmdCdp(parsed: ParsedArgs, _args: string[]): Promise<void>
     try {
       params = JSON.parse(parsed.params);
     } catch (err) {
-      emitCdpError({
-        code: 'invalid_params_json',
-        summary: fact`received: --params that is not valid JSON (${err instanceof Error ? err.message : String(err)}); expected: a JSON-encoded params object.`,
-        json: parsed.json,
-      });
+      throw invalidInput(
+        `received: --params that is not valid JSON (${err instanceof Error ? err.message : String(err)}); expected: a JSON-encoded params object.`,
+        'invalid_params_json',
+      );
     }
   }
 
@@ -199,11 +188,13 @@ export async function cmdCdp(parsed: ParsedArgs, _args: string[]): Promise<void>
   try {
     await runPageScope(method, params, parsed, timeoutMs);
   } catch (err) {
-    emitCdpError({
-      code: 'cdp_failed',
-      summary: fact`\`${invocationLabel(method, parsed.waitEvent)}\` failed on the page connection: ${err instanceof Error ? err.message : String(err)}`,
-      json: parsed.json,
-    });
+    if (err instanceof CaptureError) throw err;
+    throw captureError(
+      'world',
+      'cdp_failed',
+      `\`${invocationLabel(method, parsed.waitEvent)}\` failed on the page connection: ${err instanceof Error ? err.message : String(err)}`,
+      err,
+    );
   }
 }
 
@@ -238,12 +229,10 @@ export async function runBrowserScope(
       timeoutMs,
     });
     if (!resp.ok) {
-      emitCdpError({
-        code: 'cdp_failed',
-        summary: fact`\`${invocationLabel(method, parsed.waitEvent)}\` failed over the held connection: ${resp.error ?? 'unknown bridge error'}`,
-        followUp: flagTarget ? undefined : TAB_SCOPE_RECOVERY,
-        json: parsed.json,
-      });
+      throw cdpFailed(
+        `\`${invocationLabel(method, parsed.waitEvent)}\` failed over the held connection: ${resp.error ?? 'unknown bridge error'}`,
+        flagTarget,
+      );
     }
     emitCdpResult({
       method,
@@ -273,12 +262,11 @@ export async function runBrowserScope(
       // requiring the full 32-char target id here.
       const tab = await deps.findTabById(port, flagTarget);
       if (!tab) {
-        emitCdpError({
-          code: 'target_not_found',
-          summary: fact`received: --target ${flagTarget} with no matching target on port ${port}; expected: an existing target id (8-char prefix accepted).`,
-          followUp: text`\`capture tab list\` shows available targets.`,
-          json: parsed.json,
-        });
+        throw captureError(
+          'precondition',
+          'target_not_found',
+          `received: --target ${flagTarget} with no matching target on port ${port}; expected: an existing target id (8-char prefix accepted). \`capture tab list\` shows available targets.`,
+        );
       }
       const attached = (await client.send('Target.attachToTarget', {
         targetId: tab.id,
@@ -299,12 +287,12 @@ export async function runBrowserScope(
       json: parsed.json,
     });
   } catch (err) {
-    emitCdpError({
-      code: 'cdp_failed',
-      summary: fact`\`${invocationLabel(method, parsed.waitEvent)}\` failed on the one-shot browser connection: ${err instanceof Error ? err.message : String(err)}`,
-      followUp: flagTarget ? undefined : TAB_SCOPE_RECOVERY,
-      json: parsed.json,
-    });
+    if (err instanceof CaptureError) throw err;
+    throw cdpFailed(
+      `\`${invocationLabel(method, parsed.waitEvent)}\` failed on the one-shot browser connection: ${err instanceof Error ? err.message : String(err)}`,
+      flagTarget,
+      err,
+    );
   } finally {
     client.close();
   }

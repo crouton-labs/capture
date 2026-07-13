@@ -5,6 +5,7 @@
  * through `data()` (I-9).
  */
 import { detectCdpPort } from '../../detect.js';
+import { captureError, invalidInput } from '../../../errors.js';
 import { navigateAndWait } from '../../record.js';
 import { type CDPTarget, type ParsedArgs } from '../../types.js';
 import {
@@ -58,48 +59,31 @@ export async function cmdTabOpen(parsed: ParsedArgs, _args: string[]): Promise<v
     return;
   }
 
+  // Positional cardinality (exactly 1) is enforced by `validateCliInvocation`
+  // before dispatch reaches this leaf; this guard covers direct programmatic
+  // callers only. Failures cross the boundary as typed CaptureErrors —
+  // capture.ts is the sole renderer/exit-status owner.
   const url = parsed.positional[0];
   if (!url) {
-    emitResult(
-      {
-        tag: 'error',
-        attrs: { command: 'tab open', code: 'missing_argument' },
-        summary: text`received: no URL; expected: capture tab open <url> [--new] [--port <port>].`,
-      },
-      { json: parsed.json },
-    );
-    process.exit(1);
+    throw invalidInput('received: no URL; expected: capture tab open <url> [--new] [--port <port>].', 'missing_argument');
   }
 
   let port: number;
   try {
     port = parsed.port ?? (await detectCdpPort());
   } catch {
-    emitResult(
-      {
-        tag: 'error',
-        attrs: { command: 'tab open', code: 'no_cdp_endpoint' },
-        summary: text`received: no --port, and no CDP endpoint was discovered on localhost; expected: a running CDP-enabled browser (or an explicit --port <port>).`,
-        followUp: text`capture tab list probes every localhost CDP endpoint.`,
-      },
-      { json: parsed.json },
+    throw captureError(
+      'world',
+      'no_cdp_endpoint',
+      'received: no --port, and no CDP endpoint was discovered on localhost; expected: a running CDP-enabled browser (or an explicit --port <port>). capture tab list probes every localhost CDP endpoint.',
     );
-    process.exit(1);
   }
 
   let tab: CDPTarget;
   try {
     tab = await navigateAndWait(port, url, { forceNew: parsed.new });
   } catch (err) {
-    emitResult(
-      {
-        tag: 'error',
-        attrs: { command: 'tab open', code: 'open_failed', port },
-        summary: fact`received: \`${url}\`; opening it on port ${port} failed: ${errorMessage(err)}`,
-      },
-      { json: parsed.json },
-    );
-    process.exit(1);
+    throw captureError('world', 'open_failed', `received: \`${url}\`; opening it on port ${port} failed: ${errorMessage(err)}`, err);
   }
 
   emitResult(buildTabOpenedResult(tab, port), { json: parsed.json });

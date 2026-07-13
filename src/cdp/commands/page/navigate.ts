@@ -13,6 +13,7 @@ import { isRecorderHeldClient, type RecorderHeldClient } from '../../recorder-cl
 import { recDirFor, readRecorderJson } from '../../motion/recorder.js';
 import { appendToHarRecording as appendToHar } from '../../../har-manager.js';
 import { type ParsedArgs } from '../../types.js';
+import { CaptureError, captureError, invalidInput } from '../../../errors.js';
 import { isParseableUrl } from '../../leaf-grammar.js';
 import { emitResult, fact, text, type FactLine, type RenderableResult } from '../../../output/render.js';
 
@@ -253,18 +254,13 @@ export async function cmdPageNavigate(parsed: ParsedArgs, _args: string[]): Prom
     return;
   }
 
+  // Positional cardinality (exactly 1) is enforced by `validateCliInvocation`
+  // before dispatch reaches this leaf; this guard covers direct programmatic
+  // callers only. Failures cross the boundary as typed CaptureErrors —
+  // capture.ts is the sole renderer/exit-status owner.
   const url = parsed.positional[0];
   if (!url) {
-    emitResult(
-      {
-        tag: 'error',
-        attrs: { command: 'page navigate', code: 'missing_url' },
-        summary: text`received: no URL; expected: \`capture page navigate <url> [--settle <ms>]\`.`,
-        followUp: text`Re-run with the destination URL as the first positional argument.`,
-      },
-      { json: parsed.json },
-    );
-    process.exit(1);
+    throw invalidInput('received: no URL; expected: `capture page navigate <url> [--settle <ms>]`.', 'missing_url');
   }
 
   const settle = parsed.settle ?? DEFAULT_SETTLE_MS;
@@ -320,15 +316,12 @@ export async function cmdPageNavigate(parsed: ParsedArgs, _args: string[]): Prom
       { json: parsed.json },
     );
   } catch (err) {
-    emitResult(
-      {
-        tag: 'error',
-        attrs: { command: 'page navigate', code: 'navigate_failed' },
-        summary: fact`${err instanceof Error ? err.message : String(err)}`,
-        followUp: text`Check the URL is absolute and a CDP-enabled browser is running (probe: capture tab list).`,
-      },
-      { json: parsed.json },
+    if (err instanceof CaptureError) throw err;
+    throw captureError(
+      'world',
+      'navigate_failed',
+      `${err instanceof Error ? err.message : String(err)} — check the URL is absolute and a CDP-enabled browser is running (probe: capture tab list).`,
+      err,
     );
-    process.exit(1);
   }
 }

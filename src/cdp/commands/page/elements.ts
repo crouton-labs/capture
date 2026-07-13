@@ -17,6 +17,7 @@
  * fact (I-5); "0 interactive elements" is itself the measurement (I-8).
  */
 import { type ParsedArgs } from '../../types.js';
+import { invalidInput } from '../../../errors.js';
 import { withConnection } from '../../connection.js';
 import { INTERACTIVE_ROLES, readFullAXTree } from '../../a11y.js';
 import {
@@ -132,17 +133,13 @@ export async function cmdPageElements(parsed: ParsedArgs, _args: string[]): Prom
     return;
   }
 
+  // Positional cardinality (exactly 0) is enforced by `validateCliInvocation`
+  // before dispatch reaches this leaf; this guard covers direct programmatic
+  // callers only. Failures cross the boundary as typed CaptureErrors —
+  // capture.ts is the sole renderer/exit-status owner.
   const limit = parsed.limit ?? DEFAULT_LIMIT;
   if (!Number.isInteger(limit) || limit < 1) {
-    emitResult(
-      {
-        tag: 'error',
-        attrs: { command: 'page elements', code: 'invalid_flag' },
-        summary: fact`received: --limit ${String(parsed.limit)}; expected: a positive integer.`,
-      },
-      { json: parsed.json },
-    );
-    process.exit(1);
+    throw invalidInput(`received: --limit ${String(parsed.limit)}; expected: a positive integer.`, 'invalid_flag');
   }
 
   const records = await withConnection(
