@@ -6,7 +6,8 @@ import * as path from 'node:path';
 
 const configuredRoot = process.env.CAPTURE_ROOT;
 if (configuredRoot !== undefined && !path.isAbsolute(configuredRoot)) throw new Error('CAPTURE_ROOT must be an absolute path');
-/** The process-start private artifact root. Its pathname is intentionally not realpathed. */
+/** The private artifact root pathname, frozen at process start; the directory itself is
+ * established lazily by the first artifact transaction. Intentionally not realpathed. */
 export const CAPTURE_ROOT = path.resolve(configuredRoot ?? path.join(os.tmpdir(), 'capture-sessions'));
 export const DIR_MODE = 0o700;
 export const FILE_MODE = 0o600;
@@ -24,7 +25,7 @@ export interface ArtifactTestHooks {
   afterChildLstat?: Hook; beforeChildChdir?: Hook; afterChildChdirBeforeIdentityCheck?: Hook; beforeChildUnlink?: Hook; beforeDirectoryRmdir?: Hook;
   beforePublishAttempt?: Hook; afterStageMkdirPinned?: Hook; beforeStageChdir?: Hook; afterStageChdirBeforeIdentityCheck?: Hook; afterOwnerWrite?: Hook; beforePublishRename?: Hook; beforeStageCleanup?: Hook; afterCanonicalOwnerValidation?: Hook; afterOwnerRemoval?: Hook; beforeCanonicalRmdir?: Hook;
 }
-/** A module-bootstrap hook may be installed before importing this module with this global symbol. */
+/** A hook may be installed via this global symbol before importing this module, so the first transaction's root bootstrap is observable. */
 export const ARTIFACT_TEST_HOOKS_SYMBOL = Symbol.for('capture.artifacts.test-hooks');
 let hooks = globalThis[ARTIFACT_TEST_HOOKS_SYMBOL as keyof typeof globalThis] as ArtifactTestHooks | undefined;
 function hook(operation: ArtifactHookOperation, phase: ArtifactHookPhase, path: string, component?: string): void { const detail = { operation, phase, path, component }; hooks?.onHook?.(detail); hooks?.[phase]?.(detail); }
@@ -103,7 +104,9 @@ function closeDescriptor(fd: number, role: Extract<ArtifactSyscallRole, 'artifac
 function combineFailure(primary: unknown, secondary: unknown, message: string): never {
   throw new AggregateError([primary, secondary], message);
 }
-// The root is established below through the same pinned transaction used by every operation.
+// The root is established lazily by the first pinned artifact transaction: every
+// transaction traverses it, pinning its identity on first use and verifying it
+// on every later traversal. Non-artifact invocations touch no filesystem state.
 let captureRootIdentity: Identity | undefined;
 let cwdPinned = false;
 
@@ -122,7 +125,7 @@ function writeAll(fd: number, data: string | Buffer, role: Extract<ArtifactSysca
     const wrote = fs.writeSync(fd, bytes, off, prescribed); if (!Number.isSafeInteger(wrote) || wrote <= 0 || wrote > prescribed) throw new Error('short private artifact write'); off += wrote;
   } }
 function privateDirHere(): void { const fd = fs.openSync('.', fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW); try { fs.fchmodSync(fd, DIR_MODE); } finally { fs.closeSync(fd); } }
-function verifyRoot(actual: Identity): void { if (captureRootIdentity) { if (!sameIdentity(captureRootIdentity, actual)) throw new Error('capture root changed since process initialization'); } else captureRootIdentity = actual; }
+function verifyRoot(actual: Identity): void { if (captureRootIdentity) { if (!sameIdentity(captureRootIdentity, actual)) throw new Error('capture root changed since it was first established'); } else captureRootIdentity = actual; }
 function rootOrAncestor(current: string): boolean { return current === CAPTURE_ROOT || CAPTURE_ROOT.startsWith(`${current}${path.sep}`); }
 
 /** Performs only synchronous single-component operations while cwd is inode-pinned. */
@@ -182,11 +185,6 @@ function inPinnedDirectory<T>(absoluteDir: string, create: boolean, operation: (
   if (failure) throw failure;
   return result as T;
 }
-
-// Bootstrap without recursive pathname creation or a following stat: the established
-// configured root vnode is the authority for all later transactions.
-inPinnedDirectory(CAPTURE_ROOT, true, () => undefined);
-if (!captureRootIdentity) throw new Error('could not establish capture root identity');
 
 export function assertUnderCaptureRoot(targetPath: string): string { const resolved = path.resolve(targetPath); const relative = path.relative(CAPTURE_ROOT, resolved); if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error(`artifact path escapes capture root ${CAPTURE_ROOT}: ${targetPath}`); return resolved; }
 function pinnedParent<T>(target: string, operation: (name: string) => T, create = true, operationKind: ArtifactHookOperation = 'traversal'): T { const resolved = assertUnderCaptureRoot(target); const name = path.basename(resolved); assertName(name); return inPinnedDirectory(path.dirname(resolved), create, () => operation(name), operationKind); }

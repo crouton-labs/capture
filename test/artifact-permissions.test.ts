@@ -166,7 +166,9 @@ test('F-R2 a final configured-root symlink is rejected without mutating target, 
     const targetBefore = snapshot(target);
     const final = path.join(base, 'finalroot'); fs.symlinkSync(target, final); const linkBefore = snapshot(final); const parentContentsBefore = fs.readdirSync(base).sort();
     const result = path.join(coordinator, 'fr2-rec.json');
-    const res = child(final, `import fs from 'node:fs'; const rec=[]; globalThis[Symbol.for('capture.artifacts.test-hooks')]={onHook(d){rec.push(d)}}; let threw=false; try{ await import(process.env.ARTIFACT_MODULE);}catch(e){threw=true;} fs.writeFileSync(${JSON.stringify(result)}, JSON.stringify({threw, phases: rec.map(d=>d.phase)}));`);
+    // The root is established by the first artifact transaction, not by import;
+    // the establishing traversal must refuse the symlinked configured root.
+    const res = child(final, `import fs from 'node:fs'; const rec=[]; globalThis[Symbol.for('capture.artifacts.test-hooks')]={onHook(d){rec.push(d)}}; let threw=false; try{ const a = await import(process.env.ARTIFACT_MODULE); a.ensurePrivateDir(a.CAPTURE_ROOT + '/x'); }catch(e){threw=true;} fs.writeFileSync(${JSON.stringify(result)}, JSON.stringify({threw, phases: rec.map(d=>d.phase)}));`);
     assert.equal(res.status, 0, res.stderr);
     const rec = JSON.parse(fs.readFileSync(result, 'utf8'));
     assert.equal(rec.threw, true);
@@ -189,7 +191,7 @@ test('F-R3 intermediate symlink rejected, ordinary host spelling works, and the 
     const target = path.join(base, 'target'); fs.mkdirSync(target); fs.writeFileSync(path.join(target, 'keep'), 'keep', { mode: 0o644 });
     const targetBefore = snapshot(target); const middle = path.join(base, 'middle'); fs.symlinkSync(target, middle); const linkBefore = snapshot(middle);
     const configured = path.join(middle, 'configured');
-    const inter = child(configured, `await import(process.env.ARTIFACT_MODULE)`);
+    const inter = child(configured, `const a = await import(process.env.ARTIFACT_MODULE); a.ensurePrivateDir(a.CAPTURE_ROOT + '/x');`);
     assert.notEqual(inter.status, 0);
     assert.deepEqual(snapshot(target), targetBefore);
     assert.deepEqual(snapshot(middle), linkBefore);
@@ -211,7 +213,7 @@ test('F-R3 intermediate symlink rejected, ordinary host spelling works, and the 
     const aliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fr3-var-'));
     const result = path.join(coordinator, 'fr3-alias.json');
     try {
-      const rec = child(aliasRoot, `import fs from 'node:fs'; const rec=[]; globalThis[Symbol.for('capture.artifacts.test-hooks')]={onHook(d){ if(d.path==='/var') rec.push(d); }}; await import(process.env.ARTIFACT_MODULE); fs.writeFileSync(${JSON.stringify(result)}, JSON.stringify(rec));`);
+      const rec = child(aliasRoot, `import fs from 'node:fs'; const rec=[]; globalThis[Symbol.for('capture.artifacts.test-hooks')]={onHook(d){ if(d.path==='/var') rec.push(d); }}; const a = await import(process.env.ARTIFACT_MODULE); a.ensurePrivateDir(a.CAPTURE_ROOT + '/x'); fs.writeFileSync(${JSON.stringify(result)}, JSON.stringify(rec));`);
       assert.equal(rec.status, 0, rec.stderr);
       const recorded = JSON.parse(fs.readFileSync(result, 'utf8'));
       assert.ok(recorded.some((d: any) => d.operation === 'root-bootstrap' && d.phase === 'afterComponentChdirBeforeIdentityCheck' && d.path === '/var' && d.component === 'var'), `expected exact /var alias tuple; recorded ${JSON.stringify(recorded)}`);
@@ -222,7 +224,7 @@ test('F-R3 intermediate symlink rejected, ordinary host spelling works, and the 
     const varBase = fs.mkdtempSync(path.join(os.tmpdir(), 'fr3-var2-'));
     const suffix = path.join(varBase, 'suffix');
     try {
-      const guarded = child(suffix, `globalThis[Symbol.for('capture.artifacts.test-hooks')]={onHook(d){ if(d.path==='/var' && d.phase==='afterComponentChdirBeforeIdentityCheck'){ throw new Error('alias-guard'); } }}; await import(process.env.ARTIFACT_MODULE);`);
+      const guarded = child(suffix, `globalThis[Symbol.for('capture.artifacts.test-hooks')]={onHook(d){ if(d.path==='/var' && d.phase==='afterComponentChdirBeforeIdentityCheck'){ throw new Error('alias-guard'); } }}; const a = await import(process.env.ARTIFACT_MODULE); a.ensurePrivateDir(a.CAPTURE_ROOT + '/x');`);
       assert.notEqual(guarded.status, 0);
       assert.equal(fs.existsSync(suffix), false, 'no configured-root suffix may be created before the followed-target check');
     } finally { fs.rmSync(varBase, { recursive: true, force: true }); }
@@ -254,7 +256,7 @@ test('F-R5 an existing loose 0755 root is chmodded to 0700 in place (same inode)
   try {
     const loose = path.join(base, 'loose'); fs.mkdirSync(loose, { mode: 0o755 }); fs.chmodSync(loose, 0o755);
     const inoBefore = fs.statSync(loose).ino;
-    const res = child(loose, `await import(process.env.ARTIFACT_MODULE)`);
+    const res = child(loose, `const a = await import(process.env.ARTIFACT_MODULE); a.ensurePrivateDir(a.CAPTURE_ROOT + '/x');`);
     assert.equal(res.status, 0, res.stderr);
     assert.equal(fs.statSync(loose).ino, inoBefore);
     assert.equal(mode(loose), DIR_MODE);
@@ -272,7 +274,7 @@ for (const variant of ['real', 'symlink'] as const) {
       const outside = path.join(base, 'outside'); fs.mkdirSync(outside); fs.writeFileSync(path.join(outside, 'sentinel'), 'outside', { mode: 0o644 });
       const outsideBefore = snapshot(outside); const originalBefore = snapshot(root); const held = path.join(base, 'held');
       const expected = { operation: 'root-bootstrap', phase: 'afterComponentLstat', path: path.resolve(root), component: 'root' };
-      const g = await gatedChild(path.resolve(root), expected, `await import(process.env.ARTIFACT_MODULE);`, `fr6-${variant}`);
+      const g = await gatedChild(path.resolve(root), expected, `const a = await import(process.env.ARTIFACT_MODULE); a.ensurePrivateDir(a.CAPTURE_ROOT + '/x');`, `fr6-${variant}`);
       fs.renameSync(root, held);
       if (variant === 'real') { fs.mkdirSync(root, { mode: 0o755 }); fs.chmodSync(root, 0o755); } else fs.symlinkSync(outside, root);
       const replacementBefore = snapshot(root);
@@ -287,9 +289,10 @@ for (const variant of ['real', 'symlink'] as const) {
 }
 
 // ===========================================================================
-// F-R7 — Every entry point rejects post-import root generation replacement
+// F-R7 — Every entry point rejects post-establishment root generation
+//        replacement
 // ===========================================================================
-test('F-R7 every entry point rejects a post-import root generation replacement', async () => {
+test('F-R7 every entry point rejects a post-establishment root generation replacement', async () => {
   const ops: Array<{ name: string; variant: 'real' | 'symlink'; seed: 'file' | 'tree' | 'none'; call: string }> = [
     { name: 'create', variant: 'real', seed: 'none', call: `a.createPrivateFile(root + '/record', 'new')` },
     { name: 'read', variant: 'symlink', seed: 'file', call: `a.readPrivateFile(root + '/record')` },
@@ -308,7 +311,9 @@ test('F-R7 every entry point rejects a post-import root generation replacement',
       if (op.seed === 'tree') { fs.mkdirSync(path.join(root, 'tree')); fs.writeFileSync(path.join(root, 'tree', 'child'), 'trusted'); }
       const result = path.join(coordinator, `fr7-${op.name}.json`);
       const plant = op.variant === 'real' ? `fs.mkdirSync(root);` : `fs.symlinkSync(path.join(base,'outside'), root);`;
-      const res = await childAsync(root, `import fs from 'node:fs'; import path from 'node:path'; const a = await import(process.env.ARTIFACT_MODULE); const root = a.CAPTURE_ROOT; const base = path.dirname(root); const held = path.join(base,'held'); fs.renameSync(root, held); ${plant} let threw=false, msg=''; try{ ${op.call}; }catch(e){ threw=true; msg=String(e && e.message); } fs.writeFileSync(${JSON.stringify(result)}, JSON.stringify({threw,msg}));`);
+      // Establish the root generation through the real transaction API first;
+      // only then is the rename a replacement of a pinned generation.
+      const res = await childAsync(root, `import fs from 'node:fs'; import path from 'node:path'; const a = await import(process.env.ARTIFACT_MODULE); const root = a.CAPTURE_ROOT; a.ensurePrivateDir(root + '/.pin'); const base = path.dirname(root); const held = path.join(base,'held'); fs.renameSync(root, held); ${plant} let threw=false, msg=''; try{ ${op.call}; }catch(e){ threw=true; msg=String(e && e.message); } fs.writeFileSync(${JSON.stringify(result)}, JSON.stringify({threw,msg}));`);
       assert.equal(res.status, 0, res.stderr);
       const outcome = JSON.parse(fs.readFileSync(result, 'utf8'));
       assert.equal(outcome.threw, true, `${op.name} must reject the replaced root: ${outcome.msg}`);
@@ -333,7 +338,8 @@ test('F-R8 a cold-root bootstrap that loses mkdir to a concurrent peer adopts th
   const result = path.join(coordinator, 'fr8-cold.json');
   try {
     // The peer wins the create inside the exact ENOENT→mkdir window of the
-    // module-load bootstrap; the loser must pin the winner's vnode and proceed.
+    // first transaction's root bootstrap; the loser must pin the winner's
+    // vnode and proceed.
     const res = child(root, `import fs from 'node:fs'; let winner; globalThis[Symbol.for('capture.artifacts.test-hooks')]={onHook(d){ if(d.operation==='root-bootstrap'&&d.phase==='beforeComponentCreate'&&d.component==='root'&&winner===undefined){ fs.mkdirSync(d.path,{mode:0o700}); winner=fs.lstatSync(d.path).ino; } }}; const a = await import(process.env.ARTIFACT_MODULE); a.writePrivateFile(a.CAPTURE_ROOT + '/w', 'hi'); fs.writeFileSync(${JSON.stringify(result)}, JSON.stringify({ winner, pinned: fs.lstatSync(a.CAPTURE_ROOT).ino }));`);
     assert.equal(res.status, 0, res.stderr);
     const rec = JSON.parse(fs.readFileSync(result, 'utf8'));

@@ -12,7 +12,7 @@
   "scripts": {
     "build": "esbuild src/capture.ts --bundle --platform=node --format=cjs --outfile=bin/capture --external:esbuild '--banner:js=#!/usr/bin/env node' \"--define:globalThis.__CAPTURE_VERSION__=\\\"$npm_package_version\\\"\" && chmod +x bin/capture",
     "dev": "tsx src/capture.ts",
-    "test": "node --import tsx --test test/*.test.ts",
+    "test": "node --import tsx --import ./test/fixtures/isolate-capture-root.ts --test test/*.test.ts",
     "test:install-chrome": "npx --yes @puppeteer/browsers install chrome-headless-shell@143.0.7499.40"
   },
   "repository": {

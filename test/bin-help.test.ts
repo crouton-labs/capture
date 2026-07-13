@@ -1,9 +1,10 @@
 /**
  * Root-router surface contract, proven against the built `bin/capture`:
  * assembled root help (seven <command> blocks + I/O footer), structured
- * unknown-command errors, `--version` as the only version invocation, leaf
- * routing into the page/tab branch stubs, and the dispatch-level `--gate`
- * guard (rejected everywhere except `measure check|diff`).
+ * unknown-command errors, `--version` as the only version invocation,
+ * branch-grammar leaf validation (`page click` rejected with a leaf-specific
+ * diagnostic before any effect), and the dispatch-level `--gate` guard
+ * (rejected everywhere except `measure check|diff`).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -66,16 +67,17 @@ test('bare `capture` and `capture -h` print the assembled root help: seven <comm
   });
 });
 
-test('an unknown command is a structured <error code="unknown_command"> naming the seven roots, exit 1', () => {
+test('an unknown command is a structured <error code="unknown_command" kind="invocation"> naming the seven roots, exit 1, read-only', () => {
   withTempRoot((tempRoot) => {
     const result = run(['bogus'], tempRoot);
     assert.equal(result.status, 1);
-    assert.ok(result.stdout.includes('<error code="unknown_command">'), result.stdout);
+    assert.ok(result.stdout.includes('<error code="unknown_command" kind="invocation">'), result.stdout);
     assert.ok(result.stdout.includes('session, page, tab, measure, motion, cdp, lib'));
+    assert.deepEqual(readdirSync(tempRoot), []);
   });
 });
 
-test('`capture --version` prints a version; `-v` and the `version` word are unknown commands', () => {
+test('`capture --version` prints a version; `-v` and the `version` word are unknown commands, read-only', () => {
   withTempRoot((tempRoot) => {
     const version = run(['--version'], tempRoot);
     assert.equal(version.status, 0, version.stderr);
@@ -84,17 +86,21 @@ test('`capture --version` prints a version; `-v` and the `version` word are unkn
     for (const args of [['-v'], ['version']]) {
       const result = run(args, tempRoot);
       assert.equal(result.status, 1, `${args.join(' ')} should be an unknown command`);
-      assert.ok(result.stdout.includes('<error code="unknown_command">'), result.stdout);
+      assert.ok(result.stdout.includes('<error code="unknown_command" kind="invocation">'), result.stdout);
     }
+
+    assert.deepEqual(readdirSync(tempRoot), []);
   });
 });
 
-test('page branch leaves are routed: click reaches the real leaf and emits its structured input error', () => {
+test('page branch grammar names the leaf: `page click` is rejected at the validation boundary with a leaf-specific diagnostic, read-only', () => {
   withTempRoot((tempRoot) => {
     const result = run(['page', 'click'], tempRoot);
     assert.equal(result.status, 1);
-    assert.ok(result.stdout.includes('<error command="page click" code="invalid_input">'), result.stdout);
+    assert.ok(result.stdout.includes('<error code="invalid_input" kind="invocation">'), result.stdout);
+    assert.ok(result.stdout.includes('page click received 0 positional argument(s); expected exactly 1.'), result.stdout);
     assert.ok(!result.stdout.includes('not_implemented'), result.stdout);
+    assert.deepEqual(readdirSync(tempRoot), []);
   });
 });
 
