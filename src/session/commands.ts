@@ -16,8 +16,9 @@ import {
   updateSessionState,
   type ActiveSessionState,
 } from '../session-context.js';
-import { type ParsedArgs } from '../cdp/types.js';
+import { type ParsedArgs, type CDPTarget } from '../cdp/types.js';
 import { startBridge, stopBridge } from '../cdp/bridge/spawn.js';
+import { normalizeFailure } from '../errors.js';
 import { teardownAnyLiveRecorderAtSessionStop } from '../cdp/motion/recorder.js';
 import {
   emitResult,
@@ -36,7 +37,7 @@ import {
   ensurePrivateDir,
   writeJsonPrivate,
   readPrivateFile,
-  unlinkPrivateFile,
+  removeArtifactTree,
   type SnapMeta,
   type RecMeta,
 } from './artifacts.js';
@@ -369,6 +370,77 @@ manifest; \`view\` reads that manifest back.
 // Session Commands
 // ============================================================================
 
+/**
+ * The external effects `session start` acquires, behind one seam so the
+ * transaction's acquisition/rollback ordering is testable with deterministic
+ * fakes instead of a real browser. The default (`productionStartWorld`) wires
+ * these to the real CDP layer.
+ */
+export interface SessionStartWorld {
+  createHar(dir: string): Promise<string>;
+  deleteHar(harId: string): Promise<void>;
+  detectCdpPort(): Promise<number>;
+  openTab(port: number, url: string): Promise<CDPTarget>;
+  closeTarget(port: number, targetId: string): Promise<void>;
+  /** Attach to the freshly-opened tab and wait for load; returns page-load-timed-out. */
+  awaitTabReady(target: CDPTarget, url: string): Promise<boolean>;
+  startBridge(dir: string, port: number): Promise<{ socketPath: string; pid: number }>;
+  stopBridge(pid: number | null, socketPath: string | null): void;
+  publishActiveSession(session: Session): Promise<void>;
+}
+
+const productionStartWorld: SessionStartWorld = {
+  async createHar(dir) {
+    return (await createHarRecording(dir)).id;
+  },
+  deleteHar: deleteHarRecording,
+  async detectCdpPort() {
+    const { detectCdpPort } = await import('../cdp.js');
+    return detectCdpPort();
+  },
+  async openTab(port, url) {
+    const { openTab } = await import('../cdp.js');
+    return openTab(port, url);
+  },
+  async closeTarget(port, targetId) {
+    const { closeTarget } = await import('../cdp/targets.js');
+    return closeTarget(port, targetId);
+  },
+  async awaitTabReady(target, url) {
+    if (!target.webSocketDebuggerUrl) {
+      throw new Error(`capture session start could not attach to ${url}: missing WebSocket debugger URL. Reuse an existing tab with --target.`);
+    }
+    const { CDPClient } = await import('../cdp.js');
+    const client = new CDPClient(target.webSocketDebuggerUrl);
+    try {
+      try {
+        await client.send('Runtime.enable', {}, 5_000);
+      } catch (err) {
+        throw new Error(`capture session start could not attach to ${url}: ${err instanceof Error ? err.message : err}. Reuse an existing tab with --target.`);
+      }
+      return await waitForPageLoad(client, 10_000);
+    } finally {
+      client.close();
+    }
+  },
+  startBridge,
+  stopBridge,
+  publishActiveSession: setActiveSession,
+};
+
+let startWorld: SessionStartWorld = productionStartWorld;
+
+/** Test seam: swap the effect world session start drives; pass nothing to restore production. */
+export function __setSessionStartWorld(next?: Partial<SessionStartWorld>): void {
+  startWorld = next ? { ...productionStartWorld, ...next } : productionStartWorld;
+}
+
+/** One acquired resource: a label plus its reverse-order release. */
+interface Acquisition {
+  label: string;
+  release(): Promise<void> | void;
+}
+
 async function start(parsed: ParsedArgs): Promise<void> {
   if (parsed.help) {
     console.log(START_USAGE);
@@ -390,62 +462,38 @@ async function start(parsed: ParsedArgs): Promise<void> {
 
     const url = parsed.url ?? null;
     const hold = parsed.hold === true;
-
     const id = generateId();
     const dir = sessionDir(id);
-    ensurePrivateDir(path.join(dir, 'shots'));
 
-    // Start HAR recording directly.
+    // Every effect below is owned the instant it succeeds and released in exact
+    // reverse order if any later step throws. Nothing is committed outside this
+    // one transaction, so a failure leaves the scope byte-identical to before.
+    const acquired: Acquisition[] = [];
     let harId: string | null = null;
-    try {
-      const harResult = await createHarRecording(dir);
-      harId = harResult.id;
-    } catch (err) {
-      console.error(`Warning: could not start HAR recording: ${err instanceof Error ? err.message : err}`);
-    }
-
-    let targetId: string | null = null;
+    let target: CDPTarget | null = null;
     let pageLoadTimedOut = false;
     let bridgeSocket: string | null = null;
     let bridgePid: number | null = null;
     let cdpPort: number | null = null;
 
     try {
+      ensurePrivateDir(path.join(dir, 'shots'));
+      acquired.push({ label: 'artifact tree', release: () => removeArtifactTree(dir) });
+
+      harId = await startWorld.createHar(dir);
+      const acquiredHarId = harId;
+      acquired.push({ label: 'HAR recording', release: () => startWorld.deleteHar(acquiredHarId) });
+
       if (url || hold) {
-        const { detectCdpPort } = await import('../cdp.js');
-        cdpPort = parsed.port ?? await detectCdpPort();
+        cdpPort = parsed.port ?? await startWorld.detectCdpPort();
       }
 
-      // Open tab if URL provided. Fail fast if the new target cannot attach.
       if (url) {
-        const { openTab, CDPClient } = await import('../cdp.js');
-        const tab = await openTab(cdpPort!, url);
-        targetId = tab.id;
-
-        if (!targetId) {
-          throw new Error(
-            `capture session start could not attach to ${url}. Reuse an existing tab with --target.`,
-          );
-        }
-        if (!tab.webSocketDebuggerUrl) {
-          throw new Error(
-            `capture session start could not attach to ${url}: missing WebSocket debugger URL. Reuse an existing tab with --target.`,
-          );
-        }
-
-        const client = new CDPClient(tab.webSocketDebuggerUrl);
-        try {
-          try {
-            await client.send('Runtime.enable', {}, 5_000);
-          } catch (err) {
-            throw new Error(
-              `capture session start could not attach to ${url}: ${err instanceof Error ? err.message : err}. Reuse an existing tab with --target.`,
-            );
-          }
-          pageLoadTimedOut = await waitForPageLoad(client, 10_000);
-        } finally {
-          client.close();
-        }
+        target = await startWorld.openTab(cdpPort!, url);
+        const openedPort = cdpPort!;
+        const openedTargetId = target.id;
+        acquired.push({ label: 'opened target', release: () => startWorld.closeTarget(openedPort, openedTargetId) });
+        pageLoadTimedOut = await startWorld.awaitTabReady(target, url);
       }
 
       // Hold a CDP browser connection open for the session's lifetime so
@@ -453,62 +501,40 @@ async function start(parsed: ParsedArgs): Promise<void> {
       // survives across separate `capture` commands instead of reverting the
       // instant each command's own connection closes.
       if (hold) {
-        const bridge = await startBridge(dir, cdpPort!);
+        const bridge = await startWorld.startBridge(dir, cdpPort!);
         bridgeSocket = bridge.socketPath;
         bridgePid = bridge.pid;
+        acquired.push({ label: 'held bridge', release: () => startWorld.stopBridge(bridgePid, bridgeSocket) });
       }
-    } catch (err) {
-      // Any failure after HAR creation (CDP-port detection, tab open, bridge
-      // start) leaks the newly-created HAR recording unless we clean it up here.
-      // Best-effort so a cleanup failure can't mask the real start error.
-      if (harId) {
-        try {
-          await deleteHarRecording(harId);
-        } catch {
-          /* best effort */
-        }
-        try {
-          unlinkPrivateFile(harId);
-        } catch {
-          /* best effort */
-        }
-      }
-      try {
-        fs.rmSync(dir, { recursive: true, force: true });
-      } catch {
-        /* best effort */
-      }
-      const msg = err instanceof Error ? err.message : String(err);
-      emitResult({
-        tag: 'error',
-        attrs: { command: 'session start', code: 'start_failed' },
-        summary: fact`Session could not start: ${msg}`,
-        followUp: text`Ensure a CDP-enabled browser is running — \`capture tab list\` is the probe.`,
-      }, { json: parsed.json });
-      process.exitCode = 1;
+
+      const session: Session = {
+        sessionId: id,
+        dir,
+        harId,
+        startedAt: new Date().toISOString(),
+        stoppedAt: null,
+        stopping: false,
+        url,
+        targetId: target?.id ?? null,
+        port: cdpPort,
+        stepCount: 0,
+        logPids: [],
+        bridgeSocket,
+        bridgePid,
+      };
+      // The active index + `.session.json` are published together (last).
+      // Its rollback is a scope-owned compare-clear: a no-op unless THIS
+      // attempt's publication actually landed.
+      acquired.push({ label: 'active publication', release: () => clearActiveSessionIf(id) });
+      await startWorld.publishActiveSession(session);
+    } catch (primary) {
+      await rollbackStart(acquired, parsed, primary);
       return;
     }
 
-    const session: Session = {
-      sessionId: id,
-      dir,
-      harId,
-      startedAt: new Date().toISOString(),
-      stoppedAt: null,
-      stopping: false,
-      url,
-      targetId,
-      port: cdpPort,
-      stepCount: 0,
-      logPids: [],
-      bridgeSocket,
-      bridgePid,
-    };
-    await setActiveSession(session);
-
     const rows: FactLine[] = [fact`bundle dir: ${dir}`];
-    if (targetId) rows.push(fact`tab ${targetId} opened at ${url ?? ''}`);
-    if (pageLoadTimedOut) rows.push(fact`page load timed out after 10000ms; the session stays attached to target ${targetId ?? ''}`);
+    if (target) rows.push(fact`tab ${target.id} opened at ${url ?? ''}`);
+    if (pageLoadTimedOut) rows.push(fact`page load timed out after 10000ms; the session stays attached to target ${target?.id ?? ''}`);
     if (harId) rows.push(fact`HAR recording ${harId} — traffic auto-appends while the session is active`);
     if (hold) rows.push(fact`held CDP bridge: pid ${bridgePid ?? 0}`);
 
@@ -520,6 +546,35 @@ async function start(parsed: ParsedArgs): Promise<void> {
       followUp: fact`capture session stop ${id}`,
     }, { json: parsed.json });
   });
+}
+
+/**
+ * Releases every acquired resource in exact reverse order, then renders the
+ * primary start failure. Cleanup failures never replace the primary error —
+ * they are aggregated onto it so both survive.
+ */
+async function rollbackStart(acquired: Acquisition[], parsed: ParsedArgs, primary: unknown): Promise<void> {
+  const cleanupFailures: string[] = [];
+  for (let i = acquired.length - 1; i >= 0; i -= 1) {
+    try {
+      await acquired[i].release();
+    } catch (error) {
+      cleanupFailures.push(`${acquired[i].label}: ${normalizeFailure(error).descriptor.message}`);
+    }
+  }
+
+  const primaryMessage = normalizeFailure(primary).descriptor.message;
+  const summary = cleanupFailures.length === 0
+    ? fact`Session could not start: ${primaryMessage}`
+    : fact`Session could not start: ${primaryMessage} (rollback also failed: ${cleanupFailures.join('; ')})`;
+
+  emitResult({
+    tag: 'error',
+    attrs: { command: 'session start', code: 'start_failed' },
+    summary,
+    followUp: text`Ensure a CDP-enabled browser is running — \`capture tab list\` is the probe.`,
+  }, { json: parsed.json });
+  process.exitCode = 1;
 }
 
 async function logTail(parsed: ParsedArgs): Promise<void> {

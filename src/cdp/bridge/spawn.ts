@@ -70,6 +70,10 @@ export async function startBridge(
   const start = Date.now();
   while (!fs.existsSync(socketPath)) {
     if (Date.now() - start > timeoutMs) {
+      // Own the child we spawned: a bridge that never signalled readiness is
+      // ours to reap before we reject, so no orphaned process outlives the
+      // failed start. Mirrors startRecorderBridge()'s ownership discipline.
+      stopBridge(pid, socketPath);
       throw new Error(
         `CDP bridge (pid ${pid}) did not come up within ${timeoutMs}ms. ` +
           `Check that a browser is reachable on port ${port} (capture tab list --port ${port}).`,

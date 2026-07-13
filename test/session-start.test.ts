@@ -22,11 +22,25 @@ function sessionArgs(positional: string[], extra: Partial<ParsedArgs> = {}): Par
 function captureStdout(): { logs: string[]; restore: () => void } {
   const logs: string[] = [];
   const originalWrite = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((chunk: unknown) => {
-    logs.push(typeof chunk === 'string' ? chunk : String(chunk));
-    return true;
+  // TEE rather than swallow: the test reporter flushes its own events to stdout
+  // asynchronously and can land inside this window; swallowing them makes node's
+  // runner silently lose sibling tests from its stream. Assertions therefore
+  // scan the captured buffer (which may also hold stray reporter bytes) with
+  // includes()/extraction rather than startsWith()/whole-buffer JSON.parse().
+  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+    logs.push(typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
+    return (originalWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
   }) as typeof process.stdout.write;
   return { logs, restore: () => { process.stdout.write = originalWrite; } };
+}
+
+/** Extract the single rendered JSON result object from a TEE'd buffer that may
+ * also contain reporter bytes. The rendered result is the only `{`-led JSON in
+ * a passing run. */
+function extractJsonResult(buffer: string): { tag: string; attrs: Record<string, unknown> } {
+  const start = buffer.indexOf('{');
+  assert.ok(start >= 0, `no JSON result found in: ${buffer}`);
+  return JSON.parse(buffer.slice(start)) as { tag: string; attrs: Record<string, unknown> };
 }
 
 /** Stop a session, swallowing its rendered block, so a test's own cleanup
@@ -81,8 +95,8 @@ test('session start (no url) emits a <session> block, creates shots/ and NOT a11
     id = active!.sessionId;
     dir = active!.dir;
 
-    assert.ok(text.startsWith('<session '), `expected a rendered <session> block, got: ${text}`);
-    assert.ok(!text.startsWith('{'), 'default output must be rendered prose, not JSON');
+    assert.ok(text.includes('<session '), `expected a rendered <session> block, got: ${text}`);
+    assert.ok(!text.includes('"tag": "session"'), 'default output must be rendered prose, not JSON');
     assert.ok(text.includes(id!), text);
     assert.ok(text.includes(dir!), text);
     assert.ok(fs.existsSync(path.join(dir!, 'shots')), 'shots/ must exist');
@@ -102,7 +116,7 @@ test('session start --json mirrors the <session> result as JSON', async () => {
   try {
     await sessionMain(sessionArgs(['start'], { json: true }), []);
     out.restore();
-    const parsed = JSON.parse(out.logs.join(''));
+    const parsed = extractJsonResult(out.logs.join(''));
     assert.equal(parsed.tag, 'session');
 
     const active = getActiveSession();
@@ -249,7 +263,7 @@ test('session start --url opens a tab and stop bundles shots (not a11y)', async 
       startOut.restore();
     }
     const startText = startOut.logs.join('');
-    assert.ok(startText.startsWith('<session'), startText);
+    assert.ok(startText.includes('<session'), startText);
     assert.ok(/tab .* opened at/.test(startText), `expected a tab-opened fact, got: ${startText}`);
 
     const active = getActiveSession();
@@ -263,7 +277,7 @@ test('session start --url opens a tab and stop bundles shots (not a11y)', async 
     } finally {
       stopOut.restore();
     }
-    const stopJson = JSON.parse(stopOut.logs.join(''));
+    const stopJson = extractJsonResult(stopOut.logs.join(''));
     assert.equal(stopJson.tag, 'session-stopped');
 
     const bundle = JSON.parse(fs.readFileSync(path.join(dir!, 'bundle.json'), 'utf-8'));

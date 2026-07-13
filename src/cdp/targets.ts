@@ -208,6 +208,26 @@ export function requireTargetId(
   return targetId;
 }
 
+/**
+ * Closes exactly one target through the browser-level connection, the mirror of
+ * `openTab`. Transactional owners (session-start rollback) call this to release
+ * ONLY the target this attempt opened; it never touches foreign/pre-existing
+ * tabs. Throws when `Target.closeTarget` reports the target was not closed.
+ */
+export async function closeTarget(port: number, targetId: string): Promise<void> {
+  const { client } = await getBrowserClient(port);
+  try {
+    const result = (await client.send('Target.closeTarget', { targetId })) as {
+      success?: boolean;
+    };
+    if (result?.success === false) {
+      throw new Error(`Target.closeTarget reported no close for target ${targetId} on port ${port}.`);
+    }
+  } finally {
+    client.close();
+  }
+}
+
 export async function openTab(port: number, url: string): Promise<CDPTarget> {
   const { client } = await getBrowserClient(port);
 
