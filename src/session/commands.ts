@@ -13,11 +13,12 @@ import {
   setActiveSession,
   clearActiveSessionIf,
   updateSessionState,
+  isActiveStateCandidate,
   type ActiveSessionState,
 } from '../session-context.js';
 import { type ParsedArgs, type CDPTarget } from '../cdp/types.js';
 import { startBridge, stopBridge } from '../cdp/bridge/spawn.js';
-import { normalizeFailure, failureResult } from '../errors.js';
+import { normalizeFailure, failureResult, captureError } from '../errors.js';
 import {
   startSessionLogTailer,
   stopSessionLogTailers,
@@ -46,6 +47,7 @@ import {
   type RecMeta,
 } from './artifacts.js';
 import { beginSessionStop, admitSessionOperation, withSessionLifecycle } from './coordinator.js';
+import { parseStatusFilter, type StatusPredicate } from './har-filter.js';
 
 type Session = ActiveSessionState;
 
@@ -198,14 +200,34 @@ function sessionMetaPath(id: string): string {
   return path.join(sessionDir(id), '.session.json');
 }
 
+/**
+ * Reads and VALIDATES one persisted `.session.json`. A missing file stays the
+ * plain `No capture session found` error (leaf catch-alls map it to
+ * `unknown_session`); unparsable bytes or a record failing the shared
+ * `isActiveStateCandidate` schema throw a typed `invalid_session_record`
+ * artifact error instead of letting a structurally-trusted cast reach the
+ * renderer (where a legacy-schema record used to crash `session list`
+ * unbranded via `fact` interpolation of undefined fields).
+ */
 function readSession(id: string): Session {
   const metaPath = sessionMetaPath(id);
+  let raw: string;
   try {
-    return JSON.parse(readPrivateFile(metaPath).toString('utf-8')) as Session;
+    raw = readPrivateFile(metaPath).toString('utf-8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`No capture session found: ${id}`);
     throw error;
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    throw captureError('artifact', 'invalid_session_record', `session metadata at ${metaPath} is not valid JSON; the record is corrupt and cannot be read as a capture session.`, cause);
+  }
+  if (!isActiveStateCandidate(parsed)) {
+    throw captureError('artifact', 'invalid_session_record', `session metadata at ${metaPath} does not match the capture session record schema; it was written by an incompatible version or corrupted.`);
+  }
+  return parsed;
 }
 
 function generateId(): string {
@@ -318,7 +340,9 @@ input:
                             running session reads its live accumulating HAR; a
                             stopped one reads the bundled har.json.
   --filter-url <pattern>    substring or regex match on the request URL
-  --filter-status <code>    status code, prefix (e.g. 4), or range (e.g. 400-499)
+  --filter-status <spec>    exact status (100-599), one-digit class prefix
+                            (1-5, e.g. 4 = every 4xx), or ordered range
+                            (e.g. 400-499); any other token is invalid_filter
   --filter-method <method>  HTTP method (GET, POST, …)
   --limit <n>               first n matching entries
   --full                    inline per-entry detail (headers, post data,
@@ -443,6 +467,27 @@ export function __setSessionStartWorld(next?: Partial<SessionStartWorld>): void 
   startWorld = next ? { ...productionStartWorld, ...next } : productionStartWorld;
 }
 
+/**
+ * Exact leaf positional cardinality, enforced at the leaf boundary BEFORE any
+ * filesystem/process/session effect (m7). The CLI validator in
+ * `src/cdp/args.ts` rejects the same shapes at the entrypoint; this wall
+ * covers the direct-call seam so surplus positionals are never silently
+ * ignored. Missing-argument rejection stays with each leaf's existing
+ * `missing_argument` check. Returns true when the invocation was rejected.
+ */
+function rejectSurplusPositionals(parsed: ParsedArgs, leaf: string, max: number, usage: string): boolean {
+  const count = parsed.positional.length;
+  if (count <= max) return false;
+  const expected = max === 0 ? 'exactly 0' : max === 1 ? 'at most 1' : `at most ${max}`;
+  emitResult({
+    tag: 'error',
+    attrs: { command: `session ${leaf}`, code: 'invalid_input' },
+    summary: fact`received: ${count} positional argument(s); expected ${expected} — \`${usage}\`.`,
+  }, { json: parsed.json });
+  process.exitCode = 1;
+  return true;
+}
+
 /** One acquired resource: a label plus its reverse-order release. */
 interface Acquisition {
   label: string;
@@ -454,6 +499,8 @@ async function start(parsed: ParsedArgs): Promise<void> {
     console.log(START_USAGE);
     return;
   }
+
+  if (rejectSurplusPositionals(parsed, 'start', 0, 'capture session start [--url <url>] [--hold]')) return;
 
   return withLifecycleCoordinator(async () => {
     const active = getActiveSession();
@@ -595,6 +642,8 @@ async function logTail(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
+  if (rejectSurplusPositionals(parsed, 'log', 1, 'capture session log <path> [--name <label>] [--session <id>]')) return;
+
   const sourcePath = parsed.positional[0];
   if (!sourcePath) {
     emitResult({
@@ -719,20 +768,6 @@ async function logTail(parsed: ParsedArgs): Promise<void> {
 // session har — the session-owned HAR read surface (D4)
 // ============================================================================
 
-/** Matcher for `--filter-status`: exact code, prefix (e.g. `4`), or range (`400-499`). */
-function statusMatcher(spec: string): (code: number) => boolean {
-  if (/^\d+-\d+$/.test(spec)) {
-    const [lo, hi] = spec.split('-').map((n) => parseInt(n, 10));
-    return (c) => c >= lo && c <= hi;
-  }
-  if (/^\d+$/.test(spec)) {
-    if (spec.length < 3) return (c) => String(c).startsWith(spec);
-    const n = parseInt(spec, 10);
-    return (c) => c === n;
-  }
-  return () => true;
-}
-
 interface HarSource {
   har: HarFile;
   /** Absolute HAR file path — the block's full-fidelity pointer. */
@@ -810,6 +845,27 @@ async function har(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
+  if (rejectSurplusPositionals(parsed, 'har', 1, 'capture session har [<session-id>] [--filter-status <spec>] …')) return;
+
+  // Leaf-local filter grammar parses BEFORE any session/HAR lookup (M9/A4):
+  // an invalid --filter-status wins over an unknown session or a corrupt/
+  // missing artifact, and the active-session index is never consulted for it.
+  let statusMatch: StatusPredicate | null = null;
+  if (parsed.filterStatus !== undefined) {
+    try {
+      statusMatch = parseStatusFilter(parsed.filterStatus);
+    } catch (error) {
+      const { descriptor } = normalizeFailure(error);
+      emitResult({
+        tag: 'error',
+        attrs: { command: 'session har', code: descriptor.code },
+        summary: fact`${descriptor.message}`,
+      }, { json: parsed.json });
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   let id = parsed.positional[0] ?? null;
   if (!id) {
     const active = getActiveSession();
@@ -864,8 +920,8 @@ async function har(parsed: ParsedArgs): Promise<void> {
     );
     filters.push(`url~${pattern}`);
   }
-  if (parsed.filterStatus) {
-    const matches = statusMatcher(parsed.filterStatus);
+  if (statusMatch) {
+    const matches = statusMatch;
     entries = entries.filter((e) => matches(e.response.status));
     filters.push(`status=${parsed.filterStatus}`);
   }
@@ -927,6 +983,8 @@ async function stop(parsed: ParsedArgs): Promise<void> {
     console.log(STOP_USAGE);
     return;
   }
+
+  if (rejectSurplusPositionals(parsed, 'stop', 1, 'capture session stop <session-id>')) return;
 
   const id = parsed.positional[0];
   if (!id) {
@@ -1082,6 +1140,8 @@ function list(parsed: ParsedArgs): void {
     return;
   }
 
+  if (rejectSurplusPositionals(parsed, 'list', 0, 'capture session list')) return;
+
   const sessions = fs.existsSync(CAPTURE_ROOT)
     ? fs.readdirSync(CAPTURE_ROOT)
         .filter((d) => fs.existsSync(sessionMetaPath(d)))
@@ -1142,6 +1202,8 @@ function view(parsed: ParsedArgs): void {
     console.log(VIEW_USAGE);
     return;
   }
+
+  if (rejectSurplusPositionals(parsed, 'view', 1, 'capture session view <session-id> [--filter <section>]')) return;
 
   const id = parsed.positional[0];
   if (!id) {

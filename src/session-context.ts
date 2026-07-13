@@ -112,7 +112,10 @@ async function withSessionStateLock<T>(sessionDir: string, action: () => T): Pro
   }
 }
 
-function isActiveStateCandidate(value: unknown): value is ActiveSessionState {
+/** The one schema check for a persisted `.session.json` record. Exported so
+ * every session-record reader (here and `session/commands.ts`) validates the
+ * same shape instead of trusting parsed JSON structurally. */
+export function isActiveStateCandidate(value: unknown): value is ActiveSessionState {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   const nullableString = (field: unknown): boolean => field === undefined || field === null || typeof field === 'string';

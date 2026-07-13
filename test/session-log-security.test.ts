@@ -309,13 +309,18 @@ test('6 — weak registrations fail closed, while a mismatched birth is gone and
     assert.ok(isAlive(decoyPid), 'weak drain rejection must never authorize a signal');
 
     // Out-of-band corruption is the only remaining path for a weak record; plant one raw.
+    // `readSession` validates every record against the shared session schema, so a
+    // schema-invalid record is rejected at the read wall — the leaf maps any unreadable
+    // record to unknown_session, exactly as byte-corrupt records always were — before
+    // the drain gate ever runs. Strictly more fail-closed: the weak record cannot even
+    // be read, let alone bundled or used to authorize a signal.
     const metaPath = path.join(dir, '.session.json');
     const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as Record<string, unknown>;
     meta.logPids = [{ pid: decoyPid, name: 'weak', sourcePath: '/x' }];
     fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
     process.exitCode = 0;
     const weak = await runSession(['stop', id], { json: true });
-    assert.ok(weak.includes('stop_failed'), `identity-free registration must fail stop: ${weak}`);
+    assert.ok(weak.includes('unknown_session'), `identity-free registration must fail stop at the read wall: ${weak}`);
     assert.ok(!fs.existsSync(path.join(dir, 'bundle.json')), 'a weak writer record cannot be bundled as immutable truth');
     assert.ok(isAlive(decoyPid), 'weak registration must never authorize a signal');
 
