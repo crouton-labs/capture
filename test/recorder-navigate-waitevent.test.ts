@@ -57,18 +57,6 @@ function defaultResponseFor(req: RecorderRequest): RecorderResponse {
         markers: PENDING_MARKERS,
       };
     case 'cdp':
-      if (req.method === 'Page.getNavigationHistory') {
-        // Default "no useful history" fixture for tests that don't care about
-        // same-document-vs-cross-document prediction: a plain distinct URL, so
-        // `isSameDocumentTarget` predicts cross-document against any target
-        // used by the existing (non-fragment) tests.
-        return {
-          reqId: req.reqId,
-          ok: true,
-          type: 'cdp',
-          result: { currentIndex: 0, entries: [{ url: 'https://example.com' }] },
-        };
-      }
       return { reqId: req.reqId, ok: true, type: 'cdp', result: {} };
   }
 }
@@ -152,27 +140,11 @@ async function armActiveRecording(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Routed `capture page navigate` marks Page.navigate through the active
-// recorder, and the fragment-fix bounce only fires when the fake server
-// reports no loaderId.
-// ---------------------------------------------------------------------------
-
-test('cmdPageNavigate sends ONE combined marked Page.navigate+wait-event request through the active recorder and does NOT bounce through about:blank for a predicted cross-document nav', async () => {
-  const armed = await armActiveRecording('nav-marked', {
-    cdp: (req) => {
-      if (req.type === 'cdp' && req.method === 'Page.navigate') {
-        assert.equal(req.waitEvent, 'Page.loadEventFired', 'a predicted cross-document nav must bundle the load-event wait atomically onto the navigate call');
-        return { reqId: req.reqId, ok: true, type: 'cdp', result: { loaderId: 'loader-1' }, event: { name: 'loadEventFired' } };
-      }
-      return defaultResponseFor(req);
-    },
-  });
-  // cmdPageNavigate emits through render.ts's emitResult (process.stdout.write),
-  // so the capture TEES the stream write — node's test runner shares this
-  // same stdout for its own child-process protocol, so the original write
-  // must keep flowing; the emitted result is recovered as the one captured
-  // chunk that is a JSON object (emitResult writes it as a single chunk).
+/** Tees process.stdout.write while `fn` runs, returning the emitted JSON
+ * result chunk (emitResult writes the rendered result as one chunk). The
+ * original write must keep flowing — node's test runner shares this stdout
+ * for its own child-process protocol. */
+async function captureEmittedJson(fn: () => Promise<void>): Promise<{ tag: string; attrs: Record<string, unknown>; sections?: string[] }> {
   const originalWrite = process.stdout.write.bind(process.stdout);
   const chunks: string[] = [];
   process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
@@ -180,318 +152,150 @@ test('cmdPageNavigate sends ONE combined marked Page.navigate+wait-event request
     return (originalWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
   }) as typeof process.stdout.write;
   try {
-    const { cmdPageNavigate } = await import('../src/cdp/commands/page/navigate.js');
-    const parsed = minimalParsedArgs('page', { positional: ['https://example.com/dest'], json: true });
-    await cmdPageNavigate(parsed, []);
+    await fn();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  const resultChunk = chunks.find((c) => c.trimStart().startsWith('{'));
+  assert.ok(resultChunk, `expected one emitted JSON result chunk on stdout; got: ${JSON.stringify(chunks)}`);
+  return JSON.parse(resultChunk);
+}
 
-    // Exercises cmdPageNavigate itself end-to-end (not
-    // tryNavigateViaActiveRecorder directly) so a regression in the leaf's
-    // routing call or its emitted output shape actually fails this test.
-    const resultChunk = chunks.find((c) => c.trimStart().startsWith('{'));
-    assert.ok(resultChunk, `expected one emitted JSON result chunk on stdout; got: ${JSON.stringify(chunks)}`);
-    const output = JSON.parse(resultChunk) as { tag: string; attrs: Record<string, unknown> };
+function navigateCallsOf(received: RecorderRequest[]): Array<Extract<RecorderRequest, { type: 'cdp' }>> {
+  return received.filter(
+    (r): r is Extract<RecorderRequest, { type: 'cdp' }> => r.type === 'cdp' && r.method === 'Page.navigate',
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Routed `capture page navigate` — single-dispatch destination navigation
+// through the active recorder, with the load-event wait bundled atomically
+// onto the destination Page.navigate and the load outcome reported as a
+// fact separate from the method result. A same-document (no-loaderId) target
+// bounces dest→about:blank→dest.
+// ---------------------------------------------------------------------------
+
+test('routed navigate sends ONE combined marked Page.navigate+wait-event and reports load-outcome=observed with no about:blank bounce for a cross-document target', async () => {
+  const armed = await armActiveRecording('nav-observed', {
+    cdp: (req) => {
+      if (req.type === 'cdp' && req.method === 'Page.navigate') {
+        assert.equal(req.waitEvent, 'Page.loadEventFired', 'the destination navigate must bundle the load-event wait atomically onto the same request');
+        return { reqId: req.reqId, ok: true, type: 'cdp', result: { loaderId: 'loader-1' }, event: { name: 'loadEventFired' }, waitOutcome: 'observed' };
+      }
+      return defaultResponseFor(req);
+    },
+  });
+  try {
+    const { cmdPageNavigate } = await import('../src/cdp/commands/page/navigate.js');
+    const parsed = minimalParsedArgs('page', { positional: ['https://example.com/dest'], json: true, settle: 0 });
+    const output = await captureEmittedJson(() => cmdPageNavigate(parsed, []));
+
     assert.equal(output.tag, 'navigated');
     assert.equal(output.attrs.url, 'https://example.com/dest');
     assert.equal(output.attrs.routed, true, 'a routed navigate must carry the routed dispatch fact');
-    assert.equal(output.attrs['timed-out'], false);
-    assert.equal(output.attrs.settle, 2000, 'the default 2000ms settle must be reported as applied');
+    assert.equal(output.attrs['load-outcome'], 'observed');
+    assert.equal(output.attrs['deadline-exceeded'], undefined, 'a completed navigation must not report deadline-exceeded');
+    assert.equal(output.attrs.settle, 0);
 
-    const navigateCalls = armed.fakeServer.received.filter(
-      (r): r is Extract<RecorderRequest, { type: 'cdp' }> => r.type === 'cdp' && r.method === 'Page.navigate',
-    );
-    assert.equal(navigateCalls.length, 1, 'predicted cross-document + loaderId present -> no about:blank bounce, exactly ONE combined Page.navigate request');
+    const navigateCalls = navigateCallsOf(armed.fakeServer.received);
+    assert.equal(navigateCalls.length, 1, 'loaderId present -> no about:blank bounce, exactly ONE combined Page.navigate request');
     assert.equal(navigateCalls[0].params?.url, 'https://example.com/dest');
     assert.equal(navigateCalls[0].mark, 'navigate:https://example.com/dest');
     assert.equal(navigateCalls[0].waitEvent, 'Page.loadEventFired', 'the wait must be bundled on the SAME request, not a separate one');
   } finally {
-    process.stdout.write = originalWrite;
     armed.cleanup();
   }
 });
 
-test('F2: tryNavigateViaActiveRecorder bounces through about:blank and re-navigates when the current tab URL predicts a same-document (fragment-only) target, bundling the wait only on the final re-navigate', async () => {
-  const armed = await armActiveRecording('nav-bounce', {
+test('routed navigate preserves the loaderId and reports load-outcome=bounded-timeout when the load wait times out — no redispatch', async () => {
+  const armed = await armActiveRecording('nav-bounded', {
     cdp: (req) => {
-      if (req.type === 'cdp' && req.method === 'Page.getNavigationHistory') {
-        // Predicts same-document: the current URL already matches the target minus its fragment.
-        return {
-          reqId: req.reqId,
-          ok: true,
-          type: 'cdp',
-          result: { currentIndex: 0, entries: [{ url: 'https://example.com/dest' }] },
-        };
-      }
       if (req.type === 'cdp' && req.method === 'Page.navigate') {
-        return { reqId: req.reqId, ok: true, type: 'cdp', result: {}, event: req.waitEvent ? { name: 'loadEventFired' } : undefined };
+        // Real cross-document nav whose load event did not fire inside the
+        // load-wait window: the bridge preserves the method result (loaderId)
+        // and tags waitOutcome:'bounded-timeout' with no event.
+        return { reqId: req.reqId, ok: true, type: 'cdp', result: { loaderId: 'loader-1' }, waitOutcome: 'bounded-timeout' };
       }
       return defaultResponseFor(req);
     },
   });
   try {
-    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/page/navigate.js');
-    const parsed = minimalParsedArgs('page', { positional: ['https://example.com/dest#frag'] });
-    const routed = await tryNavigateViaActiveRecorder(parsed, 'https://example.com/dest#frag');
+    const { cmdPageNavigate } = await import('../src/cdp/commands/page/navigate.js');
+    const parsed = minimalParsedArgs('page', { positional: ['https://example.com/slow'], json: true, settle: 0 });
+    const output = await captureEmittedJson(() => cmdPageNavigate(parsed, []));
 
-    assert.deepEqual(routed, {
-      entryCount: 0,
-      tabUrl: 'https://example.com/dest#frag',
-      timedOut: false,
-    });
+    assert.equal(output.tag, 'navigated');
+    assert.equal(output.attrs['load-outcome'], 'bounded-timeout', 'a load-wait timeout with a present loaderId is bounded-timeout, not a failure');
+    assert.equal(output.attrs['deadline-exceeded'], undefined);
 
-    const navigateCalls = armed.fakeServer.received.filter(
-      (r): r is Extract<RecorderRequest, { type: 'cdp' }> => r.type === 'cdp' && r.method === 'Page.navigate',
-    );
-    assert.equal(navigateCalls.length, 3, 'predicted same-document -> navigate, about:blank bounce, re-navigate (3 total)');
-    assert.equal(navigateCalls[0].params?.url, 'https://example.com/dest#frag');
-    assert.equal(navigateCalls[0].waitEvent, undefined, 'the exploratory first navigate must NOT bundle the wait (it never fires a fresh load event)');
+    const navigateCalls = navigateCallsOf(armed.fakeServer.received);
+    assert.equal(navigateCalls.length, 1, 'a bounded-timeout with loaderId present must NOT redispatch — exactly one Page.navigate');
+    assert.equal(navigateCalls[0].params?.url, 'https://example.com/slow');
+  } finally {
+    armed.cleanup();
+  }
+});
+
+test('routed navigate propagates a method dispatch failure without retrying (zero extra navigates)', async () => {
+  const armed = await armActiveRecording('nav-method-fail', {
+    cdp: (req) => {
+      if (req.type === 'cdp' && req.method === 'Page.navigate') {
+        // Method dispatch itself failed (distinct from a wait timeout) -> ok:false.
+        return { reqId: req.reqId, ok: false, type: 'cdp', error: 'Cannot navigate to invalid URL' };
+      }
+      return defaultResponseFor(req);
+    },
+  });
+  try {
+    const { cmdPageNavigate } = await import('../src/cdp/commands/page/navigate.js');
+    const parsed = minimalParsedArgs('page', { positional: ['https://example.com/boom'], settle: 0 });
+    await assert.rejects(() => cmdPageNavigate(parsed, []), /Cannot navigate to invalid URL|navigate/i, 'a method dispatch failure must surface, not be swallowed or retried');
+
+    const navigateCalls = navigateCallsOf(armed.fakeServer.received);
+    assert.equal(navigateCalls.length, 1, 'a failed Page.navigate must not be retried — exactly one attempt');
+  } finally {
+    armed.cleanup();
+  }
+});
+
+test('routed navigate to a same-document (no-loaderId) target bounces dest->about:blank->dest, with the wait bundled on each destination send but not the bounce', async () => {
+  let destCount = 0;
+  const armed = await armActiveRecording('nav-samedoc', {
+    cdp: (req) => {
+      if (req.type === 'cdp' && req.method === 'Page.navigate') {
+        if (req.params?.url === 'about:blank') {
+          return { reqId: req.reqId, ok: true, type: 'cdp', result: { loaderId: 'blank' } };
+        }
+        destCount += 1;
+        if (destCount === 1) {
+          // First destination attempt: same-document, no loaderId, load wait
+          // times out (no fresh load event fires for a fragment change).
+          return { reqId: req.reqId, ok: true, type: 'cdp', result: {}, waitOutcome: 'bounded-timeout' };
+        }
+        // Final re-navigate after the bounce delivers a real cross-document load.
+        return { reqId: req.reqId, ok: true, type: 'cdp', result: { loaderId: 'loader-2' }, event: { name: 'loadEventFired' }, waitOutcome: 'observed' };
+      }
+      return defaultResponseFor(req);
+    },
+  });
+  try {
+    const { cmdPageNavigate } = await import('../src/cdp/commands/page/navigate.js');
+    const parsed = minimalParsedArgs('page', { positional: ['https://example.com/app#frag'], json: true, settle: 0 });
+    const output = await captureEmittedJson(() => cmdPageNavigate(parsed, []));
+
+    assert.equal(output.attrs['load-outcome'], 'observed', 'the reported outcome comes from the final re-navigate after the bounce');
+
+    const navigateCalls = navigateCallsOf(armed.fakeServer.received);
+    assert.equal(navigateCalls.length, 3, 'same-document target -> dest, about:blank bounce, re-navigate (3 total)');
+    assert.equal(navigateCalls[0].params?.url, 'https://example.com/app#frag');
+    assert.equal(navigateCalls[0].waitEvent, 'Page.loadEventFired', 'the destination send always arms the wait (single-dispatch)');
     assert.equal(navigateCalls[1].params?.url, 'about:blank');
-    assert.equal(navigateCalls[1].waitEvent, undefined);
-    assert.equal(navigateCalls[2].params?.url, 'https://example.com/dest#frag');
-    assert.equal(navigateCalls[2].waitEvent, 'Page.loadEventFired', 'the wait must be bundled only on the definite final re-navigate');
+    assert.equal(navigateCalls[1].waitEvent, undefined, 'the about:blank bounce is a plain navigate with no wait');
+    assert.equal(navigateCalls[2].params?.url, 'https://example.com/app#frag');
+    assert.equal(navigateCalls[2].waitEvent, 'Page.loadEventFired', 'the final re-navigate arms the wait');
   } finally {
     armed.cleanup();
   }
-});
-
-test('F2: tryNavigateViaActiveRecorder tolerates a failed/timed-out load-event wait on the predicted same-document final re-navigate rather than rejecting the whole call', async () => {
-  const armed = await armActiveRecording('nav-bounce-timeout', {
-    cdp: (req) => {
-      if (req.type === 'cdp' && req.method === 'Page.getNavigationHistory') {
-        // Predicts same-document: the current URL already matches the target minus its fragment.
-        return {
-          reqId: req.reqId,
-          ok: true,
-          type: 'cdp',
-          result: { currentIndex: 0, entries: [{ url: 'https://example.com/dest' }] },
-        };
-      }
-      if (req.type === 'cdp' && req.method === 'Page.navigate' && req.waitEvent) {
-        // The final same-document re-navigate's bundled load-event wait times
-        // out server-side (handleCdp's this.events.wait(...) rejecting) —
-        // handleRecorderRequest's catch turns the WHOLE response into
-        // ok:false, same as any other cdp failure.
-        return { reqId: req.reqId, ok: false, type: 'cdp', error: 'Timed out after 10000ms waiting for event "Page.loadEventFired"' };
-      }
-      if (req.type === 'cdp' && req.method === 'Page.navigate') {
-        return { reqId: req.reqId, ok: true, type: 'cdp', result: {} };
-      }
-      return defaultResponseFor(req);
-    },
-  });
-  try {
-    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/page/navigate.js');
-    const parsed = minimalParsedArgs('page', { positional: ['https://example.com/dest#frag'] });
-    const routed = await tryNavigateViaActiveRecorder(parsed, 'https://example.com/dest#frag');
-
-    assert.deepEqual(
-      routed,
-      {
-        entryCount: 0,
-        tabUrl: 'https://example.com/dest#frag',
-        timedOut: false,
-      },
-      'a failed load-event wait on the final same-document re-navigate must not reject/throw the whole routed navigate — same tolerance as the cross-document recovery path',
-    );
-
-    const navigateCalls = armed.fakeServer.received.filter(
-      (r): r is Extract<RecorderRequest, { type: 'cdp' }> => r.type === 'cdp' && r.method === 'Page.navigate',
-    );
-    assert.equal(navigateCalls.length, 3, 'predicted same-document -> navigate, about:blank bounce, re-navigate (3 total), even though the final one times out');
-    assert.equal(navigateCalls[2].waitEvent, 'Page.loadEventFired');
-  } finally {
-    armed.cleanup();
-  }
-});
-
-test('F2: with no active session/activeRecId, the routing helper returns null without opening a recorder connection', async () => {
-  clearActiveSession();
-  const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/page/navigate.js');
-  const parsed = minimalParsedArgs('page', { positional: ['https://example.com/no-session'] });
-  const routed = await tryNavigateViaActiveRecorder(parsed, 'https://example.com/no-session');
-  assert.equal(routed, null);
-});
-
-test('a stale activeRecId with no routable recorder falls back to null instead of connectForCommand() throwing', async () => {
-  // A stale active-session pointer can carry an activeRecId with no
-  // recorder.json at all (stopped/reaped and the pointer wasn't cleared
-  // yet, or never existed). isRecorderRoutable() checks for a live,
-  // 'recording'-state recorder.json before tryNavigateViaActiveRecorder ever
-  // calls connectForCommand() — without that check, connectForCommand()
-  // would find no routable recorder and fall through to its "Use --target
-  // <tabId> or --url <pattern>..." throw, because navigate's URL is
-  // positional, not parsed.url/parsed.target.
-  const sessionDir = freshSessionDir('stale-recid');
-  const recId = 'rec-stale-does-not-exist';
-  await setActiveSession({ sessionId: 's-stale', dir: sessionDir, harId: null, targetId: null, stepCount: 0 });
-  await setActiveRecId(recId);
-  try {
-    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/page/navigate.js');
-    const parsed = minimalParsedArgs('page', { positional: ['https://example.com/stale'] });
-    const routed = await tryNavigateViaActiveRecorder(parsed, 'https://example.com/stale');
-    assert.equal(routed, null, 'a non-routable recorder must fall back to null, not throw');
-  } finally {
-    clearActiveSession();
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// F2 Major fix — routed navigate must honor the SAME load/settle/timeout
-// semantics as the non-routed path (review Major #1): it must not return as
-// soon as Page.navigate resolves; it must await Page.loadEventFired (via
-// the recorder's wait-event path) THEN settle, and it must tolerate a
-// stalled/failed load-event wait rather than hanging.
-// ---------------------------------------------------------------------------
-
-test('F2 (Major fix): tryNavigateViaActiveRecorder awaits Page.loadEventFired bundled atomically onto the combined Page.navigate request, THEN applies --settle, before returning', async () => {
-  const loadEventDelayMs = 150;
-  const settleMs = 80;
-  const armed = await armActiveRecording('nav-load-settle', {
-    cdp: async (req) => {
-      if (req.type === 'cdp' && req.method === 'Page.navigate') {
-        assert.equal(req.waitEvent, 'Page.loadEventFired', 'a predicted cross-document navigate must bundle the wait on the SAME request');
-        // Delay the response so a premature return (before this resolves)
-        // would make the assertions below fail.
-        await new Promise((r) => setTimeout(r, loadEventDelayMs));
-        return { reqId: req.reqId, ok: true, type: 'cdp', result: { loaderId: 'loader-1' }, event: { name: 'loadEventFired' } };
-      }
-      return defaultResponseFor(req);
-    },
-  });
-  try {
-    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/page/navigate.js');
-    const parsed = minimalParsedArgs('page', {
-      positional: ['https://example.com/dest'],
-      settle: settleMs,
-    });
-    const t0 = Date.now();
-    const routed = await tryNavigateViaActiveRecorder(parsed, 'https://example.com/dest');
-    const elapsed = Date.now() - t0;
-
-    assert.deepEqual(routed, {
-      entryCount: 0,
-      tabUrl: 'https://example.com/dest',
-      timedOut: false,
-    });
-    assert.ok(
-      elapsed >= loadEventDelayMs + settleMs - 10,
-      `expected routed navigate to await the load wait (${loadEventDelayMs}ms) then settle ` +
-        `(${settleMs}ms) before returning; got elapsed=${elapsed}ms`,
-    );
-
-    const navigateCalls = armed.fakeServer.received.filter((r) => r.type === 'cdp' && r.method === 'Page.navigate');
-    assert.equal(navigateCalls.length, 1, 'a single combined request must carry both the navigate and the load-event wait — no separate wait-only request');
-  } finally {
-    armed.cleanup();
-  }
-});
-
-test('F2 (Major fix): tryNavigateViaActiveRecorder tolerates a failed/timed-out load-event wait — the combined request\'s ok:false response (which also loses `loaderId`, per the bridge\'s known swallow-on-timeout behavior) recovers via a plain re-navigate rather than hanging, rejecting, or spuriously bouncing', async () => {
-  const settleMs = 30;
-  const armed = await armActiveRecording('nav-load-wait-fails', {
-    cdp: (req) => {
-      if (req.type === 'cdp' && req.method === 'Page.navigate' && req.waitEvent) {
-        // Simulates the recorder bridge's own event-wait timing out server-side
-        // (handleCdp's this.events.wait(...) rejecting) — handleRecorderRequest's
-        // catch turns the WHOLE response into ok:false, discarding `loaderId`
-        // along with the event, same shape as any other cdp failure.
-        return { reqId: req.reqId, ok: false, type: 'cdp', error: 'Timed out after 10000ms waiting for event "Page.loadEventFired"' };
-      }
-      if (req.type === 'cdp' && req.method === 'Page.navigate') {
-        // The recovery path's plain (no-wait) re-navigate: a real load did
-        // complete server-side even though the bundled wait above timed out.
-        return { reqId: req.reqId, ok: true, type: 'cdp', result: { loaderId: 'loader-1' } };
-      }
-      return defaultResponseFor(req);
-    },
-  });
-  try {
-    const { tryNavigateViaActiveRecorder } = await import('../src/cdp/commands/page/navigate.js');
-    const parsed = minimalParsedArgs('page', {
-      positional: ['https://example.com/dest'],
-      settle: settleMs,
-    });
-    const routed = await tryNavigateViaActiveRecorder(parsed, 'https://example.com/dest');
-
-    assert.deepEqual(
-      routed,
-      { entryCount: 0, tabUrl: 'https://example.com/dest', timedOut: false },
-      'a failed load-event wait must not fail the whole navigate — same tolerance as the non-routed path\'s own 10s inner timer',
-    );
-
-    const navigateCalls = armed.fakeServer.received.filter((r) => r.type === 'cdp' && r.method === 'Page.navigate');
-    assert.equal(
-      navigateCalls.length,
-      2,
-      'the timed-out combined attempt plus one plain recovery re-navigate that reports a real loaderId — no spurious about:blank bounce',
-    );
-  } finally {
-    armed.cleanup();
-  }
-});
-
-test('F2 (Major fix): waitForLoadAndSettle (the shared helper backing both navigate paths) reports timedOut when the OUTER deadline elapses', async () => {
-  const { waitForLoadAndSettle } = await import('../src/cdp/record.js');
-  const neverResolves = (): Promise<void> => new Promise<void>(() => {});
-  const t0 = Date.now();
-  const result = await waitForLoadAndSettle(neverResolves, 5000, 60);
-  const elapsed = Date.now() - t0;
-
-  assert.deepEqual(result, { timedOut: true });
-  assert.ok(elapsed < 5000, 'the outer deadline (60ms) must win over the (deliberately never-resolving) inner wait');
-});
-
-// ---------------------------------------------------------------------------
-// Re-review regression fix — the non-routed path's HAR finalization
-// (`recorder.finish()`) must be covered by the SAME 60s deadline as
-// load-wait + settle (it was pulled OUTSIDE the raced region by the U14b
-// refactor), and non-routed navigate must emit exactly one timeout line
-// (the refactor had briefly caused both the shared helper's own line AND
-// navigateAndRecord()'s pre-existing line to print).
-// ---------------------------------------------------------------------------
-
-test('waitForLoadAndSettle: afterSettle (standing in for navigateAndRecord()\'s recorder.finish()) runs INSIDE the raced region, so a slow finalization alone can trip the outer deadline', async () => {
-  const { waitForLoadAndSettle } = await import('../src/cdp/record.js');
-  const instantLoad = (): Promise<void> => Promise.resolve();
-
-  // Load-wait and settle both resolve immediately, leaving the whole 80ms
-  // deadline budget unspent — only a slow `afterSettle` (the recorder.finish()
-  // stand-in) can push elapsed time past it. Pre-refactor, this HAR
-  // finalization step ran inside the same raced branch as load-wait/settle;
-  // if `afterSettle` ran OUTSIDE the deadline race (the regression), this
-  // would return `timedOut: false` no matter how slow it is.
-  const slowHarFinalization = (): Promise<void> => new Promise((r) => setTimeout(r, 200));
-
-  const result = await waitForLoadAndSettle(instantLoad, 0, 80, slowHarFinalization, false);
-
-  assert.deepEqual(result, { timedOut: true }, 'a slow HAR finalization inside afterSettle must be covered by the outer deadline');
-});
-
-test('waitForLoadAndSettle: logTimeout:false (the flag navigateAndRecord() passes) suppresses the helper\'s own "Navigate timeout" line so the non-routed path logs exactly one timeout line, not two', async () => {
-  const { waitForLoadAndSettle } = await import('../src/cdp/record.js');
-  const neverResolves = (): Promise<void> => new Promise<void>(() => {});
-
-  const restoreError = console.error;
-  const errors: string[] = [];
-  console.error = (...args: unknown[]) => {
-    errors.push(args.map((a) => String(a)).join(' '));
-  };
-  let result;
-  try {
-    result = await waitForLoadAndSettle(neverResolves, 5000, 60, undefined, false);
-    // Mirrors navigateAndRecord()'s own post-timeout log line exactly, so the
-    // full simulated output below matches navigateAndRecord()'s real output.
-    if (result.timedOut) {
-      console.error('Navigate timeout (60s) — returning partial HAR');
-    }
-  } finally {
-    console.error = restoreError;
-  }
-
-  assert.deepEqual(result, { timedOut: true });
-  const timeoutLines = errors.filter((line) => line.startsWith('Navigate timeout'));
-  assert.equal(timeoutLines.length, 1, `expected exactly one timeout line, got: ${JSON.stringify(errors)}`);
-  assert.equal(timeoutLines[0], 'Navigate timeout (60s) — returning partial HAR');
 });
 
 // ---------------------------------------------------------------------------
@@ -580,7 +384,7 @@ test('F4: runPageScope (the cmdCdp page-scope path) issues ONE combined recorder
     cdp: (req) => {
       if (req.type === 'cdp' && req.method === 'Page.reload') {
         assert.equal(req.waitEvent, 'Page.loadEventFired', 'the combined request must carry both method and waitEvent together');
-        return { reqId: req.reqId, ok: true, type: 'cdp', result: { reloaded: true }, event: eventFixture };
+        return { reqId: req.reqId, ok: true, type: 'cdp', result: { reloaded: true }, event: eventFixture, waitOutcome: 'observed' };
       }
       return defaultResponseFor(req);
     },
@@ -593,24 +397,7 @@ test('F4: runPageScope (the cmdCdp page-scope path) issues ONE combined recorder
       timeoutMs: 2000,
     });
 
-    // runPageScope emits through render.ts's emitResult (process.stdout.write)
-    // — tee the stream (node's test runner shares it for its own protocol) and
-    // recover the emitted JSON mirror chunk.
-    const originalWrite = process.stdout.write.bind(process.stdout);
-    const chunks: string[] = [];
-    process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
-      chunks.push(String(chunk));
-      return (originalWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
-    }) as typeof process.stdout.write;
-    try {
-      await runPageScope('Page.reload', {}, { ...parsed, json: true }, 2000);
-    } finally {
-      process.stdout.write = originalWrite;
-    }
-
-    const resultChunk = chunks.find((c) => c.trimStart().startsWith('{'));
-    assert.ok(resultChunk, `expected one emitted JSON result chunk on stdout; got: ${JSON.stringify(chunks)}`);
-    const output = JSON.parse(resultChunk) as { tag: string; attrs: Record<string, unknown>; sections: string[] };
+    const output = await captureEmittedJson(() => runPageScope('Page.reload', {}, { ...parsed, json: true }, 2000)) as { tag: string; attrs: Record<string, unknown>; sections: string[] };
     assert.equal(output.tag, 'cdp-result');
     assert.equal(output.attrs.method, 'Page.reload');
     assert.equal(output.attrs['wait-event'], 'Page.loadEventFired');
@@ -632,8 +419,9 @@ test('F4: runPageScope (the cmdCdp page-scope path) issues ONE combined recorder
 });
 
 // ---------------------------------------------------------------------------
-// F4 — RecorderSession.handleCdp unit-level: a wait-event-only request must
-// never call client.send with an undefined method.
+// RecorderSession.handleCdp unit-level: method + wait-event outcome
+// semantics (the root fix backing single-dispatch navigate) and the
+// wait-event-only shape guards.
 // ---------------------------------------------------------------------------
 
 class StubCdpClient extends EventEmitter implements RecorderCdpClient {
@@ -641,7 +429,7 @@ class StubCdpClient extends EventEmitter implements RecorderCdpClient {
 
   async send(method: unknown, params: Record<string, unknown> = {}): Promise<unknown> {
     this.calls.push({ method, params });
-    return {};
+    return { loaderId: 'stub-loader' };
   }
 
   on(event: string, handler: (params: unknown) => void): void {
@@ -666,6 +454,60 @@ function freshRecDir(label: string): string {
   return path.join(CAPTURE_ROOT, `nav-waitevent-bridge-${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
 }
 
+test('handleCdp: method + armed wait that observes its event returns ok:true with result, event, and waitOutcome:observed', async () => {
+  const recDir = freshRecDir('handlecdp-observed');
+  const client = new StubCdpClient();
+  const session = new RecorderSession({ client, recDir });
+  session.state = 'recording';
+
+  try {
+    const pending = session.handleCdp({ reqId: 1, type: 'cdp', method: 'Page.navigate', params: { url: 'https://example.com' }, waitEvent: 'Page.loadEventFired', timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 10));
+    client.fire('Page.loadEventFired', { frameId: 'main' });
+
+    const outcome = await pending;
+    assert.deepEqual(outcome.result, { loaderId: 'stub-loader' }, 'the method result must be preserved');
+    assert.deepEqual(outcome.event, { frameId: 'main' });
+    assert.equal(outcome.waitOutcome, 'observed');
+  } finally {
+    fs.rmSync(recDir, { recursive: true, force: true });
+  }
+});
+
+test('handleCdp: method + armed wait that TIMES OUT preserves the method result and reports waitOutcome:bounded-timeout (never destroys the result)', async () => {
+  const recDir = freshRecDir('handlecdp-bounded');
+  const client = new StubCdpClient();
+  const session = new RecorderSession({ client, recDir });
+  session.state = 'recording';
+
+  try {
+    // Never fire the event; a tiny timeoutMs makes the armed wait elapse fast.
+    const outcome = await session.handleCdp({ reqId: 2, type: 'cdp', method: 'Page.navigate', params: { url: 'https://example.com' }, waitEvent: 'Page.loadEventFired', timeoutMs: 20 });
+
+    assert.deepEqual(outcome.result, { loaderId: 'stub-loader' }, 'a wait timeout must NOT discard the method result (the root fix)');
+    assert.equal(outcome.event, undefined, 'no event was observed');
+    assert.equal(outcome.waitOutcome, 'bounded-timeout');
+  } finally {
+    fs.rmSync(recDir, { recursive: true, force: true });
+  }
+});
+
+test('handleRecorderRequest: a wait-event-ONLY request that times out is still ok:false (no method result to preserve)', async () => {
+  const recDir = freshRecDir('handlecdp-waitonly-timeout');
+  const client = new StubCdpClient();
+  const session = new RecorderSession({ client, recDir });
+  session.state = 'recording';
+
+  try {
+    const resp = await handleRecorderRequest(session, { reqId: 3, type: 'cdp', waitEvent: 'Never.fires', timeoutMs: 20 });
+    assert.equal(resp.ok, false, 'a wait-event-only timeout is a genuine failure — there is no method result to preserve');
+    assert.equal(resp.type, 'cdp');
+    assert.equal(client.calls.length, 0, 'a wait-event-only request must never call client.send');
+  } finally {
+    fs.rmSync(recDir, { recursive: true, force: true });
+  }
+});
+
 test('F4: RecorderSession.handleCdp on a wait-event-only request never calls client.send with an undefined method, and resolves { event } once the event fires', async () => {
   const recDir = freshRecDir('handlecdp-waitevent');
   const client = new StubCdpClient();
@@ -673,7 +515,7 @@ test('F4: RecorderSession.handleCdp on a wait-event-only request never calls cli
   session.state = 'recording';
 
   try {
-    const pending = session.handleCdp({ reqId: 1, type: 'cdp', waitEvent: 'Foo.bar', timeoutMs: 2000 });
+    const pending = session.handleCdp({ reqId: 4, type: 'cdp', waitEvent: 'Foo.bar', timeoutMs: 2000 });
 
     // Give the wait registration a tick to attach its listener before firing.
     await new Promise((r) => setTimeout(r, 10));

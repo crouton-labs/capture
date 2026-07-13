@@ -150,6 +150,17 @@ export interface RecCdpResponseOk {
   type: 'cdp';
   result?: unknown;
   event?: unknown;
+  /**
+   * Present iff this request armed a `waitEvent` AND carried a `method`. It
+   * reports the load-wait outcome SEPARATELY from the method result: a method
+   * dispatch that succeeds is always `ok:true` with its `result` preserved,
+   * regardless of whether the paired wait observed its event
+   * (`'observed'`, with `event` set) or the wait's own bounded timer elapsed
+   * first (`'bounded-timeout'`, no `event`). A wait-event-ONLY request (no
+   * `method`) whose wait times out is still `ok:false` — that path has no
+   * method result to preserve, so its timeout is a genuine failure.
+   */
+  waitOutcome?: 'observed' | 'bounded-timeout';
 }
 
 export type RecorderRequest = RecStartRequest | RecStopRequest | RecCdpRequest;

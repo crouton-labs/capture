@@ -551,8 +551,18 @@ export class RecorderSession {
    * `waitEvent` (wait-event-only) — anything else (both absent, or a
    * present-but-empty/non-string field) is an explicit protocol error, not a
    * silent no-op "ok" response.
+   *
+   * Method result and wait outcome are SEPARATE. When a request carries both a
+   * `method` and a `waitEvent`, a successful method dispatch is never undone by
+   * the paired wait's own timeout: the wait is armed before the send (so a fast
+   * action-caused event cannot be missed), and if it later times out the method
+   * `result` (e.g. `Page.navigate`'s `loaderId`) is still returned, tagged
+   * `waitOutcome: 'bounded-timeout'` with no `event`; when the event is observed
+   * the outcome is `'observed'` with the `event`. Only a method dispatch
+   * FAILURE cancels the wait and throws. A wait-event-ONLY request (no method)
+   * that times out still rejects — there is no method result to preserve.
    */
-  async handleCdp(req: RecCdpRequest): Promise<{ result?: unknown; event?: unknown }> {
+  async handleCdp(req: RecCdpRequest): Promise<{ result?: unknown; event?: unknown; waitOutcome?: 'observed' | 'bounded-timeout' }> {
     if (this.state === 'stopping' || this.state === 'stopped') {
       throw new Error(`cannot dispatch cdp request in state "${this.state}"`);
     }
@@ -575,11 +585,13 @@ export class RecorderSession {
       if (!hasMethod) {
         // Wait-event-ONLY request (`RecCdpWaitEventRequest`) — there is no CDP
         // call to dispatch, so `client.send` must never be reached here (it
-        // would otherwise send `method: undefined` over the real websocket).
+        // would otherwise send `method: undefined` over the real websocket). A
+        // timeout here rejects (no method result to preserve).
         const event = eventWait ? await eventWait.result() : undefined;
         return { event };
       }
 
+      let result: unknown;
       if (req.mark) {
         const internalMark = structuralMarkLabel(req.mark);
         const bracket = await withDocumentPerformanceNow(asCDPClient(this.client), () =>
@@ -593,13 +605,21 @@ export class RecorderSession {
           startPerformanceNow: bracket.startPerformanceNow,
           endPerformanceNow: bracket.endPerformanceNow,
         });
-        const event = eventWait ? await eventWait.result() : undefined;
-        return { result: bracket.result, event };
+        result = bracket.result;
+      } else {
+        result = await this.client.send(req.method, req.params ?? {}, req.timeoutMs ?? 60000);
       }
 
-      const result = await this.client.send(req.method, req.params ?? {}, req.timeoutMs ?? 60000);
-      const event = eventWait ? await eventWait.result() : undefined;
-      return { result, event };
+      // The method dispatch succeeded. Resolve the paired wait WITHOUT letting
+      // its own timeout destroy the method result: an observed event tags
+      // `'observed'`; the wait's bounded timer elapsing tags `'bounded-timeout'`
+      // and preserves `result` with no `event`.
+      if (!eventWait) return { result };
+      const settled = await eventWait.result().then(
+        (event) => ({ event, waitOutcome: 'observed' as const }),
+        () => ({ waitOutcome: 'bounded-timeout' as const }),
+      );
+      return { result, ...settled };
     } catch (err) {
       eventWait?.cancel();
       throw err;
@@ -1326,8 +1346,8 @@ export async function handleRecorderRequest(
         return { reqId: req.reqId, ok: true, type: 'rec-stop', ...summary };
       }
       case 'cdp': {
-        const { result, event } = await session.handleCdp(req);
-        return { reqId: req.reqId, ok: true, type: 'cdp', result, event };
+        const { result, event, waitOutcome } = await session.handleCdp(req);
+        return { reqId: req.reqId, ok: true, type: 'cdp', result, event, waitOutcome };
       }
       default: {
         const exhaustive: never = req;

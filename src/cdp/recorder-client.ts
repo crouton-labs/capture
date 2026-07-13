@@ -219,20 +219,21 @@ export class RecorderHeldClient {
    * needs to dispatch a method and observe an event it may itself trigger
    * should call this directly instead.
    *
-   * NOTE (`../commands/page/navigate.ts`'s `navigateAtomicWithFragmentFix`): if
-   * `waitEvent` is set and the bridge's wait rejects (times out), the
-   * bridge's `handleRecorderRequest` catch turns the ENTIRE response into
-   * `ok:false` — `result` (e.g. `Page.navigate`'s `loaderId`) is silently
-   * discarded along with it, not just `event`. A caller that needs the
-   * dispatch's `result` even when the paired wait might time out must not
-   * bundle the two; see that file for the worked-out routing around this.
+   * When `method` and `waitEvent` are BOTH set, a successful dispatch is
+   * preserved even if the paired wait times out: the bridge's `handleCdp`
+   * returns the method `result` plus a `waitOutcome` of `'observed'` (the
+   * event fired within the deadline, `event` populated) or `'bounded-timeout'`
+   * (the event did not fire in time — the method still succeeded). Only a
+   * FAILURE of the dispatched method itself yields `ok:false`. A wait-event-
+   * only request (`method` omitted) keeps the older semantics: a wait timeout
+   * is itself the failure and surfaces as `ok:false`, with no `waitOutcome`.
    */
   async dispatch(
     method: string,
     params: Record<string, unknown> = {},
     waitEvent?: string,
     timeoutMs?: number,
-  ): Promise<{ result: unknown; event?: unknown }> {
+  ): Promise<{ result: unknown; event?: unknown; waitOutcome?: 'observed' | 'bounded-timeout' }> {
     const suppressMousePress = method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed' && this.suppressNextMousePressMark;
     if (suppressMousePress) this.suppressNextMousePressMark = false;
     const mark = !suppressMousePress && isMarkableActionMethod(method, params) ? this.actionLabel : undefined;
@@ -249,7 +250,7 @@ export class RecorderHeldClient {
         `recorder-routed CDP call "${method}"${waitEvent ? ` with wait-event "${waitEvent}"` : ''} failed: ${resp.error}`,
       );
     }
-    return { result: resp.result, event: resp.event };
+    return { result: resp.result, event: resp.event, waitOutcome: resp.waitOutcome };
   }
 
   /** Documented no-op — see this file's header comment. */
