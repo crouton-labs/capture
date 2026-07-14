@@ -65,19 +65,25 @@ test('the cdp barrel namespace lacks the three stale exports and keeps the live 
   }
 });
 
-test('no source references the orphan HAR APIs (grep proof)', () => {
-  // The plan's grep: executeInBrowser | writeHarAndPrintSummary | TabSession |
-  // harOutPath | createHar? — plus navigateAndRecord, whose record.ts stub
-  // existed solely to keep the barrel compiling until this cut.
-  const forbidden =
-    /executeInBrowser|writeHarAndPrintSummary|TabSession|harOutPath|createHar\?|navigateAndRecord/;
-  const offenders: string[] = [];
-  for (const file of sourceFiles()) {
-    const text = fs.readFileSync(file, 'utf-8');
-    const m = text.match(forbidden);
-    if (m) offenders.push(`${path.relative(process.cwd(), file)}: ${m[0]}`);
-  }
-  assert.deepEqual(offenders, []);
+test('createHarRecording is confined to har-manager.ts plus the session-start consumer', async () => {
+  // A5's positive behavioral gate (replacing the forbidden persistent
+  // whole-tree grep): the surviving HAR store factory is exported by the
+  // session HAR manager, referenced by exactly one consumer — session start
+  // (src/session/commands.ts) — and no orphan module invokes it.
+  const harManager = await import('../src/har-manager.js');
+  assert.equal(typeof harManager.createHarRecording, 'function', 'har-manager.ts must export createHarRecording');
+  const referencing = sourceFiles()
+    .filter((file) => fs.readFileSync(file, 'utf-8').includes('createHarRecording'))
+    .map((file) => path.relative(process.cwd(), file))
+    .sort();
+  assert.deepEqual(
+    referencing,
+    ['src/har-manager.ts', 'src/session/commands.ts'],
+    'createHarRecording must exist solely in har-manager.ts plus the session-start consumer',
+  );
+  // The one sanctioned consumer reaches it through a named import of the manager.
+  const consumer = fs.readFileSync(path.join(SRC, 'session', 'commands.ts'), 'utf-8');
+  assert.match(consumer, /import \{[^}]*\bcreateHarRecording\b[\s\S]*?\} from '\.\.\/har-manager\.js'/);
 });
 
 test('the sole live HAR lane — session manager + internal streaming recorder — is retained', () => {

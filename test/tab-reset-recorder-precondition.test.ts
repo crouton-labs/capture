@@ -29,6 +29,8 @@ import {
   readRecorderJson,
 } from '../src/cdp/motion/recorder.js';
 import { cmdTabReset, __setTabResetDepsForTest } from '../src/cdp/commands/tab/reset.js';
+import { RECORDER_NONCE_BOOT_FILE } from '../src/cdp/recorder-bridge.js';
+import { CaptureError } from '../src/errors.js';
 import { type CDPTarget, type ParsedArgs } from '../src/cdp/types.js';
 import { type RecorderRequest, type RecorderResponse, type RecorderClockBaselines } from '../src/cdp/bridge/protocol.js';
 
@@ -44,6 +46,22 @@ function freshSessionDir(label: string): string {
   );
   ensurePrivateDir(dir);
   return dir;
+}
+
+/** A structurally valid 64-hex recorder control nonce shared by every fixture
+ * in this file — parseRecorderHandle requires it on every recorder.json (a
+ * handle without one classifies malformed), and the fake spawn seams hand it
+ * to the starter via the recorder-nonce.json boot file exactly the way the
+ * real bridge does. Mirrors test/motion-rec-lifecycle.test.ts. */
+const TEST_NONCE = 'ab'.repeat(32);
+
+/** The M5 refusal proofs assert the specific `recorder_active` code — a loose
+ * /active|recorder/i regex also matches the malformed-handle lane
+ * (`recorder_unavailable`), which would make the live-recorder proofs vacuous. */
+function recorderActiveRefusal(err: unknown): boolean {
+  return err instanceof CaptureError
+    && err.descriptor.kind === 'precondition'
+    && err.descriptor.code === 'recorder_active';
 }
 
 const PENDING_MARKERS: RecorderClockBaselines = {
@@ -153,6 +171,7 @@ function writeLiveRecorderJson(recDir: string, recId: string, pid: number, birth
     state: 'recording',
     birth,
     markers: PENDING_MARKERS,
+    nonce: TEST_NONCE,
   });
 }
 
@@ -167,23 +186,27 @@ test('proof 1: reset refuses while a live recorder + activeRecId are present, op
   const url = 'https://reset.example/new';
   await setActiveSession({ sessionId: 's-live-active', dir: sessionDir, harId: null, targetId: 'target-abc', port: 9222, stepCount: 0 });
   const recId = 'rec-live-1';
+  // Every line after the spawn lives inside the try, so no fixture failure
+  // can leak a live placeholder child (which would hang the runner forever
+  // under --test-timeout=0).
   const placeholder = spawnPlaceholderChild();
-  writeLiveRecorderJson(recDirFor(sessionDir, recId), recId, placeholder.pid, birthOf(placeholder.pid));
-  await setActiveRecId(recId);
-  const before = fs.readFileSync(path.join(sessionDir, '.session.json'));
-  const spy = { calls: 0 };
-  const restore = __setTabResetDepsForTest({
-    detectCdpPort: async () => 9222,
-    openTab: async () => { spy.calls++; return fakeTarget('target-new', url); },
-    createClient: () => makeFakeClient(),
-    lifecycle: {},
-  });
+  let restore: (() => void) | null = null;
   try {
-    await assert.rejects(() => runReset({ command: 'tab', positional: [url] }), /active|recorder/i);
+    writeLiveRecorderJson(recDirFor(sessionDir, recId), recId, placeholder.pid, birthOf(placeholder.pid));
+    await setActiveRecId(recId);
+    const before = fs.readFileSync(path.join(sessionDir, '.session.json'));
+    const spy = { calls: 0 };
+    restore = __setTabResetDepsForTest({
+      detectCdpPort: async () => 9222,
+      openTab: async () => { spy.calls++; return fakeTarget('target-new', url); },
+      createClient: () => makeFakeClient(),
+      lifecycle: {},
+    });
+    await assert.rejects(() => runReset({ command: 'tab', positional: [url] }), recorderActiveRefusal);
     assert.equal(spy.calls, 0, 'reset must not open a fresh tab while a recorder is live');
     assert.ok(before.equals(fs.readFileSync(path.join(sessionDir, '.session.json'))), '.session.json must be byte-identical');
   } finally {
-    restore();
+    restore?.();
     placeholder.kill();
     clearActiveSession();
     fs.rmSync(sessionDir, { recursive: true, force: true });
@@ -196,22 +219,23 @@ test('proof 2: reset refuses on a live recorder even with activeRecId UNSET (dir
   await setActiveSession({ sessionId: 's-live-no-pointer', dir: sessionDir, harId: null, targetId: 'target-abc', port: 9222, stepCount: 0 });
   const recId = 'rec-live-2';
   const placeholder = spawnPlaceholderChild();
-  writeLiveRecorderJson(recDirFor(sessionDir, recId), recId, placeholder.pid, birthOf(placeholder.pid));
-  // Deliberately NO setActiveRecId -- the pointer is unset even though a live
-  // recorder.json exists on disk.
-  assert.equal(getActiveRecId(), null);
-  const spy = { calls: 0 };
-  const restore = __setTabResetDepsForTest({
-    detectCdpPort: async () => 9222,
-    openTab: async () => { spy.calls++; return fakeTarget('target-new', url); },
-    createClient: () => makeFakeClient(),
-    lifecycle: {},
-  });
+  let restore: (() => void) | null = null;
   try {
-    await assert.rejects(() => runReset({ command: 'tab', positional: [url] }), /active|recorder/i);
+    writeLiveRecorderJson(recDirFor(sessionDir, recId), recId, placeholder.pid, birthOf(placeholder.pid));
+    // Deliberately NO setActiveRecId -- the pointer is unset even though a live
+    // recorder.json exists on disk.
+    assert.equal(getActiveRecId(), null);
+    const spy = { calls: 0 };
+    restore = __setTabResetDepsForTest({
+      detectCdpPort: async () => 9222,
+      openTab: async () => { spy.calls++; return fakeTarget('target-new', url); },
+      createClient: () => makeFakeClient(),
+      lifecycle: {},
+    });
+    await assert.rejects(() => runReset({ command: 'tab', positional: [url] }), recorderActiveRefusal);
     assert.equal(spy.calls, 0);
   } finally {
-    restore();
+    restore?.();
     placeholder.kill();
     clearActiveSession();
     fs.rmSync(sessionDir, { recursive: true, force: true });
@@ -258,23 +282,24 @@ test('proof 3b: reset preserves a live-foreign-pid dead handle (mismatched birth
   const recId = 'rec-dead-foreign';
   const recDir = recDirFor(sessionDir, recId);
   const foreign = spawnPlaceholderChild();
-  // A wrong birth (this process's, not the foreign pid's) makes the still-live
-  // foreign pid classify DEAD -- reset must preserve the handle and never signal it.
-  writeLiveRecorderJson(recDir, recId, foreign.pid, birthOf(process.pid));
-  const restore = __setTabResetDepsForTest({
-    detectCdpPort: async () => 9222,
-    openTab: async () => fakeTarget('target-new', url),
-    createClient: () => makeFakeClient(),
-    lifecycle: {},
-  });
+  let restore: (() => void) | null = null;
   try {
+    // A wrong birth (this process's, not the foreign pid's) makes the still-live
+    // foreign pid classify DEAD -- reset must preserve the handle and never signal it.
+    writeLiveRecorderJson(recDir, recId, foreign.pid, birthOf(process.pid));
+    restore = __setTabResetDepsForTest({
+      detectCdpPort: async () => 9222,
+      openTab: async () => fakeTarget('target-new', url),
+      createClient: () => makeFakeClient(),
+      lifecycle: {},
+    });
     await runReset({ command: 'tab', positional: [url] });
     assert.equal(fs.existsSync(path.join(recDir, 'recorder.json')), true, 'the dead handle must be preserved, not removed');
     assert.equal(getActiveSession()!.targetId, 'target-new');
     await new Promise((r) => setTimeout(r, 100));
     assert.equal(pidLive(foreign.pid), true, 'the live foreign pid must never be signaled by reset');
   } finally {
-    restore();
+    restore?.();
     foreign.kill();
     clearActiveSession();
     fs.rmSync(sessionDir, { recursive: true, force: true });
@@ -343,7 +368,7 @@ test('proof 5: an accepted reset publishes the {targetId, port} pair together', 
 test('proof 6a: reset-wins -- a recorder start launched while reset holds the lock binds reset\'s committed target', async () => {
   const sessionDir = freshSessionDir('race-reset-wins');
   const url = 'https://reset.example/new';
-  await setActiveSession({ sessionId: 's-race-reset', dir: sessionDir, harId: null, targetId: 'target-old', port: 9222, stepCount: 0 });
+  await setActiveSession({ sessionId: 's-race-reset', dir: sessionDir, harId: 'har-test-6a', targetId: 'target-old', port: 9222, stepCount: 0 });
   const insideReset = deferred();
   const release = deferred();
   const restore = __setTabResetDepsForTest({
@@ -356,11 +381,19 @@ test('proof 6a: reset-wins -- a recorder start launched while reset holds the lo
   let fakeServer: Awaited<ReturnType<typeof startFakeRecorderServer>> | null = null;
   try {
     const resetPromise = runReset({ command: 'tab', positional: [url] });
-    await insideReset.promise; // reset now holds .lifecycle.lock
+    // Race against resetPromise: if reset rejects before reaching openTab, the
+    // test fails fast instead of hanging forever on a deferred nothing will
+    // ever resolve (which would leak the placeholder under --test-timeout=0).
+    await Promise.race([insideReset.promise, resetPromise]); // reset now holds .lifecycle.lock
     const startPromise = startComposedRecorder({ sessionDir }, {
       detectPort: async () => 9222,
-      spawnRecorderBridge: async (sp) => { fakeServer = await startFakeRecorderServer(sp); return { socketPath: sp, pid: placeholder.pid }; },
+      spawnRecorderBridge: async (sp, _port, _targetId, recDir) => {
+        writeJsonPrivate(path.join(recDir, RECORDER_NONCE_BOOT_FILE), { nonce: TEST_NONCE });
+        fakeServer = await startFakeRecorderServer(sp);
+        return { socketPath: sp, pid: placeholder.pid };
+      },
     });
+    startPromise.catch(() => {}); // re-observed at the await below; never unhandled mid-wait
     await new Promise((r) => setTimeout(r, 50)); // start blocks on the lock
     release.resolve();
     await resetPromise;
@@ -380,7 +413,7 @@ test('proof 6a: reset-wins -- a recorder start launched while reset holds the lo
 test('proof 6b: start-wins -- a reset launched while a recorder start holds the lock is refused as recorder-active', async () => {
   const sessionDir = freshSessionDir('race-start-wins');
   const url = 'https://reset.example/new';
-  await setActiveSession({ sessionId: 's-race-start', dir: sessionDir, harId: null, targetId: 'target-old', port: 9222, stepCount: 0 });
+  await setActiveSession({ sessionId: 's-race-start', dir: sessionDir, harId: 'har-test-6b', targetId: 'target-old', port: 9222, stepCount: 0 });
   const insideStart = deferred();
   const release = deferred();
   const openTabSpy = { calls: 0 };
@@ -395,14 +428,24 @@ test('proof 6b: start-wins -- a reset launched while a recorder start holds the 
   try {
     const startPromise = startComposedRecorder({ sessionDir }, {
       detectPort: async () => 9222,
-      spawnRecorderBridge: async (sp) => { fakeServer = await startFakeRecorderServer(sp); insideStart.resolve(); await release.promise; return { socketPath: sp, pid: placeholder.pid }; },
+      spawnRecorderBridge: async (sp, _port, _targetId, recDir) => {
+        writeJsonPrivate(path.join(recDir, RECORDER_NONCE_BOOT_FILE), { nonce: TEST_NONCE });
+        fakeServer = await startFakeRecorderServer(sp);
+        insideStart.resolve();
+        await release.promise;
+        return { socketPath: sp, pid: placeholder.pid };
+      },
     });
-    await insideStart.promise; // start now holds .lifecycle.lock
+    // Race against startPromise: if start rejects before its spawn seam runs
+    // (e.g. a precondition failure), the test fails fast instead of hanging
+    // forever on insideStart under --test-timeout=0 and leaking the placeholder.
+    await Promise.race([insideStart.promise, startPromise]); // start now holds .lifecycle.lock
     const resetPromise = runReset({ command: 'tab', positional: [url] });
+    resetPromise.catch(() => {}); // its rejection is asserted below; never unhandled mid-wait
     await new Promise((r) => setTimeout(r, 50)); // reset blocks on the lock
     release.resolve();
     const sr = await startPromise;
-    await assert.rejects(() => resetPromise, /active|recorder/i);
+    await assert.rejects(() => resetPromise, recorderActiveRefusal);
     assert.equal(openTabSpy.calls, 0, 'reset refused before opening a tab');
     assert.equal(getActiveSession()!.targetId, 'target-old');
     assert.equal(readRecorderJson(sr.recDir)!.targetId, 'target-old');
