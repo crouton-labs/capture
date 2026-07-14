@@ -85,6 +85,14 @@ async function waitFor(file: string, timeoutMs = TSX_CHILD_TIMEOUT_MS): Promise<
   while (!fs.existsSync(file)) { if (Date.now() >= end) throw new Error(`timed out waiting for ${file}`); await new Promise(resolve => setTimeout(resolve, 5)); }
 }
 async function exitCode(proc: childProcess.ChildProcess, label: string, timeoutMs = TSX_CHILD_TIMEOUT_MS): Promise<number | null> {
+  // A child that already exited before this call will never re-emit 'exit' to a freshly attached
+  // listener, so a plain once('exit') race would hang until timeoutMs. node sets exitCode (normal
+  // exit) or signalCode (terminated by signal) once the process is gone, so short-circuit on either
+  // and report the settled result immediately. This closes a cross-process coordination race where a
+  // fast-exiting child — e.g. the bounded loser in a two-publisher proof, which writes its result and
+  // exits while the parent is still reading the winner's result — can exit before the parent reaches
+  // its exitCode() call, which otherwise stalled the whole test to the timeout bound.
+  if (proc.exitCode !== null || proc.signalCode !== null) return proc.exitCode;
   let timer: NodeJS.Timeout | undefined;
   try { return await Promise.race([new Promise<number | null>(resolve => proc.once('exit', resolve)), new Promise<never>((_, reject) => { timer = setTimeout(() => { proc.kill('SIGKILL'); reject(new Error(`timed out waiting for ${label}`)); }, timeoutMs); })]); }
   finally { if (timer) clearTimeout(timer); }
