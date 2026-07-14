@@ -79,10 +79,62 @@ async function rejectsUnchanged(lock: string, action: () => Promise<unknown>, ma
 }
 function outsideDir(): string { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-lock-outside-')); fs.writeFileSync(path.join(d, 'secret'), 'secret', { mode: 0o644 }); return d; }
 
+// ---- orphan-proof child teardown ------------------------------------------------------------------
+// Every helper below spawns a real OS child. If THIS process (the test runner) dies abnormally —
+// crash, SIGKILL, a CI timeout, an exception thrown before a test's try even starts — a bare
+// per-test `finally { child.kill() }` never runs, and any live child (blocked in busyGate's or
+// L-V4's Atomics.wait loop) reparents to pid 1 and spins forever. Track every spawned child here so
+// a runner-exit path can SIGKILL whatever is still alive, and .unref() every child so a stray
+// registration can never keep this process's event loop alive by itself.
+const liveChildren = new Set<childProcess.ChildProcess>();
+function trackChild<T extends childProcess.ChildProcess>(child: T): T {
+  liveChildren.add(child);
+  child.unref();
+  child.once('exit', () => { liveChildren.delete(child); });
+  return child;
+}
+function killLiveChildren(): void {
+  for (const child of liveChildren) { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+  liveChildren.clear();
+}
+// Installed once at module load (this file runs as its own `node --test` process, so these handlers
+// are scoped to this suite). `exit` handlers run synchronously, and `child.kill('SIGKILL')` is a
+// synchronous signal send, so it is safe there. SIGINT/SIGTERM/uncaughtException/unhandledRejection
+// cover every other way this process can go down before a test's `finally` gets to run.
+process.on('exit', killLiveChildren);
+process.on('SIGINT', () => { killLiveChildren(); process.exit(130); });
+process.on('SIGTERM', () => { killLiveChildren(); process.exit(143); });
+process.on('uncaughtException', (err) => { killLiveChildren(); console.error(err); process.exit(1); });
+process.on('unhandledRejection', (reason) => { killLiveChildren(); console.error(reason); process.exit(1); });
+
+// Self-defense embedded into every spawned child script (via string interpolation — these run in a
+// separate `-e` process, not in this module). EMPIRICALLY VERIFIED on this box (Node v26.5.0, darwin
+// arm64; see the orchestrator's validation evidence): `process.ppid` updates LIVE the instant the
+// spawning process dies and the child reparents (observed flipping from the real parent pid to `1`
+// within one 100ms poll interval, no caching lag) — so a captured-at-start comparison is sufficient
+// on its own. A `process.kill(parentPid, 0)` liveness probe is layered on anyway as a second, ~free
+// signal, since ppid-live-update is not a behavior every future Node/platform combination this suite
+// runs under is guaranteed to preserve, and the probe covers that without adding real cost.
+const ORPHAN_GUARD = `const __parentPid = process.ppid; function __orphaned(){ if (process.ppid !== __parentPid) return true; try { process.kill(__parentPid, 0); } catch { return true; } return false; }`;
+
 // ---- subprocess coordination ---------------------------------------------------------------------
-async function waitFor(file: string, timeoutMs = TSX_CHILD_TIMEOUT_MS): Promise<void> {
+// `proc` (when given) threads a child's lifecycle into the poll: if the file never appears because
+// the child that was supposed to write it died first (crash during tsx compile, an exception before
+// it publishes), failing after the full timeoutMs bound gives a bare "timed out" with no evidence.
+// Once the child has exited, re-check the file ONCE more (a child may legitimately write-then-exit
+// between one poll iteration and the next) before treating the exit as failure evidence, then throw
+// with the child's exit code/signal attached — exactly the race `exitCode()` below already closes.
+async function waitFor(file: string, opts: { proc?: childProcess.ChildProcess; label?: string; timeoutMs?: number } = {}): Promise<void> {
+  const { proc, label = 'child', timeoutMs = TSX_CHILD_TIMEOUT_MS } = opts;
   const end = Date.now() + timeoutMs;
-  while (!fs.existsSync(file)) { if (Date.now() >= end) throw new Error(`timed out waiting for ${file}`); await new Promise(resolve => setTimeout(resolve, 5)); }
+  while (!fs.existsSync(file)) {
+    if (proc && (proc.exitCode !== null || proc.signalCode !== null)) {
+      if (fs.existsSync(file)) return;
+      throw new Error(`${label} exited (code=${proc.exitCode} signal=${proc.signalCode}) before writing ${file}`);
+    }
+    if (Date.now() >= end) throw new Error(`timed out waiting for ${file}`);
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
 }
 async function exitCode(proc: childProcess.ChildProcess, label: string, timeoutMs = TSX_CHILD_TIMEOUT_MS): Promise<number | null> {
   // A child that already exited before this call will never re-emit 'exit' to a freshly attached
@@ -112,7 +164,8 @@ const guards = {};
 // Publish atomically: write to a same-directory temp name, then rename into place, so a reader
 // that polls existsSync(final) and immediately parses the bytes can never observe a truncated file.
 function publish(file, data){ const tmp = file + '.' + process.pid + '.' + Math.random().toString(16).slice(2) + '.tmp'; fs.writeFileSync(tmp, data); fs.renameSync(tmp, file); }
-function busyGate(gate){ const cell = new Int32Array(new SharedArrayBuffer(4)); while(!fs.existsSync(gate)) Atomics.wait(cell,0,0,20); }
+${ORPHAN_GUARD}
+function busyGate(gate){ const cell = new Int32Array(new SharedArrayBuffer(4)); while(!fs.existsSync(gate)){ if (__orphaned()) process.exit(1); Atomics.wait(cell,0,0,20); } }
 function pause(key, marker, gate){ if(!guards[key]){ guards[key]=true; try { publish(marker, 'ready'); } catch {} } busyGate(gate); }
 function makeProvider(p){ if(p==='production') return a.processPidBirthProvider; return { read(pid){ return (p.ownerPid && pid === p.ownerPid) ? { status: p.ownerStatus || 'absent', reason: 'fixture' } : { status: 'found', identity: p.self }; } }; }
 const opts = { acquireTimeoutMs: cfg.acquireTimeoutMs, leaseMs: cfg.leaseMs, pidBirthProvider: makeProvider(cfg.provider) };
@@ -130,7 +183,7 @@ try {
 }
 `;
 function spawnLockChild(cfg: Record<string, unknown>): childProcess.ChildProcess {
-  return childProcess.spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', LOCK_CHILD], { env: { ...process.env, CAPTURE_ROOT, CHILD_CONFIG: JSON.stringify(cfg) }, stdio: 'ignore' });
+  return trackChild(childProcess.spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', LOCK_CHILD], { env: { ...process.env, CAPTURE_ROOT, CHILD_CONFIG: JSON.stringify(cfg) }, stdio: 'ignore' }));
 }
 
 // =================================================================================================
@@ -144,7 +197,7 @@ test('explicit CAPTURE_ROOT is frozen per process and never writes the default r
   const defaultSentinel = path.join(os.tmpdir(), 'capture-sessions', `private-lock-default-${process.pid}`);
   const resultA = path.join(coord, 'a.json'); const resultB = path.join(coord, 'b.json');
   const script = `import * as fs from 'node:fs'; import * as path from 'node:path'; const a=await import(${JSON.stringify(moduleUrl)}); const root=a.CAPTURE_ROOT; a.writePrivateFile(path.join(root,'one'),'one'); process.env.CAPTURE_ROOT='/tmp/attacker'; a.writePrivateFile(path.join(root,'two'),'two'); fs.writeFileSync(process.env.RESULT,JSON.stringify({root,entries:fs.readdirSync(root).sort()}));`;
-  const spawn = (root: string, result: string) => childProcess.spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { env: { ...process.env, CAPTURE_ROOT: root, RESULT: result }, stdio: 'ignore' });
+  const spawn = (root: string, result: string) => trackChild(childProcess.spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { env: { ...process.env, CAPTURE_ROOT: root, RESULT: result }, stdio: 'ignore' }));
   try {
     assert.equal(fs.existsSync(defaultSentinel), false);
     const a = spawn(rootA, resultA); assert.equal(await exitCode(a, 'root A child'), 0);
@@ -323,7 +376,7 @@ test('L-P1 publication is atomic and complete under a cross-process pause at the
   const marker = path.join(coord, 'm'); const gate = path.join(coord, 'g'); const hold = path.join(coord, 'h'); const result = path.join(coord, 'r.json');
   const child = spawnLockChild({ lock, acquireTimeoutMs: 60_000, leaseMs: 60_000, provider: 'production', pause: { phase: 'beforePublishRename', marker, gate }, result, hold: { gate: hold, release: true } });
   try {
-    await waitFor(marker);
+    await waitFor(marker, { proc: child, label: 'p1 child' });
     // Canonical absent; exactly one 0700 pending dir with a fully-parseable 0600 owner.
     assert.equal(fs.existsSync(lock), false);
     const pend = pendings(parent); assert.equal(pend.length, 1);
@@ -334,7 +387,7 @@ test('L-P1 publication is atomic and complete under a cross-process pause at the
     assert.match(staged.token, /^[0-9a-f]{32,}$/);
     // Resume; complete generation becomes canonical, pending disappears, data matches publication.
     openGate(gate);
-    await waitFor(result);
+    await waitFor(result, { proc: child, label: 'p1 child' });
     const res = readResult(result); assert.equal(res.status, 'acquired');
     const pub = lockSnapshot(lock);
     assert.equal(pub.directory.mode, DIR_MODE); assert.equal(pub.owner.mode, FILE_MODE); assert.deepEqual(pub.listing, ['owner']);
@@ -527,9 +580,9 @@ test('L-C1 two fresh cross-process publishers yield exactly one winner and no pe
   const cfg = (marker: string, result: string) => ({ lock, acquireTimeoutMs: 4_000, leaseMs: 60_000, provider: { self: birth }, pause: { phase: 'beforePublishAttempt', marker, gate }, result, hold: { gate: hold, release: true } });
   const childA = spawnLockChild(cfg(mA, rA)); const childB = spawnLockChild(cfg(mB, rB));
   try {
-    await waitFor(mA); await waitFor(mB);
+    await waitFor(mA, { proc: childA, label: 'c1 childA' }); await waitFor(mB, { proc: childB, label: 'c1 childB' });
     openGate(gate);                                              // release both barriers together
-    await waitFor(rA); await waitFor(rB);
+    await waitFor(rA, { proc: childA, label: 'c1 childA' }); await waitFor(rB, { proc: childB, label: 'c1 childB' });
     const a = readResult(rA); const b = readResult(rB);
     const acquired = [a, b].filter(r => r.status === 'acquired'); const timedOut = [a, b].filter(r => r.status === 'error');
     assert.equal(acquired.length, 1); assert.equal(timedOut.length, 1);
@@ -737,10 +790,10 @@ test('L-V3 Darwin provider invokes a bounded, exact sysctl command (darwin only)
 test('L-V4 real provider observes a live child identity and its death', async () => {
   await ready;
   const coord = coordinator(); const result = path.join(coord, 'self.json');
-  const script = `import * as fs from 'node:fs'; const a=await import(${JSON.stringify(moduleUrl)}); const data=JSON.stringify(a.processPidBirthProvider.read(process.pid)); const tmp=process.env.RESULT+'.'+process.pid+'.tmp'; fs.writeFileSync(tmp, data); fs.renameSync(tmp, process.env.RESULT); const cell=new Int32Array(new SharedArrayBuffer(4)); for(;;) Atomics.wait(cell,0,0,1000);`;
-  const childProc = childProcess.spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { env: { ...process.env, CAPTURE_ROOT, RESULT: result }, stdio: 'ignore' });
+  const script = `import * as fs from 'node:fs'; const a=await import(${JSON.stringify(moduleUrl)}); const data=JSON.stringify(a.processPidBirthProvider.read(process.pid)); const tmp=process.env.RESULT+'.'+process.pid+'.tmp'; fs.writeFileSync(tmp, data); fs.renameSync(tmp, process.env.RESULT); ${ORPHAN_GUARD} const cell=new Int32Array(new SharedArrayBuffer(4)); for(;;){ if (__orphaned()) process.exit(1); Atomics.wait(cell,0,0,1000); }`;
+  const childProc = trackChild(childProcess.spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { env: { ...process.env, CAPTURE_ROOT, RESULT: result }, stdio: 'ignore' }));
   try {
-    await waitFor(result);
+    await waitFor(result, { proc: childProc, label: 'v4 self-report child' });
     const childSelf = readResult(result); assert.equal(childSelf.status, 'found');
     const observed = processPidBirthProvider.read(childProc.pid!); assert.equal(observed.status, 'found');
     assert.deepEqual(observed.identity, childSelf.identity);
@@ -759,7 +812,7 @@ test('L-R1 a real killed holder is recovered only after death and lease expiry',
   const coord = coordinator(); const lock = freshLock('r1'); const result = path.join(coord, 'r.json'); const never = path.join(coord, 'never');
   const holder = spawnLockChild({ lock, acquireTimeoutMs: 60_000, leaseMs: 300, provider: 'production', result, hold: { gate: never, release: false } });
   try {
-    await waitFor(result);
+    await waitFor(result, { proc: holder, label: 'r1 holder' });
     const pred = readResult(result); assert.equal(pred.status, 'acquired');
     holder.kill('SIGKILL'); await exitCode(holder, 'r1 holder');
     const successor = await acquirePrivateLock(lock, { acquireTimeoutMs: 5_000, leaseMs: 1_000, pidBirthProvider: processPidBirthProvider });
@@ -786,9 +839,9 @@ test('L-R2 two cross-process stale takers produce a single safe successor', asyn
     writeOwner(lock, owner({ pid: ownerPid, leaseDeadlineNs: '0' }));   // expired, decisively dead per fixture
     taker1 = spawnLockChild(cfg(m1, gate1, r1, hold));
     taker2 = spawnLockChild(cfg(m2, gate2, r2));
-    await waitFor(m1); await waitFor(m2);                               // both validated exact A, paused
+    await waitFor(m1, { proc: taker1, label: 'r2 taker1' }); await waitFor(m2, { proc: taker2, label: 'r2 taker2' }); // both validated exact A, paused
     openGate(gate1);                                                    // taker1 removes A, publishes B, holds
-    await waitFor(r1);
+    await waitFor(r1, { proc: taker1, label: 'r2 taker1' });
     const t1 = readResult(r1); assert.equal(t1.status, 'acquired');
     const snapB = lockSnapshot(lock);
     assert.equal(snapB.directory.mode, DIR_MODE); assert.equal(snapB.owner.mode, FILE_MODE); assert.deepEqual(snapB.listing, ['owner']);
@@ -867,9 +920,9 @@ test('L-R5 a cross-process ABA old releaser cannot remove an overlapping success
   const childA = spawnLockChild({ lock, acquireTimeoutMs: 60_000, leaseMs: 60_000, provider: 'production', result: aResult, afterOwnerRemovedPause: { marker: aMarker, gate: aGate }, releaseAfterAcquire: true });
   let handleB: any;
   try {
-    await waitFor(aResult);                                           // A acquired
+    await waitFor(aResult, { proc: childA, label: 'r5 childA' });                                           // A acquired
     const pred = readResult(aResult); assert.equal(pred.status, 'acquired');
-    await waitFor(aMarker);                                           // A is paused mid-release, owner removed, cwd inside A
+    await waitFor(aMarker, { proc: childA, label: 'r5 childA' });                                           // A is paused mid-release, owner removed, cwd inside A
     handleB = await acquirePrivateLock(lock, { acquireTimeoutMs: 5_000, leaseMs: 60_000, pidBirthProvider: processPidBirthProvider });
     const snapB = lockSnapshot(lock);
     assert.notDeepEqual({ dev: snapB.directory.dev, ino: snapB.directory.ino }, pred.generation);
@@ -1011,6 +1064,84 @@ test('L-H4 static and dynamic final canonical traps preserve protected state', a
       assert.deepEqual(listing(lock), []);
     } finally { cleanup(lock); }
   }
+});
+
+// =================================================================================================
+// Harness regression — an orphaned busyGate child self-exits (Issue 1)
+// =================================================================================================
+// Simulates "the test runner died before its finally ran" via one level of indirection: an
+// intermediary stand-in process plays the role of the runner (this actual node:test process cannot
+// safely kill itself), spawns a grandchild that blocks in busyGate exactly as spawnLockChild's
+// children do, then is SIGKILLed. The grandchild must notice its parent died and self-exit well
+// inside a tight bound — never linger reparented to pid 1 forever.
+const BUSY_GATE_PROOF_CHILD = `
+import * as fs from 'node:fs';
+${ORPHAN_GUARD}
+const cell = new Int32Array(new SharedArrayBuffer(4));
+fs.writeFileSync(process.env.ALIVE_MARKER, String(process.pid));
+while (!fs.existsSync(process.env.GATE)) {
+  if (__orphaned()) { fs.writeFileSync(process.env.EXIT_MARKER, 'self-exited'); process.exit(1); }
+  Atomics.wait(cell, 0, 0, 20);
+}
+fs.writeFileSync(process.env.EXIT_MARKER, 'gate-opened');
+`;
+const FAKE_PARENT = `
+import { spawn } from 'node:child_process';
+const child = spawn(process.execPath, ['--input-type=module', '-e', process.env.GRANDCHILD_SCRIPT], { env: process.env, stdio: 'ignore' });
+child.unref();
+setInterval(() => {}, 1000); // keep this stand-in "runner" alive until the test SIGKILLs it
+`;
+test('orphaned busyGate child self-exits once its spawning process dies', async () => {
+  const coord = coordinator();
+  const aliveMarker = path.join(coord, 'alive'); const exitMarker = path.join(coord, 'exit'); const gate = path.join(coord, 'gate');
+  const fakeParent = trackChild(childProcess.spawn(process.execPath, ['--input-type=module', '-e', FAKE_PARENT], {
+    env: { ...process.env, GRANDCHILD_SCRIPT: BUSY_GATE_PROOF_CHILD, ALIVE_MARKER: aliveMarker, EXIT_MARKER: exitMarker, GATE: gate },
+    stdio: 'ignore',
+  }));
+  let grandchildPid = -1;
+  try {
+    await waitFor(aliveMarker, { proc: fakeParent, label: 'fake-parent stand-in' });
+    grandchildPid = Number(fs.readFileSync(aliveMarker, 'utf8'));
+    assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0);
+    // Kill the stand-in "runner"; the grandchild must reparent and notice within a small bound —
+    // never linger to the harness's full 30s child-startup timeout.
+    fakeParent.kill('SIGKILL');
+    const deadline = Date.now() + 3_000;
+    while (!fs.existsSync(exitMarker)) {
+      if (Date.now() >= deadline) assert.fail('orphaned busyGate child did not self-exit within 3s');
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(fs.readFileSync(exitMarker, 'utf8'), 'self-exited');
+    // The process itself is actually gone, not merely past its marker write.
+    while (Date.now() < deadline) {
+      try { process.kill(grandchildPid, 0); } catch { break; }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.throws(() => process.kill(grandchildPid, 0), /ESRCH/);
+  } finally {
+    if (grandchildPid > 0) { try { process.kill(grandchildPid, 'SIGKILL'); } catch { /* already gone */ } }
+    fs.rmSync(coord, { recursive: true, force: true });
+  }
+});
+
+// =================================================================================================
+// Harness regression — waitFor() fails fast with exit evidence (Issue 2)
+// =================================================================================================
+test("waitFor fails fast with the dead child's exit evidence instead of the full timeout", async () => {
+  const coord = coordinator();
+  const marker = path.join(coord, 'never-written.json');
+  // A child that exits immediately without ever reaching a marker write — the exact shape of a
+  // crash during tsx compile or an exception thrown before publish().
+  const crashChild = trackChild(childProcess.spawn(process.execPath, ['--input-type=module', '-e', 'process.exitCode = 7;'], { stdio: 'ignore' }));
+  try {
+    const start = Date.now();
+    await assert.rejects(
+      waitFor(marker, { proc: crashChild, label: 'crash-child', timeoutMs: TSX_CHILD_TIMEOUT_MS }),
+      /crash-child exited \(code=7 signal=null\) before writing/,
+    );
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 5_000, `expected a fast failure, took ${elapsed}ms`);
+  } finally { crashChild.kill('SIGKILL'); fs.rmSync(coord, { recursive: true, force: true }); }
 });
 
 test.after(() => { if (savedCaptureRoot === undefined) delete process.env.CAPTURE_ROOT; else process.env.CAPTURE_ROOT = savedCaptureRoot; fs.rmSync(suiteRoot, { recursive: true, force: true }); });
