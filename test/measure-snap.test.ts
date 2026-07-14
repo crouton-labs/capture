@@ -175,13 +175,20 @@ test('measure snap writes one-shot and active-session substrates, including a ho
 
   const stopped = runCapture(['session', 'stop', sessionId]);
   assert.equal(stopped.status, 0, stopped.stderr);
-  const viewed = runCapture(['session', 'view', sessionId, '--filter', 'measure']);
+  const viewed = runCapture(['session', 'view', sessionId, '--filter', 'measure', '--json']);
   assert.equal(viewed.status, 0, viewed.stderr);
-  const listed = JSON.parse(viewed.stdout) as Array<{ id: string; path: string; settled: boolean }>;
-  assert.equal(listed.length, 1);
-  assert.equal(listed[0]?.id, activeResult.attestation.id);
-  assert.equal(listed[0]?.path, activeResult.attestation.path);
-  assert.equal(listed[0]?.settled, true);
+  // `session view --filter` renders one prose row per manifest entry (see
+  // `sectionRows`/`VIEW_FILTERS` in src/session/commands.ts) joined into a
+  // single `sections[0]` string — not a structured per-entry array — so
+  // assert against that row's prose rather than a JSON shape the command
+  // never produces.
+  const viewedResult = JSON.parse(viewed.stdout) as { sections?: string[] };
+  const listedRows = (viewedResult.sections?.[0] ?? '').split('\n').filter((row) => row.length > 0);
+  assert.equal(listedRows.length, 1);
+  const escapeForRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  assert.match(listedRows[0]!, new RegExp(`^${escapeForRegExp(activeResult.attestation.id)} `));
+  assert.match(listedRows[0]!, /settled true/);
+  assert.match(listedRows[0]!, new RegExp(`${escapeForRegExp(activeResult.attestation.path)}$`));
 });
 
 test('measure snap rejects invalid viewport input before capture and preserves structured recovery evidence', () => {

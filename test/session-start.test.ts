@@ -3,18 +3,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
 import { sessionMain, waitForPageLoad } from '../src/session/commands.js';
 import { getActiveSession, clearActiveSession } from '../src/session-context.js';
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
 import type { ParsedArgs } from '../src/cdp/types.js';
 import { liveChromeOpts } from './fixtures/live-chrome.js';
+import { closeChrome, spawnHeadlessChrome } from './fixtures/chrome.js';
 
 // Process-scope this file's active-session pointer (node's test runner
 // process-isolates each test file, so this only scopes THIS file).
 process.env.CRTR_NODE_ID = `u04-start-test-${process.pid}-${Date.now()}`;
-
-const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 function sessionArgs(positional: string[], extra: Partial<ParsedArgs> = {}): ParsedArgs {
   return { command: 'session', positional, json: false, ...extra } as ParsedArgs;
@@ -162,52 +160,6 @@ test('simultaneous session starts publish exactly one live session', async () =>
 
 // --- Real-Chrome integration: `session start --url` acceptance ---------------
 
-async function waitForHttpOk(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr: unknown;
-  while (Date.now() < deadline) {
-    try {
-      const resp = await fetch(url);
-      if (resp.ok) return;
-    } catch (err) {
-      lastErr = err;
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error(`timed out waiting for ${url}: ${String(lastErr)}`);
-}
-
-async function spawnHeadlessChrome(): Promise<{ proc: ChildProcess; port: number }> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const port = 19900 + Math.floor(Math.random() * 700) + attempt * 137;
-    const proc = spawn(
-      CHROME_PATH,
-      [
-        '--headless=new',
-        '--disable-gpu',
-        `--remote-debugging-port=${port}`,
-        '--no-first-run',
-        '--no-default-browser-check',
-        'about:blank',
-      ],
-      { stdio: 'ignore' },
-    );
-    try {
-      await waitForHttpOk(`http://localhost:${port}/json/version`, 8000);
-      return { proc, port };
-    } catch (err) {
-      lastErr = err;
-      try {
-        proc.kill('SIGKILL');
-      } catch {
-        // already dead
-      }
-    }
-  }
-  throw new Error(`failed to spawn headless Chrome after 3 attempts: ${String(lastErr)}`);
-}
-
 test('session start failure emits start_failed, sets exitCode 1, and leaves no stray session HAR', async () => {
   // A url with a port pointing at a closed CDP endpoint forces the openTab
   // CDP connect to fail, reaching the outer start_failed catch after the HAR
@@ -286,7 +238,7 @@ test('session start --url opens a tab and stop bundles shots (not a11y)', liveCh
     assert.ok(!('a11y' in bundle), 'bundle manifest must NOT carry an a11y key');
     assert.ok(!fs.existsSync(path.join(dir!, 'a11y')), 'a11y/ dir must NOT exist');
   } finally {
-    try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+    await closeChrome(proc);
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
     clearActiveSession();
   }

@@ -347,6 +347,14 @@ test('collectLayers: propagates styleSheetHeaders.available=false to layers.json
 // ============================================================================
 
 
+/** Creates a page target already navigating to `url` via `/json/new?<url>` (a PUT against the browser's own HTTP endpoint) — mirrors `newRealChromePageTarget` in test/measure-layers-styles.test.ts. */
+async function newPageTarget(port: number, url: string): Promise<string> {
+  const resp = await fetch(`http://localhost:${port}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' });
+  const json = (await resp.json()) as { webSocketDebuggerUrl?: string };
+  if (!json.webSocketDebuggerUrl) throw new Error('no webSocketDebuggerUrl in /json/new response');
+  return json.webSocketDebuggerUrl;
+}
+
 async function waitForReady(client: CDPClient, timeoutMs = 10000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
