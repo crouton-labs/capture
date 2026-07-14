@@ -260,9 +260,17 @@ test('L-S4 same pid+birth never takes over; same pid+different birth takes over 
     let nAfter = 2_000_000_000n;                                  // past the 1s deadline
     const successor = await acquirePrivateLock(diff, { acquireTimeoutMs: 5, leaseMs: 10, pidBirthProvider: provider('live', altBirth), nowNs: () => nAfter, sleep: async () => { nAfter += 1_000_000n; } });
     const after = lockSnapshot(diff);
-    assert.notDeepEqual({ dev: after.directory.dev, ino: after.directory.ino }, { dev: before.directory.dev, ino: before.directory.ino });
-    assert.notDeepEqual(after.owner.bytes, before.owner.bytes);
+    // Directory-inode identity is not a portable observable here: the successor dir is
+    // produced by production's own retire+publish (rmdir the old lock dir, rename a fresh
+    // staging dir onto the path), and on Linux ext4 the freed inode is routinely reused for
+    // the successor — so a raw {dev,ino} comparison can spuriously match even though the
+    // takeover minted a genuinely new lease generation. The portable proxy for "this is a
+    // fresh generation, not the predecessor's" is the owner token: it's a per-acquire random
+    // 32-hex, so a fresh token is the true security-relevant signal the inode check stood in for.
+    const predToken = JSON.parse(before.owner.bytes.toString('utf8')).token;
     const su = parsedOwner(diff);
+    assert.notEqual(su.token, predToken); // takeover minted a fresh lease generation (new random token), not the predecessor's
+    assert.notDeepEqual(after.owner.bytes, before.owner.bytes);
     assert.deepEqual(Object.keys(su).sort(), ['birth', 'leaseDeadlineNs', 'pid', 'token', 'version']);
     assert.equal(su.pid, process.pid); assert.deepEqual(su.birth, altBirth); assert.equal(su.version, 1);
     assert.equal(after.directory.mode, DIR_MODE); assert.equal(after.owner.mode, FILE_MODE); assert.deepEqual(after.listing, ['owner']);
@@ -286,9 +294,20 @@ test('L-S5 release matches the entire owner and refuses a byte-identical success
       fs.writeFileSync(path.join(lock, 'owner'), JSON.stringify(original), { mode: FILE_MODE });
     }
     // Replace canonical with a *different inode* holding byte-identical owner bytes; the old handle must refuse it.
+    // Constructing "different inode, same path" via rm-then-mkdir at that path is not portable:
+    // on Linux ext4 the freed inode is routinely reused by the very next allocation, so the
+    // recreated dir would silently share the predecessor's inode and this test's premise would
+    // never hold. Instead build the replacement at a *sibling* path FIRST — while the original
+    // still exists so its inode stays allocated and cannot be reused — then remove the original
+    // and rename the sibling into place; rename preserves the sibling's inode, so it's
+    // guaranteed to differ from the original's on every filesystem.
     const ownerBytes = fs.readFileSync(path.join(lock, 'owner'));
-    fs.rmSync(lock, { recursive: true, force: true });
-    fs.mkdirSync(lock, { mode: DIR_MODE }); fs.writeFileSync(path.join(lock, 'owner'), ownerBytes, { mode: FILE_MODE }); fs.chmodSync(lock, DIR_MODE); fs.chmodSync(path.join(lock, 'owner'), FILE_MODE);
+    const successor = `${lock}.successor`;                 // sibling; allocated while `lock` inode is still live → distinct inode
+    fs.mkdirSync(successor, { mode: DIR_MODE });
+    fs.writeFileSync(path.join(successor, 'owner'), ownerBytes, { mode: FILE_MODE });
+    fs.chmodSync(successor, DIR_MODE); fs.chmodSync(path.join(successor, 'owner'), FILE_MODE);
+    fs.rmSync(lock, { recursive: true, force: true });     // frees the old inode AFTER the successor inode is taken
+    fs.renameSync(successor, lock);                        // lock now holds the distinct-inode dir, byte-identical owner
     const replacement = lockSnapshot(lock);
     handle.release();
     assert.deepEqual(lockSnapshot(lock), replacement);
@@ -981,7 +1000,12 @@ test('L-H4 static and dynamic final canonical traps preserve protected state', a
     try {
       const handle = await acquirePrivateLock(lock, { acquireTimeoutMs: 1_000, leaseMs: 60_000, pidBirthProvider: provider() });
       let swapped = false;
-      __setArtifactTestHooks({ beforeCanonicalRmdir(detail) { if (!swapped) { swapped = true; fs.rmSync(lock, { recursive: true, force: true }); fs.mkdirSync(lock, { mode: DIR_MODE }); } } });
+      // Same portability concern as L-S5: rm-then-mkdir at the same path reuses the freed
+      // inode on Linux ext4, so the recreated dir would never actually be a different
+      // generation. Build the empty successor at a sibling path while `lock` still exists
+      // (its inode stays allocated and cannot be reused), then remove `lock` and rename the
+      // sibling into place — guaranteeing a distinct inode on every filesystem.
+      __setArtifactTestHooks({ beforeCanonicalRmdir(detail) { if (!swapped) { swapped = true; const succ = `${lock}.succ`; fs.mkdirSync(succ, { mode: DIR_MODE }); fs.rmSync(lock, { recursive: true, force: true }); fs.renameSync(succ, lock); } } });
       handle.release();                                               // owner removed, but the empty successor must survive
       assert.equal(fs.existsSync(lock), true); assert.equal(id(lock).type, 'dir');
       assert.deepEqual(listing(lock), []);
