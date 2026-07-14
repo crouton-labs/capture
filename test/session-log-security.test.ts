@@ -683,15 +683,16 @@ test('12b — a worker that self-tears-down before the parent reads its socket i
     await runSession(['log', keeperSrc], { name: 'keeper' });
     const keeper = getActiveSession()!.logPids![0];
 
-    // A 1ms confirm deadline plus a busy-wait held inside the parent's own
-    // pre-registration socket-identity checkpoint deterministically forces the
-    // worker's self-teardown (and socket unlink) to land before the parent's
-    // lstat, regardless of host scheduling.
+    // A 1ms confirm deadline reproduces the real race's cause (the worker's
+    // deadline fires and it unlinks its own socket before the parent's
+    // pre-registration checkpoint), and the hook deterministically reproduces
+    // its effect by removing the socket itself right before the parent's
+    // lstat — the exact on-disk state the worker's self-teardown would have
+    // left, with no dependence on host scheduling.
     useProductionWorker({
       confirmTimeoutMs: 1,
-      beforeParentSocketIdentity: () => {
-        const until = Date.now() + 50;
-        while (Date.now() < until) { /* let the worker's 1ms deadline fire and unlink its socket first */ }
+      beforeParentSocketIdentity: (socketPath) => {
+        fs.rmSync(socketPath, { force: true });
       },
     });
     let midFlight: unknown[] | undefined;

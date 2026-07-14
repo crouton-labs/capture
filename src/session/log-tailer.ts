@@ -51,7 +51,7 @@ export interface LogTailWorld {
   /** How often a running worker re-verifies its recorded control socket still exists. */
   orphanCheckIntervalMs: number;
   /** Test-only seam: fires right before the parent reads its just-readied worker's socket identity. */
-  beforeParentSocketIdentity?: () => void;
+  beforeParentSocketIdentity?: (socketPath: string) => void;
 }
 
 const productionWorld: LogTailWorld = {
@@ -253,7 +253,7 @@ export async function startSessionLogTailer(options: StartSessionLogTailerOption
     if (!sameBirth(birth, currentBirth)) {
       throw captureError('internal', 'log_tailer_identity_changed', 'Log tailer identity changed before registration.');
     }
-    world.beforeParentSocketIdentity?.();
+    world.beforeParentSocketIdentity?.(socketPath);
     // The worker's confirm deadline runs independently of this parent and can
     // already have fired — and the worker already unlinked its own socket in
     // self-teardown — before this read, if the birth re-verification above (a
