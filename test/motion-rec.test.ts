@@ -10,6 +10,7 @@ import { createHarRecording } from '../src/har-manager.js';
 import { setActiveSession, clearActiveSession } from '../src/session-context.js';
 import { startComposedRecorder } from '../src/cdp/motion/recorder.js';
 import { cmdPageType } from '../src/cdp/commands/page/type.js';
+import { liveChromeOpts } from './fixtures/live-chrome.js';
 
 async function spawnTestRecorderBridge(socketPath: string, port: number, targetId: string, recDir: string, harId: string): Promise<{ socketPath: string; pid: number }> {
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/capture.ts', '__bridge-serve', '--socket', socketPath, '--port', String(port), '--target', targetId, 'recorder', recDir, harId], { cwd: process.cwd(), detached: true, stdio: 'ignore' });
@@ -268,7 +269,7 @@ test('one-shot restores a viewport when set may have reached Chrome but its resp
   }
 });
 
-test('motion rec one-shot records a real Chrome action through the real CDP client and RecorderSession', async () => {
+test('motion rec one-shot records a real Chrome action through the real CDP client and RecorderSession', liveChromeOpts, async () => {
   const root = makeRoot('real-chrome-oneshot');
   const chrome = await spawnHeadlessChrome();
   const restore = __setMotionRecDepsForTest({
@@ -291,7 +292,7 @@ test('motion rec one-shot records a real Chrome action through the real CDP clie
   }
 });
 
-test('motion rec composed lifecycle records a real Chrome routed type action between start and stop', async () => {
+test('motion rec composed lifecycle records a real Chrome routed type action between start and stop', liveChromeOpts, async () => {
   const root = makeRoot('real-chrome-composed');
   const chrome = await spawnHeadlessChrome();
   const target = await (await fetch(`http://localhost:${chrome.port}/json/new?${encodeURIComponent(`data:text/html,${encodeURIComponent('<input aria-label="Message">')}`)}`, { method: 'PUT' })).json() as { id: string };

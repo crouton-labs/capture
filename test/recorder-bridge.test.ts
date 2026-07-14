@@ -709,13 +709,33 @@ test('the binding channel rate-caps events per second, dropping the excess and s
   const client = new StubCdpClient();
   const session = new RecorderSession({ client, recDir });
 
+  // `checkBindingRateLimit()` (src/cdp/recorder-bridge.ts) gates on real
+  // wall-clock `Date.now()`, and each accepted binding synchronously appends
+  // to disk (`appendNdjsonPrivate` → a sync file append) — under system load
+  // (e.g. this whole suite running in parallel) the 400-call loop below can
+  // itself take longer than the cap's 1-second window, letting the window
+  // legitimately roll over mid-burst and admit more than 200 events without
+  // the cap being wrong (400 calls spread over >2 real seconds genuinely is
+  // under 200/sec). Freezing `Date.now()` for the duration of the burst
+  // removes that race: every one of the 400 calls is timestamped identically,
+  // so the rolling window cannot advance mid-loop no matter how slow the host
+  // is — this is the same determinism-under-load fix as elsewhere in this
+  // suite, just against the wall clock instead of a CDP stub.
+  const realDateNow = Date.now;
+  const frozenNow = realDateNow();
+
   try {
     await session.start();
     const nonce = extractBindingNonce(client);
 
     const fired = 400;
-    for (let i = 0; i < fired; i++) {
-      client.fireBinding(JSON.stringify({ kind: 'mutation', performanceNowMs: i, count: 1, nonce }));
+    Date.now = () => frozenNow;
+    try {
+      for (let i = 0; i < fired; i++) {
+        client.fireBinding(JSON.stringify({ kind: 'mutation', performanceNowMs: i, count: 1, nonce }));
+      }
+    } finally {
+      Date.now = realDateNow;
     }
     await tick();
 

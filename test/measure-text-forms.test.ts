@@ -11,6 +11,7 @@ import { enableDomainsForSnap } from '../src/cdp/domains.js';
 import type { SnapshotContext, SnapshotWriter } from '../src/cdp/measure/types.js';
 import { collectText } from '../src/cdp/measure/collectors/text.js';
 import { collectForms } from '../src/cdp/measure/collectors/forms.js';
+import { liveChromeOpts } from './fixtures/live-chrome.js';
 
 // Representative JWT-shaped text evidence.
 const FAKE_JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
@@ -1361,7 +1362,7 @@ async function rcWaitForFixtureReady(client: CDPClient, timeoutMs = 10000): Prom
   throw new Error('fixture page did not reach readyState=complete with the password focused in time');
 }
 
-describe('D6 real-Chrome: type=password geometry is skipped by the canvas measureText value-geometry walk', () => {
+describe('D6 real-Chrome: type=password geometry is skipped by the canvas measureText value-geometry walk', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
   let forms: any;
@@ -1530,7 +1531,7 @@ async function rcReadMarkerMutations(client: CDPClient): Promise<string[]> {
   return res.result?.value ?? [];
 }
 
-describe('D7 real-Chrome: baseline collectText/collectForms never mutate the DOM with a marker attribute', () => {
+describe('D7 real-Chrome: baseline collectText/collectForms never mutate the DOM with a marker attribute', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
 
@@ -1696,7 +1697,7 @@ async function rcReadSetterFired(client: CDPClient): Promise<string[]> {
   return res.result?.value ?? [];
 }
 
-describe('D8 real-Chrome: baseline collectText/collectForms never trigger a page-defined __captureTextEls/__captureFormEls setter', () => {
+describe('D8 real-Chrome: baseline collectText/collectForms never trigger a page-defined __captureTextEls/__captureFormEls setter', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
 
@@ -1850,7 +1851,7 @@ async function rcReadD9Mutations(client: CDPClient): Promise<string[]> {
   return res.result?.value ?? [];
 }
 
-describe('D9 real-Chrome: collectForms never mutates document.body (childList or attributes)', () => {
+describe('D9 real-Chrome: collectForms never mutates document.body (childList or attributes)', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
 
@@ -2020,7 +2021,7 @@ async function rcReadD10Mutations(client: CDPClient): Promise<string[]> {
   return res.result?.value ?? [];
 }
 
-describe('D10 real-Chrome: collectForms never fires an invalid control\'s `invalid` event (checkValidity/reportValidity are not pure reads)', () => {
+describe('D10 real-Chrome: collectForms never fires an invalid control\'s `invalid` event (checkValidity/reportValidity are not pure reads)', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
 

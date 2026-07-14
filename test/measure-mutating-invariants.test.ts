@@ -67,6 +67,7 @@ import { collectStates } from '../src/cdp/measure/collectors/states.js';
 import { collectPixels } from '../src/cdp/measure/collectors/pixels.js';
 import { collectGeometry, type GeometryElementRecord } from '../src/cdp/measure/collectors/geometry.js';
 import { enableDomainsForSnap } from '../src/cdp/domains.js';
+import { liveChromeOpts } from './fixtures/live-chrome.js';
 
 // ============================================================================
 // Shared stub-context helpers — mirrors test/measure-restoration.test.ts.
@@ -827,7 +828,7 @@ describe('scroll.ts — Phase 3 Class B (I-3), stub proof: every element-bearing
 // test callback runs).
 // ============================================================================
 
-describe('focus.ts — Finding C (I-5), real-Chrome adversarial proof: clickableUnfocusableTruncated reflects the real 50-candidate cap in FOCUS_INIT_SCRIPT', () => {
+describe('focus.ts — Finding C (I-5), real-Chrome adversarial proof: clickableUnfocusableTruncated reflects the real 50-candidate cap in FOCUS_INIT_SCRIPT', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
 
@@ -900,7 +901,7 @@ ${Array.from({ length: n }, (_, i) => `<div onclick="void(0)" id="click-${i}">c$
   });
 });
 
-describe('scroll.ts — Finding C (I-5), real-Chrome adversarial proof: scrollContainersTruncated reflects the real 60-container cap in SCROLL_TOPOLOGY_SCRIPT', () => {
+describe('scroll.ts — Finding C (I-5), real-Chrome adversarial proof: scrollContainersTruncated reflects the real 60-container cap in SCROLL_TOPOLOGY_SCRIPT', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
 
@@ -973,7 +974,7 @@ ${Array.from({ length: n }, (_, i) => `<div class="scrollbox" id="scrollbox-${i}
   });
 });
 
-describe('scroll.ts — Finding C (I-5), real-Chrome adversarial proof: stickyFixedDescendantsTruncated reflects the real per-container 30-descendant cap', () => {
+describe('scroll.ts — Finding C (I-5), real-Chrome adversarial proof: stickyFixedDescendantsTruncated reflects the real per-container 30-descendant cap', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
 
@@ -1052,7 +1053,7 @@ ${Array.from({ length: n }, (_, i) => `<div class="sticky-kid" style="position:s
   });
 });
 
-describe('scroll.ts — Finding C (I-5), real-Chrome adversarial proof: snapDescendantsTruncated reflects the real per-container 30-descendant cap', () => {
+describe('scroll.ts — Finding C (I-5), real-Chrome adversarial proof: snapDescendantsTruncated reflects the real per-container 30-descendant cap', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
 
@@ -1131,7 +1132,7 @@ ${Array.from({ length: n }, (_, i) => `<div class="snap-kid" style="scroll-snap-
   });
 });
 
-describe('scroll.ts — Finding C (I-5), real-Chrome adversarial proof: visibleChildrenTruncated reflects the real per-sample 30-child cap', () => {
+describe('scroll.ts — Finding C (I-5), real-Chrome adversarial proof: visibleChildrenTruncated reflects the real per-sample 30-child cap', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
 
@@ -1270,7 +1271,7 @@ function makeInMemoryWriter(store: Record<string, unknown>): SnapshotWriter {
   };
 }
 
-describe('scroll.ts — Finding D (I-3): real-Chrome backendNodeId EQUALITY vs geometry.json', () => {
+describe('scroll.ts — Finding D (I-3): real-Chrome backendNodeId EQUALITY vs geometry.json', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
   let scroll: ScrollReport;
@@ -1753,7 +1754,7 @@ const STATES_FIXTURE_HTML = `<!DOCTYPE html><html><body style="margin:0;">
 
 const STATES_FIXTURE_URL = `data:text/html,${encodeURIComponent(STATES_FIXTURE_HTML)}`;
 
-describe('states.ts — Finding D (I-3): real-Chrome backendNodeId EQUALITY vs geometry.json', () => {
+describe('states.ts — Finding D (I-3): real-Chrome backendNodeId EQUALITY vs geometry.json', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
   let states: StatesJsonMinimal;
@@ -1842,7 +1843,7 @@ const PIXELS_FIXTURE_HTML = `<!DOCTYPE html><html><body style="margin:0;backgrou
 
 const PIXELS_FIXTURE_URL = `data:text/html,${encodeURIComponent(PIXELS_FIXTURE_HTML)}`;
 
-describe('pixels.ts — Finding D (I-3): real-Chrome backendNodeId EQUALITY vs geometry.json', () => {
+describe('pixels.ts — Finding D (I-3): real-Chrome backendNodeId EQUALITY vs geometry.json', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
   let pixelsJson: PixelsJsonMinimal;

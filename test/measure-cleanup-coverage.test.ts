@@ -13,6 +13,7 @@ import type { SnapshotContext } from '../src/cdp/measure/types.js';
 import { collectAx } from '../src/cdp/measure/collectors/ax.js';
 import { collectMedia, type MediaReport } from '../src/cdp/measure/collectors/media.js';
 import { collectQueries } from '../src/cdp/measure/collectors/queries.js';
+import { liveChromeOpts } from './fixtures/live-chrome.js';
 
 // Three distinct token shapes, planted into every page-controlled string
 // these three collectors emit (AX name/description, media currentSrc/poster/
@@ -242,7 +243,7 @@ async function waitForRedactFixtureReady(client: CDPClient, timeoutMs = 15000): 
   throw new Error('media-redaction fixture page did not reach readyState=complete in time');
 }
 
-describe('collectMedia (real headless Chrome): token-shaped src/poster/iframe-src planted in real DOM attributes are preserved', () => {
+describe('collectMedia (real headless Chrome): token-shaped src/poster/iframe-src planted in real DOM attributes are preserved', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
   let dir: string;

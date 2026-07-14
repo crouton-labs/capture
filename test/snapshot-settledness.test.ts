@@ -19,6 +19,7 @@ import {
   domSignaturesEqual,
 } from '../src/cdp/measure/settle.js';
 import { captureSnapshotSubstrate } from '../src/cdp/measure/snapshot.js';
+import { liveChromeOpts } from './fixtures/live-chrome.js';
 
 // A 1x1 transparent PNG, base64-encoded — stands in for `Page.captureScreenshot`'s `data`.
 const ONE_PIXEL_PNG_BASE64 =
@@ -1069,7 +1070,7 @@ async function rcReadSetterFired(client: CDPClient): Promise<string[]> {
   return res.result?.value ?? [];
 }
 
-describe('D10 real-Chrome: the churn-observer lifecycle never triggers a page-defined __captureSettle setter', () => {
+describe('D10 real-Chrome: the churn-observer lifecycle never triggers a page-defined __captureSettle setter', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
 

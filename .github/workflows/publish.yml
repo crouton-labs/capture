@@ -23,20 +23,32 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Bump version
+      - name: Bump version (no commit, no tag)
+        run: npm version patch --no-git-tag-version
+
+      - name: Build bin/capture from the bumped source
+        run: npm run build
+
+      - name: Create the one fresh release commit and tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          npm version patch -m "chore: release v%s"
-          git push --follow-tags
+          version="$(node -p "require('./package.json').version")"
+          git add package.json bin/capture
+          git commit -m "chore: release v${version}"
+          git tag "v${version}"
+          git push
+          git push --tags
 
-      - run: pnpm build
+      - name: Verify the release commit's bin/capture is fresh
+        run: npm run check:bin
 
-      - run: npm publish --access public
+      - name: Publish the exact released tree
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

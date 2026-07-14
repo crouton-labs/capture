@@ -2,17 +2,26 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { cdpMain } from '../src/cdp/dispatch.js';
+import { failureResult } from '../src/errors.js';
+import { emitResult } from '../src/output/render.js';
 
 /**
  * D7/I-8: `--gate` (exit 2 on findings/changes) is accepted only by
  * `measure check` and `measure diff`. The rejection lives in exactly ONE
  * place — the shared dispatch layer (`src/cdp/dispatch.ts` +
  * `gate-guard.ts`) — so every other leaf on the whole surface rejects the
- * flag structurally (a `<error status="unsupported_flag">`, exit 1) before
+ * flag structurally (a `<error code="unsupported_flag">`, exit 1) before
  * its branch main runs. No measure/motion leaf calls the guard itself;
  * these tests drive `cdpMain()` (the dispatch entry) to prove the single
  * guard covers a sample from every branch: session, page, tab, cdp, lib,
  * measure (incl. bare `measure`/`measure map`), and motion.
+ *
+ * The guard's rejection is a thrown `CaptureError` that crosses `cdpMain()`
+ * unrendered (see `gate-guard.ts`) — `src/capture.ts`'s `main().catch` is the
+ * one real root boundary that renders it (`emitResult(failureResult(error))`)
+ * and sets `process.exitCode = 1`. `runDispatch()` below mirrors that exact
+ * boundary so these tests prove the same rendered contract a real invocation
+ * produces, not cdpMain()'s internal (unrendered) throw shape.
  */
 
 /** Runs cdpMain() against a stubbed process.argv, capturing stdout +
@@ -45,7 +54,15 @@ async function runDispatch(argv: string[]): Promise<{ stdout: string; exitCode?:
   try {
     await cdpMain();
   } catch (err) {
-    if (!(err instanceof Error) || !/^process\.exit\(\d+\)$/.test(err.message)) throw err;
+    if (err instanceof Error && /^process\.exit\(\d+\)$/.test(err.message)) {
+      // already reflected via the patched process.exit above.
+    } else {
+      // Mirror src/capture.ts's `main().catch`: the real root boundary
+      // renders the escaped CaptureError and sets the exit code — cdpMain()
+      // itself never renders it (see gate-guard.ts).
+      emitResult(failureResult(err), { json: process.argv.includes('--json') });
+      process.exitCode = 1;
+    }
   } finally {
     process.argv = originalArgv;
     console.log = originalLog;
@@ -92,8 +109,14 @@ for (const { argv, command } of rejectionCases) {
 
     assert.equal(exitCode, 1, `--gate must reject with exit 1, got ${exitCode}\n${stdout}`);
     assert.match(stdout, /<error /);
-    assert.match(stdout, /status="unsupported_flag"/);
-    assert.match(stdout, new RegExp(`command="${command.replace(/ /g, '\\s')}"`));
+    assert.match(stdout, /code="unsupported_flag"/);
+    assert.match(stdout, /kind="invocation"/);
+    // The command name is carried in the rendered message, not an attr —
+    // the root boundary renders `failureResult()`, whose attrs are only
+    // `code`/`kind` (see src/errors.ts). Backticks neutralize to straight
+    // quotes in the rendered prose (see output/render.ts).
+    const escapedCommand = command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.match(stdout, new RegExp("'--gate' is not accepted on '" + escapedCommand + "'"));
     // The guard fires INSTEAD of the branch/leaf running — never alongside.
     assert.doesNotMatch(stdout, /<subcommand /);
     assert.doesNotMatch(stdout, /not_implemented/);

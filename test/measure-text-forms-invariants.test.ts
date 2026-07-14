@@ -11,6 +11,7 @@ import { enableDomainsForSnap } from '../src/cdp/domains.js';
 import type { SnapshotContext, SnapshotWriter } from '../src/cdp/measure/types.js';
 import { collectText } from '../src/cdp/measure/collectors/text.js';
 import { collectForms } from '../src/cdp/measure/collectors/forms.js';
+import { liveChromeOpts } from './fixtures/live-chrome.js';
 
 // ============================================================================
 // C4 remediation — text.ts / forms.ts.
@@ -1248,7 +1249,7 @@ const RC_BASELINE_FALLBACK_HTML = `<!DOCTYPE html><html><body style="margin:0;fo
 </body></html>`;
 const RC_BASELINE_FALLBACK_URL = `data:text/html,${encodeURIComponent(RC_BASELINE_FALLBACK_HTML)}`;
 
-describe('A1 real-Chrome: text.ts baseline honesty — baselineApproximate marks the crude rect.height*0.2 fallback, never the precise path', () => {
+describe('A1 real-Chrome: text.ts baseline honesty — baselineApproximate marks the crude rect.height*0.2 fallback, never the precise path', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
 
@@ -1331,7 +1332,7 @@ const RC_LINEHEIGHT_EXPLICIT_HTML = `<!DOCTYPE html><html><body style="margin:0;
 </body></html>`;
 const RC_LINEHEIGHT_EXPLICIT_URL = `data:text/html,${encodeURIComponent(RC_LINEHEIGHT_EXPLICIT_HTML)}`;
 
-describe('A2 real-Chrome: forms.ts single-line rect honesty — lineHeightApproximate marks the 1.2*font-size fallback used when Chrome computes line-height:normal', () => {
+describe('A2 real-Chrome: forms.ts single-line rect honesty — lineHeightApproximate marks the 1.2*font-size fallback used when Chrome computes line-height:normal', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
 
@@ -1450,7 +1451,7 @@ const RC_WRAP_OFFSETS_HTML = `<!DOCTYPE html><html><body style="margin:0;font:16
 </body></html>`;
 const RC_WRAP_OFFSETS_URL = `data:text/html,${encodeURIComponent(RC_WRAP_OFFSETS_HTML)}`;
 
-describe('T2 real-Chrome: text.ts findWrapOffsets() honesty — a Range.setStart/setEnd failure mid-binary-search marks the wrap offset unavailable, never an exact-looking corrupted number', () => {
+describe('T2 real-Chrome: text.ts findWrapOffsets() honesty — a Range.setStart/setEnd failure mid-binary-search marks the wrap offset unavailable, never an exact-looking corrupted number', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
 

@@ -49,6 +49,7 @@ import type { AnimationReport } from '../src/cdp/measure/collectors/animation.js
 import { collectGeometry } from '../src/cdp/measure/collectors/geometry.js';
 import type { GeometryElementRecord } from '../src/cdp/measure/collectors/geometry.js';
 import type { SnapshotContext, SnapshotWriter, AnimationEvidence } from '../src/cdp/measure/types.js';
+import { liveChromeOpts } from './fixtures/live-chrome.js';
 
 // A 1x1 transparent PNG, base64-encoded — stands in for `Page.captureScreenshot`'s
 // `data` (same literal `test/snapshot-settledness.test.ts` uses; not imported).
@@ -985,7 +986,7 @@ test('collectAnimationEvidence: a successful walk with zero animations reports a
 // `document.getAnimations` on a live page to throw, proving the REAL
 // ANIMATION_INVENTORY_SCRIPT catch branch (not just a hand-built stub
 // shape) round-trips correctly through collectAnimationEvidence.
-describe('Class C item 3 real-Chrome: collectAnimationEvidence against a live page whose document.getAnimations() throws', () => {
+describe('Class C item 3 real-Chrome: collectAnimationEvidence against a live page whose document.getAnimations() throws', liveChromeOpts, () => {
   let evidenceChromeProc: ChildProcess | undefined;
   let evidenceClient: CDPClient | undefined;
 
@@ -1366,7 +1367,7 @@ test('buildDomSettleSampler: a normal sample with no animation read failure repo
 // observers via `injectChurnObservers`, and samples via the real
 // `buildDomSettleSampler(client, handle)()` -- proving the real page-side
 // read failure survives the whole round trip, not just the wrapper logic.
-describe('#5 real-Chrome: buildDomSettleSampler against a live page whose document.getAnimations() throws', () => {
+describe('#5 real-Chrome: buildDomSettleSampler against a live page whose document.getAnimations() throws', liveChromeOpts, () => {
   let sampleChromeProc: ChildProcess | undefined;
   let sampleClient: CDPClient | undefined;
 
@@ -1823,7 +1824,7 @@ function makeInMemoryWriter(store: Record<string, unknown>): SnapshotWriter {
   };
 }
 
-describe('Finding D real-Chrome: collectAnimation and collectGeometry resolve the SAME backendNodeId for #spinner', () => {
+describe('Finding D real-Chrome: collectAnimation and collectGeometry resolve the SAME backendNodeId for #spinner', liveChromeOpts, () => {
   let chromeProc: ChildProcess | undefined;
   let client: CDPClient | undefined;
   let animationReport: AnimationReport;

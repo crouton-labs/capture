@@ -8,6 +8,7 @@ import { sessionMain, waitForPageLoad } from '../src/session/commands.js';
 import { getActiveSession, clearActiveSession } from '../src/session-context.js';
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
 import type { ParsedArgs } from '../src/cdp/types.js';
+import { liveChromeOpts } from './fixtures/live-chrome.js';
 
 // Process-scope this file's active-session pointer (node's test runner
 // process-isolates each test file, so this only scopes THIS file).
@@ -251,7 +252,7 @@ test('session start failure emits start_failed, sets exitCode 1, and leaves no s
   assert.equal(getActiveSession(), null);
 });
 
-test('session start --url opens a tab and stop bundles shots (not a11y)', async () => {
+test('session start --url opens a tab and stop bundles shots (not a11y)', liveChromeOpts, async () => {
   const { proc, port } = await spawnHeadlessChrome();
   let dir: string | undefined;
   let id: string | undefined;

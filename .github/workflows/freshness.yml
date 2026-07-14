@@ -1,0 +1,28 @@
+name: Freshness
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Verify bin/capture is byte-fresh (never rewrites it)
+        run: npm run check:bin
+
+      - name: Deterministic test suite
+        run: npm test
