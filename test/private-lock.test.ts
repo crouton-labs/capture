@@ -101,8 +101,11 @@ import * as fs from 'node:fs';
 const cfg = JSON.parse(process.env.CHILD_CONFIG);
 const a = await import(${JSON.stringify(moduleUrl)});
 const guards = {};
+// Publish atomically: write to a same-directory temp name, then rename into place, so a reader
+// that polls existsSync(final) and immediately parses the bytes can never observe a truncated file.
+function publish(file, data){ const tmp = file + '.' + process.pid + '.' + Math.random().toString(16).slice(2) + '.tmp'; fs.writeFileSync(tmp, data); fs.renameSync(tmp, file); }
 function busyGate(gate){ const cell = new Int32Array(new SharedArrayBuffer(4)); while(!fs.existsSync(gate)) Atomics.wait(cell,0,0,20); }
-function pause(key, marker, gate){ if(!guards[key]){ guards[key]=true; try { fs.writeFileSync(marker, 'ready', { flag: 'wx' }); } catch {} } busyGate(gate); }
+function pause(key, marker, gate){ if(!guards[key]){ guards[key]=true; try { publish(marker, 'ready'); } catch {} } busyGate(gate); }
 function makeProvider(p){ if(p==='production') return a.processPidBirthProvider; return { read(pid){ return (p.ownerPid && pid === p.ownerPid) ? { status: p.ownerStatus || 'absent', reason: 'fixture' } : { status: 'found', identity: p.self }; } }; }
 const opts = { acquireTimeoutMs: cfg.acquireTimeoutMs, leaseMs: cfg.leaseMs, pidBirthProvider: makeProvider(cfg.provider) };
 if (cfg.afterOwnerRemovedPause) opts.afterOwnerRemoved = () => pause('aor', cfg.afterOwnerRemovedPause.marker, cfg.afterOwnerRemovedPause.gate);
@@ -111,11 +114,11 @@ try {
   const handle = await a.acquirePrivateLock(cfg.lock, opts);
   let owner = null; try { owner = JSON.parse(fs.readFileSync(cfg.lock + '/owner', 'utf8')); } catch {}
   const st = fs.lstatSync(cfg.lock);
-  fs.writeFileSync(cfg.result, JSON.stringify({ status: 'acquired', pid: process.pid, token: handle.token, owner, generation: { dev: st.dev, ino: st.ino, mode: st.mode & 0o777 } }));
+  publish(cfg.result, JSON.stringify({ status: 'acquired', pid: process.pid, token: handle.token, owner, generation: { dev: st.dev, ino: st.ino, mode: st.mode & 0o777 } }));
   if (cfg.releaseAfterAcquire) handle.release();
   if (cfg.hold) { busyGate(cfg.hold.gate); if (cfg.hold.release) handle.release(); }
 } catch (err) {
-  fs.writeFileSync(cfg.result, JSON.stringify({ status: 'error', pid: process.pid, message: String((err && err.message) || err) }));
+  publish(cfg.result, JSON.stringify({ status: 'error', pid: process.pid, message: String((err && err.message) || err) }));
 }
 `;
 function spawnLockChild(cfg: Record<string, unknown>): childProcess.ChildProcess {
@@ -707,7 +710,7 @@ test('L-V3 Darwin provider invokes a bounded, exact sysctl command (darwin only)
 test('L-V4 real provider observes a live child identity and its death', async () => {
   await ready;
   const coord = coordinator(); const result = path.join(coord, 'self.json');
-  const script = `import * as fs from 'node:fs'; const a=await import(${JSON.stringify(moduleUrl)}); fs.writeFileSync(process.env.RESULT, JSON.stringify(a.processPidBirthProvider.read(process.pid))); const cell=new Int32Array(new SharedArrayBuffer(4)); for(;;) Atomics.wait(cell,0,0,1000);`;
+  const script = `import * as fs from 'node:fs'; const a=await import(${JSON.stringify(moduleUrl)}); const data=JSON.stringify(a.processPidBirthProvider.read(process.pid)); const tmp=process.env.RESULT+'.'+process.pid+'.tmp'; fs.writeFileSync(tmp, data); fs.renameSync(tmp, process.env.RESULT); const cell=new Int32Array(new SharedArrayBuffer(4)); for(;;) Atomics.wait(cell,0,0,1000);`;
   const childProc = childProcess.spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { env: { ...process.env, CAPTURE_ROOT, RESULT: result }, stdio: 'ignore' });
   try {
     await waitFor(result);
