@@ -663,6 +663,76 @@ test('12 — a failed registration confirmation removes exactly its own register
   }
 });
 
+test('12b — a worker that self-tears-down before the parent reads its socket identity still rolls back cleanly', async () => {
+  // A sibling race to #12, one step earlier: here the worker's confirm
+  // deadline fires and it unlinks its own socket before the parent ever gets
+  // to read that socket's identity for the registration record (the parent's
+  // birth re-verification just before that read is a synchronous subprocess
+  // spawn, whose duration is not bounded under real scheduling contention).
+  // The parent must treat a socket that is already gone at that checkpoint
+  // exactly like the later, already-covered confirm failure — never leak the
+  // raw ENOENT as an uncaught/opaque error.
+  useProductionWorker();
+  const { id, dir } = await startSession();
+  const work = tmpDir('confirm-rollback-early');
+  const keeperSrc = path.join(work, 'keeper.log');
+  const failingSrc = path.join(work, 'failing.log');
+  fs.writeFileSync(keeperSrc, 'keeper\n');
+  fs.writeFileSync(failingSrc, 'failing\n');
+  try {
+    await runSession(['log', keeperSrc], { name: 'keeper' });
+    const keeper = getActiveSession()!.logPids![0];
+
+    // A 1ms confirm deadline plus a busy-wait held inside the parent's own
+    // pre-registration socket-identity checkpoint deterministically forces the
+    // worker's self-teardown (and socket unlink) to land before the parent's
+    // lstat, regardless of host scheduling.
+    useProductionWorker({
+      confirmTimeoutMs: 1,
+      beforeParentSocketIdentity: () => {
+        const until = Date.now() + 50;
+        while (Date.now() < until) { /* let the worker's 1ms deadline fire and unlink its socket first */ }
+      },
+    });
+    let midFlight: unknown[] | undefined;
+    let sessionRenames = 0;
+    __setArtifactTestHooks({
+      beforeRename(detail) {
+        if (!detail.path.endsWith(`${path.sep}.session.json`)) return;
+        sessionRenames += 1;
+        if (sessionRenames === 2) {
+          midFlight = (JSON.parse(fs.readFileSync(path.join(dir, '.session.json'), 'utf-8')) as { logPids: unknown[] }).logPids;
+        }
+      },
+    });
+    process.exitCode = 0;
+    const out = await runSession(['log', failingSrc], { name: 'failing' });
+    __setArtifactTestHooks();
+    assert.ok(!out.includes('ENOENT'), `a vanished socket at the pre-registration checkpoint must not leak a raw fs error: ${out}`);
+    assert.ok(out.includes('log_tailer_confirm_failed'), `confirm failure must still surface as the primary error: ${out}`);
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+
+    assert.ok(midFlight, 'rollback must rewrite session state after registration');
+    assert.equal(midFlight!.length, 2, 'the failing handle must have been registered before rollback');
+    const failing = (midFlight as Array<{ pid: number; nonce: string }>).find(entry => entry.nonce !== keeper.nonce);
+    assert.ok(failing, 'the mid-flight state holds the failing record');
+    const after = readMeta(dir).logPids as Array<{ pid: number; nonce: string }>;
+    assert.equal(after.length, 1, 'only the failed registration is removed');
+    assert.equal(after[0].nonce, keeper.nonce, 'the keeper handle survives untouched');
+    assert.ok(await waitForBirthAbsent(failing!.pid), 'the failed worker group must be reaped');
+
+    assert.ok(isAlive(keeper.pid), 'the keeper must survive its neighbor\u2019s rollback');
+  } finally {
+    __setArtifactTestHooks();
+    useProductionWorker();
+    await runSession(['stop', id], { json: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(work, { recursive: true, force: true });
+    clearActiveSession();
+  }
+});
+
 test('13 — a worker whose control socket disappears self-terminates instead of tailing as an orphan', async () => {
   // The recorded control socket is the one channel a registered handle can
   // reach the worker through. Severing it (the shape a deleted CAPTURE_ROOT

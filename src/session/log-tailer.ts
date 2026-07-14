@@ -50,6 +50,8 @@ export interface LogTailWorld {
   confirmTimeoutMs: number;
   /** How often a running worker re-verifies its recorded control socket still exists. */
   orphanCheckIntervalMs: number;
+  /** Test-only seam: fires right before the parent reads its just-readied worker's socket identity. */
+  beforeParentSocketIdentity?: () => void;
 }
 
 const productionWorld: LogTailWorld = {
@@ -251,7 +253,23 @@ export async function startSessionLogTailer(options: StartSessionLogTailerOption
     if (!sameBirth(birth, currentBirth)) {
       throw captureError('internal', 'log_tailer_identity_changed', 'Log tailer identity changed before registration.');
     }
-    const socket = socketIdentity(socketPath);
+    world.beforeParentSocketIdentity?.();
+    // The worker's confirm deadline runs independently of this parent and can
+    // already have fired — and the worker already unlinked its own socket in
+    // self-teardown — before this read, if the birth re-verification above (a
+    // synchronous `sysctl`/`/proc` spawn) stalls under scheduling contention.
+    // That is exactly the same "never confirmed" outcome the requestControl()
+    // call below already detects and rolls back, just observed one step
+    // earlier. A sentinel identity can never match a real socket's inode, so a
+    // later unlinkRecordedSocket() stays a safe no-op regardless, and the
+    // confirm attempt that follows is what determines and reports the failure.
+    let socket: { dev: string; ino: string };
+    try {
+      socket = socketIdentity(socketPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      socket = { dev: '0', ino: '0' };
+    }
     const record: RegisteredLogTailer = {
       pid,
       name: options.name,
