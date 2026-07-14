@@ -385,3 +385,107 @@ test('clearActiveSessionIf removes active pointer only for matching ids', async 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// V-8 regression pair: a stale-clean decision is made from a read of one exact
+// pointer inode. A concurrent `session start` publishes its pointer via rename
+// (a fresh inode) — so a clear that lands AFTER that publish must be a no-op,
+// or the scope's freshly started session silently loses its active pointer.
+// Both cases race deterministically via the artifact `afterFinalOpen` hook:
+// the rename-publish happens between the deciding read's open and its clear.
+// (Raw fs inside the hook is deliberate: nested private-artifact transactions
+// are rejected, and rename-onto-the-pointer is exactly what a real publish does.)
+
+test('stale-clean in getActiveSession must not remove a pointer republished by a concurrent start (V-8)', async () => {
+  const { getActiveSession, setActiveSession, updateSessionState, clearActiveSession } = await import('../src/session-context.js');
+  const { __setArtifactTestHooks, writeJsonPrivate } = await import('../src/session/artifacts.js');
+
+  const prevNodeId = process.env.CRTR_NODE_ID;
+  const scope = 'test-node-v8-stale-clean';
+  const activePath = path.join(CAPTURE_ROOT, `.active-${scope}`);
+  const dirA = fs.mkdtempSync(path.join(CAPTURE_ROOT, 'capture-test-v8-clean-a-'));
+  const dirB = fs.mkdtempSync(path.join(CAPTURE_ROOT, 'capture-test-v8-clean-b-'));
+
+  try {
+    process.env.CRTR_NODE_ID = scope;
+    clearActiveSession();
+    await setActiveSession({ sessionId: 'sess-a', dir: dirA, harId: null, targetId: null, stepCount: 0 });
+    await updateSessionState(dirA, { stoppedAt: new Date().toISOString() });
+
+    // B's canonical record exists up front; only its pointer publish is raced.
+    writeJsonPrivate(path.join(dirB, '.session.json'), { sessionId: 'sess-b', dir: dirB, harId: null, targetId: null, stepCount: 0 });
+
+    let fired = false;
+    __setArtifactTestHooks({
+      afterFinalOpen(detail) {
+        if (fired) return;
+        if (!detail.path.endsWith('.session.json')) return;
+        fired = true;
+        // Concurrent start publishes B's pointer between the stale
+        // determination's read of A and its clear: fresh inode via rename.
+        const temp = path.join(CAPTURE_ROOT, `.active-${scope}.race-publish`);
+        fs.writeFileSync(temp, JSON.stringify({ sessionId: 'sess-b', dir: dirB }), { mode: 0o600 });
+        fs.renameSync(temp, activePath);
+      },
+    });
+    try {
+      assert.equal(getActiveSession(), null, 'session A is stale and must not resolve');
+    } finally {
+      __setArtifactTestHooks();
+    }
+    assert.equal(fired, true, 'the race hook must have fired during the stale read');
+    assert.equal(getActiveSession()?.sessionId, 'sess-b', "A's stale-clean must not unlink B's republished pointer");
+  } finally {
+    __setArtifactTestHooks();
+    clearActiveSession();
+    if (prevNodeId === undefined) delete process.env.CRTR_NODE_ID;
+    else process.env.CRTR_NODE_ID = prevNodeId;
+    fs.rmSync(dirA, { recursive: true, force: true });
+    fs.rmSync(dirB, { recursive: true, force: true });
+  }
+});
+
+test('clearActiveSessionIf must not remove a pointer republished after its deciding read (V-8)', async () => {
+  const { getActiveSession, setActiveSession, clearActiveSessionIf, clearActiveSession } = await import('../src/session-context.js');
+  const { __setArtifactTestHooks, writeJsonPrivate } = await import('../src/session/artifacts.js');
+
+  const prevNodeId = process.env.CRTR_NODE_ID;
+  const scope = 'test-node-v8-clear-if';
+  const activePath = path.join(CAPTURE_ROOT, `.active-${scope}`);
+  const dirA = fs.mkdtempSync(path.join(CAPTURE_ROOT, 'capture-test-v8-if-a-'));
+  const dirB = fs.mkdtempSync(path.join(CAPTURE_ROOT, 'capture-test-v8-if-b-'));
+
+  try {
+    process.env.CRTR_NODE_ID = scope;
+    clearActiveSession();
+    await setActiveSession({ sessionId: 'sess-a', dir: dirA, harId: null, targetId: null, stepCount: 0 });
+    writeJsonPrivate(path.join(dirB, '.session.json'), { sessionId: 'sess-b', dir: dirB, harId: null, targetId: null, stepCount: 0 });
+
+    let fired = false;
+    __setArtifactTestHooks({
+      afterFinalOpen(detail) {
+        if (fired) return;
+        if (!path.basename(detail.path).startsWith(`.active-${scope}`)) return;
+        fired = true;
+        // Concurrent start wins the pointer between clearActiveSessionIf's
+        // deciding read (which sees sess-a) and its clear.
+        const temp = path.join(CAPTURE_ROOT, `.active-${scope}.race-publish`);
+        fs.writeFileSync(temp, JSON.stringify({ sessionId: 'sess-b', dir: dirB }), { mode: 0o600 });
+        fs.renameSync(temp, activePath);
+      },
+    });
+    try {
+      clearActiveSessionIf('sess-a');
+    } finally {
+      __setArtifactTestHooks();
+    }
+    assert.equal(fired, true, 'the race hook must have fired during the deciding read');
+    assert.equal(getActiveSession()?.sessionId, 'sess-b', "clearing A by id must not unlink B's republished pointer");
+  } finally {
+    __setArtifactTestHooks();
+    clearActiveSession();
+    if (prevNodeId === undefined) delete process.env.CRTR_NODE_ID;
+    else process.env.CRTR_NODE_ID = prevNodeId;
+    fs.rmSync(dirA, { recursive: true, force: true });
+    fs.rmSync(dirB, { recursive: true, force: true });
+  }
+});

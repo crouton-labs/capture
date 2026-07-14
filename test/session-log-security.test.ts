@@ -4,7 +4,9 @@
  * These proofs drive the REAL worker process boundary: the log-tail world's
  * entry seam is pointed at `src/capture.ts` so `session log` self-spawns the
  * genuine `__log-tail-serve` route under tsx, exactly as the built bin does with
- * an empty execArgv. No faked child_process for the core proofs; no real Chrome
+ * an empty execArgv (`workerExecArgv()` drops the isolate-capture-root preamble
+ * so the worker inherits this process's CAPTURE_ROOT by env instead of
+ * re-randomizing it). No faked child_process for the core proofs; no real Chrome
  * (a no-url `session start` opens the live HAR without touching CDP).
  */
 import { test } from 'node:test';
@@ -25,12 +27,13 @@ import {
   processPidBirthProvider,
   type PidBirth,
 } from '../src/session/artifacts.js';
+import { workerExecArgv } from './fixtures/worker-exec-argv.js';
 import type { ParsedArgs } from '../src/cdp/types.js';
 
 process.env.CRTR_NODE_ID = `u05-logsec-${process.pid}-${Date.now()}`;
 
 const CAPTURE_SRC = path.resolve('src/capture.ts');
-const baseEntry = (): string[] => [...process.execArgv, CAPTURE_SRC];
+const baseEntry = (): string[] => [...workerExecArgv(), CAPTURE_SRC];
 
 function useProductionWorker(extra: Partial<Parameters<typeof __setLogTailWorld>[0]> = {}): void {
   __setLogTailWorld({ entryArgv: baseEntry, ...extra });
@@ -481,7 +484,7 @@ test('10 — session stop waits for a log operation admitted before its worker i
   const delayedEntry = path.join(work, 'delayed-entry.mjs');
   fs.writeFileSync(src, 'race line\n');
   fs.writeFileSync(delayedEntry, `setTimeout(() => { import(${JSON.stringify(pathToFileURL(CAPTURE_SRC).href)}); }, 400);\n`);
-  useProductionWorker({ entryArgv: () => [...process.execArgv, delayedEntry] });
+  useProductionWorker({ entryArgv: () => [...workerExecArgv(), delayedEntry] });
 
   const rendered: string[] = [];
   const original = process.stdout.write.bind(process.stdout);
@@ -543,7 +546,7 @@ test('11 — a worker never confirmed after readiness self-terminates; a confirm
   const destFd = fs.openSync(path.join(work, 'dest.log'), 'a');
   const child = spawn(
     process.execPath,
-    [...baseEntry(), '__log-tail-serve', '--source', src, '--socket-token', token, '--confirm-timeout', '500'],
+    [...baseEntry(), '__log-tail-serve', '--source', src, '--socket-token', token, '--confirm-timeout', '500', '--orphan-check', '5000'],
     { detached: true, stdio: ['ignore', destFd, 'ignore', 'pipe'], env: { ...process.env, CAPTURE_LOG_TAIL_NONCE: 'a'.repeat(48) } },
   );
   fs.closeSync(destFd);
@@ -652,6 +655,32 @@ test('12 — a failed registration confirmation removes exactly its own register
     assert.ok(await pollUntil(() => fs.existsSync(keeperDest) && fs.readFileSync(keeperDest, 'utf-8').includes('after rollback')), 'the keeper is still tailing');
   } finally {
     __setArtifactTestHooks();
+    useProductionWorker();
+    await runSession(['stop', id], { json: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(work, { recursive: true, force: true });
+    clearActiveSession();
+  }
+});
+
+test('13 — a worker whose control socket disappears self-terminates instead of tailing as an orphan', async () => {
+  // The recorded control socket is the one channel a registered handle can
+  // reach the worker through. Severing it (the shape a deleted CAPTURE_ROOT
+  // leaves behind) must make the worker reap itself at its next self-check.
+  useProductionWorker({ orphanCheckIntervalMs: 50 });
+  const { id, dir } = await startSession();
+  const work = tmpDir('orphan-socket');
+  const src = path.join(work, 'src.log');
+  fs.writeFileSync(src, 'x\n');
+  try {
+    await runSession(['log', src], { name: 'orphan' });
+    const entry = (readMeta(dir).logPids as Array<Record<string, unknown>>)[0];
+    const workerPid = entry.pid as number;
+    const socketPath = entry.socketPath as string;
+    assert.ok(isAlive(workerPid), 'worker must be alive while its socket exists');
+    fs.unlinkSync(socketPath);
+    assert.ok(await waitForBirthAbsent(workerPid), 'an unreachable worker must reap itself');
+  } finally {
     useProductionWorker();
     await runSession(['stop', id], { json: true });
     fs.rmSync(dir, { recursive: true, force: true });

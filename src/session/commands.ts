@@ -5,6 +5,7 @@ import {
   readHarRecording,
   deleteHarRecording,
   harFilePath,
+  validateHarFile,
   type HarFile,
   type HAREntry,
 } from '../har-manager.js';
@@ -18,7 +19,7 @@ import {
 } from '../session-context.js';
 import { type ParsedArgs, type CDPTarget } from '../cdp/types.js';
 import { startBridge, stopBridge } from '../cdp/bridge/spawn.js';
-import { normalizeFailure, failureResult, captureError } from '../errors.js';
+import { normalizeFailure, failureResult, captureError, worldFailure } from '../errors.js';
 import {
   startSessionLogTailer,
   stopSessionLogTailers,
@@ -67,6 +68,57 @@ interface BundleManifest {
   recs: Array<{ id: string; path: string; action: string | null; frames: number; durationMs: number; state: string; viewportRestored: boolean | null }>;
   /** Retry outcomes for viewport obligations retained by failed recorder starts. */
   pendingViewportRestorations: Array<{ recId: string; viewportRestored: boolean | null }>;
+}
+
+function isNamedPathEntry(value: unknown): value is { name: string; path: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.name === 'string' && typeof record.path === 'string';
+}
+
+/** The one schema check for a persisted `bundle.json` manifest. A manifest is
+ * committed once and immutable, so any record failing this shape was written
+ * by an incompatible version or corrupted — never something to structurally
+ * trust into the renderer. */
+function isBundleManifest(value: unknown): value is BundleManifest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const validHar = record.har === null
+    || (!!record.har && typeof record.har === 'object' && !Array.isArray(record.har)
+      && typeof (record.har as Record<string, unknown>).id === 'string'
+      && typeof (record.har as Record<string, unknown>).path === 'string'
+      && typeof (record.har as Record<string, unknown>).entryCount === 'number');
+  return typeof record.id === 'string'
+    && typeof record.startedAt === 'string'
+    && typeof record.stoppedAt === 'string'
+    && typeof record.duration === 'number'
+    && (record.url === null || typeof record.url === 'string')
+    && Array.isArray(record.shots) && record.shots.every(isNamedPathEntry)
+    && validHar
+    && Array.isArray(record.logs) && record.logs.every(item => isNamedPathEntry(item) && typeof (item as unknown as Record<string, unknown>).lines === 'number')
+    && Array.isArray(record.other) && record.other.every(isNamedPathEntry)
+    && Array.isArray(record.snaps) && record.snaps.every(item => !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string' && typeof (item as Record<string, unknown>).path === 'string')
+    && Array.isArray(record.recs) && record.recs.every(item => !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string' && typeof (item as Record<string, unknown>).path === 'string')
+    && Array.isArray(record.pendingViewportRestorations);
+}
+
+/** Reads and VALIDATES one immutable `bundle.json`. The read is contained and
+ * no-follow (`readPrivateFile`); ENOENT propagates for callers that treat a
+ * missing bundle as "not stopped yet". Unparsable bytes or a schema failure
+ * throw a typed `invalid_bundle_manifest` artifact error instead of letting a
+ * structurally-trusted cast reach the renderer. */
+function readBundleManifest(bundlePath: string): BundleManifest {
+  const raw = readPrivateFile(bundlePath).toString('utf-8');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    throw captureError('artifact', 'invalid_bundle_manifest', `bundle manifest at ${bundlePath} is not valid JSON; the record is corrupt and cannot be read as a capture bundle.`, cause);
+  }
+  if (!isBundleManifest(parsed)) {
+    throw captureError('artifact', 'invalid_bundle_manifest', `bundle manifest at ${bundlePath} does not match the capture bundle schema; it was written by an incompatible version or corrupted.`);
+  }
+  return parsed;
 }
 
 /** The bundle-manifest section keys `session view --filter` can address. */
@@ -201,8 +253,8 @@ function sessionMetaPath(id: string): string {
 }
 
 /**
- * Reads and VALIDATES one persisted `.session.json`. A missing file stays the
- * plain `No capture session found` error (leaf catch-alls map it to
+ * Reads and VALIDATES one persisted `.session.json`. A missing file throws a
+ * typed `unknown_session` precondition error (leaf catch-alls emit it as
  * `unknown_session`); unparsable bytes or a record failing the shared
  * `isActiveStateCandidate` schema throw a typed `invalid_session_record`
  * artifact error instead of letting a structurally-trusted cast reach the
@@ -215,7 +267,7 @@ function readSession(id: string): Session {
   try {
     raw = readPrivateFile(metaPath).toString('utf-8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`No capture session found: ${id}`);
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw captureError('precondition', 'unknown_session', `No capture session found: ${id}`);
     throw error;
   }
   let parsed: unknown;
@@ -440,7 +492,7 @@ const productionStartWorld: SessionStartWorld = {
   },
   async awaitTabReady(target, url) {
     if (!target.webSocketDebuggerUrl) {
-      throw new Error(`capture session start could not attach to ${url}: missing WebSocket debugger URL. Reuse an existing tab with --target.`);
+      throw worldFailure(`capture session start could not attach to ${url}: missing WebSocket debugger URL. Reuse an existing tab with --target.`);
     }
     const { CDPClient } = await import('../cdp.js');
     const client = new CDPClient(target.webSocketDebuggerUrl);
@@ -448,7 +500,7 @@ const productionStartWorld: SessionStartWorld = {
       try {
         await client.send('Runtime.enable', {}, 5_000);
       } catch (err) {
-        throw new Error(`capture session start could not attach to ${url}: ${err instanceof Error ? err.message : err}. Reuse an existing tab with --target.`);
+        throw worldFailure(`capture session start could not attach to ${url}: ${err instanceof Error ? err.message : err}. Reuse an existing tab with --target.`, err);
       }
       return await waitForPageLoad(client, 10_000);
     } finally {
@@ -785,10 +837,22 @@ async function locateSessionHar(session: Session): Promise<HarSource | { unavail
   const stopped = fs.existsSync(path.join(session.dir, 'bundle.json'));
   if (stopped) {
     const harPath = path.join(session.dir, 'har.json');
-    if (!fs.existsSync(harPath)) {
-      return { unavailable: 'the stopped session bundled no HAR (recording never started or captured nothing)' };
+    let raw: string;
+    try {
+      raw = readPrivateFile(harPath).toString('utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { unavailable: 'the stopped session bundled no HAR (recording never started or captured nothing)' };
+      }
+      throw error;
     }
-    return { har: JSON.parse(fs.readFileSync(harPath, 'utf-8')) as HarFile, path: harPath, source: 'bundle' };
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (cause) {
+      throw captureError('artifact', 'invalid_har_file', `bundled HAR at ${harPath} is not valid JSON; the record is corrupt and cannot be read as a HAR file.`, cause);
+    }
+    return { har: validateHarFile(parsed, `bundled HAR ${harPath}`), path: harPath, source: 'bundle' };
   }
   if (!session.harId) {
     return { unavailable: 'the running session has no HAR recording (it could not be started with the session)' };
@@ -1021,7 +1085,7 @@ async function stop(parsed: ParsedArgs): Promise<void> {
       session = readSession(id);
       const bundlePath = path.join(session.dir, 'bundle.json');
       try {
-        const manifest = JSON.parse(readPrivateFile(bundlePath).toString('utf-8')) as BundleManifest;
+        const manifest = readBundleManifest(bundlePath);
         // The bundle commit is authoritative even if the committing process
         // died before post-commit cleanup. Complete those idempotent steps
         // without ever replacing the immutable manifest.
@@ -1240,18 +1304,22 @@ function view(parsed: ParsedArgs): void {
   }
 
   const bundlePath = path.join(session.dir, 'bundle.json');
-  if (!fs.existsSync(bundlePath)) {
-    emitResult({
-      tag: 'error',
-      attrs: { command: 'session view', code: 'session_not_stopped' },
-      summary: fact`Session ${id} has not been stopped; there is no bundle manifest yet.`,
-      followUp: fact`capture session stop ${id}`,
-    }, { json: parsed.json });
-    process.exitCode = 1;
-    return;
+  let manifest: BundleManifest;
+  try {
+    manifest = readBundleManifest(bundlePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      emitResult({
+        tag: 'error',
+        attrs: { command: 'session view', code: 'session_not_stopped' },
+        summary: fact`Session ${id} has not been stopped; there is no bundle manifest yet.`,
+        followUp: fact`capture session stop ${id}`,
+      }, { json: parsed.json });
+      process.exitCode = 1;
+      return;
+    }
+    throw error;
   }
-
-  const manifest = JSON.parse(fs.readFileSync(bundlePath, 'utf-8')) as BundleManifest;
 
   if (parsed.filter !== undefined) {
     const key = VIEW_FILTERS[parsed.filter];

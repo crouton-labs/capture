@@ -15,6 +15,7 @@ import { sessionMain } from '../src/session/commands.js';
 import { __setLogTailWorld } from '../src/session/log-tailer.js';
 import { appendToHarRecording, type HAREntry } from '../src/har-manager.js';
 import { getActiveSession, clearActiveSession } from '../src/session-context.js';
+import { workerExecArgv } from './fixtures/worker-exec-argv.js';
 import type { ParsedArgs } from '../src/cdp/types.js';
 
 // Process-scope this file's active-session pointer.
@@ -22,10 +23,12 @@ process.env.CRTR_NODE_ID = `u15-har-test-${process.pid}-${Date.now()}`;
 
 // `session log` self-spawns the hidden `__log-tail-serve` route; under the test
 // runner the built bin's default entry (process.argv[1]) is not capture.ts, so
-// point the tailer world's entry at the real source (empty execArgv in the
+// point the tailer world's entry at the real source. `workerExecArgv()` drops
+// the isolate-capture-root preamble so the worker inherits this process's
+// CAPTURE_ROOT by env instead of re-randomizing it (empty execArgv in the
 // built bin resolves the same way).
 const CAPTURE_SRC = path.resolve('src/capture.ts');
-__setLogTailWorld({ entryArgv: () => [...process.execArgv, CAPTURE_SRC] });
+__setLogTailWorld({ entryArgv: () => [...workerExecArgv(), CAPTURE_SRC] });
 
 function sessionArgs(positional: string[], extra: Partial<ParsedArgs> = {}): ParsedArgs {
   return { command: 'session', positional, json: false, ...extra } as ParsedArgs;

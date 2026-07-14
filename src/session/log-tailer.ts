@@ -8,7 +8,9 @@
  * success. The worker invokes `tail` with argv only, timestamps its lines onto
  * the inherited destination descriptor, self-terminates if the registration
  * confirmation never arrives, and drains on a nonce-authenticated control
- * request from `session stop`.
+ * request from `session stop`. A running worker also self-terminates when its
+ * recorded control socket stops existing: that socket is the one channel any
+ * owner can reach it through, so a worker without it is an unowned orphan.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -33,7 +35,8 @@ import {
 } from './artifacts.js';
 
 const READINESS_FD = 3;
-const CONFIRM_TIMEOUT = /^[1-9][0-9]{0,6}$/;
+/** Bounded positive milliseconds — the grammar for every worker `--… <ms>` flag. */
+const WORKER_MS = /^[1-9][0-9]{0,6}$/;
 const CONTROL_MESSAGE_LIMIT = 4096;
 const WORKER_CHILD_EXIT_TIMEOUT_MS = 2_000;
 
@@ -45,6 +48,8 @@ export interface LogTailWorld {
   teardownWaitMs: number;
   /** How long a ready worker waits for its registration confirmation before self-terminating. */
   confirmTimeoutMs: number;
+  /** How often a running worker re-verifies its recorded control socket still exists. */
+  orphanCheckIntervalMs: number;
 }
 
 const productionWorld: LogTailWorld = {
@@ -53,6 +58,7 @@ const productionWorld: LogTailWorld = {
   readinessTimeoutMs: 10_000,
   teardownWaitMs: 5_000,
   confirmTimeoutMs: 10_000,
+  orphanCheckIntervalMs: 5_000,
 };
 let world: LogTailWorld = productionWorld;
 
@@ -221,7 +227,7 @@ export async function startSessionLogTailer(options: StartSessionLogTailerOption
     destFd = openPrivateAppendFd(destPath);
     child = spawn(
       process.execPath,
-      [...world.entryArgv(), '__log-tail-serve', '--source', options.sourcePath, '--socket-token', socketToken, '--confirm-timeout', String(world.confirmTimeoutMs)],
+      [...world.entryArgv(), '__log-tail-serve', '--source', options.sourcePath, '--socket-token', socketToken, '--confirm-timeout', String(world.confirmTimeoutMs), '--orphan-check', String(world.orphanCheckIntervalMs)],
       {
         detached: true,
         shell: false,
@@ -381,13 +387,15 @@ interface WorkerArgs {
   sourcePath: string;
   socketToken: string;
   confirmTimeoutMs: number;
+  orphanCheckIntervalMs: number;
 }
 
 function parseWorkerArgs(argv: string[]): WorkerArgs {
-  const usage = 'log tailer expects exactly --source <path> --socket-token <token> --confirm-timeout <ms>';
+  const usage = 'log tailer expects exactly --source <path> --socket-token <token> --confirm-timeout <ms> --orphan-check <ms>';
   let sourcePath: string | undefined;
   let socketToken: string | undefined;
   let confirmTimeout: string | undefined;
+  let orphanCheck: string | undefined;
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -401,15 +409,18 @@ function parseWorkerArgs(argv: string[]): WorkerArgs {
     } else if (flag === '--confirm-timeout') {
       if (confirmTimeout !== undefined) throw new Error('duplicate --confirm-timeout');
       confirmTimeout = value;
+    } else if (flag === '--orphan-check') {
+      if (orphanCheck !== undefined) throw new Error('duplicate --orphan-check');
+      orphanCheck = value;
     } else {
       throw new Error(usage);
     }
   }
-  if (!sourcePath || !socketToken || !confirmTimeout || argv.length !== 6
-      || !LOG_TAILER_SOCKET_TOKEN.test(socketToken) || !CONFIRM_TIMEOUT.test(confirmTimeout)) {
+  if (!sourcePath || !socketToken || !confirmTimeout || !orphanCheck || argv.length !== 8
+      || !LOG_TAILER_SOCKET_TOKEN.test(socketToken) || !WORKER_MS.test(confirmTimeout) || !WORKER_MS.test(orphanCheck)) {
     throw new Error(usage);
   }
-  return { sourcePath, socketToken, confirmTimeoutMs: Number(confirmTimeout) };
+  return { sourcePath, socketToken, confirmTimeoutMs: Number(confirmTimeout), orphanCheckIntervalMs: Number(orphanCheck) };
 }
 
 function nonceMatches(expected: string, candidate: unknown): boolean {
@@ -476,6 +487,7 @@ export async function runLogTailer(argv: string[]): Promise<void> {
   let ownedSocket: { dev: string; ino: string } | undefined;
   let ready = false;
   let exitCode = 0;
+  let orphanCheck: NodeJS.Timeout | undefined;
   let confirmDeadline: NodeJS.Timeout | undefined;
   const clearConfirmDeadline = (): void => {
     if (confirmDeadline === undefined) return;
@@ -541,6 +553,27 @@ export async function runLogTailer(argv: string[]): Promise<void> {
     ownedSocket = socketIdentity(socketPath);
     server.on('error', () => requestStop?.('fatal'));
 
+    // Orphan self-check: the recorded control socket is the one channel any
+    // owner (a registered session handle) can ever reach this worker through.
+    // If that directory entry disappears or is replaced, no `session stop` can
+    // drain it, so the worker tears itself down instead of tailing forever as
+    // an unowned process. Each probe is one lstat; nothing is held open
+    // between checks. Only a provable loss of the entry — ENOENT or a
+    // different inode — counts; a transiently failing stat never does.
+    const ownedSocketPath = socketPath;
+    const owned = ownedSocket;
+    orphanCheck = setInterval(() => {
+      try {
+        const current = fs.lstatSync(ownedSocketPath, { bigint: true });
+        if (current.isSocket()
+            && current.dev.toString() === owned.dev
+            && current.ino.toString() === owned.ino) return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return;
+      }
+      requestStop?.('fatal');
+    }, args.orphanCheckIntervalMs);
+
     const tailEnv = { ...process.env };
     delete tailEnv.CAPTURE_LOG_TAIL_NONCE;
     tail = spawn('tail', ['-f', '--', args.sourcePath], {
@@ -586,6 +619,7 @@ export async function runLogTailer(argv: string[]): Promise<void> {
       try { await stopWorkerChild(tail, tailExited); } catch { /* process exit code preserves the worker failure */ }
     }
   } finally {
+    if (orphanCheck !== undefined) clearInterval(orphanCheck);
     clearConfirmDeadline();
     process.removeListener('SIGTERM', onSigterm);
     try { reader?.close(); } catch { /* child output is already closed */ }

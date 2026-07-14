@@ -7,6 +7,7 @@
  * per-session `.session.json` file under that directory.
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   CAPTURE_ROOT,
@@ -81,14 +82,44 @@ function isIndex(value: unknown): value is ActiveSessionIndex {
   return typeof record.sessionId === 'string' && typeof record.dir === 'string';
 }
 
-function readActiveSessionIndex(): ActiveSessionIndex | null {
+/** Directory-entry identity of the `.active-<scope>` pointer, for compare-clear. */
+interface ActiveEntryIdentity {
+  dev: string;
+  ino: string;
+}
+
+function statActiveEntry(): ActiveEntryIdentity | null {
+  try {
+    const stat = fs.lstatSync(getActivePath(), { bigint: true });
+    return { dev: stat.dev.toString(), ino: stat.ino.toString() };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+interface ActivePointer {
+  index: ActiveSessionIndex | null;
+  /** Identity of the exact entry this read observed; null when no entry existed. */
+  entry: ActiveEntryIdentity | null;
+}
+
+/**
+ * Reads the active pointer together with the identity of the directory entry
+ * it came from. The identity is captured BEFORE the content read, so a stale
+ * determination made from these bytes can only ever authorize clearing this
+ * exact inode — never a pointer published after it.
+ */
+function readActivePointer(): ActivePointer {
+  const entry = statActiveEntry();
+  if (!entry) return { index: null, entry: null };
   try {
     const raw = readPrivateFile(getActivePath()).toString('utf-8');
     const parsed = JSON.parse(raw) as unknown;
-    if (!isIndex(parsed)) return null;
-    return { sessionId: parsed.sessionId, dir: parsed.dir };
+    if (!isIndex(parsed)) return { index: null, entry };
+    return { index: { sessionId: parsed.sessionId, dir: parsed.dir }, entry };
   } catch {
-    return null;
+    return { index: null, entry };
   }
 }
 
@@ -152,15 +183,31 @@ function clearActivePath(): void {
 }
 
 /**
+ * Compare-clear (A2/U03): removes the active pointer only while the directory
+ * entry is still the exact inode the deciding read observed. A concurrent
+ * `session start` publishes its pointer as a fresh inode via rename, so a
+ * pointer republished after that read is never unlinked by a slow stale-clean
+ * and the scope's one-live-session cardinality is preserved.
+ */
+function clearActiveEntry(expected: ActiveEntryIdentity | null): void {
+  if (!expected) return;
+  const current = statActiveEntry();
+  if (!current || current.dev !== expected.dev || current.ino !== expected.ino) return;
+  clearActivePath();
+}
+
+/**
  * Reads active session metadata. Endpoint resolution uses `cleanStale: false`
  * while it decides whether a malformed ambient CDP_PORT is relevant: that
  * preserves a stale pointer for the invocation error path. Normal command
  * consumers retain the default eager stale-index cleanup.
  */
 export function getActiveSession({ cleanStale = true }: { cleanStale?: boolean } = {}): ActiveSessionState | null {
-  const index = readActiveSessionIndex();
+  const pointer = readActivePointer();
+  const clean = (): void => { if (cleanStale) clearActiveEntry(pointer.entry); };
+  const index = pointer.index;
   if (!index) {
-    if (cleanStale) clearActivePath();
+    clean();
     return null;
   }
 
@@ -170,7 +217,7 @@ export function getActiveSession({ cleanStale = true }: { cleanStale?: boolean }
 
     try {
       readPrivateFile(path.join(sessionDir, 'bundle.json'));
-      if (cleanStale) clearActivePath();
+      clean();
       return null;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -179,17 +226,17 @@ export function getActiveSession({ cleanStale = true }: { cleanStale?: boolean }
     const raw = readPrivateFile(sessionMetaPath(sessionDir)).toString('utf-8');
     const parsed = JSON.parse(raw) as unknown;
     if (!isActiveStateCandidate(parsed)) {
-      if (cleanStale) clearActivePath();
+      clean();
       return null;
     }
 
     const state = parsed as ActiveSessionState;
     if (state.sessionId !== index.sessionId || state.dir !== sessionDir) {
-      if (cleanStale) clearActivePath();
+      clean();
       return null;
     }
     if (state.stoppedAt) {
-      if (cleanStale) clearActivePath();
+      clean();
       return null;
     }
 
@@ -198,7 +245,7 @@ export function getActiveSession({ cleanStale = true }: { cleanStale?: boolean }
   } catch {
     // Any malformed/corrupt pointer or metadata file is stale. Endpoint
     // precedence may inspect it without mutation; all ordinary callers clean.
-    if (cleanStale) clearActivePath();
+    clean();
     return null;
   }
 }
@@ -226,9 +273,9 @@ export function clearActiveSession(): void {
 }
 
 export function clearActiveSessionIf(sessionId: string): void {
-  const index = readActiveSessionIndex();
-  if (index?.sessionId === sessionId) {
-    clearActivePath();
+  const pointer = readActivePointer();
+  if (pointer.index?.sessionId === sessionId) {
+    clearActiveEntry(pointer.entry);
   }
 }
 
