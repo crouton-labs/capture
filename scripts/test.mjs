@@ -9,7 +9,7 @@
 //   fully-live files below. This list is derived at runtime via readdir
 //   minus the hardcoded live exclusion, so a newly added deterministic test
 //   file is picked up automatically and can never be silently dropped.
-// - Live (`--live`): the 2 fully-live files below PLUS 15 mixed files whose
+// - Live (`--live`): the 2 fully-live files below PLUS 16 mixed files whose
 //   real-Chrome cases are individually gated with `test/fixtures/live-chrome.ts`
 //   (`liveChromeOpts` on the describe/test, with any file-scope Chrome
 //   `before` hook made a no-op unless CAPTURE_LIVE_CHROME=1) and whose
@@ -37,6 +37,7 @@ const FULLY_LIVE_FILES = [
 // real-Chrome describes/tests are individually gated (`liveChromeOpts`) and
 // only run under the live profile.
 const MIXED_LIVE_FILES = [
+  'chrome-fixture.test.ts',
   'measure-animation-freeze-invariants.test.ts',
   'measure-animation.test.ts',
   'measure-ax-queries-media-invariants.test.ts',
