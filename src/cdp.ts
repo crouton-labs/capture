@@ -1,4 +1,3 @@
-#!/usr/bin/env tsx
 /**
  * CDP (Chrome DevTools Protocol) — the library barrel over the CDP substrate.
  *
@@ -9,7 +8,9 @@
  * (`src/cdp/har-recorder.ts`, a direct import of the recorder bridge) is the
  * sole HAR lane.
  * The command surface itself lives under `src/cdp/commands/` and is routed by
- * `src/capture.ts` → `src/cdp/dispatch.ts`.
+ * `src/capture.ts` → `src/cdp/dispatch.ts`. This module is a pure barrel:
+ * `src/capture.ts` is the ONLY entrypoint and the ONLY error/termination
+ * boundary — nothing here executes, renders, or exits.
  */
 
 export { CDPClient } from './cdp/client.js';
@@ -24,23 +25,3 @@ export { ConsoleRecorder } from './cdp/console-recorder.js';
 export type { ConsoleEntry } from './cdp/console-recorder.js';
 export { acquireTabLock, isTabLocked, releaseTabLock, withTabLock } from './cdp/tab-lock.js';
 export { cdpMain } from './cdp/dispatch.js';
-
-// Only run CLI when executed directly (not imported via capture.ts)
-const isMainModule =
-  process.argv[1]?.endsWith('cdp.ts') ||
-  process.argv[1]?.endsWith('cdp.mjs');
-if (isMainModule) {
-  cdpMain()
-    .then(() => {
-      // Flush stdout before exiting — process.exit() doesn't wait for stream drain
-      if (process.stdout.writableNeedDrain) {
-        process.stdout.once('drain', () => process.exit(0));
-      } else {
-        process.exit(0);
-      }
-    })
-    .catch((err) => {
-      console.error(err.message);
-      process.exit(1);
-    });
-}

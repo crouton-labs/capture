@@ -105,15 +105,20 @@ test('page branch grammar names the leaf: `page click` is rejected at the valida
 });
 
 test('the dispatch-level guard rejects --gate on every leaf except measure check|diff', () => {
+  // FROZEN-BIN-PENDING (U23): the typed one-boundary shape below
+  // (<error code="unsupported_flag" kind="invocation">) goes red against the
+  // frozen bin/capture (which renders the old command/status shape from the
+  // guard itself) until U23 rebuilds it. Proven against source in
+  // test/cli-error-contract.test.ts.
   withTempRoot((tempRoot) => {
     const pageScroll = run(['page', 'scroll', '--gate', 'x'], tempRoot);
     assert.equal(pageScroll.status, 1);
-    assert.ok(pageScroll.stdout.includes('unsupported_flag'), pageScroll.stdout);
+    assert.ok(pageScroll.stdout.includes('<error code="unsupported_flag" kind="invocation">'), pageScroll.stdout);
     assert.ok(pageScroll.stdout.includes('page scroll'), pageScroll.stdout);
 
     const sessionList = run(['session', 'list', '--gate'], tempRoot);
     assert.equal(sessionList.status, 1);
-    assert.ok(sessionList.stdout.includes('unsupported_flag'), sessionList.stdout);
+    assert.ok(sessionList.stdout.includes('<error code="unsupported_flag" kind="invocation">'), sessionList.stdout);
     assert.ok(sessionList.stdout.includes('session list'), sessionList.stdout);
 
     // measure check accepts --gate: it must NOT be rejected at dispatch.

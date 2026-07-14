@@ -111,13 +111,19 @@ test('an unknown lib name is a structured unknown_lib error', () => {
   assert.ok(result.stdout.includes('<error code="unknown_lib"'), result.stdout);
 });
 
-test('a missing or unknown lib subcommand is a structured unknown_subcommand error', () => {
-  for (const args of [['lib'], ['lib', 'bogus']]) {
-    const result = run(args);
-    assert.equal(result.status, 1, args.join(' '));
-    assert.ok(result.stdout.includes('<error code="unknown_subcommand"'), result.stdout);
-    assert.ok(result.stdout.includes('list, search, show, read'), result.stdout);
-  }
+test('bare `lib` prints branch usage exit 0; an unknown lib leaf is central-dispatch unknown_command — same posture as the other root branches', () => {
+  // FROZEN-BIN-PENDING (U23): the bare-`lib` expectation goes red against the
+  // frozen bin/capture (which still errors exit 1) until U23 rebuilds it. The
+  // same behavior is proven against source in test/cli-error-contract.test.ts.
+  const bare = run(['lib']);
+  assert.equal(bare.status, 0, bare.stdout);
+  assert.ok(bare.stdout.includes('capture lib — vault-lib introspection'), bare.stdout);
+  assert.ok(bare.stdout.includes('<subcommand name="list"'), bare.stdout);
+
+  const bogus = run(['lib', 'bogus']);
+  assert.equal(bogus.status, 1);
+  assert.ok(bogus.stdout.includes('<error code="unknown_command"'), bogus.stdout);
+  assert.ok(bogus.stdout.includes('Unknown lib leaf: bogus.'), bogus.stdout);
 });
 
 test('`lib -h` is the branch help; `lib read -h` is the leaf help — both exit 0, no examples', () => {

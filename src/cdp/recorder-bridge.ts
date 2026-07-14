@@ -1421,8 +1421,9 @@ export interface RunRecorderBridgeOptions {
   recDir: string;
   /** The owning session's live HAR recording id — the streaming `HARRecorder`
    * installed on the held tab connection appends its evidence there (via
-   * `har-manager.ts`'s `appendToHarRecording`, whose per-HAR-file lock is the
-   * cross-process safety boundary; nothing else is needed here). */
+   * `har-manager.ts`'s `appendToHarRecording`; each batch is one `O_APPEND`
+   * no-follow write of one NDJSON record, so cross-process writers interleave
+   * whole records without a lock — nothing else is needed here). */
   harId: string;
   port?: number;
 }
@@ -1468,6 +1469,20 @@ export function __setRecorderBridgeDepsForTest(overrides: Partial<RecorderBridge
   return () => { recorderBridgeDeps = previous; };
 }
 
+/**
+ * Joins the terminal rec-stop's two possible failures into the one wire
+ * error message the caller sees. A drain-only failure surfaces the exact
+ * drain error unchanged; when `RecorderSession.stop()` ALSO failed, its
+ * failure is never replaced wholesale — both messages are joined so both
+ * stay distinguishable. Module-level (not a bridge closure) so the focused
+ * settle-join regression test exercises exactly the production join.
+ */
+export function joinTerminalStopFailure(stopResp: RecorderResponse, drainError: unknown): string {
+  const drainMessage = drainError instanceof Error ? drainError.message : String(drainError);
+  if (stopResp.ok) return drainMessage;
+  return `rec-stop teardown failed: ${stopResp.error}; HAR drain failed: ${drainMessage}`;
+}
+
 export async function runRecorderBridge(opts: RunRecorderBridgeOptions): Promise<void> {
   const port = opts.port ?? (await resolvePort());
   const resolved = await recorderBridgeDeps.findTab(opts.targetId, port);
@@ -1482,7 +1497,7 @@ export async function runRecorderBridge(opts: RunRecorderBridgeOptions): Promise
   // BEFORE the control socket exists, so network activity between recorder
   // boot and the caller's `rec-start` is already captured. Exactly-once
   // delivery is the HARRecorder's own contract; cross-process file safety is
-  // har-manager's per-HAR-file lock.
+  // har-manager's append-only store (one O_APPEND write per batch, no lock).
   const har = new HARRecorder(client, (batch) => appendToHarRecording(opts.harId, batch));
   await har.start();
 
@@ -1531,7 +1546,10 @@ export async function runRecorderBridge(opts: RunRecorderBridgeOptions): Promise
    * authoritative: it overrides even a successful `RecorderSession.stop()`
    * with an explicit `ok:false` response carrying the exact primary error —
    * the recorder never claims success once its evidence store is fatally
-   * broken, and the HAR store itself is never reset. Response is flushed
+   * broken, and the HAR store itself is never reset — and when the stop
+   * teardown ALSO failed, the drain error never replaces it wholesale: both
+   * messages are joined (`joinTerminalStopFailure`) so both failures stay
+   * distinguishable in the one response. Response is flushed
    * (write completion callback) before the socket ends, cleanup runs, and the
    * injected exit seam fires non-zero on fatal / zero on success.
    */
@@ -1545,7 +1563,7 @@ export async function runRecorderBridge(opts: RunRecorderBridgeOptions): Promise
         reqId: req.reqId,
         ok: false,
         type: 'rec-stop',
-        error: err instanceof Error ? err.message : String(err),
+        error: joinTerminalStopFailure(stopResp, err),
       };
     }
     await new Promise<void>((resolveWrite) => {

@@ -90,7 +90,7 @@ effects:
 export async function cmdMotionRec(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
     console.log(USAGE);
-    process.exit(0);
+    return;
   }
 
   const lifecycleError = validateLifecycleInputs(parsed);

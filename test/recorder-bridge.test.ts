@@ -12,6 +12,7 @@ import { recorderSocketPath } from '../src/cdp/bridge/spawn.js';
 import {
   RecorderSession,
   handleRecorderRequest,
+  joinTerminalStopFailure,
   OBSERVER_INSTALLED_SENTINEL,
   type RecorderCdpClient,
 } from '../src/cdp/recorder-bridge.js';
@@ -329,6 +330,25 @@ test('Tracing.dataCollected batches and injected-observer bindingCalled entries 
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }
+});
+
+test('the terminal rec-stop settle joins a stop failure with a drain error — neither replaces the other; a drain-only failure passes through unchanged', () => {
+  const failedStop = { reqId: 7, ok: false as const, type: 'rec-stop' as const, error: 'tracing teardown exploded' };
+  const joined = joinTerminalStopFailure(failedStop, new Error('HAR sink append rejected'));
+  assert.ok(joined.includes('tracing teardown exploded'), joined);
+  assert.ok(joined.includes('HAR sink append rejected'), joined);
+  assert.notEqual(joined, 'HAR sink append rejected', 'the stop failure must not be replaced wholesale by the drain error');
+
+  const okStop = {
+    reqId: 8,
+    ok: true as const,
+    type: 'rec-stop' as const,
+    frameCount: 0,
+    eventCount: 0,
+    durationMs: 1,
+    markers: { performanceNowMs: 0, wallClockMs: 0, firstScreencastTimestampSec: null, firstTraceEventTsUs: null, baselinesPending: true },
+  };
+  assert.equal(joinTerminalStopFailure(okStop, new Error('drain only')), 'drain only');
 });
 
 test('rec-stop stops screencast/tracing, tears down observers, and returns frame/event counts', async () => {

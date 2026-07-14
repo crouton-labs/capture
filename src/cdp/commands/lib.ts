@@ -10,11 +10,14 @@
  * block naming a lib carries `src` = the absolute path to that lib's `.ts`
  * source, the agent's full-fidelity pointer; `lib read` is the schema-level
  * full-fidelity leaf. Dev-checkout only: with `vault/` source missing
- * (published package) every leaf exits 1 with a structured
- * `<error code="dev_only">` block.
+ * (published package) every leaf throws a typed `dev_only` failure, rendered
+ * at the root boundary as `<error code="dev_only">`, exit 1. Every failure
+ * here throws typed (`CaptureError`) — the `src/capture.ts` root boundary is
+ * the one renderer and exit-code authority.
  */
 
 import * as path from "path";
+import { captureError, invalidInput } from "../../errors.js";
 import { type ParsedArgs } from "../types.js";
 import {
   emitResult,
@@ -167,6 +170,11 @@ function scoreHit(
 const svcName = (doc: LibraryDoc): string =>
   doc.library.replace(/^@vallum\//, "");
 
+/** Plain-string truncation for thrown messages (the `capped()` render marker
+ * only works inside `fact` templates, not in a `CaptureError` message). */
+const cap = (value: string, maxLength: number): string =>
+  value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
+
 const srcPathFor = (name: string): string =>
   path.join(vaultLibsDir(), name, "index.ts");
 
@@ -185,67 +193,38 @@ function resolveName(query: string, names: string[]): NameResolution {
   return { unknown: true };
 }
 
-/** Emit a structured `<error code=…>` block and exit 1. */
-function fail(
-  parsed: ParsedArgs,
-  code: string,
-  command: string,
-  summary: FactLine,
-  followUp?: FactLine,
-): never {
-  emitResult(
-    { tag: "error", attrs: { code, command }, summary, followUp },
-    { json: parsed.json },
-  );
-  process.exit(1);
-}
-
-/** Resolve a lib name or fail structurally (unknown/ambiguous). */
-function resolveNameOrFail(
-  parsed: ParsedArgs,
-  command: string,
-  query: string,
-): string {
+/** Resolve a lib name or throw typed (unknown/ambiguous). */
+function resolveNameOrFail(command: string, query: string): string {
   const names = listLibs();
   const r = resolveName(query, names);
   if ("ambiguous" in r) {
-    fail(
-      parsed,
+    throw invalidInput(
+      `${command} received: lib name \`${query}\` — matches ${r.ambiguous.join(", ")}; expected exactly one lib. Re-run with the full lib name.`,
       "ambiguous_lib",
-      command,
-      fact`received: lib name \`${query}\` — matches ${r.ambiguous.join(", ")}; expected exactly one lib.`,
-      text`Re-run with the full lib name.`,
     );
   }
   if ("unknown" in r) {
-    fail(
-      parsed,
+    throw invalidInput(
+      `${command} received: unknown lib \`${query}\`; available: ${cap(names.join(", "), 1600)}. Run \`capture lib list\` for every lib with its summary.`,
       "unknown_lib",
-      command,
-      fact`received: unknown lib \`${query}\`; available: ${capped(names.join(", "), 1600)}.`,
-      text`Run \`capture lib list\` for every lib with its summary.`,
     );
   }
   return r.name;
 }
 
-/** `getDoc` or fail structurally. `DEV_ONLY_MSG` rethrows to the shared
- * dev-only handler in `cmdLib`; any other build failure is a structured
- * doc_unavailable error. */
-async function getDocOrFail(
-  parsed: ParsedArgs,
-  command: string,
-  name: string,
-): Promise<LibraryDoc> {
+/** `getDoc` or throw typed. `DEV_ONLY_MSG` rethrows to the shared dev-only
+ * handler in `cmdLib`; any other build failure is a typed doc_unavailable
+ * failure. */
+async function getDocOrFail(command: string, name: string): Promise<LibraryDoc> {
   try {
     return await getDoc(name);
   } catch (e) {
     if (e instanceof Error && e.message === DEV_ONLY_MSG) throw e;
-    fail(
-      parsed,
+    throw captureError(
+      "world",
       "doc_unavailable",
-      command,
-      fact`doc generation for lib \`${name}\` failed: ${(e as Error).message}`,
+      `${command}: doc generation for lib \`${name}\` failed: ${(e as Error).message}`,
+      e,
     );
   }
 }
@@ -273,11 +252,8 @@ async function libList(parsed: ParsedArgs): Promise<void> {
 async function libSearch(parsed: ParsedArgs): Promise<void> {
   const query = parsed.positional[1];
   if (!query) {
-    fail(
-      parsed,
-      "invalid_input",
-      "lib search",
-      text`received: no query; expected: capture lib search <query> [--limit <n>].`,
+    throw invalidInput(
+      "lib search received: no query; expected: capture lib search <query> [--limit <n>].",
     );
   }
   const limit = Math.min(
@@ -369,25 +345,19 @@ function emitLibSummary(
 async function libShow(parsed: ParsedArgs): Promise<void> {
   const name = parsed.positional[1];
   if (!name) {
-    fail(
-      parsed,
-      "invalid_input",
-      "lib show",
-      text`received: no lib name; expected: capture lib show <name>.`,
+    throw invalidInput(
+      "lib show received: no lib name; expected: capture lib show <name>.",
     );
   }
   // Resolve + build ONLY the named lib (design §3.1: show is single-lib, not
   // an all-lib bundle). Mirrors the read path; adds show's visibility filter
   // (a present-but-non-visible lib is treated as unknown).
-  const resolved = resolveNameOrFail(parsed, "lib show", name);
-  const doc = await getDocOrFail(parsed, "lib show", resolved);
+  const resolved = resolveNameOrFail("lib show", name);
+  const doc = await getDocOrFail("lib show", resolved);
   if (!isAgentVisible(doc)) {
-    fail(
-      parsed,
+    throw invalidInput(
+      `lib show received: unknown lib \`${name}\`; available: ${cap(listLibs().join(", "), 1600)}. Run \`capture lib list\` for every lib with its summary.`,
       "unknown_lib",
-      "lib show",
-      fact`received: unknown lib \`${name}\`; available: ${capped(listLibs().join(", "), 1600)}.`,
-      text`Run \`capture lib list\` for every lib with its summary.`,
     );
   }
   emitLibSummary(
@@ -401,16 +371,13 @@ async function libShow(parsed: ParsedArgs): Promise<void> {
 async function libRead(parsed: ParsedArgs): Promise<void> {
   const name = parsed.positional[1];
   if (!name) {
-    fail(
-      parsed,
-      "invalid_input",
-      "lib read",
-      text`received: no lib name; expected: capture lib read <name> [fn…].`,
+    throw invalidInput(
+      "lib read received: no lib name; expected: capture lib read <name> [fn…].",
     );
   }
   // `read` may read ANY present lib (no visibility filter).
-  const resolved = resolveNameOrFail(parsed, "lib read", name);
-  const doc = await getDocOrFail(parsed, "lib read", resolved);
+  const resolved = resolveNameOrFail("lib read", name);
+  const doc = await getDocOrFail("lib read", resolved);
   const service = svcName(doc);
   const fns = parsed.positional.slice(2);
 
@@ -435,15 +402,12 @@ async function libRead(parsed: ParsedArgs): Promise<void> {
   }
 
   if (found.length === 0) {
-    fail(
-      parsed,
-      "unknown_function",
-      "lib read",
-      fact`received: ${missing.join(", ")} — not in ${service}; available: ${capped(
+    throw invalidInput(
+      `lib read received: ${missing.join(", ")} — not in ${service}; available: ${cap(
         doc.functions.map((f) => f.name).join(", "),
         1600,
-      )}.`,
-      fact`\`capture lib show ${service}\` lists every function with its summary.`,
+      )}. \`capture lib show ${service}\` lists every function with its summary.`,
+      "unknown_function",
     );
   }
 
@@ -495,28 +459,23 @@ export async function cmdLib(
         return await libShow(parsed);
       case "read":
         return await libRead(parsed);
+      case undefined:
+        // Bare `lib` prints branch usage, exit 0 — same posture as the other
+        // root branches (page/tab/measure/motion).
+        console.log(LIB_USAGE);
+        return;
       default:
-        fail(
-          parsed,
-          "unknown_subcommand",
-          sub ? `lib ${sub}` : "lib",
-          sub
-            ? fact`received: unknown lib subcommand \`${sub}\`; expected one of: list, search, show, read.`
-            : text`received: no lib subcommand; expected one of: list, search, show, read.`,
-          text`Run \`capture lib -h\` for the subcommand schemas.`,
-        );
+        // Defense-in-depth mirror of the sibling branch routers; central
+        // dispatch (`validateCliInvocation`) rejects unknown lib leaves with
+        // the same typed shape before this switch runs.
+        throw invalidInput(`Unknown lib leaf: ${sub}.`, "unknown_command");
     }
   } catch (e) {
     // The dev-only gate (vault/ source or esbuild missing) surfaces here from
-    // any leaf; gate behavior is unchanged, only its presentation is
-    // structured.
+    // any leaf; gate behavior is unchanged, only its presentation is the
+    // typed vocabulary rendered at the root boundary.
     if (e instanceof Error && e.message === DEV_ONLY_MSG) {
-      fail(
-        parsed,
-        "dev_only",
-        sub ? `lib ${sub}` : "lib",
-        fact`${e.message}`,
-      );
+      throw captureError("precondition", "dev_only", e.message, e);
     }
     throw e;
   }

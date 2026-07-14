@@ -207,12 +207,20 @@ test('--gate is confined to measure check and measure diff at built-binary dispa
       { args: ['motion', 'timeline', '--gate'], command: 'motion timeline' },
     ];
 
+    // FROZEN-BIN-PENDING (U23): the typed one-boundary shape below (code +
+    // kind attrs, leaf named in the message) goes red against the frozen
+    // bin/capture (old command/status shape) until U23 rebuilds it. Proven
+    // against source in test/cli-error-contract.test.ts.
     for (const probe of rejected) {
       const result = run(probe.args, tempRoot);
       assertExit(result, 1);
       const attrs = errorAttributes(result.stdout);
-      assert.equal(attrs.status, 'unsupported_flag', `${probe.args.join(' ')}\n${transcript(result)}`);
-      assert.equal(attrs.command, probe.command, `${probe.args.join(' ')}\n${transcript(result)}`);
+      assert.equal(attrs.code, 'unsupported_flag', `${probe.args.join(' ')}\n${transcript(result)}`);
+      assert.equal(attrs.kind, 'invocation', `${probe.args.join(' ')}\n${transcript(result)}`);
+      assert.ok(
+        result.stdout.includes(`'--gate' is not accepted on '${probe.command}'`),
+        `${probe.args.join(' ')}\n${transcript(result)}`,
+      );
     }
 
     for (const probe of [

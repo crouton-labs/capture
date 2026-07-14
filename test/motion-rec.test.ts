@@ -34,6 +34,21 @@ import {
   classifyEncodeFailure,
 } from '../src/cdp/commands/motion/rec.js';
 
+test('`motion rec -h` prints usage and RETURNS — a hard process.exit here would kill this runner process', async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (message?: unknown) => { logs.push(String(message)); };
+  try {
+    await cmdMotionRec({ command: 'motion', positional: [], help: true }, []);
+  } finally {
+    console.log = originalLog;
+  }
+  assert.ok(
+    logs.some((line) => line.startsWith('capture motion rec — record the page over time')),
+    logs.join('\n'),
+  );
+});
+
 const TINY_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=', 'base64');
 
 type Sent = { method: string; params?: Record<string, unknown> };

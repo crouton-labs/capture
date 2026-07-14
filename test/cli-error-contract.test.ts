@@ -62,6 +62,35 @@ test('source CLI renders malformed root, flag, env, numeric, and branch failures
   assertOneError(['measure', 'unknown']);
   assertOneError(['measure', 'map', 'unknown']);
   assertOneError(['motion', 'unknown']);
+  assertOneError(['lib', 'unknown']);
+});
+
+test('the --gate rejection is thrown typed and rendered once at the root boundary', () => {
+  assertOneError(['page', 'elements', '--gate']);
+  assertOneError(['session', 'list', '--gate']);
+
+  const mirrored = run(['session', 'list', '--gate', '--json']);
+  assert.equal(mirrored.status, 1);
+  assert.equal(mirrored.stderr, '');
+  const output = JSON.parse(mirrored.stdout) as { tag: string; attrs: { code: string; kind: string }; summary: string };
+  assert.equal(output.tag, 'error');
+  assert.equal(output.attrs.code, 'unsupported_flag');
+  assert.equal(output.attrs.kind, 'invocation');
+  assert.ok(output.summary.includes('session list'), output.summary);
+});
+
+test('lib failures throw typed to the root boundary; bare `lib` prints branch usage exit 0 like every other root branch', () => {
+  assertOneError(['lib', 'show', 'zzz-no-such-lib']);
+
+  const bogus = run(['lib', 'bogus']);
+  assert.equal(bogus.status, 1);
+  assert.match(bogus.stdout, /<error code="unknown_command" kind="invocation">/);
+
+  const bare = run(['lib']);
+  assert.equal(bare.status, 0, bare.stdout);
+  assert.equal(bare.stderr, '');
+  assert.match(bare.stdout, /^capture lib — vault-lib introspection/);
+  assert.doesNotMatch(bare.stdout, /<error\b/);
 });
 
 test('session stop ignores malformed CDP_PORT because it does not use CDP', () => {

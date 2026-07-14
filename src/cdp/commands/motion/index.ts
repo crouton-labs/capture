@@ -29,7 +29,7 @@ finalized recording artifact. Every leaf defaults to rendered prose; --json
 mirrors the same result. Findings exit 0 — a report, not a failure;
 input/precondition errors exit 1. No leaf accepts --gate.
 
-<subcommand name="rec" args="[url] --do <action> [--duration <ms>] | --start | --stop" whenToUse="record an interaction — one-shot action, or composed across commands with --start/--stop (needs an active session)"/>
+<subcommand name="rec" args="[url] --do <action> [--duration <seconds>] | --start | --stop" whenToUse="record an interaction — one-shot action, or composed across commands with --start/--stop (needs an active session)"/>
 <subcommand name="mask" args="<rec> [--limit <N>]" whenToUse="motion-diff composite image + per-region facts"/>
 <subcommand name="timeline" args="<rec> --element <sel> [--prop <prop>]" whenToUse="per-frame geometry/scroll/property timeline for one element"/>
 <subcommand name="jank" args="<rec>" whenToUse="dropped-frame/long-task/layout-shift facts"/>
