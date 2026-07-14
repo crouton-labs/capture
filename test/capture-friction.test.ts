@@ -65,8 +65,11 @@ test('HAR request timestamps convert CDP monotonic time through the recorded wal
     response: { url: 'https://example.test/api', status: 200, headers: {} },
   });
 
-  const [entry] = recorder.finishPartial().log.entries;
-  assert.equal(entry.startedDateTime, '2026-07-15T20:26:40.250Z');
+  // Without a terminal event the request is finalized as incomplete-lifecycle
+  // evidence (Phase-3 contract), which carries the same wall-anchored
+  // startedDateTime the conversion under test produces.
+  const [lifecycle] = recorder.finishPartial().incompleteLifecycles;
+  assert.equal(lifecycle.startedDateTime, '2026-07-15T20:26:40.250Z');
 });
 
 test('HAR recording emits WebSocket handshakes and frames as filterable entries', async () => {
