@@ -159,6 +159,11 @@ function readResult(file: string) { return JSON.parse(fs.readFileSync(file, 'utf
 const LOCK_CHILD = `
 import * as fs from 'node:fs';
 const cfg = JSON.parse(process.env.CHILD_CONFIG);
+// Optional, opt-in-only: when a caller wants a self-signed record of this process's own exit code
+// (proof of self-termination that doesn't depend on the parent observing/reaping the pid — see the
+// orphan-proof regression below), it sets cfg.exitMarker. 'exit' listeners run synchronously even
+// for an in-process process.exit() call, so this always captures the real final exitCode.
+if (cfg.exitMarker) process.on('exit', () => { try { fs.writeFileSync(cfg.exitMarker, String(process.exitCode)); } catch {} });
 const a = await import(${JSON.stringify(moduleUrl)});
 const guards = {};
 // Publish atomically: write to a same-directory temp name, then rename into place, so a reader
@@ -1071,38 +1076,40 @@ test('L-H4 static and dynamic final canonical traps preserve protected state', a
 // =================================================================================================
 // Simulates "the test runner died before its finally ran" via one level of indirection: an
 // intermediary stand-in process plays the role of the runner (this actual node:test process cannot
-// safely kill itself), spawns a grandchild that blocks in busyGate exactly as spawnLockChild's
-// children do, then is SIGKILLed. The grandchild must notice its parent died and self-exit well
-// inside a tight bound — never linger reparented to pid 1 forever.
-const BUSY_GATE_PROOF_CHILD = `
-import * as fs from 'node:fs';
-${ORPHAN_GUARD}
-const cell = new Int32Array(new SharedArrayBuffer(4));
-fs.writeFileSync(process.env.ALIVE_MARKER, String(process.pid));
-while (!fs.existsSync(process.env.GATE)) {
-  if (__orphaned()) { fs.writeFileSync(process.env.EXIT_MARKER, 'self-exited'); process.exit(1); }
-  Atomics.wait(cell, 0, 0, 20);
-}
-fs.writeFileSync(process.env.EXIT_MARKER, 'gate-opened');
-`;
+// safely kill itself), spawns a grandchild that runs the REAL LOCK_CHILD program — the exact fixture
+// every other cross-process test in this file exercises via spawnLockChild, acquiring a real lock and
+// blocking in the real busyGate via `hold` — then is SIGKILLed. This does not run a copy of the
+// guard: if ORPHAN_GUARD/busyGate were ever dropped or misplaced from LOCK_CHILD, this test would
+// fail, because it exercises that exact production fixture code path.
 const FAKE_PARENT = `
 import { spawn } from 'node:child_process';
-const child = spawn(process.execPath, ['--input-type=module', '-e', process.env.GRANDCHILD_SCRIPT], { env: process.env, stdio: 'ignore' });
+const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', process.env.GRANDCHILD_SCRIPT], { env: process.env, stdio: 'ignore' });
 child.unref();
 setInterval(() => {}, 1000); // keep this stand-in "runner" alive until the test SIGKILLs it
 `;
-test('orphaned busyGate child self-exits once its spawning process dies', async () => {
+test('orphaned busyGate child self-exits once its spawning process dies', { timeout: 15_000 }, async () => {
+  await ready;
   const coord = coordinator();
-  const aliveMarker = path.join(coord, 'alive'); const exitMarker = path.join(coord, 'exit'); const gate = path.join(coord, 'gate');
+  const lock = freshLock('orphan-proof');
+  const result = path.join(coord, 'result.json');
+  const exitMarker = path.join(coord, 'exit');
+  const gate = path.join(coord, 'never-opened'); // deliberately never created — the child must self-exit, not gate-open
+  const cfg = { lock, acquireTimeoutMs: 5_000, leaseMs: 60_000, provider: 'production', result, hold: { gate, release: false }, exitMarker };
   const fakeParent = trackChild(childProcess.spawn(process.execPath, ['--input-type=module', '-e', FAKE_PARENT], {
-    env: { ...process.env, GRANDCHILD_SCRIPT: BUSY_GATE_PROOF_CHILD, ALIVE_MARKER: aliveMarker, EXIT_MARKER: exitMarker, GATE: gate },
+    env: { ...process.env, CAPTURE_ROOT, GRANDCHILD_SCRIPT: LOCK_CHILD, CHILD_CONFIG: JSON.stringify(cfg) },
     stdio: 'ignore',
   }));
   let grandchildPid = -1;
   try {
-    await waitFor(aliveMarker, { proc: fakeParent, label: 'fake-parent stand-in' });
-    grandchildPid = Number(fs.readFileSync(aliveMarker, 'utf8'));
+    // The real LOCK_CHILD only publishes `result` once it has acquired the lock and entered its
+    // `hold` busyGate loop. A short explicit bound here (not the harness's 30s default) means a
+    // broken startup fails fast instead of burning the full 30s window.
+    await waitFor(result, { proc: fakeParent, label: 'fake-parent stand-in', timeoutMs: 10_000 });
+    const acquired = readResult(result);
+    assert.equal(acquired.status, 'acquired');
+    grandchildPid = acquired.pid;
     assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0);
+    assert.doesNotThrow(() => process.kill(grandchildPid, 0), 'grandchild should still be alive, blocked in busyGate');
     // Kill the stand-in "runner"; the grandchild must reparent and notice within a small bound —
     // never linger to the harness's full 30s child-startup timeout.
     fakeParent.kill('SIGKILL');
@@ -1111,23 +1118,29 @@ test('orphaned busyGate child self-exits once its spawning process dies', async 
       if (Date.now() >= deadline) assert.fail('orphaned busyGate child did not self-exit within 3s');
       await new Promise(resolve => setTimeout(resolve, 20));
     }
-    assert.equal(fs.readFileSync(exitMarker, 'utf8'), 'self-exited');
-    // The process itself is actually gone, not merely past its marker write.
-    while (Date.now() < deadline) {
-      try { process.kill(grandchildPid, 0); } catch { break; }
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
-    assert.throws(() => process.kill(grandchildPid, 0), /ESRCH/);
+    // Proof of self-termination is the child's own signed record of its exit code (written from its
+    // own 'exit' handler — see LOCK_CHILD's exitMarker wiring), not a `kill(pid, 0)` liveness probe:
+    // a self-exited-but-not-yet-reaped process is a zombie whose pid can still answer `kill(pid, 0)`
+    // on Linux/container CI (this file runs in the deterministic tier on ubuntu-latest), which would
+    // flake that assertion there. Exit code 1 is unique to busyGate's `__orphaned()` branch — the
+    // gate is never opened, so the only other way LOCK_CHILD's process could end is a normal (code 0)
+    // script completion.
+    assert.equal(fs.readFileSync(exitMarker, 'utf8'), '1');
   } finally {
     if (grandchildPid > 0) { try { process.kill(grandchildPid, 'SIGKILL'); } catch { /* already gone */ } }
+    if (fakeParent.exitCode === null && fakeParent.signalCode === null) {
+      fakeParent.kill('SIGKILL');
+      await exitCode(fakeParent, 'fake-parent stand-in', 5_000).catch(() => { /* best-effort cleanup */ });
+    }
     fs.rmSync(coord, { recursive: true, force: true });
+    cleanup(lock);
   }
 });
 
 // =================================================================================================
 // Harness regression — waitFor() fails fast with exit evidence (Issue 2)
 // =================================================================================================
-test("waitFor fails fast with the dead child's exit evidence instead of the full timeout", async () => {
+test("waitFor fails fast with the dead child's exit evidence instead of the full timeout", { timeout: 8_000 }, async () => {
   const coord = coordinator();
   const marker = path.join(coord, 'never-written.json');
   // A child that exits immediately without ever reaching a marker write — the exact shape of a
@@ -1136,7 +1149,7 @@ test("waitFor fails fast with the dead child's exit evidence instead of the full
   try {
     const start = Date.now();
     await assert.rejects(
-      waitFor(marker, { proc: crashChild, label: 'crash-child', timeoutMs: TSX_CHILD_TIMEOUT_MS }),
+      waitFor(marker, { proc: crashChild, label: 'crash-child', timeoutMs: 5_000 }),
       /crash-child exited \(code=7 signal=null\) before writing/,
     );
     const elapsed = Date.now() - start;
