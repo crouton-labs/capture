@@ -1,4 +1,5 @@
 import { after, before, test } from 'node:test';
+import { LIVE_CHROME, liveChromeOpts } from './fixtures/live-chrome.js';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { closeChrome, spawnHeadlessChrome, type ChromeFixture } from './fixtures/chrome.js';
@@ -105,6 +106,13 @@ before(async () => {
   process.env.CRTR_NODE_ID = scope;
   const port = await startFixtureServer();
   pageUrl = `http://127.0.0.1:${port}/measure-snap-fixture`;
+  if (!LIVE_CHROME) {
+    // Real-Chrome tests are gated with liveChromeOpts; the deterministic
+    // tests need only the fixture server plus a plausible (unconnected) port
+    // for input-validation paths that reject before any CDP contact.
+    cdpPort = 22000 + Math.floor(Math.random() * 1000);
+    return;
+  }
   await startChrome();
   await openFixturePage();
 });
@@ -119,7 +127,7 @@ after(async () => {
   server?.close();
 });
 
-test('measure snap writes one-shot and active-session substrates, including a hover state artifact', async () => {
+test('measure snap writes one-shot and active-session substrates, including a hover state artifact', liveChromeOpts, async () => {
   const oneShot = runCapture(['measure', 'snap', pageUrl, '--port', String(cdpPort), '--state', 'hover:button']);
   assert.equal(oneShot.status, 0, oneShot.stderr);
   const oneShotPath = oneShot.stdout.match(/path="([^"]+)"/)?.[1];
@@ -309,7 +317,7 @@ test('withAppliedViewport still attempts the clear when the override request its
   assert.ok(client.sent.includes('Emulation.clearDeviceMetricsOverride'), 'ownership is claimed before the set is awaited, so the clear still runs');
 });
 
-test('viewport capture applies native metrics during capture and clears them afterward', async () => {
+test('viewport capture applies native metrics during capture and clears them afterward', liveChromeOpts, async () => {
   clearActiveSession();
   const baseline = await readViewport();
   const response = await fetch(`http://localhost:${cdpPort}/json/list`);
@@ -328,7 +336,7 @@ test('viewport capture applies native metrics during capture and clears them aft
   }
 });
 
-test('measure snap completes two repeated native viewport captures and clears the final override', async () => {
+test('measure snap completes two repeated native viewport captures and clears the final override', liveChromeOpts, async () => {
   clearActiveSession();
   const baseline = await readViewport();
   const repeated = runCapture(['measure', 'snap', pageUrl, '--port', String(cdpPort), '--viewport', '319x219', '--viewport', '321x222', '--json']);
@@ -343,7 +351,7 @@ test('measure snap completes two repeated native viewport captures and clears th
   assert.deepEqual(await readViewport(), baseline, 'the second capture also clears its temporary viewport');
 });
 
-test('viewport request preserves a foreign DPR2 override without allocating artifacts', async () => {
+test('viewport request preserves a foreign DPR2 override without allocating artifacts', liveChromeOpts, async () => {
   clearActiveSession();
   const rootsBefore = oneShotRoots();
   const response = await fetch(`http://localhost:${cdpPort}/json/list`);
@@ -367,7 +375,7 @@ test('viewport request preserves a foreign DPR2 override without allocating arti
   }
 });
 
-test('viewport request rejects a recorder-held target before it allocates a session snap', async () => {
+test('viewport request rejects a recorder-held target before it allocates a session snap', liveChromeOpts, async () => {
   const sessionId = `cap-recorder-viewport-${Date.now().toString(36)}`;
   const sessionDir = path.join(CAPTURE_ROOT, sessionId);
   const recId = 'rec-live';

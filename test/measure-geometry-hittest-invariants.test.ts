@@ -16,6 +16,7 @@
  */
 
 import { test, describe, before, after } from 'node:test';
+import { LIVE_CHROME, liveChromeOpts } from './fixtures/live-chrome.js';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { closeChrome, spawnHeadlessChrome } from './fixtures/chrome.js';
@@ -104,6 +105,7 @@ let chromePort = 0;
 
 describe('real Chrome integration', () => {
 before(async () => {
+  if (!LIVE_CHROME) return; // every describe/test using this shared Chrome is gated with liveChromeOpts
   const { proc, port } = await spawnHeadlessChrome();
   chromeProc = proc;
   chromePort = port;
@@ -136,7 +138,7 @@ function buildGeometryFixtureHtml(): string {
   </body></html>`;
 }
 
-describe('geometry.json: MAX_ELEMENTS + grid-track slice caps emit exact truncation facts (I-5, finding C)', () => {
+describe('geometry.json: MAX_ELEMENTS + grid-track slice caps emit exact truncation facts (I-5, finding C)', liveChromeOpts, () => {
   let geometry: GeometryJson;
   let client: CDPClient;
 
@@ -223,7 +225,7 @@ function buildHittestFixtureHtml(): string {
   </body></html>`;
 }
 
-describe('hittest.json: candidate/lattice/bridge caps emit exact truncation facts, and bridge-capped records are honestly unresolved (I-5 + I-3, findings C + D)', () => {
+describe('hittest.json: candidate/lattice/bridge caps emit exact truncation facts, and bridge-capped records are honestly unresolved (I-5 + I-3, findings C + D)', liveChromeOpts, () => {
   let hittest: HittestJson;
   let client: CDPClient;
 
@@ -404,7 +406,7 @@ describe('geometry.json + hittest.json: a forced collection failure emits an hon
   // Companion happy-path -- proves the two failure cases above are now
   // distinguishable from a genuinely-empty-but-successful walk: before this
   // remediation both collapsed to the exact same indistinguishable shape.
-  test('collectGeometry + collectHittest: a real (Chrome-backed) empty-page run reports available:true and no unavailableReason', async () => {
+  test('collectGeometry + collectHittest: a real (Chrome-backed) empty-page run reports available:true and no unavailableReason', liveChromeOpts, async () => {
     const store: Record<string, unknown> = {};
     const client = await newClient(chromePort, 400, 400);
     try {
@@ -983,7 +985,7 @@ describe('geometry.json: a per-element DOM.getContentQuads/DOM.getBoxModel read 
   // still report the plain, unflagged benign shape (no `geometryUnavailable`
   // anywhere), exactly matching pre-fix output for the cases where nothing
   // actually failed.
-  test('real Chrome: a genuinely visible element and a genuinely display:none element both resolve with geometryUnavailable absent everywhere', async () => {
+  test('real Chrome: a genuinely visible element and a genuinely display:none element both resolve with geometryUnavailable absent everywhere', liveChromeOpts, async () => {
     const client = await newClient(chromePort, 400, 400);
     try {
       await navigateAndWait(
@@ -1240,7 +1242,7 @@ describe("hittest.json: a PRIMARY element's failed CDP rect-upgrade read never c
   // DOM.getContentQuads/DOM.getBoxModel behavior for a genuinely visible
   // primary element -- the upgrade succeeds, so rectCdpUpgradeFailed is
   // absent and rect reflects the real (non-zero) CDP-derived geometry.
-  test('real Chrome: a genuinely visible primary element resolves its CDP rect upgrade with rectCdpUpgradeFailed absent', async () => {
+  test('real Chrome: a genuinely visible primary element resolves its CDP rect upgrade with rectCdpUpgradeFailed absent', liveChromeOpts, async () => {
     const client = await newClient(chromePort, 400, 400);
     try {
       await navigateAndWait(
@@ -1294,7 +1296,7 @@ function buildIframeContentDocumentThrowsFixtureHtml(): string {
   </body></html>`;
 }
 
-describe('geometry.json: a same-origin iframe whose contentDocument read THROWS marks the iframe record unavailable rather than silently skipping its subtree with no fact (I-4/I-5, G6)', () => {
+describe('geometry.json: a same-origin iframe whose contentDocument read THROWS marks the iframe record unavailable rather than silently skipping its subtree with no fact (I-4/I-5, G6)', liveChromeOpts, () => {
   // MUST FAIL PRE-FIX: pre-fix, geometry.ts's IFRAME branch caught the throw,
   // set innerDoc=null, and returned with zero markers of any kind -- the
   // iframe's own record had no `iframeContentUnavailable` key at all (always
@@ -1442,7 +1444,7 @@ describe('geometry.json: a malformed meta.elementsTruncated field on an otherwis
   });
 });
 
-describe("hittest.json: document.elementsFromPoint() throwing or returning a nullish result marks every point stackUnavailable:true rather than a silent empty hit stack (I-4/I-5, H5)", () => {
+describe("hittest.json: document.elementsFromPoint() throwing or returning a nullish result marks every point stackUnavailable:true rather than a silent empty hit stack (I-4/I-5, H5)", liveChromeOpts, () => {
   // MUST FAIL PRE-FIX: pre-fix, `doc.elementsFromPoint(localX, localY) || []`
   // collapsed BOTH a throw and a nullish return to the exact same empty-stack
   // shape a genuinely empty point produces, with no marker of any kind --
@@ -1527,7 +1529,7 @@ describe("hittest.json: document.elementsFromPoint() throwing or returning a nul
   }, { timeout: 20000 });
 });
 
-describe('hittest.json: a same-origin iframe whose contentDocument read THROWS during the candidate walk emits an honest candidateIframesUnavailable aggregate rather than silently skipping inner candidates (I-4/I-5, H7)', () => {
+describe('hittest.json: a same-origin iframe whose contentDocument read THROWS during the candidate walk emits an honest candidateIframesUnavailable aggregate rather than silently skipping inner candidates (I-4/I-5, H7)', liveChromeOpts, () => {
   // MUST FAIL PRE-FIX: pre-fix, walkCandidates' IFRAME branch caught the
   // throw, set innerDoc=null, and returned with no marker at all --
   // `candidateIframesUnavailable` did not exist anywhere on the pre-fix

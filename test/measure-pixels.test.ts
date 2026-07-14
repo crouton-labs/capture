@@ -1,4 +1,5 @@
 import { test, describe, before, after } from 'node:test';
+import { LIVE_CHROME, liveChromeOpts } from './fixtures/live-chrome.js';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -1185,6 +1186,7 @@ function alphaAt(png: PNG, x: number, y: number): number {
 
 describe('D5 real-Chrome pixel collection', () => {
 before(async () => {
+  if (!LIVE_CHROME) return; // D5 real-Chrome tests below are gated with liveChromeOpts
   d5Fixture = await spawnHeadlessChrome();
   const { proc, port } = d5Fixture;
   d5Chrome = proc;
@@ -1235,7 +1237,7 @@ after(async () => {
   await d5Fixture?.close();
 });
 
-test('D5 real-Chrome: pixels.json carries the scope fact and a clean success capture', () => {
+test('D5 real-Chrome: pixels.json carries the scope fact and a clean success capture', liveChromeOpts, () => {
   assert.deepEqual(d5Pixels.scope, {
     enumeration: 'top-document-light-dom',
     pierce: false,
@@ -1247,7 +1249,7 @@ test('D5 real-Chrome: pixels.json carries the scope fact and a clean success cap
   assert.ok(d5Pixels.elements.length > 0);
 });
 
-test('D5 real-Chrome: rotated (non-axis-aligned) quad masks off-mask pixels and keeps facts on-mask', () => {
+test('D5 real-Chrome: rotated (non-axis-aligned) quad masks off-mask pixels and keeps facts on-mask', liveChromeOpts, () => {
   const rot = d5Pixels.elements.find((e) => e.selector === 'div#rot');
   assert.ok(rot, 'rotated element present');
 
@@ -1285,7 +1287,7 @@ test('D5 real-Chrome: rotated (non-axis-aligned) quad masks off-mask pixels and 
   assert.ok(anyOpaque, 'crop retains on-mask painted pixels');
 });
 
-test('D5 real-Chrome: disjoint multi-line-box inline element carves off-quad gutter out of the crop', () => {
+test('D5 real-Chrome: disjoint multi-line-box inline element carves off-quad gutter out of the crop', liveChromeOpts, () => {
   const wrap = d5Pixels.elements.find((e) => e.selector === 'span#wrap');
   assert.ok(wrap, 'wrapped inline element present');
 
@@ -1309,7 +1311,7 @@ test('D5 real-Chrome: disjoint multi-line-box inline element carves off-quad gut
   assert.ok(opaque > 0, 'line-box pixels retained on-mask');
 });
 
-test('D5 real-Chrome: plain element crop is scaled by the real 2x device-pixel-ratio', () => {
+test('D5 real-Chrome: plain element crop is scaled by the real 2x device-pixel-ratio', liveChromeOpts, () => {
   const plain = d5Pixels.elements.find((e) => e.selector === 'div#plain');
   assert.ok(plain, 'plain element present');
 
@@ -1328,7 +1330,7 @@ test('D5 real-Chrome: plain element crop is scaled by the real 2x device-pixel-r
   assert.ok(plain!.avgColor.b > plain!.avgColor.r + 60, 'on-mask avg is blue-dominant');
 });
 
-test('D5 real-Chrome: overflow:hidden ancestor clips the child\'s pixel mask (green/magenta gradient truncated to the visible half)', () => {
+test('D5 real-Chrome: overflow:hidden ancestor clips the child\'s pixel mask (green/magenta gradient truncated to the visible half)', liveChromeOpts, () => {
   // `#clipChild` is a 120x40 element (half green, half magenta) whose
   // `#clipParent` ancestor is only 60px wide with `overflow:hidden` — only
   // the left (green) half is ever actually painted; the right (magenta)
@@ -1359,7 +1361,7 @@ test('D5 real-Chrome: overflow:hidden ancestor clips the child\'s pixel mask (gr
   assert.ok(clipChild!.alphaFraction > 0.9, `on-mask alpha should be ~1 (clipped-away half excluded), got ${clipChild!.alphaFraction}`);
 });
 
-test('D5 real-Chrome: rectangular clip-path ancestor clips the child\'s pixel mask', () => {
+test('D5 real-Chrome: rectangular clip-path ancestor clips the child\'s pixel mask', liveChromeOpts, () => {
   // Same green/magenta gradient child, this time clipped by an ANCESTOR's
   // `clip-path: inset(0 60px 0 0)` (rather than `overflow:hidden`) — insets
   // the visible region to the same left 60px of the 120px-wide box.
@@ -1375,7 +1377,7 @@ test('D5 real-Chrome: rectangular clip-path ancestor clips the child\'s pixel ma
   assert.ok(clipPathChild!.alphaFraction > 0.9, `on-mask alpha should be ~1, got ${clipPathChild!.alphaFraction}`);
 });
 
-test('D5 real-Chrome: circular clip-path ancestor clips the child\'s pixel mask (non-rectangular shape, bbox unchanged)', () => {
+test('D5 real-Chrome: circular clip-path ancestor clips the child\'s pixel mask (non-rectangular shape, bbox unchanged)', liveChromeOpts, () => {
   // `#clipCircleChild` is a SOLID-orange 80x80 fill; its `#clipCircleParent`
   // ancestor clips it to `circle(40px at 40px 40px)` -- a disc INSCRIBED in
   // the ancestor's own 80x80 box (radius 40 exactly reaches all four edges
@@ -1406,7 +1408,7 @@ test('D5 real-Chrome: circular clip-path ancestor clips the child\'s pixel mask 
   assert.ok(el!.alphaFraction > 0.9, `on-mask alpha should be ~1 (only the painted disc counted), got ${el!.alphaFraction}`);
 });
 
-test('D5 real-Chrome: polygon clip-path ancestor clips the child\'s pixel mask (non-rectangular shape, bbox unchanged)', () => {
+test('D5 real-Chrome: polygon clip-path ancestor clips the child\'s pixel mask (non-rectangular shape, bbox unchanged)', liveChromeOpts, () => {
   // `#clipPolyChild` is a SOLID-green 100x60 fill; its `#clipPolyParent`
   // ancestor clips it to `polygon(0 0, 100% 0, 0 100%)` -- the box's own
   // upper-left triangular HALF. Every vertex sits on the box's own edges,
@@ -1431,7 +1433,7 @@ test('D5 real-Chrome: polygon clip-path ancestor clips the child\'s pixel mask (
   assert.ok(el!.alphaFraction > 0.9, `on-mask alpha should be ~1 (only the painted triangle counted), got ${el!.alphaFraction}`);
 });
 
-test('D5 real-Chrome: path() ancestor clip-path is flagged honest/approximate instead of silently unmasked', () => {
+test('D5 real-Chrome: path() ancestor clip-path is flagged honest/approximate instead of silently unmasked', liveChromeOpts, () => {
   // `#clipPathFuncChild`'s ancestor uses `clip-path: path('M0 0 L60 0 L60 40
   // L0 40 Z')` -- a shape this collector cannot resolve to exact per-pixel
   // geometry (an arbitrary SVG path). The mandatory contract for shapes we
@@ -1449,7 +1451,7 @@ test('D5 real-Chrome: path() ancestor clip-path is flagged honest/approximate in
   );
 });
 
-test('D5 real-Chrome: four-value edge-offset circle() ancestor clip resolves exactly (not approximate)', () => {
+test('D5 real-Chrome: edge-offset circle() ancestor clip resolves the computed calc() position exactly (not approximate)', liveChromeOpts, () => {
   // `#clipCalcParent` is authored `clip-path: circle(20px at right 30px
   // bottom 30px)`. Chrome preserves this valid four-value CSS <position>
   // form in computed style. The parser must resolve each edge/offset pair,
@@ -1485,7 +1487,7 @@ test('D5 real-Chrome: four-value edge-offset circle() ancestor clip resolves exa
   assert.ok(el!.alphaFraction > 0.9, `on-mask alpha should be ~1 (only the painted disc counted), got ${el!.alphaFraction}`);
 });
 
-test('D5 real-Chrome: vertical-first four-value edge offsets resolve exactly', () => {
+test('D5 real-Chrome: vertical-first four-value edge offsets resolve exactly', liveChromeOpts, () => {
   const el = d5Pixels.elements.find((e) => e.selector === 'div#clipEdgeOrderChild');
   assert.ok(el, 'clipEdgeOrderChild element present');
   const record = el as unknown as { ancestorClipApproximate: boolean };
@@ -1496,7 +1498,7 @@ test('D5 real-Chrome: vertical-first four-value edge offsets resolve exactly', (
   assert.ok(Math.abs(el!.rect.height - 40) <= 2, `rect height should be ~40, got ${el!.rect.height}`);
 });
 
-test('D5 real-Chrome: calc() edge offsets resolve exactly', () => {
+test('D5 real-Chrome: calc() edge offsets resolve exactly', liveChromeOpts, () => {
   const el = d5Pixels.elements.find((e) => e.selector === 'div#clipCalcOffsetChild');
   assert.ok(el, 'clipCalcOffsetChild element present');
   const record = el as unknown as { ancestorClipApproximate: boolean };
@@ -1507,7 +1509,7 @@ test('D5 real-Chrome: calc() edge offsets resolve exactly', () => {
   assert.ok(Math.abs(el!.rect.height - 20) <= 2, `rect height should be ~20, got ${el!.rect.height}`);
 });
 
-test('D5 real-Chrome: malformed three-token positions are approximate, never guessed exact', async () => {
+test('D5 real-Chrome: malformed three-token positions are approximate, never guessed exact', liveChromeOpts, async () => {
   // Browsers reject malformed CSS before it reaches computed style. Feed the
   // page-side collector the malformed value through a narrowly scoped
   // computed-style proxy so this regression proves its defensive parser path.
@@ -1568,7 +1570,7 @@ test('D5 real-Chrome: malformed three-token positions are approximate, never gue
   }
 });
 
-test('D5 real-Chrome: url() clip-path whose fragment merely resembles a circle() call is flagged approximate, never treated as an exact shape', () => {
+test('D5 real-Chrome: url() clip-path whose fragment merely resembles a circle() call is flagged approximate, never treated as an exact shape', liveChromeOpts, () => {
   // `#clipUrlParent` is authored `clip-path: url('#circle(20px at 50px
   // 50px)')` -- a valid but UNSUPPORTED `<clip-source>` reference (an SVG
   // `<clipPath>` element id, which this fragment does not actually name).

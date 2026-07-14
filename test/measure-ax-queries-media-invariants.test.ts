@@ -18,6 +18,7 @@
  */
 
 import { test, describe, before, after } from 'node:test';
+import { LIVE_CHROME, liveChromeOpts } from './fixtures/live-chrome.js';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { closeChrome, spawnHeadlessChrome } from './fixtures/chrome.js';
@@ -183,6 +184,7 @@ let geometry: GeometryJson;
 
 describe('real Chrome integration', () => {
 before(async () => {
+  if (!LIVE_CHROME) return; // every real-Chrome describe reading this shared capture is gated with liveChromeOpts
   const { proc, port } = await spawnHeadlessChrome();
   chromeProc = proc;
 
@@ -261,7 +263,7 @@ after(async () => {
 // Finding A -- media.ts baseline canvas.getContext side effect (I-1/I-6)
 // ============================================================================
 
-describe('Finding A: media.ts baseline collection never probes canvas.getContext', () => {
+describe('Finding A: media.ts baseline collection never probes canvas.getContext', liveChromeOpts, () => {
   test('collectMedia never triggers HTMLCanvasElement.prototype.getContext (real Chrome spy)', () => {
     assert.equal(
       getContextCallCount,
@@ -283,7 +285,7 @@ describe('Finding A: media.ts baseline collection never probes canvas.getContext
 // Finding D -- ax.ts + media.ts identity EQUALITY with geometry.json (I-3)
 // ============================================================================
 
-describe('Finding D: ax.json / media.json backendNodeId EQUALS geometry.json backendNodeId for the same element', () => {
+describe('Finding D: ax.json / media.json backendNodeId EQUALS geometry.json backendNodeId for the same element', liveChromeOpts, () => {
   test('ax.json: #ax-target backendNodeId equals geometry.json #ax-target backendNodeId', () => {
     const axNode = ax.nodes.find((n) => n.axName === 'Send');
     assert.ok(axNode, 'expected an ax.json node for the #ax-target button (accessible name "Send")');
@@ -331,14 +333,14 @@ describe('Finding D: ax.json / media.json backendNodeId EQUALS geometry.json bac
 // Finding C -- silent caps now emit truncation facts (I-5)
 // ============================================================================
 
-describe('Finding C: ax.ts AX_MAX_RECT_LOOKUPS cap now emits rectLookupsTruncated (real Chrome)', () => {
+describe('Finding C: ax.ts AX_MAX_RECT_LOOKUPS cap now emits rectLookupsTruncated (real Chrome)', liveChromeOpts, () => {
   test('ax.json reports a positive rectLookupsTruncated count once eligible nodes exceed the cap', () => {
     assert.notEqual(ax.rectLookupsTruncated, undefined, 'expected ax.json to carry rectLookupsTruncated once the 310 role=listitem items push eligible nodes over AX_MAX_RECT_LOOKUPS (300)');
     assert.ok(ax.rectLookupsTruncated! > 0, `expected a positive rectLookupsTruncated, got ${ax.rectLookupsTruncated}`);
   });
 });
 
-describe('Finding C: media.ts MEDIA_MAX_ELEMENTS cap now emits elementsTruncated (real Chrome)', () => {
+describe('Finding C: media.ts MEDIA_MAX_ELEMENTS cap now emits elementsTruncated (real Chrome)', liveChromeOpts, () => {
   test('media.json reports elementsTruncated once the page has more than 200 img/video/canvas/svg/iframe elements', () => {
     // 1 #cv canvas + 1 #media-target img + 205 loop imgs = 207 total; cap is 200.
     assert.equal(media.elementsTruncated, 7, `expected media.json's elementsTruncated to be 207 - 200 = 7, got ${media.elementsTruncated}`);
@@ -346,7 +348,7 @@ describe('Finding C: media.ts MEDIA_MAX_ELEMENTS cap now emits elementsTruncated
   });
 });
 
-describe('Finding C: queries.ts MAX_MEDIA_QUERIES/MAX_CONTAINER_QUERIES/MAX_AFFECTED_SELECTORS caps now emit truncation facts (real Chrome)', () => {
+describe('Finding C: queries.ts MAX_MEDIA_QUERIES/MAX_CONTAINER_QUERIES/MAX_AFFECTED_SELECTORS caps now emit truncation facts (real Chrome)', liveChromeOpts, () => {
   test('queries.json reports mediaQueriesTruncated once the stylesheet has more than 50 media-query rules', () => {
     assert.equal(queries.mediaQueriesTruncated, true, 'expected mediaQueriesTruncated: true (55 @media rules > MAX_MEDIA_QUERIES 50)');
     assert.equal(queries.mediaQueries.length, 50, 'expected mediaQueries to still be capped to exactly 50 records');
@@ -373,7 +375,7 @@ describe('Finding C: queries.ts MAX_MEDIA_QUERIES/MAX_CONTAINER_QUERIES/MAX_AFFE
   });
 });
 
-describe('Finding C2: queries.ts named container-query matching resolves the NAMED ancestor container, not merely the nearest (real Chrome)', () => {
+describe('Finding C2: queries.ts named container-query matching resolves the NAMED ancestor container, not merely the nearest (real Chrome)', liveChromeOpts, () => {
   test('the "outer-container (min-width: 400px)" record resolves #outer-container (500px width), not the nearer but differently-named #inner-container (300px width)', () => {
     const record = queries.containerQueries.find((c) => c.containerName === 'outer-container');
     assert.ok(record, 'expected a queries.json record for the @container outer-container rule');
@@ -1020,7 +1022,7 @@ describe('Phase 3 (stub cross-check): queries.ts report-level availability fact'
 // emits on that throw.
 // ============================================================================
 
-describe('MARK #62/#63/#29 (real Chrome, dedicated fixture): media/queries in-page read-failure honesty markers', () => {
+describe('MARK #62/#63/#29 (real Chrome, dedicated fixture): media/queries in-page read-failure honesty markers', liveChromeOpts, () => {
   const HONESTY_FIXTURE_HTML = `<!DOCTYPE html><html><body style="margin:0;">
 <style>@media (min-width: 1px) { .honesty-marker-sel {} }</style>
 <img id="style-fail-target" src="${TINY_GIF}" width="40" height="30" style="position:absolute;top:0;left:0;object-fit:cover;">

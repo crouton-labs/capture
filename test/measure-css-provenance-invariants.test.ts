@@ -12,6 +12,7 @@
  */
 
 import { test, describe, before, after } from 'node:test';
+import { LIVE_CHROME, liveChromeOpts } from './fixtures/live-chrome.js';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -391,6 +392,7 @@ let chromePort: number;
 
 describe('real Chrome integration', () => {
 before(async () => {
+  if (!LIVE_CHROME) return; // real-Chrome section below is gated with liveChromeOpts
   const { proc, port } = await spawnHeadlessChrome();
   chromeProc = proc;
   chromePort = port;
@@ -428,7 +430,7 @@ const LAYERS_FIXTURE_HTML = `<!DOCTYPE html><html><body style="margin:0;">
 </body></html>`;
 const LAYERS_FIXTURE_URL = `data:text/html,${encodeURIComponent(LAYERS_FIXTURE_HTML)}`;
 
-test('real-chrome (B1): a matched-rule set containing @layer-nested rules is flagged winnerApproximate, and the actual computed winner differs from the simplified model\'s reported winner', async () => {
+test('real-chrome (B1): a matched-rule set containing @layer-nested rules is flagged winnerApproximate, and the actual computed winner differs from the simplified model\'s reported winner', liveChromeOpts, async () => {
   const wsUrl = await newPageTarget(chromePort, LAYERS_FIXTURE_URL);
   const client = new CDPClient(wsUrl);
   await client.waitReady();
@@ -479,7 +481,7 @@ const NO_LAYER_FIXTURE_HTML = `<!DOCTYPE html><html><body style="margin:0;">
 </body></html>`;
 const NO_LAYER_FIXTURE_URL = `data:text/html,${encodeURIComponent(NO_LAYER_FIXTURE_HTML)}`;
 
-test('real-chrome (B1): a normal page with no @layer/@scope/revert reports the winner as exact (winnerApproximate absent)', async () => {
+test('real-chrome (B1): a normal page with no @layer/@scope/revert reports the winner as exact (winnerApproximate absent)', liveChromeOpts, async () => {
   const wsUrl = await newPageTarget(chromePort, NO_LAYER_FIXTURE_URL);
   const client = new CDPClient(wsUrl);
   await client.waitReady();
@@ -520,7 +522,7 @@ ${Array.from({ length: STYLES_CAP_ELEMENT_COUNT }, (_, i) => `<div class="item" 
 </body></html>`;
 const STYLES_CAP_FIXTURE_URL = `data:text/html,${encodeURIComponent(STYLES_CAP_FIXTURE_HTML)}`;
 
-test('real-chrome (C1): styles.json reports total/kept/truncated when the page has more visible elements than STYLES_MAX_ELEMENTS', async () => {
+test('real-chrome (C1): styles.json reports total/kept/truncated when the page has more visible elements than STYLES_MAX_ELEMENTS', liveChromeOpts, async () => {
   const wsUrl = await newPageTarget(chromePort, STYLES_CAP_FIXTURE_URL);
   const client = new CDPClient(wsUrl);
   await client.waitReady();
@@ -542,7 +544,7 @@ test('real-chrome (C1): styles.json reports total/kept/truncated when the page h
   }
 }, { timeout: 20000 });
 
-test('real-chrome (C1): a page with FEWER elements than the cap reports elementsTruncated=false', async () => {
+test('real-chrome (C1): a page with FEWER elements than the cap reports elementsTruncated=false', liveChromeOpts, async () => {
   const smallHtml = `<!DOCTYPE html><html><body style="margin:0;"><div id="one" style="width:10px;height:10px;"></div></body></html>`;
   const smallUrl = `data:text/html,${encodeURIComponent(smallHtml)}`;
   const wsUrl = await newPageTarget(chromePort, smallUrl);
@@ -569,7 +571,7 @@ test('real-chrome (C1): a page with FEWER elements than the cap reports elements
 const IDENTITY_FIXTURE_HTML = `<!DOCTYPE html><html><body style="margin:0;"><div id="box" style="width:50px;height:50px;background:red;">hi</div></body></html>`;
 const IDENTITY_FIXTURE_URL = `data:text/html,${encodeURIComponent(IDENTITY_FIXTURE_HTML)}`;
 
-test('real-chrome (D1): styles.json element backendNodeId EQUALS geometry.json backendNodeId for the same DOM node', async () => {
+test('real-chrome (D1): styles.json element backendNodeId EQUALS geometry.json backendNodeId for the same DOM node', liveChromeOpts, async () => {
   const wsUrl = await newPageTarget(chromePort, IDENTITY_FIXTURE_URL);
   const client = new CDPClient(wsUrl);
   await client.waitReady();
@@ -625,7 +627,7 @@ const LAYER_IDENTITY_FIXTURE_HTML = `<!DOCTYPE html><html><body style="margin:0;
 </body></html>`;
 const LAYER_IDENTITY_FIXTURE_URL = `data:text/html,${encodeURIComponent(LAYER_IDENTITY_FIXTURE_HTML)}`;
 
-test('real-chrome (D1): a layer\'s owning backendNodeId, and a member backendNodeId, EQUAL geometry.json\'s backendNodeId for the same node', async () => {
+test('real-chrome (D1): a layer\'s owning backendNodeId, and a member backendNodeId, EQUAL geometry.json\'s backendNodeId for the same node', liveChromeOpts, async () => {
   const wsUrl = await newPageTarget(chromePort, LAYER_IDENTITY_FIXTURE_URL);
   const client = new CDPClient(wsUrl);
   await client.waitReady();

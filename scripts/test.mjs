@@ -5,16 +5,18 @@
 // separately classified live tier (`--live` / `npm run test:live`), never
 // mixed into the deterministic gate that runs on every push/PR.
 //
-// - Deterministic (default): every `test/*.test.ts` file EXCEPT the 9
+// - Deterministic (default): every `test/*.test.ts` file EXCEPT the 2
 //   fully-live files below. This list is derived at runtime via readdir
 //   minus the hardcoded live exclusion, so a newly added deterministic test
 //   file is picked up automatically and can never be silently dropped.
-// - Live (`--live`): the 9 fully-live files below PLUS 8 mixed files whose
+// - Live (`--live`): the 2 fully-live files below PLUS 15 mixed files whose
 //   real-Chrome cases are individually gated with `test/fixtures/live-chrome.ts`
-//   (`liveChromeOpts`) and whose remaining cases are deterministic and
-//   re-run harmlessly under this profile. This combined list IS hardcoded —
-//   it is not derived — because "which files contain a live case" is not
-//   mechanically inferable from a directory listing.
+//   (`liveChromeOpts` on the describe/test, with any file-scope Chrome
+//   `before` hook made a no-op unless CAPTURE_LIVE_CHROME=1) and whose
+//   remaining stub/pure cases are deterministic and run in the default
+//   profile (re-running harmlessly under this one). This combined list IS
+//   hardcoded — it is not derived — because "which files contain a live
+//   case" is not mechanically inferable from a directory listing.
 import { spawn } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import * as path from 'node:path';
@@ -24,27 +26,27 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const testDir = path.join(repoRoot, 'test');
 
-// Fully-live: every test in the file depends on a file-scope `before` hook
-// that launches/connects to a real Chrome. The whole file is live-tier only.
+// Fully-live: EVERY test in the file genuinely exercises a real Chrome
+// (there are no stub/pure cases to salvage). The whole file is live-tier only.
 const FULLY_LIVE_FILES = [
-  'measure-animation.test.ts',
-  'measure-ax-queries-media-invariants.test.ts',
-  'measure-css-provenance-invariants.test.ts',
   'measure-focus-geometry-identity.test.ts',
-  'measure-geometry-hittest-invariants.test.ts',
   'measure-geometry-hittest.test.ts',
-  'measure-layers-styles.test.ts',
-  'measure-pixels.test.ts',
-  'measure-snap.test.ts',
 ];
 
-// Mixed: most cases in the file are deterministic; a subset of describes/tests
-// are individually gated (`liveChromeOpts`) on a real Chrome and only run
-// under the live profile.
+// Mixed: the file's stub/pure cases are deterministic and run by default; its
+// real-Chrome describes/tests are individually gated (`liveChromeOpts`) and
+// only run under the live profile.
 const MIXED_LIVE_FILES = [
   'measure-animation-freeze-invariants.test.ts',
+  'measure-animation.test.ts',
+  'measure-ax-queries-media-invariants.test.ts',
   'measure-cleanup-coverage.test.ts',
+  'measure-css-provenance-invariants.test.ts',
+  'measure-geometry-hittest-invariants.test.ts',
+  'measure-layers-styles.test.ts',
   'measure-mutating-invariants.test.ts',
+  'measure-pixels.test.ts',
+  'measure-snap.test.ts',
   'measure-text-forms-invariants.test.ts',
   'measure-text-forms.test.ts',
   'snapshot-settledness.test.ts',

@@ -1,4 +1,5 @@
 import { test, describe, before, after } from 'node:test';
+import { LIVE_CHROME, liveChromeOpts } from './fixtures/live-chrome.js';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -1101,6 +1102,7 @@ let realChromePort: number;
 
 describe('real Chrome integration', () => {
 before(async () => {
+  if (!LIVE_CHROME) return; // real-chrome tests A/B below are gated with liveChromeOpts
   const { proc, port } = await spawnHeadlessChrome();
   realChrome = proc;
   realChromePort = port;
@@ -1225,7 +1227,7 @@ class LayerTreeSynthesizingClient {
   }
 }
 
-test('real-chrome A (layers): collectLayers() drives the real production path end-to-end and reports the WINNING (higher-specificity) declaration, with generated source location', async () => {
+test('real-chrome A (layers): collectLayers() drives the real production path end-to-end and reports the WINNING (higher-specificity) declaration, with generated source location', liveChromeOpts, async () => {
   const wsUrl = await newRealChromePageTarget(realChromePort, LAYERS_A_FIXTURE_URL);
   const client = new CDPClient(wsUrl);
   await client.waitReady();
@@ -1287,7 +1289,7 @@ const STYLES_B_FIXTURE_HTML = `<!DOCTYPE html><html><body style="margin:0;">
 </body></html>`;
 const STYLES_B_FIXTURE_URL = `data:text/html,${encodeURIComponent(STYLES_B_FIXTURE_HTML)}`;
 
-test('real-chrome B (styles): a stylesheet already parsed before any CSS.enable still yields a generated source location, with no late styleSheetAdded during collection', async () => {
+test('real-chrome B (styles): a stylesheet already parsed before any CSS.enable still yields a generated source location, with no late styleSheetAdded during collection', liveChromeOpts, async () => {
   const wsUrl = await newRealChromePageTarget(realChromePort, STYLES_B_FIXTURE_URL);
   const client = new CDPClient(wsUrl);
   await client.waitReady();

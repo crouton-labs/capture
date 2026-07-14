@@ -10,6 +10,7 @@
  */
 
 import { test, describe, before, after } from 'node:test';
+import { LIVE_CHROME, liveChromeOpts } from './fixtures/live-chrome.js';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { closeChrome, spawnHeadlessChrome } from './fixtures/chrome.js';
@@ -80,6 +81,7 @@ let geometry: { elements: GeometryElementRecord[] };
 
 describe('real Chrome integration', () => {
 before(async () => {
+  if (!LIVE_CHROME) return; // the shared-capture tests reading `animation`/`geometry` are gated with liveChromeOpts
   const { proc, port } = await spawnHeadlessChrome();
   chromeProc = proc;
 
@@ -130,7 +132,7 @@ after(async () => {
   }
 });
 
-test('animation.json: the infinite #spinner-a animation is enumerated with the settle.ts base shape', () => {
+test('animation.json: the infinite #spinner-a animation is enumerated with the settle.ts base shape', liveChromeOpts, () => {
   assert.ok(Array.isArray(animation.animations));
   const spinner = animation.animations.find((a) => (a.selector ?? '').includes('spinner-a'));
   assert.ok(spinner, `expected an animation record for #spinner-a, got selectors ${JSON.stringify(animation.animations.map((a) => a.selector))}`);
@@ -149,7 +151,7 @@ test('animation.json: the infinite #spinner-a animation is enumerated with the s
 // index-correct, not just present), and (b) the two backendNodeIds are
 // DISTINCT (proving neither is a stuck first-handle stamped onto every
 // record).
-test('animation.json: an element-targeted animation carries a backendNodeId (D3 cross-artifact join key), distinct per target', () => {
+test('animation.json: an element-targeted animation carries a backendNodeId (D3 cross-artifact join key), distinct per target', liveChromeOpts, () => {
   const withTarget = animation.animations.filter((a) => a.selector !== null);
   assert.ok(withTarget.length > 0, 'expected at least one element-targeted animation');
   const withBackendNodeId = withTarget.filter((a) => a.backendNodeId !== undefined);
@@ -190,7 +192,7 @@ test('animation.json: an element-targeted animation carries a backendNodeId (D3 
   );
 });
 
-test('animation.json: coverage records the explicit top-document scope fact (D5)', () => {
+test('animation.json: coverage records the explicit top-document scope fact (D5)', liveChromeOpts, () => {
   assert.ok(animation.coverage, 'expected a coverage scope fact');
   assert.equal(animation.coverage.scope, 'top-document');
   assert.equal(typeof animation.coverage.iframesNotWalked, 'number');
@@ -261,7 +263,7 @@ async function readSetterFired(c: CDPClient): Promise<string[]> {
   return res.result?.value ?? [];
 }
 
-describe('D9 real-Chrome: baseline collectAnimation never triggers a page-defined __captureAnimEls setter', () => {
+describe('D9 real-Chrome: baseline collectAnimation never triggers a page-defined __captureAnimEls setter', liveChromeOpts, () => {
   let setterChromeProc: ChildProcess | undefined;
   let setterClient: CDPClient | undefined;
 
@@ -767,7 +769,7 @@ test('collectAnimation: one target failing identity resolution reports backendNo
 // instance).
 // ============================================================================
 
-describe('real-Chrome page-side catch-branch regressions (review findings A/B)', () => {
+describe('real-Chrome page-side catch-branch regressions (review findings A/B)', liveChromeOpts, () => {
   let failChromeProc: ChildProcess | undefined;
   let failClient: CDPClient | undefined;
 
