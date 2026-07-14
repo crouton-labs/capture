@@ -168,10 +168,20 @@ async function runEsbuild(entry: string): Promise<BuildResult<{ write: false }>>
 // The only post-bundle edit: esbuild's iife wrapper `(() => { … })()` has no
 // return, so the script completion value is undefined. Insert `return ` before
 // the last `__CAPTURE_RESULT.then(` so the IIFE returns the user's promise.
-function applyReturnInsert(bundled: string): string {
+// The anchor is an invariant `buildEntry` establishes (the preserved `.then()`
+// call survives tree-shaking, and minify:false keeps the sentinel name), so a
+// missing anchor is a broken bundle — evaluating it would silently complete
+// with undefined instead of the code's value. Hard error, never a returnless
+// bundle. Exported for its focused test (test/bundle.test.ts).
+export function applyReturnInsert(bundled: string): string {
   const anchor = `${SENTINEL}.then(`;
   const i = bundled.lastIndexOf(anchor);
-  return i === -1 ? bundled : bundled.slice(0, i) + "return " + bundled.slice(i);
+  if (i === -1) {
+    throw new Error(
+      `bundled exec output lost its ${SENTINEL}.then( return anchor — the bundle would complete with undefined instead of the code's value`,
+    );
+  }
+  return bundled.slice(0, i) + "return " + bundled.slice(i);
 }
 
 function formatBuildErrors(errors: Message[]): string {

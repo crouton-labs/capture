@@ -2,6 +2,7 @@ import { PNG } from 'pngjs';
 import { CDPClient } from './client.js';
 import { nextStepPath } from '../session-context.js';
 import { writeBinaryPrivate } from '../session/artifacts.js';
+import { withScopeSerialization } from './scope-lock.js';
 
 /**
  * Downscales a PNG so its longest side fits within maxDim, using a box
@@ -47,7 +48,36 @@ function downscalePngToFit(png: Buffer, maxDim: number): Buffer {
   return PNG.sync.write(dst);
 }
 
+/**
+ * Captures one screenshot, applying (and always clearing) a device-metrics
+ * override when a viewport or full-page capture is requested. The override
+ * is target-visible state driven over the connection: a direct connection's
+ * override dies with its own websocket session, but the recorder-held
+ * connection is shared across commands, so the entire
+ * setDeviceMetricsOverride→capture→clear scope serializes under the owning
+ * session's `.viewport-scope.lock` (`withScopeSerialization`) when the
+ * client is the recorder-held adapter — otherwise a concurrent routed
+ * caller could clear this capture's live override mid-scope (or capture
+ * inside someone else's).
+ */
 export async function captureScreenshot(
+  client: CDPClient,
+  viewport?: { width: number; height: number },
+  options?: { fullPage?: boolean },
+): Promise<Buffer> {
+  return withScopeSerialization(client, 'viewport', 'screenshot capture', () =>
+    viewportScopedCapture(client, viewport, options),
+  );
+}
+
+/**
+ * The one viewport/capture state transaction: override (when requested) →
+ * capture → clear. Restoration ownership is claimed BEFORE the override is
+ * awaited (a lost response does not prove Chrome rejected it); a clear
+ * failure prevents success — alone it throws, paired with a primary failure
+ * it throws an `AggregateError` preserving both facts.
+ */
+async function viewportScopedCapture(
   client: CDPClient,
   viewport?: { width: number; height: number },
   options?: { fullPage?: boolean },

@@ -659,12 +659,17 @@ test('scrollResolved: accepts a pixel offset destination', async () => {
 });
 
 test('scrollResolved: an invalid destination throws before any CDP call', async () => {
-  const client = stubClient({});
-  await assert.rejects(
-    () => scrollResolved(client, RESOLVED_BUTTON, 'sideways'),
-    /Invalid scroll destination/,
-  );
-  assert.equal(client.calls.length, 0);
+  // '' and whitespace must reject via the shared `isScrollDestination`
+  // predicate's trim guard — Number('') === 0 is finite, so the old inline
+  // copy silently scrolled to 0 on this route.
+  for (const to of ['sideways', '', '  ']) {
+    const client = stubClient({});
+    await assert.rejects(
+      () => scrollResolved(client, RESOLVED_BUTTON, to),
+      /Invalid scroll destination/,
+    );
+    assert.equal(client.calls.length, 0);
+  }
 });
 
 test('scrollResolved: carries the recorder landmark on the one mutating call when the transport supports marks', async () => {

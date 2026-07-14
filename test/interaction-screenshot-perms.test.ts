@@ -14,6 +14,8 @@ import { CAPTURE_ROOT, DIR_MODE, FILE_MODE } from '../src/session/artifacts.js';
 import { setActiveSession, clearActiveSession } from '../src/session-context.js';
 import { cmdPageClick, __setPageInputDepsForTest } from '../src/cdp/commands/page/click.js';
 import type { ParsedArgs, CDPTarget } from '../src/cdp/types.js';
+import type { CDPClient } from '../src/cdp/client.js';
+import type { SettleFacts } from '../src/cdp/connection.js';
 
 function mode(p: string): number {
   return fs.statSync(p).mode & 0o777;
@@ -64,9 +66,18 @@ test('page click auto-screenshot writes the shot 0600 under a 0700 shots/ dir', 
   fs.mkdirSync(CAPTURE_ROOT, { recursive: true });
   const dir = path.join(CAPTURE_ROOT, `interaction-perm-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
 
+  // The action seam is injected UNCAST so the fake is type-checked against
+  // `typeof withPageAction` — a seam rename/reshape fails compilation here
+  // instead of silently reaching the real connectForCommand.
   const restoreDeps = __setPageInputDepsForTest({
-    withConnection: (async (_parsed: ParsedArgs, fn: (c: unknown, t: CDPTarget) => Promise<unknown>) =>
-      fn(fakeClient(), FAKE_TAB)) as never,
+    withPageAction: async <T,>(
+      _parsed: ParsedArgs,
+      _opts: { settleMs: number },
+      fn: (client: CDPClient, tab: CDPTarget) => Promise<T>,
+    ): Promise<{ result: T; settle: SettleFacts }> => {
+      const result = await fn(fakeClient() as unknown as CDPClient, FAKE_TAB);
+      return { result, settle: { requestedMs: 0, waitedMs: 0, completed: true } };
+    },
   });
 
   const origWrite = process.stdout.write.bind(process.stdout);

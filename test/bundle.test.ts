@@ -8,7 +8,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hasImports, bundleExec } from "../src/vault/bundle.js";
+import { hasImports, bundleExec, applyReturnInsert } from "../src/vault/bundle.js";
 
 test("leading static import is detected", () => {
   assert.equal(
@@ -49,6 +49,16 @@ test("plain code has no imports", () => {
 // import that forces esbuild to actually resolve the lib. Needs the dev
 // checkout (vault/libs + esbuild), both present here.
 // ---------------------------------------------------------------------------
+
+test("a missing return-insert anchor is a hard error, never a silently returnless bundle", () => {
+  // The sentinel `.then(` anchor is an invariant buildEntry establishes; if
+  // esbuild output ever lost it, the old code returned the bundle unchanged
+  // and the exec silently completed with undefined instead of the value.
+  assert.throws(
+    () => applyReturnInsert("(() => { const x = 1; })();"),
+    /__CAPTURE_RESULT\.then\( return anchor/,
+  );
+});
 
 test("bundle: a declaration + natural final expression resolves to the final value (M20 regression)", async () => {
   // Old code inserted the body as raw statements into a returnless IIFE, so a

@@ -8,6 +8,7 @@
  * `motion rec --do scroll:` records.
  */
 import { type ParsedArgs } from '../../types.js';
+import { isScrollDestination } from '../../leaf-grammar.js';
 import { resolveLiveTarget, scrollResolved, type LiveClient } from '../../../interact.js';
 import { emitResult, fact, lineList, type FactLine } from '../../../output/render.js';
 import {
@@ -28,10 +29,6 @@ output:
   <scrolled backend-node-id=… role=… name=…> — resolved identity, destination, the container's resulting scrollTop, the measured settle (requested/waited), screenshot artifact path; --json mirrors the same fields
 effects:
   assigns the container's scrollTop in-page (may trigger lazy-load network); writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
-
-function isValidDestination(to: string): boolean {
-  return to === 'top' || to === 'bottom' || Number.isFinite(Number(to));
-}
 
 export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
@@ -54,7 +51,7 @@ export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promis
     );
   }
   const to = parsed.to;
-  if (!isValidDestination(to)) {
+  if (!isScrollDestination(to)) {
     return emitInvalidInput(
       parsed,
       'page scroll',

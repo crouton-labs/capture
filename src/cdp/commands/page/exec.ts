@@ -22,7 +22,8 @@ import { CaptureError, captureError } from '../../../errors.js';
 import { buildExecExpression } from '../../exec-expression.js';
 import { getActiveSession } from '../../../session-context.js';
 import { createOneshotSession } from '../../../session/commands.js';
-import { writePrivateFile, acquirePrivateLock } from '../../../session/artifacts.js';
+import { writePrivateFile } from '../../../session/artifacts.js';
+import { withScopeSerialization } from '../../scope-lock.js';
 import { isRecorderHeldClient } from '../../recorder-client.js';
 import { hasImports, bundleExec } from '../../../vault/bundle.js';
 import {
@@ -168,32 +169,20 @@ async function focusScopedEvaluate(client: ExecClient, expression: string): Prom
  * focus-emulation state outlives any single command, so two concurrent
  * routed execs could otherwise clear one another's live override; the
  * entire three-request scope therefore runs under the owning session's
- * private cross-process lock (`.focus-scope.lock`, the shared
- * `acquirePrivateLock` authority every session lock uses). A direct
- * connection needs no lock — its emulation state is scoped to its own
- * websocket session, which closes with the command.
+ * `.focus-scope.lock` via the shared scope-serialization authority
+ * (`../../scope-lock.js`), passing this module's injectable seams so the
+ * test-controlled deps govern the held/session branch. A direct connection
+ * needs no lock — its emulation state is scoped to its own websocket
+ * session, which closes with the command.
  */
 async function evaluateWithFocusEmulation(client: ExecClient, expression: string): Promise<EvalResult> {
-  if (!deps.isRecorderHeldClient(client)) {
-    return focusScopedEvaluate(client, expression);
-  }
-  const session = deps.getActiveSession();
-  if (!session) {
-    throw captureError(
-      'internal',
-      'recorder_session_missing',
-      'page exec was routed through a recorder-held connection but no active session exists to serialize its focus scope.',
-    );
-  }
-  const lock = await acquirePrivateLock(path.join(session.dir, '.focus-scope.lock'), {
-    acquireTimeoutMs: 120_000,
-    leaseMs: 60_000,
-  });
-  try {
-    return await focusScopedEvaluate(client, expression);
-  } finally {
-    lock.release();
-  }
+  return withScopeSerialization(
+    client,
+    'focus',
+    'page exec',
+    () => focusScopedEvaluate(client, expression),
+    { isRecorderHeldClient: deps.isRecorderHeldClient, getActiveSession: deps.getActiveSession },
+  );
 }
 
 export async function cmdPageExec(parsed: ParsedArgs, _args: string[]): Promise<void> {

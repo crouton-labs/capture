@@ -467,7 +467,9 @@ test('page scroll: --to bottom moves the container and auto-screenshots', async 
 });
 
 test('page scroll: missing or invalid --to is a structured invalid_input error before any CDP call', async () => {
-  for (const flags of [{}, { to: 'sideways' }] as Array<Partial<ParsedArgs>>) {
+  // '' and whitespace destinations ride the shared `isScrollDestination`
+  // predicate's trim guard (Number('') === 0 would otherwise scroll to 0).
+  for (const flags of [{}, { to: 'sideways' }, { to: '' }, { to: '  ' }] as Array<Partial<ParsedArgs>>) {
     const client = stubClient({});
     const deps = installDeps(client);
     try {

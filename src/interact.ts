@@ -23,6 +23,7 @@
  */
 
 import { readFullAXTree, type FullAXNode } from './cdp/a11y.js';
+import { isScrollDestination } from './cdp/leaf-grammar.js';
 import { captureError } from './errors.js';
 import { parseSelectorInput, type SelectorInputKind } from './output/selector.js';
 
@@ -370,7 +371,7 @@ export async function scrollResolved(
   to: string,
   opts: { mark?: string } = {},
 ): Promise<ScrollDispatch> {
-  if (to !== 'top' && to !== 'bottom' && !Number.isFinite(Number(to))) {
+  if (!isScrollDestination(to)) {
     throw captureError(
       'invocation',
       'invalid_scroll_destination',

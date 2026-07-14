@@ -1,4 +1,5 @@
 import { captureError } from '../errors.js';
+import { withScopeSerialization } from './scope-lock.js';
 
 export const INTERACTIVE_ROLES = new Set([
   'button',
@@ -96,13 +97,29 @@ function isFullAXNode(value: unknown): value is FullAXNode {
 /**
  * Reads one complete AX tree with call-scoped Accessibility ownership.
  *
+ * The Accessibility domain's enabled state lives on the connection: a direct
+ * connection's state dies with its own websocket session, but the
+ * recorder-held connection is shared across commands (its bridge handles
+ * each CDP request independently — it serializes nothing), so the entire
+ * enable→read→disable scope serializes under the owning session's
+ * `.ax-scope.lock` (`withScopeSerialization`) when the client is the
+ * recorder-held adapter — otherwise a concurrent routed caller could
+ * disable this read's domain mid-flight.
+ */
+export async function readFullAXTree(client: AccessibilityClient): Promise<FullAXNode[]> {
+  return withScopeSerialization(client, 'ax', 'full AX tree read', () => axScopedRead(client));
+}
+
+/**
+ * The one Accessibility state transaction: enable → read → disable.
  * Claiming ownership before awaiting `Accessibility.enable` matters because a
  * lost response does not prove the browser rejected the enable request. The
  * matching disable therefore always runs, without touching the DOM domain.
- * The helper intentionally owns no lock so a held transport can serialize the
- * complete enable/read/disable scope at its own authority.
+ * A disable failure prevents success — alone it throws a typed cleanup
+ * failure; paired with a primary failure it throws an `AggregateError`
+ * preserving both facts.
  */
-export async function readFullAXTree(client: AccessibilityClient): Promise<FullAXNode[]> {
+async function axScopedRead(client: AccessibilityClient): Promise<FullAXNode[]> {
   let primaryFailed = false;
   let primaryError: unknown;
   let ownsAccessibility = false;
