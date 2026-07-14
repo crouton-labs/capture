@@ -297,14 +297,12 @@ const QUERIES_SCRIPT = `/* __captureQueriesInventory */
 })();`;
 
 // ============================================================================
-// Node-side normalization — the SINGLE sanitize authority for every
+// Node-side normalization — the SINGLE cap authority for every
 // page-controlled query/selector string. The in-page walk does NO capping;
-// each string is redacted THEN capped here via the shared `sanitizeString`
-// (redact-before-cap, so a boundary-straddling secret is never sliced into
-// a non-matchable partial before redaction runs).
+// each string is length-capped here via the shared `sanitizeString`.
 // ============================================================================
 
-/** Sanitizes a page-controlled string (media/container query text, selector, container name) through the shared redactor/capper, or returns `undefined` for a non-string. Page-authored query/selector text can carry secret-shaped substrings, so this is the required path over a bare length cap. */
+/** Caps a page-controlled string (media/container query text, selector, container name) through the shared `sanitizeString` length cap, or returns `undefined` for a non-string. */
 function sanitizeStr(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   return sanitizeString(value);

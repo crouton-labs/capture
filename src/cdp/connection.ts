@@ -12,7 +12,7 @@ import {
 import { getActiveSession, updateActiveSession, type ActiveSessionState } from '../session-context.js';
 import { RecorderHeldClient, isRecorderHeldClient } from './recorder-client.js';
 import { recDirFor, readRecorderJson } from './motion/recorder.js';
-import { captureError } from '../errors.js';
+import { captureError, invalidInput } from '../errors.js';
 
 function getPortFromWebSocketDebuggerUrl(url?: string): number | null {
   if (!url) return null;
@@ -103,13 +103,12 @@ export async function applyActiveSessionNetworkConditions(
  * concern instead of every intervening command having to supply one.
  */
 function deriveActionLabel(parsed: ParsedArgs): string {
-  // `type`'s positional[0] is the raw text being typed (often a password,
-  // token, or other secret) — it must never flow into the mark label, which
-  // lands verbatim in events.jsonl as a host-side input-landmark record (it
-  // no longer ever touches the page — see `../timing.ts`'s
-  // `withDocumentPerformanceNow`). Use the --into field name when given (the
-  // actual target of the action), otherwise a generic placeholder — never
-  // the typed content itself.
+  // The label names the action's TARGET. For `type` the target is the
+  // `--into` field (or 'focused element'), not the typed text — the payload
+  // is preserved in the command's own result and evidence, while the label
+  // lands in events.jsonl as the input-landmark record identifying where
+  // input landed (it never touches the page — see `../timing.ts`'s
+  // `withDocumentPerformanceNow`).
   if (parsed.command === 'type') {
     return `type:${parsed.into ?? 'focused element'}`;
   }
@@ -209,7 +208,7 @@ export async function connectForCommand(
   }
 
   if (!parsed.target && !parsed.url) {
-    throw new Error('Use --target <tabId> or --url <pattern> to target a tab. Run "capture tab list" to see available tabs.');
+    throw invalidInput('Use --target <tabId> or --url <pattern> to target a tab. Run "capture tab list" to see available tabs.', 'missing_target');
   }
 
   const resolved = await seams.resolveTab(parsed);
@@ -217,13 +216,15 @@ export async function connectForCommand(
 
   if (!tab) {
     const query = parsed.target ?? parsed.url;
-    throw new Error(
+    throw captureError(
+      'precondition',
+      'target_unavailable',
       `No tab found for ${parsed.target ? 'target' : 'URL pattern'} "${query}". Run "capture tab list" to see available tabs.`,
     );
   }
 
   if (!tab.webSocketDebuggerUrl) {
-    throw new Error('Tab has no WebSocket debugger URL');
+    throw captureError('precondition', 'target_unavailable', 'Tab has no WebSocket debugger URL');
   }
 
   // Derive the endpoint port once, from the authoritative resolution result

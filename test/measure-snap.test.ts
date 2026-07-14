@@ -10,6 +10,7 @@ import { CAPTURE_ROOT, ensurePrivateDir, writeJsonPrivate } from '../src/session
 import { clearActiveSession, setActiveSession } from '../src/session-context.js';
 import { resolveSnapRef } from '../src/output/artifact.js';
 import { withAppliedViewport } from '../src/cdp/commands/measure/snap.js';
+import { CaptureError } from '../src/errors.js';
 
 const scope = `measure-snap-test-${process.pid}-${Date.now()}`;
 const secret = 'hunter2-should-not-appear';
@@ -246,9 +247,66 @@ test('withAppliedViewport refuses a foreign DPR override that matches no display
   const client = fakeViewportClient(2, [1]);
   await assert.rejects(
     withAppliedViewport(client as never, { label: '390x844', width: 390, height: 844 }, async () => {}),
-    /foreign-owned/,
+    (err: unknown) => {
+      assert.ok(err instanceof CaptureError, 'the refusal is a typed CaptureError');
+      assert.equal(err.descriptor.code, 'viewport_unavailable');
+      assert.match(err.message, /foreign-owned/);
+      return true;
+    },
   );
   assert.equal(client.sent.includes('Emulation.setDeviceMetricsOverride'), false, 'a foreign override is never replaced');
+});
+
+// Failure-injecting variant of fakeViewportClient: a native (owned) target
+// whose set/clear override calls can be made to reject deterministically.
+function failingViewportClient(opts: { failSet?: boolean; failClear?: boolean }) {
+  const sent: string[] = [];
+  return {
+    sent,
+    send: async (method: string) => {
+      sent.push(method);
+      if (method === 'Runtime.evaluate') return { result: { value: 2 } };
+      if (method === 'Emulation.getScreenInfos') return { screenInfos: [{ devicePixelRatio: 2 }] };
+      if (method === 'Emulation.setDeviceMetricsOverride' && opts.failSet) throw new Error('set-override-failed');
+      if (method === 'Emulation.clearDeviceMetricsOverride' && opts.failClear) throw new Error('clear-override-failed');
+      return {};
+    },
+  };
+}
+
+test('withAppliedViewport propagates a primary capture failure and still clears its override', async () => {
+  const client = failingViewportClient({});
+  const primary = new Error('capture-exploded');
+  await assert.rejects(
+    withAppliedViewport(client as never, { label: '390x844', width: 390, height: 844 }, async () => { throw primary; }),
+    (err: unknown) => err === primary,
+  );
+  assert.ok(client.sent.includes('Emulation.clearDeviceMetricsOverride'), 'the override is cleared even when capture fails');
+});
+
+test('withAppliedViewport reports a dual failure as an AggregateError preserving both errors in order', async () => {
+  const client = failingViewportClient({ failClear: true });
+  const primary = new Error('capture-exploded');
+  await assert.rejects(
+    withAppliedViewport(client as never, { label: '390x844', width: 390, height: 844 }, async () => { throw primary; }),
+    (err: unknown) => {
+      assert.ok(err instanceof AggregateError, 'a dual failure is an AggregateError');
+      assert.equal(err.errors.length, 2);
+      assert.equal(err.errors[0], primary, 'the primary failure comes first');
+      assert.match((err.errors[1] as Error).message, /clear-override-failed/);
+      assert.equal(err.cause, primary, 'the primary failure is the cause');
+      return true;
+    },
+  );
+});
+
+test('withAppliedViewport still attempts the clear when the override request itself rejects', async () => {
+  const client = failingViewportClient({ failSet: true });
+  await assert.rejects(
+    withAppliedViewport(client as never, { label: '390x844', width: 390, height: 844 }, async () => {}),
+    /set-override-failed/,
+  );
+  assert.ok(client.sent.includes('Emulation.clearDeviceMetricsOverride'), 'ownership is claimed before the set is awaited, so the clear still runs');
 });
 
 test('viewport capture applies native metrics during capture and clears them afterward', async () => {
@@ -320,6 +378,7 @@ test('viewport request rejects a recorder-held target before it allocates a sess
     recId,
     pid: process.pid,
     socketPath: path.join(recDir, 'recorder.sock'),
+    nonce: 'a'.repeat(64),
     targetId,
     url: pageUrl,
     startedAt: new Date().toISOString(),

@@ -368,8 +368,10 @@ test('connectForCommand: direct CDP is allowed when there is no active recording
     const h = installSeams({ getActiveSession: () => null });
     try {
       await assert.rejects(connectForCommand(parsedFor({ target: undefined })), (err: unknown) => {
-        assert.ok(!(err instanceof CaptureError), 'no-recording direct lane is a plain invocation error');
-        assert.match((err as Error).message, /Use --target/);
+        assert.ok(err instanceof CaptureError, 'no-recording direct lane is a typed invocation error');
+        assert.equal(err.descriptor.kind, 'invocation');
+        assert.equal(err.descriptor.code, 'missing_target');
+        assert.match(err.message, /Use --target/);
         return true;
       });
     } finally {

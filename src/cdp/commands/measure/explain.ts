@@ -10,7 +10,7 @@ input:
   --selector <sel>   element selector (required): CSS, backend:<id>, axid:<id>, ax:<name>, or text:<text>
   --size             include size/layout provenance (box/flex/grid/constraints)
   --text             include text line/baseline/font/wrap metrics
-  --form             include form geometry/caret/selection/autofill facts (values withheld)
+  --form             include form value/geometry/caret/selection/autofill facts
 output: <explain selector=… matches=…> — the compact element explanation, plus one section per requested detail flag; --json mirrors
 effects: read-only — reads existing snapshot artifacts, never drives the browser`;
 

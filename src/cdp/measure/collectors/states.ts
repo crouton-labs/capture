@@ -104,7 +104,7 @@ import { sanitizeString } from '../redaction.js';
 const MAX_SELECTOR_MATCHES = 10;
 /** Defensive cap on how many auto-discovered elements a bare (no-selector) state request will process — smaller than the selector cap since it has a wider blast radius. */
 const MAX_AUTO_ELEMENTS = 8;
-/** Per-field length cap applied NODE-SIDE (post-redaction) to page-controlled strings (text, aria-label). Passed to {@link sanitizeString} as `{ max }`, so redaction runs on the full value before this cap — a boundary-straddling secret is redacted to a fixed marker before it can be sliced. */
+/** Per-field length cap applied NODE-SIDE to page-controlled strings (text, aria-label). Passed to {@link sanitizeString} as `{ max }` — a tighter bound than the shared default. */
 const MAX_STRING_LEN = 200;
 
 const CONCRETE_STATES = ['hover', 'focus', 'active', 'checked', 'open', 'disabled', 'invalid'] as const;
@@ -293,7 +293,7 @@ function expandSpecs(raw: readonly string[]): { items: WorkItem[]; invalidRaw: s
 // Small page-controlled-string hygiene — `sanitizeToken` keeps a best-effort
 // selector CSS-safe; the assembled selector (and every other page-controlled
 // string this collector emits) is then routed through the shared
-// `sanitizeString` for secret-substring redaction + capping (D1).
+// `sanitizeString` length cap.
 // ============================================================================
 
 function sanitizeToken(value: string): string {
@@ -301,11 +301,11 @@ function sanitizeToken(value: string): string {
 }
 
 /**
- * Redacts every emitted computed-style VALUE (page-controlled — `cursor`
- * and `filter` carry author-controlled `url(...)` that can embed a secret).
+ * Caps every emitted computed-style VALUE (page-controlled — `cursor` and
+ * `filter` carry author-controlled `url(...)` of unbounded length).
  * Property NAMES come from the fixed {@link STYLE_PROPS} list and are never
  * page-controlled, so they pass through unchanged; only the values are
- * routed through the shared {@link sanitizeString} authority (D1).
+ * routed through the shared {@link sanitizeString} cap.
  */
 function sanitizeStyleValues(style: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};

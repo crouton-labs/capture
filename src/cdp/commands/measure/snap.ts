@@ -13,6 +13,7 @@ import { createOneshotSession } from '../../../session/commands.js';
 import { getActiveSession } from '../../../session-context.js';
 import { removeArtifactTree } from '../../../session/artifacts.js';
 import { ArtifactResolutionError, isUrlRef, readMeta, resolveSnapRef, type SnapRef } from '../../../output/artifact.js';
+import { captureError, invalidInput } from '../../../errors.js';
 import {
   emitResult,
   fact,
@@ -149,18 +150,41 @@ export async function withAppliedViewport<T>(client: ViewportClient, viewport: V
   if (!viewport) return fn();
   const ownership = await viewportOwnership(client);
   if (ownership.owner !== 'native') {
-    throw new Error(viewportRefusal(ownership));
+    throw captureError('precondition', 'viewport_unavailable', viewportRefusal(ownership));
   }
-  await client.send('Emulation.setDeviceMetricsOverride', {
-    width: viewport.width,
-    height: viewport.height,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
+  let ownsDeviceMetricsOverride = false;
+  let primaryFailed = false;
+  let primaryError: unknown;
   try {
+    // A rejected response does not prove that Chrome rejected the request.
+    // Claim cleanup responsibility before awaiting the override request.
+    ownsDeviceMetricsOverride = true;
+    await client.send('Emulation.setDeviceMetricsOverride', {
+      width: viewport.width,
+      height: viewport.height,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
     return await fn();
+  } catch (error) {
+    primaryFailed = true;
+    primaryError = error;
+    throw error;
   } finally {
-    await client.send('Emulation.clearDeviceMetricsOverride');
+    if (ownsDeviceMetricsOverride) {
+      try {
+        await client.send('Emulation.clearDeviceMetricsOverride');
+      } catch (cleanupError) {
+        if (primaryFailed) {
+          throw new AggregateError(
+            [primaryError, cleanupError],
+            'Viewport capture failed and device-metrics cleanup also failed.',
+            { cause: primaryError },
+          );
+        }
+        throw cleanupError;
+      }
+    }
   }
 }
 
@@ -181,10 +205,10 @@ function settledNote(settled: boolean, captured: boolean, settleMs: number, sett
  */
 export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.positional[0], viewportValue = parsed.viewport): Promise<MeasureSnapCapture> {
   if (parsed.positional.length > 1) {
-    throw new Error('measure snap accepts at most one positional URL or snapshot reference');
+    throw invalidInput('measure snap accepts at most one positional URL or snapshot reference');
   }
   if (parsed.settleTimeout !== undefined && (!Number.isFinite(parsed.settleTimeout) || parsed.settleTimeout <= 0)) {
-    throw new Error('--settle-timeout must be a positive number of milliseconds');
+    throw invalidInput('--settle-timeout must be a positive number of milliseconds');
   }
   const viewport: ViewportSpec | undefined = viewportValue === undefined
     ? undefined
@@ -275,7 +299,7 @@ function buildSnapshotResult(captured: MeasureSnapCapture): RenderableResult {
       ...(meta.states.length ? { states: meta.states.length } : {}),
     },
     summary: meta.settled || capturedFullSubstrate
-      ? text`Snapshot substrate captured. Sensitive control and token-like values are represented as redacted state, geometry, and length facts; raw values are not emitted.`
+      ? text`Snapshot substrate captured.`
       : text`The evidence snapshot is not queryable because the settledness requirement was not met.`,
     artifacts: formatArtifactList(artifacts),
     followUp: meta.settled || capturedFullSubstrate

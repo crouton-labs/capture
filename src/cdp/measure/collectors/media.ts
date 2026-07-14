@@ -372,7 +372,7 @@ document.querySelectorAll('img, video, canvas, svg, iframe').length;`;
 // Collector
 // ============================================================================
 
-/** Sanitizes an optional page-controlled string (URL/selector/CSS keyword) through the shared redactor/capper, preserving `null`. */
+/** Caps an optional page-controlled string (URL/selector/CSS keyword) through the shared `sanitizeString` length cap, preserving `null`. */
 function sanitizeOptional(value: string | null | undefined): string | null {
   if (value === null || value === undefined) return null;
   return sanitizeString(value);

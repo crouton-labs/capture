@@ -71,10 +71,8 @@ const MAX_ELEMENTS = 1200;
 // file's walk script and hittest.ts's walk/sample script. Exported so
 // hittest.ts imports rather than duplicates. NONE of these cap in-page:
 // every page-controlled string they build is returned at full length and
-// is redact-then-capped node-side through redaction.ts `sanitizeString`
-// (the single sanitizer authority), so a secret that would straddle a cap
-// boundary is redacted whole rather than sliced into a non-matchable
-// partial before redaction runs.
+// is capped node-side through redaction.ts `sanitizeString` (the single
+// cap authority).
 // ============================================================================
 
 export const SELECTOR_HELPER_JS = `
@@ -714,8 +712,8 @@ function resolvedIdentity(backendNodeId: number | undefined): { backendNodeId: n
 // String-sanitizing — `layout` (and its nested `flex`/`grid` facts) is a
 // page-controlled bag of computed-CSS-value strings, exactly like
 // selector/domPath/text above. Each string is routed through the single
-// redaction.ts `sanitizeString` authority (redact-then-cap at
-// CSS_VALUE_MAX), never a private capper. `capTrackList` additionally
+// redaction.ts `sanitizeString` authority (capped at CSS_VALUE_MAX),
+// never a private capper. `capTrackList` additionally
 // bounds the grid template-track ARRAY itself (a pathological
 // `grid-template-columns: repeat(100000, 1fr)` would otherwise emit an
 // unbounded array of per-track strings) through the one authoritative

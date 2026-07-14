@@ -745,11 +745,11 @@ async function walk(
 // Collector
 // ============================================================================
 
-/** Node-side redact-then-cap of a page-controlled string; `max` overrides the default 2000 cap (redaction always runs on the full value first). */
+/** Node-side length cap of a page-controlled string; `max` overrides the default 2000 cap. */
 const sanitizeOrNull = (value: string | null, max?: number): string | null =>
   value === null ? null : sanitizeString(value, max === undefined ? undefined : { max });
 
-/** Node-side cap for a focus stop's accessible name, applied AFTER redaction so a boundary-straddling secret is redacted before capping rather than truncated mid-token. */
+/** Node-side length cap for a focus stop's accessible name (page-controlled). */
 const MAX_FOCUS_NAME_LEN = 200;
 
 export const collectFocus: Collector = async (ctx) => {

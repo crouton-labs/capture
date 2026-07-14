@@ -1,3 +1,5 @@
+import { invalidInput } from '../errors.js';
+
 export interface Viewport {
   readonly width: number;
   readonly height: number;
@@ -15,5 +17,5 @@ export function parseViewport(value: string): Viewport {
       return { width, height };
     }
   }
-  throw new Error(`--viewport must match <positive-safe-int>x<positive-safe-int> using lowercase x with no whitespace; received "${value}"`);
+  throw invalidInput(`--viewport must match <positive-safe-int>x<positive-safe-int> using lowercase x with no whitespace; received "${value}"`, 'invalid_viewport');
 }

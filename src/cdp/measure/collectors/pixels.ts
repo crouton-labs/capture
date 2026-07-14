@@ -1378,9 +1378,8 @@ function flattenAttributes(attributes: readonly string[] | undefined): Map<strin
 /**
  * Best-effort `tag#id.class1.class2` selector. Structure is built from the
  * raw page-controlled attributes, then the whole string is routed through
- * the shared {@link sanitizeString} (secret-substring redaction + length
- * cap) — the single authority every collector uses for page-controlled
- * strings, so a token withheld in one artifact can't leak raw here.
+ * the shared {@link sanitizeString} length cap — the single authority every
+ * collector uses for page-controlled strings.
  */
 function buildSelector(nodeName: string | undefined, attributes: readonly string[] | undefined): string | undefined {
   if (!nodeName) return undefined;
@@ -1401,9 +1400,8 @@ function buildSelector(nodeName: string | undefined, attributes: readonly string
 /**
  * Stable, collision-free crop filename base: `index` guarantees uniqueness,
  * `backendNodeId ?? tag` is a stable identifier under our control, and the
- * shared {@link sanitizeFilenameSlug} redacts secret substrings BEFORE
- * filename-safe slugging — so a secret-shaped id/class in a page attribute
- * can never reach a crop filename. Never derived from raw page attributes.
+ * shared {@link sanitizeFilenameSlug} replaces filename-unsafe characters
+ * and caps length. Never derived from raw page attributes.
  */
 function cropFileBase(index: number, entry: DescribedElement): string {
   const stableId = typeof entry.backendNodeId === 'number' ? String(entry.backendNodeId) : (entry.tag ?? 'el');

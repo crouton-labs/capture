@@ -430,12 +430,13 @@ function formSection(target: GeometryElement, report: Record<string, unknown>): 
     const scroll = control.scroll && typeof control.scroll === 'object' ? control.scroll as Record<string, unknown> : {};
     const autofill = control.autofill && typeof control.autofill === 'object' ? control.autofill as Record<string, unknown> : {};
     facts.push(factFor(target, fact`Form control: type=${String(control.type ?? 'unknown')}; rect=${rect ? `x=${rect.x} y=${rect.y} w=${rect.w} h=${rect.h}` : 'unavailable'}; client=${Number(dimensions.clientWidth ?? 0)}×${Number(dimensions.clientHeight ?? 0)}; scroll-size=${Number(dimensions.scrollWidth ?? 0)}×${Number(dimensions.scrollHeight ?? 0)}.`));
-    facts.push(factFor(target, fact`Form value measurement: length=${Number(control.valueLength ?? 0)}; redacted=${String(control.redacted ?? false)}; redaction-reason=${String(control.redactionReason ?? 'none')}; value and visible substring withheld.`));
+    const visibleSubstring = control.visibleSubstring && typeof control.visibleSubstring === 'object' ? control.visibleSubstring as Record<string, unknown> : undefined;
+    facts.push(factFor(target, fact`Form value: length=${Number(control.valueLength ?? 0)}; value=${JSON.stringify(control.value ?? '')}${control.capped ? ' (recorded value capped at the shared artifact-string limit)' : ''}; visible-substring=${visibleSubstring ? `${JSON.stringify(String(visibleSubstring.text ?? ''))} [${Number(visibleSubstring.start ?? 0)},${Number(visibleSubstring.end ?? 0)})` : 'none recorded'}.`));
     facts.push(factFor(target, fact`Selection/caret: start=${String(control.selectionStart ?? 'none')}; end=${String(control.selectionEnd ?? 'none')}; caret=${JSON.stringify(control.caretRect ?? null)}; selection-rects=${Array.isArray(control.selectionRects) ? control.selectionRects.length : 0}; internal-scroll left=${Number(scroll.left ?? 0)} top=${Number(scroll.top ?? 0)}.`));
     facts.push(factFor(target, fact`Autofill/native parts: autofilled=${String(autofill.isAutofilled ?? false)}; native-part-dimensions=${JSON.stringify(control.nativePartDimensions ?? {})}.`));
     if (control.validity && typeof control.validity === 'object') {
       const validity = control.validity as Record<string, unknown>;
-      facts.push(factFor(target, fact`Validity state: valid=${String(validity.valid ?? 'unknown')}; value-missing=${String(validity.valueMissing ?? false)}; type-mismatch=${String(validity.typeMismatch ?? false)}; pattern-mismatch=${String(validity.patternMismatch ?? false)}; custom-error=${String(validity.customError ?? false)}; message withheld.`));
+      facts.push(factFor(target, fact`Validity state: valid=${String(validity.valid ?? 'unknown')}; value-missing=${String(validity.valueMissing ?? false)}; type-mismatch=${String(validity.typeMismatch ?? false)}; pattern-mismatch=${String(validity.patternMismatch ?? false)}; custom-error=${String(validity.customError ?? false)}; message=${JSON.stringify(validity.message ?? '')}.`));
     }
   }
   return { kind: 'form', facts };

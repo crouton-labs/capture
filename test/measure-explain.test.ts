@@ -13,9 +13,9 @@ const sessionDir = path.join(CAPTURE_ROOT, scope);
 const snapDir = path.join(sessionDir, 'measure', 'snaps', 'snap-test');
 const ref: SnapRef = { kind: 'snap', id: 'snap-test', dir: snapDir };
 const oldNodeId = process.env.CRTR_NODE_ID;
-const RAW_VALUE = 'RAW-FORM-VALUE-MUST-NOT-PRINT';
-const RAW_VISIBLE = 'RAW-VISIBLE-SUBSTRING-MUST-NOT-PRINT';
-const RAW_VALIDITY = 'RAW-VALIDITY-MESSAGE-MUST-NOT-PRINT';
+const RAW_VALUE = 'RAW-FORM-VALUE-EVIDENCE';
+const RAW_VISIBLE = 'RAW-VISIBLE-SUBSTRING-EVIDENCE';
+const RAW_VALIDITY = 'RAW-VALIDITY-MESSAGE-EVIDENCE';
 
 function write(name: string, value: unknown): void {
   writeJsonPrivate(path.join(snapDir, name), value);
@@ -157,7 +157,7 @@ before(async () => {
       id: 'form-local-id', backendNodeId: 42, selector: '.card', type: 'password',
       rect: { x: 20, y: 40, width: 220, height: 72 },
       dimensions: { clientWidth: 220, clientHeight: 72, scrollWidth: 240, scrollHeight: 72 },
-      valueLength: 31, redacted: true, redactionReason: 'password-field',
+      valueLength: 31,
       value: RAW_VALUE, text: RAW_VALUE,
       visibleSubstring: { start: 2, end: 12, text: RAW_VISIBLE },
       selectionStart: 3, selectionEnd: 5, caretRect: { x: 60, y: 48, width: 1, height: 18 },
@@ -202,7 +202,7 @@ test('compact explain command reports provenance, clipping, context, per-record 
   assert.doesNotMatch(result.stdout, /Box model:|Text metrics:|Form control:/);
 });
 
-test('detail flags add size, text, and redacted form facts without rendering any value, visible substring, or validity message', () => {
+test('detail flags render raw form value, visible substring, and validity message', () => {
   const result = run('snap-test', '--selector', 'backend:42', '--size', '--text', '--form');
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Box model: measured width=220; height=72/);
@@ -212,13 +212,15 @@ test('detail flags add size, text, and redacted form facts without rendering any
   assert.match(result.stdout, /Text line 0: rect x=24 y=44 w=170 h=20; baseline=59; baseline-approximate=false; wrap-after-char=7/);
   assert.match(result.stdout, /Font metrics: family=Inter; size=16px; weight=600; line-height=20px/);
   assert.match(result.stdout, /Form control: type=password; rect=x=20 y=40 w=220 h=72/);
-  assert.match(result.stdout, /Form value measurement: length=31; redacted=true; redaction-reason=password-field; value and visible substring withheld/);
+  assert.match(result.stdout, /Form value: length=31; value=/);
+  assert.match(result.stdout, /visible-substring=.*\[2,12\)/);
   assert.match(result.stdout, /Selection\/caret: start=3; end=5; caret=/);
   assert.match(result.stdout, /autofilled=true; native-part-dimensions=/);
-  assert.match(result.stdout, /message withheld/);
-  assert.ok(!result.stdout.includes(RAW_VALUE));
-  assert.ok(!result.stdout.includes(RAW_VISIBLE));
-  assert.ok(!result.stdout.includes(RAW_VALIDITY));
+  assert.match(result.stdout, /custom-error=false; message=/);
+  assert.ok(result.stdout.includes(RAW_VALUE), 'raw form value must be rendered');
+  assert.ok(result.stdout.includes(RAW_VISIBLE), 'raw visible substring must be rendered');
+  assert.ok(result.stdout.includes(RAW_VALIDITY), 'raw validity message must be rendered');
+  assert.ok(!/withheld|redact/i.test(result.stdout), 'no withheld-evidence or redaction claim may render');
 });
 
 test('missing selector returns bounded nearest CSS recovery candidates while full identity facts remain in snapshot artifacts', () => {

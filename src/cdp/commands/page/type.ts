@@ -2,10 +2,10 @@
  * `page type <text> [--into <target>]` — type agent-supplied text into the
  * focused element, or into exactly one live-resolved field (design D3).
  *
- * The block echoes only the agent-supplied text (I-7); the screenshot label
- * and any recorder landmark never carry the typed content (it may be a
- * secret) — they identify the FIELD instead, matching `connection.ts`'s
- * `deriveActionLabel` posture.
+ * The block echoes the agent-supplied text (I-7); the screenshot label and
+ * any recorder landmark identify the FIELD (the action's target), matching
+ * `connection.ts`'s `deriveActionLabel` — the typed text is the action's
+ * payload and is echoed in the command's own result block.
  */
 import { type ParsedArgs } from '../../types.js';
 import {

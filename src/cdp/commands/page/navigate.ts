@@ -71,8 +71,9 @@ Effects:
   Navigates the source tab (exactly one Page.navigate for the destination;
   one dest→about:blank→dest bounce only for a same-document/fragment target).
   During a live composed recording the CDP routes through the recorder socket
-  and Page.navigate carries a labeled performance.mark landmark; HAR/console
-  capture is skipped while routed (events.jsonl holds the equivalent record).`;
+  and Page.navigate carries a labeled performance.mark landmark; local
+  console/HAR collectors are skipped while routed — traffic streams into the
+  session HAR via the recording's held connection.`;
 
 /** Load outcome plus the dispatched navigation's own facts, produced by one
  * navigation core (recorder-routed or direct). Distinct fields so the render
@@ -219,7 +220,7 @@ function buildNavigatedResult(f: NavigatedFacts): RenderableResult {
   }
   if (f.routed) {
     sections.push(
-      text`Page.navigate routed through the active recording with a labeled performance.mark; HAR/console capture skipped while routed (events.jsonl holds the equivalent record).`,
+      text`Page.navigate routed through the active recording with a labeled performance.mark; local console/HAR collectors skipped while routed — traffic streams into the session HAR via the recording's held connection.`,
     );
   }
   return {
