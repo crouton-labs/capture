@@ -12,22 +12,30 @@
  * is ever defaulted or coerced.
  *
  * The `HAR_DIR`/`createHarRecording`/`readHarRecording`/`appendToHarRecording`/
- * `deleteHarRecording` store functions below are the schema-conformant, locked
- * private-artifact implementation for active session and command-owned HAR files.
+ * `deleteHarRecording` store functions below are the schema-conformant
+ * private-artifact implementation for active session and command-owned HAR
+ * files. The live store is an append-only NDJSON log below the private session
+ * tree: one header record identifying the store format and creator, then one
+ * validated `HarAppendBatch` record per append. Each append is a single
+ * `O_APPEND` no-follow write of one newline-terminated record — there is no
+ * lock and no read-modify-write, so concurrent writers (a command-side append
+ * and the recorder's streaming path) interleave whole records instead of
+ * contending for a lock. Reads parse the whole log fail-closed through the
+ * same validators: an empty store, an unterminated trailing record, a corrupt
+ * line, or an unknown shape throws and is never rewritten or recreated.
  */
 
 import crypto from 'node:crypto';
-import * as fs from 'fs';
 import * as path from 'path';
 
 import {
-  acquirePrivateLock,
+  appendPrivateFile,
   assertUnderCaptureRoot,
   CAPTURE_ROOT,
+  createPrivateFile,
   ensurePrivateDir,
   readPrivateFile,
   unlinkPrivateFile,
-  writeJsonPrivate,
 } from './session/artifacts.js';
 
 // ── Exported TypeScript schema ───────────────────────────────────────────────
@@ -879,7 +887,7 @@ export function validateHarAppendBatch(value: unknown, source: string): HarAppen
   return { entries, incompleteLifecycles };
 }
 
-// ── HAR recording file API (session-owned, private, and lock-scoped) ─────
+// ── HAR recording file API (session-owned, private, append-only NDJSON) ─────
 
 export const HAR_DIR = path.join(CAPTURE_ROOT, '.har');
 
@@ -892,31 +900,25 @@ function token(): string {
   return crypto.randomBytes(6).toString('hex');
 }
 
-function makeLockPath(harPath: string): string {
-  return `${harPath}.lock`;
+/** The store's first NDJSON record — written once at creation; every read
+ * requires it, so any file that is not a capture live-HAR append log (including
+ * an empty file) fails closed at the header. */
+interface HarStoreHeader {
+  format: 'capture-live-har-ndjson';
+  version: 1;
+  creator: { name: 'capture'; version: string };
 }
 
-function lockOptions(): { acquireTimeoutMs: number; leaseMs: number } {
-  return { acquireTimeoutMs: 250, leaseMs: 5_000 };
-}
-
-function lockHarRecording(id: string): { path: string; lockPath: string } {
-  const p = harFilePath(id);
-  return { path: p, lockPath: makeLockPath(p) };
-}
-
-function makeEmptyHarFile(): HarFile {
-  return {
-    log: {
-      version: '1.2',
-      creator: {
-        name: 'capture',
-        version: captureVersion(),
-      },
-      entries: [],
-    },
-    incompleteLifecycles: [],
-  };
+function vStoreHeader(value: unknown, source: string): HarStoreHeader {
+  const o = vObject(value, source, 'harStoreHeader');
+  exactKeys(o, ['format', 'version', 'creator'], source, 'harStoreHeader');
+  vLiteral(o.format, 'capture-live-har-ndjson', source, 'harStoreHeader.format');
+  vLiteral(o.version, 1, source, 'harStoreHeader.version');
+  const creator = vObject(o.creator, source, 'harStoreHeader.creator');
+  exactKeys(creator, ['name', 'version'], source, 'harStoreHeader.creator');
+  vLiteral(creator.name, 'capture', source, 'harStoreHeader.creator.name');
+  const version = vNonEmptyString(creator.version, source, 'harStoreHeader.creator.version');
+  return { format: 'capture-live-har-ndjson', version: 1, creator: { name: 'capture', version } };
 }
 
 /**
@@ -937,58 +939,82 @@ export async function createHarRecording(sessionDir: string = CAPTURE_ROOT): Pro
   const harDir = path.join(sessionAbsolute, '.har');
   ensurePrivateDir(harDir);
 
+  const header: HarStoreHeader = {
+    format: 'capture-live-har-ndjson',
+    version: 1,
+    creator: { name: 'capture', version: captureVersion() },
+  };
+  const headerLine = `${JSON.stringify(header)}\n`;
   for (;;) {
-    const filename = `${token()}.json`;
-    const candidate = path.join(harDir, filename);
-    if (fs.existsSync(candidate)) continue;
-    writeJsonPrivate(candidate, makeEmptyHarFile());
+    const candidate = path.join(harDir, `${token()}.json`);
+    // O_EXCL creation: a token collision loses to the existing store instead of
+    // replacing it.
+    try {
+      createPrivateFile(candidate, headerLine);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw error;
+    }
     return { id: candidate, path: candidate };
   }
 }
 
 export async function readHarRecording(id: string): Promise<HarFile> {
-  const resolved = lockHarRecording(id);
-  const handle = await acquirePrivateLock(resolved.lockPath, lockOptions());
+  const target = harFilePath(id);
+  const source = `live HAR recording ${target}`;
+  let raw: string;
   try {
-    const raw = readPrivateFile(resolved.path);
-    return validateHarFile(JSON.parse(raw.toString('utf8')), `live HAR recording ${resolved.path}`);
-  } finally {
-    handle.release();
+    raw = readPrivateFile(target).toString('utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`live HAR recording is missing — cannot read: ${target}`, { cause: error });
+    }
+    throw error;
   }
+  if (raw.length === 0) fail(source, 'store', 'is empty — a live HAR store always begins with its header record');
+  if (!raw.endsWith('\n')) fail(source, 'store', 'ends with an unterminated record — the store is corrupt');
+  const lines = raw.slice(0, -1).split('\n');
+  const parseLine = (line: string, index: number): unknown => {
+    if (line.length === 0) fail(source, `store line ${index + 1}`, 'is empty');
+    try {
+      return JSON.parse(line);
+    } catch {
+      return fail(source, `store line ${index + 1}`, 'is not valid JSON');
+    }
+  };
+
+  const header = vStoreHeader(parseLine(lines[0], 0), source);
+  const entries: HAREntry[] = [];
+  const incompleteLifecycles: IncompleteLifecycle[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const batch = validateHarAppendBatch(parseLine(lines[i], i), `${source} line ${i + 1}`);
+    entries.push(...batch.entries);
+    incompleteLifecycles.push(...batch.incompleteLifecycles);
+  }
+  return {
+    log: { version: '1.2', creator: header.creator, entries },
+    incompleteLifecycles,
+  };
 }
 
 export async function appendToHarRecording(id: string, batch: HarAppendBatch): Promise<void> {
   if (batch.entries.length === 0 && batch.incompleteLifecycles.length === 0) return;
 
   const safeBatch = validateHarAppendBatch(batch, `har append batch ${id}`);
-  const resolved = lockHarRecording(id);
-  const handle = await acquirePrivateLock(resolved.lockPath, lockOptions());
+  const target = harFilePath(id);
   try {
-    const current = validateHarFile(JSON.parse(readPrivateFile(resolved.path).toString('utf8')), `live HAR recording ${resolved.path}`);
-    const next: HarFile = {
-      log: {
-        version: '1.2',
-        creator: {
-          name: 'capture',
-          version: captureVersion(),
-        },
-        entries: [...current.log.entries, ...safeBatch.entries],
-      },
-      incompleteLifecycles: [...current.incompleteLifecycles, ...safeBatch.incompleteLifecycles],
-    };
-    const validated = validateHarFile(next, `har append result ${resolved.path}`);
-    writeJsonPrivate(resolved.path, validated);
-  } finally {
-    handle.release();
+    // One O_APPEND no-follow write of one newline-terminated record. The file
+    // is opened without O_CREAT: appending to a missing (deleted) store fails
+    // explicitly and never recreates it.
+    appendPrivateFile(target, `${JSON.stringify(safeBatch)}\n`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`live HAR recording is missing — cannot append: ${target}`, { cause: error });
+    }
+    throw error;
   }
 }
 
 export async function deleteHarRecording(id: string): Promise<void> {
-  const resolved = lockHarRecording(id);
-  const handle = await acquirePrivateLock(resolved.lockPath, lockOptions());
-  try {
-    unlinkPrivateFile(resolved.path);
-  } finally {
-    handle.release();
-  }
+  unlinkPrivateFile(harFilePath(id));
 }
