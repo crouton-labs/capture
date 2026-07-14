@@ -20,8 +20,8 @@ function service(store = new MemoryCursorIndexStore<{ id: string }>()) {
 async function create(limit = 2) {
   return service().createPage({
     ...identity,
-    leaf: 'a11y search',
-    path: 'a11y search',
+    leaf: 'library search',
+    path: 'library search',
     order: 'source-ordinal-v1',
     coverage: { retained: 5 },
     rows: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'e' }],
@@ -39,7 +39,7 @@ test('cursor service round-trips deterministic pages without reordering rows', a
   const subject = service(store);
   const first = await subject.createPage({
     ...identity,
-    leaf: 'a11y search', path: 'a11y search', order: 'source-ordinal-v1', coverage: { retained: 5 },
+    leaf: 'library search', path: 'library search', order: 'source-ordinal-v1', coverage: { retained: 5 },
     rows: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'e' }], expiresAt: expiry, limit: 2,
   });
   assert.deepEqual(first.rows.map((row) => row.id), ['a', 'b']);
@@ -64,7 +64,7 @@ test('cursor bytes are signed: tampering is rejected before the index store is r
   const subject = service(store);
   const first = await subject.createPage({
     ...identity,
-    leaf: 'a11y search', path: 'a11y search', order: 'source-ordinal-v1', coverage: {}, rows: [{ id: 'a' }, { id: 'b' }], expiresAt: expiry, limit: 1,
+    leaf: 'library search', path: 'library search', order: 'source-ordinal-v1', coverage: {}, rows: [{ id: 'a' }, { id: 'b' }], expiresAt: expiry, limit: 1,
   });
   const tampered = `${first.nextCursor!.slice(0, -1)}${first.nextCursor!.endsWith('a') ? 'b' : 'a'}`;
   await rejects('cursor_invalid', () => subject.continuePage({ ...identity, cursor: tampered }));
@@ -77,7 +77,7 @@ test('expired cursors reject before index lookup', async () => {
   const issuer = new CursorService({ store, secret: 'test-secret', now: () => new Date('2026-07-12T10:00:00.000Z') });
   const first = await issuer.createPage({
     ...identity,
-    leaf: 'a11y search', path: 'a11y search', order: 'source-ordinal-v1', coverage: {}, rows: [{ id: 'a' }, { id: 'b' }], expiresAt: '2026-07-12T11:00:00.000Z', limit: 1,
+    leaf: 'library search', path: 'library search', order: 'source-ordinal-v1', coverage: {}, rows: [{ id: 'a' }, { id: 'b' }], expiresAt: '2026-07-12T11:00:00.000Z', limit: 1,
   });
   await rejects('cursor_expired', () => service(store).continuePage({ ...identity, cursor: first.nextCursor! }));
   assert.equal(reads, 0);
@@ -89,7 +89,7 @@ test('scope and query identity mismatches reject before index lookup', async () 
   const subject = service(store);
   const first = await subject.createPage({
     ...identity,
-    leaf: 'a11y search', path: 'a11y search', order: 'source-ordinal-v1', coverage: {}, rows: [{ id: 'a' }, { id: 'b' }], expiresAt: expiry, limit: 1,
+    leaf: 'library search', path: 'library search', order: 'source-ordinal-v1', coverage: {}, rows: [{ id: 'a' }, { id: 'b' }], expiresAt: expiry, limit: 1,
   });
   await rejects('cursor_scope_mismatch', () => subject.continuePage({ ...identity, scope: { snapshotId: 'snap_02' }, cursor: first.nextCursor! }));
   await rejects('cursor_query_mismatch', () => subject.continuePage({ ...identity, query: { term: 'link' }, cursor: first.nextCursor! }));
@@ -102,14 +102,14 @@ test('page boundaries and maximum limits are fixed, bounded, and deterministic',
   const rows = Array.from({ length: 21 }, (_, n) => ({ id: String(n) }));
   const first = await subject.createPage({
     ...identity,
-    leaf: 'a11y search', path: 'a11y search', order: 'source-ordinal-v1', coverage: {}, rows, expiresAt: expiry, limit: 20,
+    leaf: 'library search', path: 'library search', order: 'source-ordinal-v1', coverage: {}, rows, expiresAt: expiry, limit: 20,
   });
   assert.equal(first.rows.length, 20);
   const last = await subject.continuePage({ ...identity, cursor: first.nextCursor! });
   assert.deepEqual(last.rows, [{ id: '20' }]);
   await rejects('cursor_limit_invalid', () => subject.createPage({
     ...identity,
-    leaf: 'a11y search', path: 'a11y search', order: 'source-ordinal-v1', coverage: {}, rows, expiresAt: expiry, limit: 21,
+    leaf: 'library search', path: 'library search', order: 'source-ordinal-v1', coverage: {}, rows, expiresAt: expiry, limit: 21,
   }));
 
   const fixed = await create(2);
@@ -125,7 +125,7 @@ test('a mutated or mismatched durable index is never paginated', async () => {
   const subject = service(store);
   const first = await subject.createPage({
     ...identity,
-    leaf: 'a11y search', path: 'a11y search', order: 'source-ordinal-v1', coverage: {}, rows: [{ id: 'a' }, { id: 'b' }], expiresAt: expiry, limit: 1,
+    leaf: 'library search', path: 'library search', order: 'source-ordinal-v1', coverage: {}, rows: [{ id: 'a' }, { id: 'b' }], expiresAt: expiry, limit: 1,
   });
   await rejects('cursor_index_invalid', () => subject.continuePage({ ...identity, cursor: first.nextCursor! }));
 });
