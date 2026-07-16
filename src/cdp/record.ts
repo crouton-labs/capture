@@ -3,8 +3,8 @@ import {
   findTab,
   listTargets,
   openTab,
-  type CDPTarget,
 } from './targets.js';
+import { type CDPTarget } from './types.js';
 
 /**
  * Opens (or reuses) a tab for `url` and waits for its load event — `tab open`'s
@@ -32,23 +32,49 @@ export async function navigateAndWait(
     throw new Error('New tab has no WebSocket debugger URL');
   }
 
-  // Wait for page load
+  // Wait for page load. The client owns a page WebSocket, so close it even
+  // when connection, readiness, timeout, or target-refresh work fails.
   const client = new CDPClient(tab.webSocketDebuggerUrl);
-  await client.waitReady();
-  await client.send('Page.enable');
+  try {
+    await client.waitReady();
+    await client.send('Page.enable');
 
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`Page load timeout: ${url}`)),
-      timeout,
-    );
-    client.on('Page.loadEventFired', () => {
-      clearTimeout(timer);
-      resolve();
+    let timer: NodeJS.Timeout | undefined;
+    let loadHandler: ((params: unknown) => void) | undefined;
+    let loadTimeoutError: Error | undefined;
+    let resolveLoad!: () => void;
+    const loadPromise = new Promise<void>((resolve) => {
+      resolveLoad = resolve;
+      loadHandler = () => {
+        if (timer) clearTimeout(timer);
+        resolveLoad();
+      };
+      // Arm the event before checking readyState: the load event may fire
+      // while the readiness query is in flight.
+      client.on('Page.loadEventFired', loadHandler);
+      timer = setTimeout(() => {
+        loadTimeoutError = new Error(`Page load timeout: ${url}`);
+        resolveLoad();
+      }, timeout);
     });
-  });
 
-  client.close();
+    try {
+      const result = await client.send('Runtime.evaluate', {
+        expression: 'document.readyState',
+        returnByValue: true,
+      });
+      const readyState = (result as { result?: { value?: unknown } } | undefined)?.result?.value;
+      if (readyState !== 'complete') {
+        await loadPromise;
+        if (loadTimeoutError) throw loadTimeoutError;
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (loadHandler) client.off('Page.loadEventFired', loadHandler);
+    }
+  } finally {
+    client.close();
+  }
 
   // Refresh target info — find by ID to avoid returning a different tab with same URL
   const targets = await listTargets(port);
