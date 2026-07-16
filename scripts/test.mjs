@@ -9,7 +9,7 @@
 //   fully-live files below. This list is derived at runtime via readdir
 //   minus the hardcoded live exclusion, so a newly added deterministic test
 //   file is picked up automatically and can never be silently dropped.
-// - Live (`--live`): the 2 fully-live files below PLUS 16 mixed files whose
+// - Live (`--live`): the 2 fully-live files below PLUS 17 mixed files whose
 //   real-Chrome cases are individually gated with `test/fixtures/live-chrome.ts`
 //   (`liveChromeOpts` on the describe/test, with any file-scope Chrome
 //   `before` hook made a no-op unless CAPTURE_LIVE_CHROME=1) and whose
@@ -53,6 +53,7 @@ const MIXED_LIVE_FILES = [
   'snapshot-settledness.test.ts',
   'motion-rec.test.ts',
   'session-start.test.ts',
+  'tab-branch.test.ts',
 ];
 
 function allTestFiles() {

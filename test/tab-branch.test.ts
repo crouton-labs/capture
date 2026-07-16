@@ -15,7 +15,7 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { renderResult } from '../src/output/render.js';
@@ -23,6 +23,9 @@ import { buildTabsResult } from '../src/cdp/commands/tab/list.js';
 import { buildTabOpenedResult } from '../src/cdp/commands/tab/open.js';
 import { buildTabResetResult } from '../src/cdp/commands/tab/reset.js';
 import { buildNetworkResult } from '../src/cdp/commands/tab/network.js';
+import { closeTarget, listTargets } from '../src/cdp/targets.js';
+import { liveChromeOpts } from './fixtures/live-chrome.js';
+import { spawnHeadlessChrome } from './fixtures/chrome.js';
 
 const BIN = fileURLToPath(new URL('../bin/capture', import.meta.url));
 
@@ -157,6 +160,37 @@ function withTempRoot(fn: (tempRoot: string) => void): void {
   }
 }
 
+function runAsync(args: string[], tempRoot: string, timeoutMs: number): Promise<{ status: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; elapsedMs: number }> {
+  const startedAt = Date.now();
+  const child = spawn(process.execPath, [BIN, ...args], {
+    env: {
+      ...process.env,
+      CAPTURE_ROOT: path.join(tempRoot, 'capture-sessions'),
+      TMPDIR: tempRoot,
+      TMP: tempRoot,
+      TEMP: tempRoot,
+      CDP_PORT: '',
+      CDP_TARGET: '',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+  child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('close', (status, signal) => {
+      clearTimeout(timer);
+      resolve({ status, signal, stdout, stderr, elapsedMs: Date.now() - startedAt });
+    });
+  });
+}
+
 /** A localhost port that was just free — closed again before use, so a
  * connection to it refuses. */
 async function closedPort(): Promise<number> {
@@ -168,6 +202,33 @@ async function closedPort(): Promise<number> {
     });
   });
 }
+
+test('live bin: `tab open about:blank --new` exits promptly, reports one tab, and does not leak its target', { ...liveChromeOpts, timeout: 15_000 }, async () => {
+  const fixture = await spawnHeadlessChrome();
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), 'capture-tab-open-live-'));
+  const before = await listTargets(fixture.port);
+  const beforeIds = new Set(before.map((target) => target.id));
+  try {
+    const result = await runAsync(['tab', 'open', 'about:blank', '--new', '--port', String(fixture.port)], tempRoot, 3_000);
+    assert.equal(result.status, 0, `capture exited with status ${String(result.status)} signal ${String(result.signal)}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    assert.equal(result.signal, null, result.stderr);
+    assert.ok(result.elapsedMs < 3_000, `capture did not exit promptly: ${result.elapsedMs}ms`);
+    assert.equal((result.stdout.match(/<tab-opened\b/g) ?? []).length, 1, result.stdout);
+
+    const after = await listTargets(fixture.port);
+    const created = after.filter((target) => !beforeIds.has(target.id));
+    assert.equal(created.length, 1, `expected one created target, got ${created.map((target) => target.id).join(', ')}`);
+    const outputTarget = /<tab-opened\b[^>]*\btarget="([^"]+)"/.exec(result.stdout)?.[1];
+    assert.equal(outputTarget, created[0]!.id, result.stdout);
+  } finally {
+    const current = await listTargets(fixture.port);
+    const created = current.filter((target) => !beforeIds.has(target.id));
+    await Promise.all(created.map((target) => closeTarget(fixture.port, target.id)));
+    assert.deepEqual((await listTargets(fixture.port)).filter((target) => !beforeIds.has(target.id)), []);
+    rmSync(tempRoot, { recursive: true, force: true });
+    await fixture.close();
+  }
+});
 
 test('bin: `tab list --port <unreachable>` exits 0 with an endpoints-unreachable fact in the <tabs> block', async () => {
   const port = await closedPort();
