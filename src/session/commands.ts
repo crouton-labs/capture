@@ -319,6 +319,8 @@ input:
   --hold         Hold one CDP browser connection open for the session's
                  lifetime, so browser-level state (permission grants,
                  ServiceWorker enablement) survives across separate commands.
+                 With no --url, later --target <existing-id> commands adopt
+                 an already-open tab without creating a new one.
   --port <n>     CDP port to attach to; default is auto-detected across localhost.
 
 Output:

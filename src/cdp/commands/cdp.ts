@@ -57,7 +57,7 @@ Input:
   --wait-event <Domain.event>  wait for (and return) the next occurrence of a protocol event; combinable with a method (the method is sent first) or usable alone.
   --browser                    route through the held connection (session start --hold) instead of a one-shot page websocket. Connection-scoped state (permission grants, domain enables) reverts the instant its connection closes — it survives across commands only inside a held session.
   --port <port>                CDP endpoint. An explicit flag selects that endpoint even when an active session holds another browser connection.
-  --target <id>                with --browser: attach a flattened CDP session on the held connection to this target (for target-scoped domains); without --browser: the page target to run against. 8-char id prefix accepted.
+  --target <id>                with --browser: attach a flattened CDP session on the held connection to this target (for target-scoped domains), including an already-open tab adopted by \`session start --hold\` without --url; without --browser: the page target to run against. 8-char id prefix accepted.
   --timeout <ms>               event-wait timeout (default ${DEFAULT_TIMEOUT_MS}ms).
 
 Output:
