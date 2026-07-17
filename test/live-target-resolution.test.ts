@@ -282,6 +282,64 @@ test('axid: resolves by AX node id from the same live fetch', async () => {
   assert.deepEqual(result, { ok: true, kind: 'axid', backendNodeId: 203, role: 'textbox', name: 'Message' });
 });
 
+// The real-world shape this reproduces: a `button "Send"` whose own visible
+// label renders as a `StaticText "Send"` descendant in the AX tree, so an
+// `ax:Send` substring query matches both with the identical accessible name.
+const AX_ACTIONABLE_TIE_NODES = [
+  { nodeId: '1', backendDOMNodeId: 100, role: { value: 'RootWebArea' }, name: { value: 'Fixture' } },
+  { nodeId: '5', backendDOMNodeId: 339, role: { value: 'button' }, name: { value: 'Send' } },
+  { nodeId: '6', backendDOMNodeId: 409, role: { value: 'StaticText' }, name: { value: 'Send' } },
+];
+
+function axTieHandlers(): Record<string, (params: Record<string, unknown>) => unknown> {
+  return {
+    'Accessibility.enable': () => ({}),
+    'Accessibility.disable': () => ({}),
+    'Accessibility.getFullAXTree': () => ({ nodes: AX_ACTIONABLE_TIE_NODES }),
+  };
+}
+
+test('ax: an interactive button and its same-name StaticText descendant resolve to the button', async () => {
+  const client = stubClient(axTieHandlers());
+  const result = await resolveLiveTarget(client, 'ax:Send');
+  assert.ok(result.ok);
+  assert.deepEqual(result, { ok: true, kind: 'ax', backendNodeId: 339, role: 'button', name: 'Send' });
+});
+
+test('ax: two interactive roles sharing a name stay genuinely ambiguous (no tie-break)', async () => {
+  const client = stubClient({
+    'Accessibility.enable': () => ({}),
+    'Accessibility.disable': () => ({}),
+    'Accessibility.getFullAXTree': () => ({
+      nodes: [
+        { nodeId: '1', backendDOMNodeId: 301, role: { value: 'button' }, name: { value: 'Send' } },
+        { nodeId: '2', backendDOMNodeId: 302, role: { value: 'link' }, name: { value: 'Send' } },
+      ],
+    }),
+  });
+  const result = await resolveLiveTarget(client, 'ax:Send');
+  assert.ok(!result.ok);
+  assert.equal(result.code, 'ambiguous');
+  assert.equal(result.matchCount, 2);
+});
+
+test('ax: two same-name StaticText nodes with no interactive role stay ambiguous', async () => {
+  const client = stubClient({
+    'Accessibility.enable': () => ({}),
+    'Accessibility.disable': () => ({}),
+    'Accessibility.getFullAXTree': () => ({
+      nodes: [
+        { nodeId: '1', backendDOMNodeId: 301, role: { value: 'StaticText' }, name: { value: 'Send' } },
+        { nodeId: '2', backendDOMNodeId: 302, role: { value: 'StaticText' }, name: { value: 'Send' } },
+      ],
+    }),
+  });
+  const result = await resolveLiveTarget(client, 'ax:Send');
+  assert.ok(!result.ok);
+  assert.equal(result.code, 'ambiguous');
+  assert.equal(result.matchCount, 2);
+});
+
 test('full AX lifecycle: an enable response loss still disables and preserves the primary failure', async () => {
   const primary = new Error('enable response lost');
   const client = stubClient({

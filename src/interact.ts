@@ -18,11 +18,19 @@
  * nothing — command leaves own all output; returned facts carry the resolved
  * identity (`backendNodeId`, role, name) and the dispatched coordinates.
  *
+ * `ax:`/`axid:` tie-break: a same-name match set that mixes an
+ * {@link INTERACTIVE_ROLES} role (e.g. `button`) with non-interactive ones
+ * (e.g. `StaticText` — the common shape of a label rendering inside its own
+ * button) narrows to the interactive match when that leaves exactly one
+ * candidate, because that is the only element the caller can actually drive.
+ * A tie among multiple interactive roles (or zero) stays genuinely
+ * ambiguous — see {@link preferActionable}.
+ *
  * Uses getFullAXTree instead of queryAXTree because queryAXTree hangs on
  * complex pages (7000+ AX nodes) when given the DOM root nodeId.
  */
 
-import { readFullAXTree, type FullAXNode } from './cdp/a11y.js';
+import { INTERACTIVE_ROLES, readFullAXTree, type FullAXNode } from './cdp/a11y.js';
 import { isScrollDestination } from './cdp/leaf-grammar.js';
 import { captureError } from './errors.js';
 import { parseSelectorInput, type SelectorInputKind } from './output/selector.js';
@@ -163,11 +171,26 @@ export async function resolveLiveTarget(
   }
 }
 
+/**
+ * Narrows a same-name match set to its lone {@link INTERACTIVE_ROLES} member
+ * when the set mixes interactive and non-interactive roles — e.g. a `button`
+ * plus the `StaticText` label rendered inside it, both carrying the same
+ * accessible name. Leaves `matches` untouched when zero or more than one
+ * interactive role is present, so a genuine tie (two buttons, or no
+ * interactive role at all) still surfaces every candidate.
+ */
+function preferActionable(matches: FullAXNode[]): FullAXNode[] {
+  if (matches.length <= 1) return matches;
+  const interactive = matches.filter((m) => m.role?.value !== undefined && INTERACTIVE_ROLES.has(m.role.value));
+  return interactive.length === 1 ? interactive : matches;
+}
+
 function settleAxMatches(
   kind: LiveTargetKind,
   input: string,
-  matches: FullAXNode[],
+  rawMatches: FullAXNode[],
 ): ResolvedTarget | ResolutionFailure {
+  const matches = preferActionable(rawMatches);
   if (matches.length === 1) {
     const m = matches[0];
     return {
