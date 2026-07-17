@@ -377,6 +377,32 @@ test('one-shot browser call skips Target.attachToTarget for a session-autofilled
   assert.doesNotMatch(stdout, /target="session-target"/);
 });
 
+test('an explicit --port bypasses an active session bridge and connects to that endpoint', async () => {
+  await withHeldSession(async () => {
+    const calls: string[] = [];
+    const client: BrowserScopeClient & { closed: boolean } = {
+      closed: false,
+      async send(method: string): Promise<unknown> { calls.push(method); return { version: '1' }; },
+      on(): void {},
+      close(): void { this.closed = true; },
+    };
+    const deps: BrowserScopeDeps = {
+      sendBridgeRequest() { throw new Error('an explicit --port must not use the held bridge'); },
+      async getBrowserClient(port) { assert.equal(port, 9333); return { client }; },
+      findTabById() { throw new Error('target lookup is not expected'); },
+      detectCdpPort() { throw new Error('explicit port must not auto-detect'); },
+    };
+    const parsed = parsedArgs({ positional: ['Browser.getVersion'], browser: true, port: 9333, portSource: 'flag' });
+    const { exitCode, stdout } = await withCapturedOutput(() =>
+      runBrowserScope('Browser.getVersion', undefined, parsed, 1000, deps),
+    );
+    assert.equal(exitCode, undefined);
+    assert.deepEqual(calls, ['Browser.getVersion']);
+    assert.ok(client.closed);
+    assert.match(stdout, /scope="browser"/);
+  });
+});
+
 test('one-shot browser call attaches a flattened session only for an explicit --target', async () => {
   clearActiveSession();
   const calls: Array<{ method: string; sessionId?: string }> = [];
@@ -425,6 +451,7 @@ test('cdp -h states the at-least-one-of input constraint and the inline --params
   assert.equal(exitCode, undefined, 'help must return, never call process.exit');
   assert.match(helpText, /At least one of <Domain\.method> \/ --wait-event is required/);
   assert.match(helpText, /Spec deviation: params stay inline JSON/);
+  assert.match(helpText, /--port <port>/);
   assert.match(helpText, /Output:/);
   assert.match(helpText, /Effects:/);
   assert.doesNotMatch(helpText, /Example/i, 'D6 leaf help carries no examples');

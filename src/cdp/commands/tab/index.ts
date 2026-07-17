@@ -12,14 +12,15 @@ import { invalidInput } from '../../../errors.js';
 import { type ParsedArgs } from '../../types.js';
 import { cmdTabList } from './list.js';
 import { cmdTabOpen } from './open.js';
+import { cmdTabClose } from './close.js';
 import { cmdTabReset } from './reset.js';
 import { cmdTabNetwork } from './network.js';
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="tab">
-tab and connection plumbing — endpoint/tab discovery, open/reset tabs, connection-level network emulation
-use when finding a CDP endpoint or tab, opening/replacing a tab, or toggling connectivity; \`tab list\` is the probe for a running browser
-  list · open · reset · network — \`capture tab -h\`
+tab and connection plumbing — endpoint/tab discovery, lifecycle, connection-level network emulation
+use when finding a CDP endpoint or tab, opening/closing/replacing a tab, or toggling connectivity; \`tab list\` is the probe for a running browser
+  list · open · close · reset · network — \`capture tab -h\`
 </command>`;
 
 export const TAB_USAGE = `capture tab — tab and connection plumbing: discovery, lifecycle, network emulation.
@@ -32,6 +33,7 @@ the session's {target, port} pair together.
 
 <subcommand name="list" args="[--port <port>]" whenToUse="discover CDP endpoints and the tabs open on them"/>
 <subcommand name="open" args="<url> [--new] [--port <port>]" whenToUse="open a URL and get its tab id"/>
+<subcommand name="close" args="<target> [--port <port>]" whenToUse="close one explicitly identified background tab"/>
 <subcommand name="reset" args="<url> [--port <port>]" whenToUse="abandon a stuck tab and open a fresh one (refuses while a recording is active; reaps dead recorder handles; updates the active session's {target, port} together)"/>
 <subcommand name="network" args="<offline|online>" whenToUse="toggle connection-level network emulation for a tab"/>
 
@@ -46,6 +48,8 @@ export async function tabMain(parsed: ParsedArgs, args: string[]): Promise<void>
       return cmdTabList(rest, args);
     case 'open':
       return cmdTabOpen(rest, args);
+    case 'close':
+      return cmdTabClose(rest, args);
     case 'reset':
       return cmdTabReset(rest, args);
     case 'network':

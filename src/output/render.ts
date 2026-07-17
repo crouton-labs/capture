@@ -54,6 +54,7 @@ export const RESULT_TAGS = [
   'screenshot',
   'tabs',
   'tab-opened',
+  'tab-closed',
   'tab-reset',
   'network',
   'cdp-result',

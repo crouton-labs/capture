@@ -30,6 +30,7 @@ import { cmdCdp } from '../src/cdp/commands/cdp.js';
 import { cmdPageElements } from '../src/cdp/commands/page/elements.js';
 import { cmdPageNavigate } from '../src/cdp/commands/page/navigate.js';
 import { cmdTabOpen } from '../src/cdp/commands/tab/open.js';
+import { cmdTabClose } from '../src/cdp/commands/tab/close.js';
 import { type ParsedArgs } from '../src/cdp/types.js';
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-cardinality-'));
@@ -117,6 +118,8 @@ test('every surplus/missing page/tab positional is one invalid_input before any 
   assertRejectedBeforeEffects(['page', 'navigate', 'https://a.example/', 'https://b.example/'], 'page navigate received 2 positional argument(s); expected exactly 1');
   assertRejectedBeforeEffects(['tab', 'open'], 'tab open received 0 positional argument(s); expected exactly 1');
   assertRejectedBeforeEffects(['tab', 'open', 'https://a.example/', 'https://b.example/'], 'tab open received 2 positional argument(s); expected exactly 1');
+  assertRejectedBeforeEffects(['tab', 'close'], 'tab close received 0 positional argument(s); expected exactly 1');
+  assertRejectedBeforeEffects(['tab', 'close', 'first', 'second'], 'tab close received 2 positional argument(s); expected exactly 1');
   assertRejectedBeforeEffects(['tab', 'reset'], 'tab reset received 0 positional argument(s); expected exactly 1');
   assertRejectedBeforeEffects(['tab', 'reset', 'https://a.example/', 'extra'], 'tab reset received 2 positional argument(s); expected exactly 1');
   assertRejectedBeforeEffects(['tab', 'network'], 'tab network received 0 positional argument(s); expected exactly 1');
@@ -188,6 +191,7 @@ test('touched leaves throw typed invocation errors on direct-call misuse instead
   );
   await assertTypedRejection(() => cmdPageNavigate(leafArgs('page', { positional: [] }), []), 'missing_url');
   await assertTypedRejection(() => cmdTabOpen(leafArgs('tab', { positional: [] }), []), 'missing_argument');
+  await assertTypedRejection(() => cmdTabClose(leafArgs('tab', { positional: [] }), []), 'missing_argument');
   await assertTypedRejection(
     () => cmdPageElements(leafArgs('page', { limit: 0 as unknown as number }), []),
     'invalid_flag',

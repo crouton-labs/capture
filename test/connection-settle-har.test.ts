@@ -124,6 +124,7 @@ function installSeams(overrides: Partial<ConnectionSeams> = {}, client = makeStu
       updatePatches.push(patch);
       return null;
     },
+    withSessionScopeLifecycle: async (action) => action(),
     appendHar: (async (_id: string, batch: unknown) => {
       log.push('append');
       appendCalls.push(batch);
@@ -409,13 +410,19 @@ test('connectForCommand: lazily publishes {targetId, port} as one atomic patch f
   const prevEnv = process.env.CDP_PORT;
   process.env.CDP_PORT = 'garbage-not-a-port';
   const sessionDir = makeTempSessionDir();
+  let lifecycleBoundaries = 0;
   const h = installSeams({
     // Session exists with NO targetId yet → the lazy publish fires.
     getActiveSession: () => sessionState({ dir: sessionDir, targetId: null }),
+    withSessionScopeLifecycle: async (action) => {
+      lifecycleBoundaries += 1;
+      return action();
+    },
     resolveTab: async () => ({ port: 9223, tab: FAKE_TAB }),
   });
   try {
     await connectForCommand(parsedFor({ target: 'tab-new' }));
+    assert.equal(lifecycleBoundaries, 1, 'target establishment shares the scope lifecycle boundary with destructive tab close');
     assert.equal(h.updatePatches.length, 1, 'exactly one metadata patch');
     // Both fields, together, from the RESOLVED port — never the garbage env.
     assert.deepEqual(h.updatePatches[0], { targetId: 'tab-new', port: 9223 });

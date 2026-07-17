@@ -10,6 +10,7 @@ import {
   appendToHarRecording as appendToHar,
 } from '../har-manager.js';
 import { getActiveSession, updateActiveSession, type ActiveSessionState } from '../session-context.js';
+import { withSessionScopeLifecycle } from '../session/coordinator.js';
 import { RecorderHeldClient, isRecorderHeldClient } from './recorder-client.js';
 import { recDirFor, readRecorderJson } from './motion/recorder.js';
 import { captureError, invalidInput } from '../errors.js';
@@ -35,6 +36,7 @@ function getPortFromWebSocketDebuggerUrl(url?: string): number | null {
 export interface ConnectionSeams {
   getActiveSession: () => ActiveSessionState | null;
   updateActiveSession: (patch: Partial<ActiveSessionState>) => Promise<ActiveSessionState | null>;
+  withSessionScopeLifecycle: <T>(action: () => Promise<T>) => Promise<T>;
   resolveTab: (parsed: ParsedArgs) => Promise<{ port: number; tab: CDPTarget } | null>;
   createClient: (wsUrl: string) => CDPClient;
   appendHar: typeof appendToHar;
@@ -58,6 +60,7 @@ function defaultResolveTab(parsed: ParsedArgs): Promise<{ port: number; tab: CDP
 let seams: ConnectionSeams = {
   getActiveSession: () => getActiveSession(),
   updateActiveSession,
+  withSessionScopeLifecycle,
   resolveTab: defaultResolveTab,
   createClient: (wsUrl) => new CDPClient(wsUrl),
   appendHar: appendToHar,
@@ -232,10 +235,16 @@ export async function connectForCommand(
   // endpoint precedence already resolved before this leaf ran.
   const port = resolved?.port ?? getPortFromWebSocketDebuggerUrl(tab.webSocketDebuggerUrl);
 
-  // Lazy target establishment: publish `{targetId, port}` as one atomic pair
-  // through U03's metadata helper so a subsequent command finds both together.
+  // Lazy target establishment shares the scope lifecycle boundary with tab
+  // close and session start/stop. Re-read under that boundary so a stale
+  // pre-resolution snapshot cannot repoint a replacement session.
   if (activeSession && !activeSession.targetId) {
-    await seams.updateActiveSession({ targetId: tab.id, port: port ?? null });
+    await seams.withSessionScopeLifecycle(async () => {
+      const current = seams.getActiveSession();
+      if (current?.sessionId === activeSession.sessionId && !current.targetId) {
+        await seams.updateActiveSession({ targetId: tab.id, port: port ?? null });
+      }
+    });
   }
 
   console.error(

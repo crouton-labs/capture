@@ -22,6 +22,7 @@ import { getActiveSession, updateSessionState } from '../../../session-context.j
 import {
   admitSessionOperation,
   withSessionLifecycle,
+  withSessionScopeLifecycle,
   scanRecorderHandles,
   clearDanglingRecorderPointer,
   type LifecycleSeams,
@@ -123,38 +124,40 @@ export async function cmdTabReset(parsed: ParsedArgs, _args: string[]): Promise<
   const url = parsed.positional[0];
   if (!url) throw invalidInput('received: no URL; expected: capture tab reset <url> [--port <port>].', 'missing_argument');
 
-  const session = getActiveSession();
-  if (!session) {
-    let port: number;
-    try {
-      port = parsed.port ?? (await deps.detectCdpPort());
-    } catch {
-      throw captureError('world', 'no_cdp_endpoint', 'received: no --port, and no CDP endpoint was discovered on localhost; expected: a running CDP-enabled browser (or an explicit --port <port>).');
-    }
-    const tab = await openTabOrThrow(port, url);
-    await boundedLoadWait(tab);
-    emitResult(buildTabResetResult(tab, port, false), { json: parsed.json });
-    return;
-  }
-
-  const op = await admitSessionOperation(session.dir);
-  try {
-    const result = await withSessionLifecycle(session.dir, async () => {
-      const fresh = getActiveSession();
-      if (!fresh || fresh.dir !== session.dir) throw captureError('precondition', 'session_unavailable', 'The active capture session is no longer available.');
-      const scan = scanRecorderHandles(session.dir, deps.lifecycle);
-      if (scan.some(h => h.classification === 'unknown')) throw captureError('world', 'recorder_liveness_unknown', 'Cannot determine recorder liveness; refusing to reset.');
-      if (scan.some(h => h.classification === 'malformed')) throw captureError('precondition', 'recorder_unavailable', 'A malformed recorder handle exists on this session; resolve it before resetting.');
-      if (scan.some(h => h.classification === 'live')) throw captureError('precondition', 'recorder_active', 'A recording is active on this session; stop it first: `capture motion rec --stop`. Reset never rebinds a live recorder.');
-      await clearDanglingRecorderPointer(session.dir, scan);
-      const port = fresh.port ?? parsed.port ?? (await deps.detectCdpPort());
+  return withSessionScopeLifecycle(async () => {
+    const session = getActiveSession();
+    if (!session) {
+      let port: number;
+      try {
+        port = parsed.port ?? (await deps.detectCdpPort());
+      } catch {
+        throw captureError('world', 'no_cdp_endpoint', 'received: no --port, and no CDP endpoint was discovered on localhost; expected: a running CDP-enabled browser (or an explicit --port <port>).');
+      }
       const tab = await openTabOrThrow(port, url);
       await boundedLoadWait(tab);
-      await updateSessionState(session.dir, { targetId: tab.id, port });
-      return buildTabResetResult(tab, port, true);
-    }, deps.lifecycle);
-    emitResult(result, { json: parsed.json });
-  } finally {
-    await op.release();
-  }
+      emitResult(buildTabResetResult(tab, port, false), { json: parsed.json });
+      return;
+    }
+
+    const op = await admitSessionOperation(session.dir);
+    try {
+      const result = await withSessionLifecycle(session.dir, async () => {
+        const fresh = getActiveSession();
+        if (!fresh || fresh.dir !== session.dir) throw captureError('precondition', 'session_unavailable', 'The active capture session is no longer available.');
+        const scan = scanRecorderHandles(session.dir, deps.lifecycle);
+        if (scan.some(h => h.classification === 'unknown')) throw captureError('world', 'recorder_liveness_unknown', 'Cannot determine recorder liveness; refusing to reset.');
+        if (scan.some(h => h.classification === 'malformed')) throw captureError('precondition', 'recorder_unavailable', 'A malformed recorder handle exists on this session; resolve it before resetting.');
+        if (scan.some(h => h.classification === 'live')) throw captureError('precondition', 'recorder_active', 'A recording is active on this session; stop it first: `capture motion rec --stop`. Reset never rebinds a live recorder.');
+        await clearDanglingRecorderPointer(session.dir, scan);
+        const port = fresh.port ?? parsed.port ?? (await deps.detectCdpPort());
+        const tab = await openTabOrThrow(port, url);
+        await boundedLoadWait(tab);
+        await updateSessionState(session.dir, { targetId: tab.id, port });
+        return buildTabResetResult(tab, port, true);
+      }, deps.lifecycle);
+      emitResult(result, { json: parsed.json });
+    } finally {
+      await op.release();
+    }
+  });
 }

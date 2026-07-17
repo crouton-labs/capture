@@ -10,6 +10,11 @@ export interface ParsedArgs {
   command: string;
   positional: string[];
   port?: number;
+  /** Where `port` was assigned from: an actual `--port` flag, active-session
+   * fallback, or the ambient `CDP_PORT` env var. Browser-scope CDP uses a
+   * held session bridge unless this is `'flag'`, which explicitly selects a
+   * different browser endpoint. */
+  portSource?: 'flag' | 'session' | 'env';
   out?: string;
   json?: boolean;
   duration?: number;

@@ -38,7 +38,6 @@ import {
 import {
   CAPTURE_ROOT,
   MAX_LOG_LABEL_BYTES,
-  acquirePrivateLock,
   ensurePrivateDir,
   rejectLogLabel,
   writeJsonPrivate,
@@ -47,7 +46,7 @@ import {
   type SnapMeta,
   type RecMeta,
 } from './artifacts.js';
-import { beginSessionStop, admitSessionOperation, withSessionLifecycle } from './coordinator.js';
+import { beginSessionStop, admitSessionOperation, withSessionLifecycle, withSessionScopeLifecycle } from './coordinator.js';
 import { parseStatusFilter, type StatusPredicate } from './har-filter.js';
 
 type Session = ActiveSessionState;
@@ -149,22 +148,6 @@ const SECTION_LABELS: Record<SectionKey, string> = {
 
 function sessionDir(id: string): string {
   return path.join(CAPTURE_ROOT, id);
-}
-
-function lifecycleScopeLockPath(): string {
-  return path.join(CAPTURE_ROOT, `.session-lifecycle-${process.env.CRTR_NODE_ID ?? 'default'}`);
-}
-
-async function withLifecycleCoordinator<T>(action: () => Promise<T>): Promise<T> {
-  const handle = await acquirePrivateLock(lifecycleScopeLockPath(), {
-    acquireTimeoutMs: 120_000,
-    leaseMs: 1_000,
-  });
-  try {
-    return await action();
-  } finally {
-    handle.release();
-  }
 }
 
 function isSessionStopped(session: Session): boolean {
@@ -567,7 +550,7 @@ async function start(parsed: ParsedArgs): Promise<void> {
 
   if (rejectSurplusPositionals(parsed, 'start', 0, 'capture session start [--url <url>] [--hold]')) return;
 
-  return withLifecycleCoordinator(async () => {
+  return withSessionScopeLifecycle(async () => {
     const active = getActiveSession();
     if (active && !isSessionStopped(active)) {
       emitResult({
@@ -1075,7 +1058,7 @@ async function stop(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
-  return withLifecycleCoordinator(async () => {
+  return withSessionScopeLifecycle(async () => {
     let session: Session;
     try {
       session = readSession(id);

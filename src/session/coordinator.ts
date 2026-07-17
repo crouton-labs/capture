@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { captureError } from '../errors.js';
 import {
+  CAPTURE_ROOT,
   acquirePrivateLock,
   assertUnderCaptureRoot,
   readPrivateFile,
@@ -32,6 +33,23 @@ export interface SessionOperation {
 
 export interface SessionStopAdmission {
   finish(success: boolean): Promise<void>;
+}
+
+function scopeLifecycleLockPath(): string {
+  return path.join(CAPTURE_ROOT, `.session-lifecycle-${process.env.CRTR_NODE_ID ?? 'default'}`);
+}
+
+/** Serializes active-session publication, teardown, and target ownership changes for one capture scope. */
+export async function withSessionScopeLifecycle<T>(action: () => Promise<T>): Promise<T> {
+  const lock = await acquirePrivateLock(scopeLifecycleLockPath(), {
+    acquireTimeoutMs: 120_000,
+    leaseMs: 1_000,
+  });
+  try {
+    return await action();
+  } finally {
+    lock.release();
+  }
 }
 
 function statePath(sessionDir: string): string {

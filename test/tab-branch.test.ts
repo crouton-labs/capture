@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { renderResult } from '../src/output/render.js';
 import { buildTabsResult } from '../src/cdp/commands/tab/list.js';
 import { buildTabOpenedResult } from '../src/cdp/commands/tab/open.js';
+import { buildTabClosedResult } from '../src/cdp/commands/tab/close.js';
 import { buildTabResetResult } from '../src/cdp/commands/tab/reset.js';
 import { buildNetworkResult } from '../src/cdp/commands/tab/network.js';
 import { closeTarget, listTargets } from '../src/cdp/targets.js';
@@ -106,6 +107,18 @@ test('tab open: emits a <tab-opened> block with port/target attrs, escaped title
   const followUps = out.match(/follow_up:/g) ?? [];
   assert.equal(followUps.length, 1, out);
   assert.ok(out.includes('follow_up: capture page shot --port 9222 --target FEED0123'), out);
+});
+
+test('tab close: emits a <tab-closed> block with the exact target identity and escaped URL', () => {
+  const out = renderResult(buildTabClosedResult(
+    { id: 'C10SE0123456789A', title: '', url: HOSTILE_URL, type: 'page' },
+    9444,
+  ));
+  assert.ok(out.startsWith('<tab-closed '), out);
+  assert.ok(out.includes('port="9444"'), out);
+  assert.ok(out.includes('target="C10SE0123456789A"'), out);
+  assert.ok(out.includes('&lt;img'), out);
+  assert.ok(!out.includes('<img'), out);
 });
 
 test('tab reset: emits a <tab-reset> block and states the session-target outcome as a fact both ways', () => {
@@ -230,6 +243,46 @@ test('live bin: `tab open about:blank --new` exits promptly, reports one tab, an
   }
 });
 
+test('live bin: `tab close` refuses while session ownership is unresolved, then closes only the named tab after session stop', { ...liveChromeOpts, timeout: 15_000 }, async () => {
+  const fixture = await spawnHeadlessChrome();
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), 'capture-tab-close-live-'));
+  const before = await listTargets(fixture.port);
+  const beforeIds = new Set(before.map((target) => target.id));
+  let targetId: string | undefined;
+  try {
+    const opened = await runAsync(['tab', 'open', 'about:blank', '--new', '--port', String(fixture.port)], tempRoot, 3_000);
+    assert.equal(opened.status, 0, opened.stderr || opened.stdout);
+    targetId = /<tab-opened\b[^>]*\btarget="([^"]+)"/.exec(opened.stdout)?.[1];
+    assert.ok(targetId, opened.stdout);
+
+    const started = await runAsync(['session', 'start', '--port', String(fixture.port)], tempRoot, 3_000);
+    assert.equal(started.status, 0, started.stderr || started.stdout);
+    const sessionId = /<session\b[^>]*\bid="([^"]+)"/.exec(started.stdout)?.[1];
+    assert.ok(sessionId, started.stdout);
+
+    const refused = await runAsync(['tab', 'close', targetId.slice(0, 8), '--port', String(fixture.port)], tempRoot, 3_000);
+    assert.equal(refused.status, 1, refused.stderr || refused.stdout);
+    assert.match(refused.stdout, /code="active_session_target_unknown"/);
+    assert.ok((await listTargets(fixture.port)).some((target) => target.id === targetId), 'an unresolved active session must make close fail without mutation');
+
+    const stopped = await runAsync(['session', 'stop', sessionId], tempRoot, 3_000);
+    assert.equal(stopped.status, 0, stopped.stderr || stopped.stdout);
+
+    const closed = await runAsync(['tab', 'close', targetId.slice(0, 8), '--port', String(fixture.port)], tempRoot, 3_000);
+    assert.equal(closed.status, 0, closed.stderr || closed.stdout);
+    assert.match(closed.stdout, /<tab-closed\b/);
+    assert.match(closed.stdout, new RegExp(`target="${targetId}"`));
+    assert.ok(!(await listTargets(fixture.port)).some((target) => target.id === targetId), 'the named tab must no longer exist');
+  } finally {
+    if (targetId && (await listTargets(fixture.port)).some((target) => target.id === targetId)) {
+      await closeTarget(fixture.port, targetId);
+    }
+    assert.deepEqual((await listTargets(fixture.port)).filter((target) => !beforeIds.has(target.id)), []);
+    rmSync(tempRoot, { recursive: true, force: true });
+    await fixture.close();
+  }
+});
+
 test('bin: `tab list --port <unreachable>` exits 0 with an endpoints-unreachable fact in the <tabs> block', async () => {
   const port = await closedPort();
   withTempRoot((tempRoot) => {
@@ -261,6 +314,15 @@ test('bin: `tab open` with no URL is a structured <error code="invalid_input">, 
   });
 });
 
+test('bin: `tab close` rejects a destructive target prefix shorter than eight characters before probing CDP', () => {
+  withTempRoot((tempRoot) => {
+    const result = run(['tab', 'close', 'ABCD', '--port', '65535'], tempRoot);
+    assert.equal(result.status, 1);
+    assert.ok(result.stdout.includes('<error code="target_prefix_too_short"'), result.stdout);
+    assert.match(result.stdout, /prefix of at least 8 characters/);
+  });
+});
+
 test('bin: `tab reset` with no URL is a structured <error code="invalid_input">, exit 1', () => {
   withTempRoot((tempRoot) => {
     const result = run(['tab', 'reset'], tempRoot);
@@ -281,7 +343,7 @@ test('bin: `tab network bogus` is a structured <error> naming the accepted value
 
 test('bin: each tab leaf -h is the D6 leaf shape — summary/input/output/effects, no examples, no "Next:" coaching', () => {
   withTempRoot((tempRoot) => {
-    for (const leaf of ['list', 'open', 'reset', 'network']) {
+    for (const leaf of ['list', 'open', 'close', 'reset', 'network']) {
       const result = run(['tab', leaf, '-h'], tempRoot);
       assert.equal(result.status, 0, `tab ${leaf} -h: ${result.stderr}`);
       assert.equal(result.stderr, '', `tab ${leaf} -h must not write to stderr`);

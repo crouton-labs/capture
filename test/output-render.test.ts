@@ -1129,6 +1129,7 @@ test('every new/ported result tag is trusted and renders as its own block, in pr
     'screenshot',
     'tabs',
     'tab-opened',
+    'tab-closed',
     'tab-reset',
     'network',
     'cdp-result',

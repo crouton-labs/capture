@@ -60,7 +60,7 @@ function validateKnownLeaf(command: string, positional: readonly string[]): void
   const branches: Record<string, readonly string[]> = {
     session: ['start', 'stop', 'list', 'view', 'har', 'log'],
     page: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements'],
-    tab: ['list', 'open', 'reset', 'network'],
+    tab: ['list', 'open', 'close', 'reset', 'network'],
     measure: ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map'],
     motion: ['rec', 'mask', 'timeline', 'jank', 'response'],
     lib: ['list', 'search', 'show', 'read'],
@@ -213,7 +213,7 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
     const next = rest[i + 1];
     if (VALUE_FLAGS.has(arg)) valueFor(arg, next);
 
-    if (arg === '--port') { parsed.port = integer(valueFor(arg, next), '--port', 1, 65535); i++; }
+    if (arg === '--port') { parsed.port = integer(valueFor(arg, next), '--port', 1, 65535); parsed.portSource = 'flag'; i++; }
     else if (arg === '--out') { parsed.out = valueFor(arg, next); i++; }
     else if (arg === '--json') parsed.json = true;
     else if (arg === '--duration') { parsed.duration = durationMs(valueFor(arg, next)); i++; }
@@ -313,10 +313,11 @@ export function resolveCliContext(parsed: ParsedArgs): ParsedArgs {
     // A session target is inseparable from the endpoint that created it.
     // Prefer that endpoint over ambient CDP_PORT, but retain an explicit
     // --port override for deliberate multi-browser work.
-    if (parsed.port === undefined && session.port !== undefined && session.port !== null) parsed.port = session.port;
+    if (parsed.port === undefined && session.port !== undefined && session.port !== null) { parsed.port = session.port; parsed.portSource = 'session'; }
   }
   if (parsed.port === undefined && process.env.CDP_PORT !== undefined) {
     parsed.port = integer(process.env.CDP_PORT, 'CDP_PORT', 1, 65535);
+    parsed.portSource = 'env';
   }
   // Preserve historical stale-index cleanup once endpoint validation has
   // succeeded; only the malformed-env throw path deliberately leaves it alone.

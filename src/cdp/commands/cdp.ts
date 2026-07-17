@@ -56,6 +56,7 @@ Input:
   --params <json>              JSON-encoded params object for the method. Spec deviation: params stay inline JSON (no file indirection) — raw CDP params are small protocol-defined objects.
   --wait-event <Domain.event>  wait for (and return) the next occurrence of a protocol event; combinable with a method (the method is sent first) or usable alone.
   --browser                    route through the held connection (session start --hold) instead of a one-shot page websocket. Connection-scoped state (permission grants, domain enables) reverts the instant its connection closes — it survives across commands only inside a held session.
+  --port <port>                CDP endpoint. An explicit flag selects that endpoint even when an active session holds another browser connection.
   --target <id>                with --browser: attach a flattened CDP session on the held connection to this target (for target-scoped domains); without --browser: the page target to run against. 8-char id prefix accepted.
   --timeout <ms>               event-wait timeout (default ${DEFAULT_TIMEOUT_MS}ms).
 
@@ -220,8 +221,10 @@ export async function runBrowserScope(
 ): Promise<void> {
   const flagTarget = parsed.targetSource === 'flag' ? parsed.target : undefined;
   const session = getActiveSession();
-  if (session?.bridgeSocket && fs.existsSync(session.bridgeSocket)) {
-    const resp = await deps.sendBridgeRequest(session.bridgeSocket, {
+  const bridgeSocket = session?.bridgeSocket;
+  const heldBridgeActive = Boolean(bridgeSocket && fs.existsSync(bridgeSocket));
+  if (parsed.portSource !== 'flag' && bridgeSocket && heldBridgeActive) {
+    const resp = await deps.sendBridgeRequest(bridgeSocket, {
       method,
       params,
       targetId: flagTarget,
@@ -247,9 +250,14 @@ export async function runBrowserScope(
   }
 
   // In-flight diagnostic (stderr): the one-shot connection semantics fact.
+  const connectionReason = parsed.portSource === 'flag'
+    ? heldBridgeActive
+      ? `Using explicitly selected CDP port ${parsed.port} instead of the active session bridge`
+      : `Using explicitly selected CDP port ${parsed.port}`
+    : 'No held session bridge active';
   console.error(
-    'No held session bridge active \u2014 this one-shot connection closes when the command exits, ' +
-      'so any browser-level grant or target enablement made here reverts immediately after.',
+    `${connectionReason} — this one-shot connection closes when the command exits, ` +
+    'so any browser-level grant or target enablement made here reverts immediately after.',
   );
 
   const port = parsed.port ?? (await deps.detectCdpPort());

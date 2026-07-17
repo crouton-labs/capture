@@ -16,6 +16,12 @@ test('a bare invocation with no target records no provenance', () => {
   assert.equal(parsed.targetSource, undefined);
 });
 
+test('an explicit --port records flag provenance at parse time', () => {
+  const parsed = parseCliArgs(['cdp', 'Browser.getVersion', '--port', '9222']);
+  assert.equal(parsed.port, 9222);
+  assert.equal(parsed.portSource, 'flag');
+});
+
 test('an explicit --target records flag provenance at parse time', () => {
   const parsed = parseCliArgs(['click', 'Sign in', '--target', 'abc123']);
   assert.equal(parsed.target, 'abc123');
