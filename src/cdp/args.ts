@@ -179,9 +179,12 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
           throw invalidInput('motion rec lifecycle flags cannot be combined with one-shot flags.');
         }
       } else {
-        requireCount(values, 1, 1, 'motion rec');
+        // The URL is optional: omitting it records the active session tab
+        // (enforced downstream once session state is known — this pure
+        // validator only bounds cardinality at 0..1 and checks a supplied URL).
+        requireCount(values, 0, 1, 'motion rec');
         if (!parsed.do) throw invalidInput('motion rec one-shot requires --do.');
-        assertParseableUrl(values[0], 'recording URL');
+        if (values[0] !== undefined) assertParseableUrl(values[0], 'recording URL');
         parseDoAction(parsed.do);
       }
       if (parsed.viewport !== undefined) {

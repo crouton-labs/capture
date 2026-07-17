@@ -138,6 +138,23 @@ test('cdp cardinality: two positionals and zero-without---wait-event are invalid
   validateCliInvocation(single);
 });
 
+test('motion rec one-shot cardinality is 0..1 — omitting the URL passes the gate for the active-session form, while surplus positionals still reject', () => {
+  // The URL is documented as optional (recording the active session tab when
+  // omitted) — the pure gate must not hard-require it before session state is
+  // even consulted.
+  const omitted = parseCliSyntax(['motion', 'rec', '--do', 'scroll:.stage,to=bottom']);
+  validateCliInvocation(omitted);
+  assert.deepEqual(omitted.positional, ['rec']);
+
+  const withUrl = parseCliSyntax(['motion', 'rec', 'https://example.test/', '--do', 'click:button.send']);
+  validateCliInvocation(withUrl);
+
+  assertRejectedBeforeEffects(
+    ['motion', 'rec', 'https://a.example/', 'https://b.example/', '--do', 'click:button.send'],
+    'motion rec received 2 positional argument(s); expected 0..1',
+  );
+});
+
 test('--json mirrors the same single invalid_input error object', () => {
   const result = probe(['tab', 'open', 'a', 'b', '--json']);
   assert.equal(result.status, 1);
