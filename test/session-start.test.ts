@@ -1,8 +1,11 @@
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { WebSocketServer } from 'ws';
+import { CDPClient } from '../src/cdp/client.js';
 import { sessionMain, waitForPageLoad } from '../src/session/commands.js';
 import { getActiveSession, clearActiveSession } from '../src/session-context.js';
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
@@ -78,6 +81,25 @@ test('waitForPageLoad returns true when the page load does not fire before the d
 
   const timedOut = await waitForPageLoad(client, 10);
   assert.equal(timedOut, true);
+});
+
+test('waitForPageLoad bounds a fresh tab Page.enable acknowledgement instead of inheriting CDPClient’s 60-second request timeout', async () => {
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await once(server, 'listening');
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const client = new CDPClient(`ws://127.0.0.1:${address.port}`);
+  const startedAt = Date.now();
+  try {
+    await assert.rejects(
+      () => waitForPageLoad(client, 1_000, 25),
+      /CDP request timeout \(25ms\): Page.enable/,
+    );
+    assert.ok(Date.now() - startedAt < 500, 'Page.enable acknowledgement must fail promptly');
+  } finally {
+    client.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 
 test('session start (no url) emits a <session> block, creates shots/ and NOT a11y/', async () => {
@@ -204,14 +226,18 @@ test('session start failure emits start_failed, sets exitCode 1, and leaves no s
   assert.equal(getActiveSession(), null);
 });
 
-test('session start --url opens a tab and stop bundles shots (not a11y)', liveChromeOpts, async () => {
+test('session start --url file: opens a tab and stop bundles shots (not a11y)', liveChromeOpts, async () => {
   const { proc, port } = await spawnHeadlessChrome();
+  const file = path.join(CAPTURE_ROOT, `session-start-${process.pid}-${Date.now()}.html`);
+  fs.mkdirSync(CAPTURE_ROOT, { recursive: true });
+  fs.writeFileSync(file, '<!doctype html><title>Capture session file target</title><main>ready</main>');
+  const url = pathToFileURL(file).href;
   let dir: string | undefined;
   let id: string | undefined;
   try {
     const startOut = captureStdout();
     try {
-      await sessionMain(sessionArgs(['start'], { url: 'data:text/html,<h1>ok</h1>', port }), []);
+      await sessionMain(sessionArgs(['start'], { url, port }), []);
     } finally {
       startOut.restore();
     }
@@ -240,6 +266,7 @@ test('session start --url opens a tab and stop bundles shots (not a11y)', liveCh
   } finally {
     await closeChrome(proc);
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(file, { force: true });
     clearActiveSession();
   }
 });

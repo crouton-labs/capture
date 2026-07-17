@@ -286,12 +286,18 @@ function generateId(): string {
   return `cap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
+/** A fresh target must acknowledge Page.enable promptly. Target.createTarget
+ * already succeeded; waiting a full CDP request timeout here only postpones a
+ * failed session start before it can publish or roll back its target. */
+export const SESSION_TAB_ATTACH_TIMEOUT_MS = 5_000;
+
 export async function waitForPageLoad(
-  client: { waitReady(): Promise<void>; send(method: string, params?: Record<string, unknown>): Promise<unknown>; on(event: string, handler: (params: unknown) => void): void; },
+  client: { waitReady(): Promise<void>; send(method: string, params?: Record<string, unknown>, timeout?: number): Promise<unknown>; on(event: string, handler: (params: unknown) => void): void; },
   timeoutMs: number,
+  attachTimeoutMs = SESSION_TAB_ATTACH_TIMEOUT_MS,
 ): Promise<boolean> {
   await client.waitReady();
-  await client.send('Page.enable');
+  await client.send('Page.enable', {}, attachTimeoutMs);
 
   return await new Promise<boolean>((resolve) => {
     const timer = setTimeout(() => resolve(true), timeoutMs);
@@ -502,7 +508,14 @@ const productionStartWorld: SessionStartWorld = {
       } catch (err) {
         throw worldFailure(`capture session start could not attach to ${url}: ${err instanceof Error ? err.message : err}. Reuse an existing tab with --target.`, err);
       }
-      return await waitForPageLoad(client, 10_000);
+      try {
+        return await waitForPageLoad(client, 10_000);
+      } catch (err) {
+        throw worldFailure(
+          `capture session start could not attach to ${url}: Page.enable failed during its ${SESSION_TAB_ATTACH_TIMEOUT_MS}ms attachment window (${err instanceof Error ? err.message : err}). The CDP endpoint created the tab but cannot drive it; choose another endpoint from \`capture tab list\` and retry with \`--port\`.`,
+          err,
+        );
+      }
     } finally {
       client.close();
     }
