@@ -77,6 +77,17 @@ test('an unknown command is a structured <error code="unknown_command" kind="inv
   });
 });
 
+test('a guessable former/legacy root name still fails, but the unknown_command message hints its current destination', () => {
+  withTempRoot((tempRoot) => {
+    const result = run(['screenshot'], tempRoot);
+    assert.equal(result.status, 1);
+    assert.ok(result.stdout.includes('<error code="unknown_command" kind="invocation">'), result.stdout);
+    assert.ok(result.stdout.includes("did you mean 'capture page shot'?"), result.stdout);
+    assert.ok(result.stdout.includes('session, page, tab, measure, motion, cdp, lib'));
+    assert.deepEqual(readdirSync(tempRoot), []);
+  });
+});
+
 test('`capture --version` prints a version; `-v` and the `version` word are unknown commands, read-only', () => {
   withTempRoot((tempRoot) => {
     const version = run(['--version'], tempRoot);

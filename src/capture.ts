@@ -25,6 +25,18 @@ import { COMMAND_BLOCK as LIB_BLOCK } from './cdp/commands/lib.js';
 /** The seven visible root children, in help order. */
 const ROOTS = ['session', 'page', 'tab', 'measure', 'motion', 'cdp', 'lib'] as const;
 
+/**
+ * Guessable former/legacy tokens with one unambiguous current destination —
+ * an orientation hint on the `unknown_command` error, never a second
+ * dispatchable path (the guessed token still fails; only the message
+ * changes). Deliberately small: an entry only earns a place here when its
+ * correct destination is unambiguous, so this stays a short discriminator
+ * rather than a growing synonym taxonomy.
+ */
+const GUESSABLE_HINTS: Readonly<Record<string, string>> = {
+  screenshot: 'page shot',
+};
+
 const ROOT_BLOCKS = [
   SESSION_BLOCK,
   PAGE_BLOCK,
@@ -90,10 +102,13 @@ async function main(): Promise<void> {
     return cdpMain();
   }
 
+  const hint = GUESSABLE_HINTS[command];
   throw captureError(
     'invocation',
     'unknown_command',
-    `Unknown command ${command}; expected one of the seven roots: session, page, tab, measure, motion, cdp, lib.`,
+    hint
+      ? `Unknown command ${command}; did you mean \`capture ${hint}\`? Expected one of the seven roots: session, page, tab, measure, motion, cdp, lib.`
+      : `Unknown command ${command}; expected one of the seven roots: session, page, tab, measure, motion, cdp, lib.`,
   );
 }
 
