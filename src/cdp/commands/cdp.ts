@@ -58,7 +58,7 @@ Input:
   --browser                    route through the held connection (session start --hold) instead of a one-shot page websocket. Connection-scoped state (permission grants, domain enables) reverts the instant its connection closes — it survives across commands only inside a held session.
   --port <port>                CDP endpoint. An explicit flag selects that endpoint even when an active session holds another browser connection.
   --target <id>                with --browser: attach a flattened CDP session on the held connection to this target (for target-scoped domains), including an already-open tab adopted by \`session start --hold\` without --url; without --browser: the page target to run against. 8-char id prefix accepted.
-  --timeout <ms>               event-wait timeout (default ${DEFAULT_TIMEOUT_MS}ms).
+  --timeout <ms>               one-shot method-response and event-wait timeout (default ${DEFAULT_TIMEOUT_MS}ms). WebSocket connection setup is separately bounded to 5000ms.
 
 Output:
   <cdp-result method=… wait-event=… scope=…> — the protocol result and/or awaited event as an escaped, length-capped JSON payload. --json mirrors the same block with the payload at full fidelity.
@@ -73,7 +73,7 @@ Effects:
  * command wiring against a stub without a live browser.
  */
 export interface CdpScopeClient {
-  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  send(method: string, params?: Record<string, unknown>, timeout?: number): Promise<unknown>;
   on(event: string, handler: (params: unknown) => void): void;
   close(): void;
 }
@@ -279,11 +279,11 @@ export async function runBrowserScope(
       const attached = (await client.send('Target.attachToTarget', {
         targetId: tab.id,
         flatten: true,
-      })) as { sessionId: string };
+      }, timeoutMs)) as { sessionId: string };
       sessionId = attached.sessionId;
     }
     const eventPromise = parsed.waitEvent ? waitForEventOnce(client, parsed.waitEvent, timeoutMs) : undefined;
-    const result = method ? await client.send(method, params ?? {}, 60000, sessionId) : undefined;
+    const result = method ? await client.send(method, params ?? {}, timeoutMs, sessionId) : undefined;
     const event = eventPromise ? await eventPromise : undefined;
     emitCdpResult({
       method,
@@ -349,7 +349,7 @@ export async function runPageScope(
       }
     } else {
       const eventPromise = parsed.waitEvent ? waitForEventOnce(client, parsed.waitEvent, timeoutMs) : undefined;
-      result = method ? await client.send(method, params ?? {}) : undefined;
+      result = method ? await client.send(method, params ?? {}, timeoutMs) : undefined;
       event = eventPromise ? await eventPromise : undefined;
     }
     emitCdpResult({

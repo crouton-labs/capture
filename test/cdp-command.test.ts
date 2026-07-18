@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { WebSocketServer } from 'ws';
 
 // U11: `cdp` conform-in-place (src/cdp/commands/cdp.ts).
 //
@@ -11,6 +13,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cmdCdp, runPageScope, runBrowserScope, type CdpScopeClient, type BrowserScopeClient, type BrowserScopeDeps } from '../src/cdp/commands/cdp.js';
+import { CDPClient } from '../src/cdp/client.js';
 import { CaptureError } from '../src/errors.js';
 import type { ParsedArgs } from '../src/cdp/types.js';
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
@@ -213,6 +216,36 @@ test('method+params result is dispatched with the parsed params and rendered as 
   assert.match(stdout, /…\[\+\d+ chars\]/, 'an oversize protocol result must be length-capped in prose');
   const payloadLine = stdout.split('\n').find((l) => l.startsWith('result: '));
   assert.ok(payloadLine && payloadLine.length < 4200, 'the prose payload must be bounded by the generous cap');
+});
+
+test('one-shot page method timeout bounds a non-responsive CDP websocket and closes it', async () => {
+  const server = new WebSocketServer({ port: 0 });
+  await once(server, 'listening');
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+
+  const peerClosed = new Promise<void>((resolve) => {
+    server.once('connection', (socket) => socket.once('close', () => resolve()));
+  });
+  const client = new CDPClient(`ws://127.0.0.1:${address.port}`);
+  const startedAt = Date.now();
+
+  try {
+    await assert.rejects(
+      () => runPageScope(
+        'Runtime.evaluate',
+        { expression: 'document.title', returnByValue: true },
+        parsedArgs({ positional: ['Runtime.evaluate'], timeoutMs: 25 }),
+        25,
+        async () => ({ client }),
+      ),
+      /CDP request timeout \(25ms\): Runtime\.evaluate/,
+    );
+    assert.ok(Date.now() - startedAt < 500, 'the method must reject near its requested timeout, not the old 60s default');
+    await peerClosed;
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+  }
 });
 
 test('--json mirrors the raw protocol result at full fidelity (no cap)', async () => {
@@ -452,6 +485,8 @@ test('cdp -h states the at-least-one-of input constraint and the inline --params
   assert.match(helpText, /At least one of <Domain\.method> \/ --wait-event is required/);
   assert.match(helpText, /Spec deviation: params stay inline JSON/);
   assert.match(helpText, /--port <port>/);
+  assert.match(helpText, /one-shot method-response and event-wait timeout/);
+  assert.match(helpText, /WebSocket connection setup is separately bounded to 5000ms/);
   assert.match(helpText, /Output:/);
   assert.match(helpText, /Effects:/);
   assert.doesNotMatch(helpText, /Example/i, 'D6 leaf help carries no examples');
