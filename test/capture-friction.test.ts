@@ -144,3 +144,25 @@ test('tab-open ready-state probe does not retry unrelated CDP errors', async () 
   await assert.rejects(() => readReadyStateWithRetry(client, 1_000), /Target closed/);
   assert.equal(client.attempts, 1);
 });
+
+class HangingRetryClient {
+  attempts = 0;
+  requestTimeout: number | undefined;
+
+  async send(_method: string, _params: Record<string, unknown>, timeout?: number): Promise<unknown> {
+    this.attempts++;
+    if (this.attempts === 1) throw new Error('Cannot find default execution context');
+    this.requestTimeout = timeout;
+    if (typeof timeout !== 'number') throw new Error('missing request timeout');
+    return new Promise((_, reject) => setTimeout(() => reject(new Error(`CDP request timeout (${timeout}ms): Runtime.evaluate`)), timeout));
+  }
+}
+
+test('tab-open retry passes the remaining load budget to a hanging CDP request', async () => {
+  const client = new HangingRetryClient();
+  const started = Date.now();
+  await assert.rejects(() => readReadyStateWithRetry(client, 200), /CDP request timeout/);
+  assert.equal(client.attempts, 2);
+  assert.ok(client.requestTimeout !== undefined && client.requestTimeout < 200, `request timeout was ${String(client.requestTimeout)}`);
+  assert.ok(Date.now() - started < 500, 'a retry must not inherit CDPClient’s 60s request timeout');
+});

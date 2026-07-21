@@ -25,17 +25,24 @@ export async function readReadyStateWithRetry(
   timeout: number,
 ): Promise<unknown> {
   const deadline = Date.now() + timeout;
+  let lastRetryableError: unknown;
   while (true) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      if (lastRetryableError) throw lastRetryableError;
+      throw new Error('Runtime.evaluate deadline exceeded');
+    }
     try {
       const result = await client.send('Runtime.evaluate', {
         expression: 'document.readyState',
         returnByValue: true,
-      });
+      }, remaining);
       return (result as { result?: { value?: unknown } } | undefined)?.result?.value;
     } catch (err) {
-      const remaining = deadline - Date.now();
-      if (!isMissingDefaultExecutionContext(err) || remaining <= 0) throw err;
-      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(50, remaining)));
+      const remainingAfterAttempt = deadline - Date.now();
+      if (!isMissingDefaultExecutionContext(err) || remainingAfterAttempt <= 0) throw err;
+      lastRetryableError = err;
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(50, remainingAfterAttempt)));
     }
   }
 }
