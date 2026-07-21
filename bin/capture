@@ -8379,6 +8379,25 @@ var init_a11y = __esm({
 });
 
 // src/cdp/record.ts
+function isMissingDefaultExecutionContext(err) {
+  return err instanceof Error && err.message === "Cannot find default execution context";
+}
+async function readReadyStateWithRetry(client, timeout) {
+  const deadline = Date.now() + timeout;
+  while (true) {
+    try {
+      const result = await client.send("Runtime.evaluate", {
+        expression: "document.readyState",
+        returnByValue: true
+      });
+      return result?.result?.value;
+    } catch (err) {
+      const remaining = deadline - Date.now();
+      if (!isMissingDefaultExecutionContext(err) || remaining <= 0) throw err;
+      await new Promise((resolve11) => setTimeout(resolve11, Math.min(50, remaining)));
+    }
+  }
+}
 async function navigateAndWait(port, url, options = {}) {
   const timeout = options.timeout ?? 1e4;
   if (!options.forceNew) {
@@ -8412,11 +8431,7 @@ async function navigateAndWait(port, url, options = {}) {
       }, timeout);
     });
     try {
-      const result = await client.send("Runtime.evaluate", {
-        expression: "document.readyState",
-        returnByValue: true
-      });
-      const readyState = result?.result?.value;
+      const readyState = await readReadyStateWithRetry(client, timeout);
       if (readyState !== "complete") {
         await loadPromise;
         if (loadTimeoutError) throw loadTimeoutError;

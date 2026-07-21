@@ -11,6 +11,35 @@ import { type CDPTarget } from './types.js';
  * load-wait helper. Navigation of an existing tab lives in
  * `./commands/page/navigate.ts` via ordinary page targeting.
  */
+function isMissingDefaultExecutionContext(err: unknown): boolean {
+  return err instanceof Error && err.message === 'Cannot find default execution context';
+}
+
+/**
+ * Arc can report the page load before it has installed the default execution
+ * context (notably for hash-routed Gmail URLs). Retry only that known transient
+ * CDP error; every other Runtime.evaluate failure remains fatal.
+ */
+export async function readReadyStateWithRetry(
+  client: Pick<CDPClient, 'send'>,
+  timeout: number,
+): Promise<unknown> {
+  const deadline = Date.now() + timeout;
+  while (true) {
+    try {
+      const result = await client.send('Runtime.evaluate', {
+        expression: 'document.readyState',
+        returnByValue: true,
+      });
+      return (result as { result?: { value?: unknown } } | undefined)?.result?.value;
+    } catch (err) {
+      const remaining = deadline - Date.now();
+      if (!isMissingDefaultExecutionContext(err) || remaining <= 0) throw err;
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(50, remaining)));
+    }
+  }
+}
+
 export async function navigateAndWait(
   port: number,
   url: string,
@@ -59,11 +88,7 @@ export async function navigateAndWait(
     });
 
     try {
-      const result = await client.send('Runtime.evaluate', {
-        expression: 'document.readyState',
-        returnByValue: true,
-      });
-      const readyState = (result as { result?: { value?: unknown } } | undefined)?.result?.value;
+      const readyState = await readReadyStateWithRetry(client, timeout);
       if (readyState !== 'complete') {
         await loadPromise;
         if (loadTimeoutError) throw loadTimeoutError;

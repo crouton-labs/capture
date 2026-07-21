@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { PNG } from 'pngjs';
 import { captureScreenshot } from '../src/cdp/screenshot.js';
 import { HARRecorder } from '../src/cdp/har-recorder.js';
+import { readReadyStateWithRetry } from '../src/cdp/record.js';
 import { waitForPageLoad } from '../src/session/commands.js';
 import type { CDPClient } from '../src/cdp/client.js';
 
@@ -118,4 +119,28 @@ test('page-load wait completes immediately when the page already reached readySt
   const timedOut = await waitForPageLoad(new AlreadyLoadedClient(), 1_000);
   assert.equal(timedOut, false);
   assert.ok(Date.now() - started < 100);
+});
+
+class LateExecutionContextClient {
+  attempts = 0;
+
+  async send(method: string): Promise<unknown> {
+    assert.equal(method, 'Runtime.evaluate');
+    this.attempts++;
+    if (this.attempts < 3) throw new Error('Cannot find default execution context');
+    return { result: { value: 'complete' } };
+  }
+}
+
+test('tab-open ready-state probe retries Arc’s late default execution context and then succeeds', async () => {
+  const client = new LateExecutionContextClient();
+  const readyState = await readReadyStateWithRetry(client, 1_000);
+  assert.equal(readyState, 'complete');
+  assert.equal(client.attempts, 3);
+});
+
+test('tab-open ready-state probe does not retry unrelated CDP errors', async () => {
+  const client = { attempts: 0, async send(): Promise<unknown> { client.attempts++; throw new Error('Target closed'); } };
+  await assert.rejects(() => readReadyStateWithRetry(client, 1_000), /Target closed/);
+  assert.equal(client.attempts, 1);
 });
