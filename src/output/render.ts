@@ -107,8 +107,7 @@ function neutralizeControl(s: string): string {
   return s
     .replace(/[\r\n\t\u2028\u2029]+/g, ' ')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
-    .replace(/\p{Cf}/gu, '')
-    .replace(/`/g, "'");
+    .replace(/\p{Cf}/gu, '');
 }
 
 function capLength(s: string, max: number): string {

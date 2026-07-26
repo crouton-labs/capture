@@ -20,6 +20,20 @@ import {
 
 const ANSI_PATTERN = /\u001b\[[0-9;]*[A-Za-z]/;
 
+test('dynamic text preserves literal grave accents in prose and JSON output', () => {
+  const fence = '```mermaid';
+  const result: RenderableResult = {
+    tag: 'typed',
+    attrs: { text: fence },
+    summary: fact`typed ${fence}`,
+  };
+
+  assert.match(renderResult(result), /text="```mermaid"[\s\S]*typed ```mermaid/);
+  const json = toJsonResult(result);
+  assert.equal((json.attrs as Record<string, unknown>).text, fence);
+  assert.equal(json.summary, `typed ${fence}`);
+});
+
 test('measure check result renders the sample shape', () => {
   const findings = formatFindings([
     {
