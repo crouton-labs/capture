@@ -263,7 +263,7 @@ test('--gate is confined to measure check and measure diff at built-binary dispa
       assert.equal(attrs.code, 'unsupported_flag', `${probe.args.join(' ')}\n${transcript(result)}`);
       assert.equal(attrs.kind, 'invocation', `${probe.args.join(' ')}\n${transcript(result)}`);
       assert.ok(
-        result.stdout.includes(`'--gate' is not accepted on '${probe.command}'`),
+        result.stdout.includes(`\`--gate\` is not accepted on \`${probe.command}\``),
         `${probe.args.join(' ')}\n${transcript(result)}`,
       );
     }

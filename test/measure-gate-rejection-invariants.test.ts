@@ -113,10 +113,10 @@ for (const { argv, command } of rejectionCases) {
     assert.match(stdout, /kind="invocation"/);
     // The command name is carried in the rendered message, not an attr —
     // the root boundary renders `failureResult()`, whose attrs are only
-    // `code`/`kind` (see src/errors.ts). Backticks neutralize to straight
-    // quotes in the rendered prose (see output/render.ts).
+    // `code`/`kind` (see src/errors.ts). Rendered prose preserves the
+    // authored grave accents (see output/render.ts neutralizeControl).
     const escapedCommand = command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    assert.match(stdout, new RegExp("'--gate' is not accepted on '" + escapedCommand + "'"));
+    assert.match(stdout, new RegExp('`--gate` is not accepted on `' + escapedCommand + '`'));
     // The guard fires INSTEAD of the branch/leaf running — never alongside.
     assert.doesNotMatch(stdout, /<subcommand /);
     assert.doesNotMatch(stdout, /not_implemented/);

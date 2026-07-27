@@ -82,7 +82,7 @@ test('a guessable former/legacy root name still fails, but the unknown_command m
     const result = run(['screenshot'], tempRoot);
     assert.equal(result.status, 1);
     assert.ok(result.stdout.includes('<error code="unknown_command" kind="invocation">'), result.stdout);
-    assert.ok(result.stdout.includes("did you mean 'capture page shot'?"), result.stdout);
+    assert.ok(result.stdout.includes('did you mean `capture page shot`?'), result.stdout);
     assert.ok(result.stdout.includes('session, page, tab, measure, motion, cdp, lib'));
     assert.deepEqual(readdirSync(tempRoot), []);
   });
