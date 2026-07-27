@@ -11,6 +11,7 @@ import {
 } from '../har-manager.js';
 import {
   getActiveSession,
+  activeSessionScopeKey,
   setActiveSession,
   clearActiveSessionIf,
   updateSessionState,
@@ -235,10 +236,38 @@ function sessionMetaPath(id: string): string {
   return path.join(sessionDir(id), '.session.json');
 }
 
+/** Outcome of reading one persisted record without failing the caller: either
+ * the validated session or the short reason its `.session.json` is unreadable. */
+type SessionRead =
+  | { ok: true; session: Session }
+  | { ok: false; id: string; metaPath: string; reason: string };
+
 /**
- * Reads and VALIDATES one persisted `.session.json`. A missing file throws a
- * typed `unknown_session` precondition error (leaf catch-alls emit it as
- * `unknown_session`); unparsable bytes or a record failing the shared
+ * Reads one record without throwing. A listing is what an agent reaches for
+ * precisely when it is working out what state it is in, so one corrupt or
+ * legacy-schema record on a shared capture root must not make every other
+ * session invisible — `list` renders the reason as its own unreadable row.
+ * A missing file is not a read outcome here; only `readSession` (targeted
+ * commands) turns that into `unknown_session`.
+ */
+function tryReadSession(id: string): SessionRead {
+  const metaPath = sessionMetaPath(id);
+  const bad = (reason: string): SessionRead => ({ ok: false, id, metaPath, reason });
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readPrivateFile(metaPath).toString('utf-8'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw error;
+    return bad('not valid JSON; the record is corrupt');
+  }
+  if (!isActiveStateCandidate(parsed)) return bad('does not match the session record schema; written by an incompatible version or corrupted');
+  return { ok: true, session: parsed };
+}
+
+/**
+ * Reads and VALIDATES one persisted `.session.json` for a command that named
+ * this session. A missing file throws a typed `unknown_session` precondition
+ * error; unparsable bytes or a record failing the shared
  * `isActiveStateCandidate` schema throw a typed `invalid_session_record`
  * artifact error instead of letting a structurally-trusted cast reach the
  * renderer (where a legacy-schema record used to crash `session list`
@@ -246,23 +275,15 @@ function sessionMetaPath(id: string): string {
  */
 function readSession(id: string): Session {
   const metaPath = sessionMetaPath(id);
-  let raw: string;
+  let read: SessionRead;
   try {
-    raw = readPrivateFile(metaPath).toString('utf-8');
+    read = tryReadSession(id);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw captureError('precondition', 'unknown_session', `No capture session found: ${id}`);
     throw error;
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    throw captureError('artifact', 'invalid_session_record', `session metadata at ${metaPath} is not valid JSON; the record is corrupt and cannot be read as a capture session.`, cause);
-  }
-  if (!isActiveStateCandidate(parsed)) {
-    throw captureError('artifact', 'invalid_session_record', `session metadata at ${metaPath} does not match the capture session record schema; it was written by an incompatible version or corrupted.`);
-  }
-  return parsed;
+  if (!read.ok) throw captureError('artifact', 'invalid_session_record', `session metadata at ${metaPath} ${read.reason}.`);
+  return read.session;
 }
 
 function generateId(): string {
@@ -354,8 +375,11 @@ input:
   (none)
 
 output:
-  One <sessions count=…> block, one row per session: id, status
+  One <sessions count=… unreadable=…> block, one row per session: id, status
   (active|stopped), start time, and URL when set. --json mirrors the same rows.
+  A record that is corrupt or written by an incompatible version lists as its
+  own "<id> — unreadable — <path> — <reason>" row and is excluded from count;
+  one bad record never hides the others.
 
 effects:
   None — reads session metadata only.`;
@@ -557,9 +581,9 @@ async function start(parsed: ParsedArgs): Promise<void> {
     if (active && !isSessionStopped(active)) {
       emitResult({
         tag: 'error',
-        attrs: { command: 'session start', code: 'start_failed' },
-        summary: fact`A session is already active for this scope (${active.sessionId}); stop it first with \`session stop ${active.sessionId}\`.`,
-        followUp: text`Only one live session is allowed per capture scope at a time.`,
+        attrs: { command: 'session start', code: 'session_already_active' },
+        summary: fact`Session ${active.sessionId} is already live in this capture scope (${activeSessionScopeKey()}); one live session per scope.`,
+        followUp: fact`Scopes are per-agent (CRTR_NODE_ID), so this session is yours — a concurrent agent's session never blocks yours. Keep using it (every command auto-targets its tab), or run \`capture session stop ${active.sessionId}\` to start fresh. To drive a different tab without ending it, pass \`--target <target-id>\` from \`capture tab list\`.`,
       }, { json: parsed.json });
       process.exitCode = 1;
       return;
@@ -1212,17 +1236,24 @@ function list(parsed: ParsedArgs): void {
 
   if (rejectSurplusPositionals(parsed, 'list', 0, 'capture session list')) return;
 
-  const sessions = fs.existsSync(CAPTURE_ROOT)
+  const reads = fs.existsSync(CAPTURE_ROOT)
     ? fs.readdirSync(CAPTURE_ROOT)
         .filter((d) => fs.existsSync(sessionMetaPath(d)))
-        .map((d) => {
-          const session = readSession(d);
-          const hasBundled = fs.existsSync(path.join(session.dir, 'bundle.json'));
-          return { id: session.sessionId, startedAt: session.startedAt ?? '', url: session.url ?? null, status: hasBundled ? 'stopped' : 'active' };
+        .flatMap((d) => {
+          // A record deleted between readdir and read is simply gone, not unreadable.
+          try { return [tryReadSession(d)]; } catch { return []; }
         })
     : [];
 
-  if (sessions.length === 0) {
+  const sessions = reads.flatMap((read) => {
+    if (!read.ok) return [];
+    const session = read.session;
+    const hasBundled = fs.existsSync(path.join(session.dir, 'bundle.json'));
+    return [{ id: session.sessionId, startedAt: session.startedAt ?? '', url: session.url ?? null, status: hasBundled ? 'stopped' : 'active' }];
+  });
+  const unreadable = reads.flatMap((read) => (read.ok ? [] : [read]));
+
+  if (reads.length === 0) {
     emitResult({
       tag: 'sessions',
       attrs: { count: 0 },
@@ -1237,11 +1268,17 @@ function list(parsed: ParsedArgs): void {
       s.url ? fact` — ${s.url}` : text``,
     ),
   );
+  const unreadableRows = unreadable.map((u) =>
+    line(fact`${u.id} — unreadable — ${u.metaPath} — ${u.reason}`),
+  );
 
   emitResult({
     tag: 'sessions',
-    attrs: { count: sessions.length },
-    sections: [lineList(rows)],
+    attrs: { count: sessions.length, unreadable: unreadable.length },
+    sections: [lineList([...rows, ...unreadableRows])],
+    ...(unreadable.length > 0
+      ? { followUp: text`Unreadable records are corrupt or written by an incompatible version; they are inert. Delete the named .session.json (or its session dir) to drop the row.` }
+      : {}),
   }, { json: parsed.json });
 }
 

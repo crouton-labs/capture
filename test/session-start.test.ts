@@ -168,7 +168,9 @@ test('simultaneous session starts publish exactly one live session', async () =>
     const output = out.logs.join('');
     assert.equal((output.match(/\"tag\": \"session\"/g) ?? []).length, 1);
     assert.equal((output.match(/\"tag\": \"error\"/g) ?? []).length, 1);
-    assert.match(output, /start_failed/);
+    // The loser of the race is refused by the one-live-session-per-scope guard,
+    // which names its own typed code and teaches the recovery routes.
+    assert.match(output, /session_already_active/);
   } finally {
     out.restore();
     process.exitCode = 0;
