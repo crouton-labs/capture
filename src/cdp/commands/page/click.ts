@@ -94,6 +94,20 @@ export function emitResolutionError(parsed: ParsedArgs, command: string, failure
     return;
   }
 
+  if (failure.code === 'invalid-css-selector') {
+    emitResult(
+      {
+        tag: 'error',
+        attrs: { command, code: 'invalid_css_selector' },
+        summary: fact`received: bare target \`${failure.input}\` was rejected by DOM.querySelectorAll as a CSS selector.`,
+        followUp: fact`Retry \`capture ${command} ax:${failure.input}\` to target that accessible name, or use \`backend:<id>\` from \`capture page elements\`.`,
+      },
+      { json: parsed.json },
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const code = failure.code === 'no-match' ? 'no_match' : 'ambiguous_target';
   const candidateRows: FactLine[] = failure.candidates.map((c) =>
     line(data(c.role ?? 'unknown'), text` "`, data(c.name ?? ''), text`" — backend:`, data(c.backendNodeId)),

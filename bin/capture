@@ -15199,10 +15199,18 @@ function settleAxMatches(kind, input, rawMatches) {
 async function resolveLiveCss(client, input, selector) {
   await client.send("DOM.enable");
   const { root } = await client.send("DOM.getDocument", { depth: 0 });
-  const { nodeIds } = await client.send("DOM.querySelectorAll", {
-    nodeId: root.nodeId,
-    selector
-  });
+  let nodeIds;
+  try {
+    ({ nodeIds } = await client.send("DOM.querySelectorAll", {
+      nodeId: root.nodeId,
+      selector
+    }));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("DOM Error while querying")) {
+      return { ok: false, code: "invalid-css-selector", input };
+    }
+    throw error;
+  }
   if (nodeIds.length === 1) {
     const backendNodeId2 = await backendNodeIdFor(client, nodeIds[0]);
     const { role, name } = await axIdentityFor(client, backendNodeId2);
@@ -15402,6 +15410,19 @@ function emitResolutionError(parsed, command, failure) {
         attrs: { command, code: "unsupported_prefix" },
         summary: fact`received: target \`${failure.input}\` — the \`text:\` prefix is not accepted by live driving verbs; expected one of: bare CSS selector, ax:<name>, axid:<id>, backend:<id>.`,
         followUp: fact`Retry \`${command}\` with \`ax:<name>\` (accessible-name substring) or a CSS selector; \`text:\` matching exists only on the query leaves.`
+      },
+      { json: parsed.json }
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (failure.code === "invalid-css-selector") {
+    emitResult(
+      {
+        tag: "error",
+        attrs: { command, code: "invalid_css_selector" },
+        summary: fact`received: bare target \`${failure.input}\` was rejected by DOM.querySelectorAll as a CSS selector.`,
+        followUp: fact`Retry \`capture ${command} ax:${failure.input}\` to target that accessible name, or use \`backend:<id>\` from \`capture page elements\`.`
       },
       { json: parsed.json }
     );
@@ -227171,7 +227192,7 @@ function buildElementsResult(records, opts) {
   const total = records.length;
   const shown = records.slice(0, opts.limit);
   const rows = shown.map(
-    (r) => r.backendNodeId !== null ? fact`${r.role} "${r.name}" backend:${r.backendNodeId}` : fact`${r.role} "${r.name}"`
+    (r) => r.backendNodeId !== null ? fact`${r.role} "${r.name}" target:ax:${r.name} backend:${r.backendNodeId}` : fact`${r.role} "${r.name}"`
   );
   const sections = [];
   if (rows.length > 0) sections.push(lineList(rows));
@@ -227221,7 +227242,7 @@ Input:
   --json              mirror the result as JSON
 
 Output:
-  <elements scope="interactive|all" count=<total>> \u2014 one row per element: role "name" backend:<id>
+  <elements scope="interactive|all" count=<total>> \u2014 one row per element: role "name" target:ax:<name> backend:<id>; copy the target value into a driving verb
 
 Effects: read-only \u2014 the accessibility fetch is CDP-side, no page-observable writes; routes unmarked through an active composed recording.`;
   }

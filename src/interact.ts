@@ -91,6 +91,11 @@ export type ResolutionFailure =
     }
   | {
       readonly ok: false;
+      readonly code: 'invalid-css-selector';
+      readonly input: string;
+    }
+  | {
+      readonly ok: false;
       readonly code: 'no-match' | 'ambiguous';
       readonly input: string;
       readonly kind: LiveTargetKind;
@@ -222,10 +227,21 @@ async function resolveLiveCss(
 ): Promise<ResolvedTarget | ResolutionFailure> {
   await client.send('DOM.enable');
   const { root } = (await client.send('DOM.getDocument', { depth: 0 })) as { root: { nodeId: number } };
-  const { nodeIds } = (await client.send('DOM.querySelectorAll', {
-    nodeId: root.nodeId,
-    selector,
-  })) as { nodeIds: number[] };
+  let nodeIds: number[];
+  try {
+    ({ nodeIds } = (await client.send('DOM.querySelectorAll', {
+      nodeId: root.nodeId,
+      selector,
+    })) as { nodeIds: number[] });
+  } catch (error) {
+    // Chrome reports a malformed CSS selector from this CDP method as the
+    // otherwise opaque "DOM Error while querying". The bare grammar is CSS;
+    // make the accessible-name retry explicit instead of leaking that error.
+    if (error instanceof Error && error.message.includes('DOM Error while querying')) {
+      return { ok: false, code: 'invalid-css-selector', input };
+    }
+    throw error;
+  }
 
   if (nodeIds.length === 1) {
     const backendNodeId = await backendNodeIdFor(client, nodeIds[0]);

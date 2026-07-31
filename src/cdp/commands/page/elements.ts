@@ -42,7 +42,7 @@ Input:
   --json              mirror the result as JSON
 
 Output:
-  <elements scope="interactive|all" count=<total>> — one row per element: role "name" backend:<id>
+  <elements scope="interactive|all" count=<total>> — one row per element: role "name" target:ax:<name> backend:<id>; copy the target value into a driving verb
 
 Effects: read-only — the accessibility fetch is CDP-side, no page-observable writes; routes unmarked through an active composed recording.`;
 
@@ -106,7 +106,7 @@ export function buildElementsResult(
 
   const rows = shown.map((r) =>
     r.backendNodeId !== null
-      ? fact`${r.role} "${r.name}" backend:${r.backendNodeId}`
+      ? fact`${r.role} "${r.name}" target:ax:${r.name} backend:${r.backendNodeId}`
       : fact`${r.role} "${r.name}"`,
   );
 

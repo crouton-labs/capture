@@ -299,6 +299,26 @@ test('page click: no-match exits 1 and names page elements as the recovery', asy
   }
 });
 
+test('page click: a bare accessible name that is invalid CSS gives its exact ax: retry', async () => {
+  const accessibleName = 'you have selected Thu, Jul 30 is your start date and Fri, Jul 31 is your end date, please choose new dates as desire or tab to continue';
+  const client = stubClient({
+    'DOM.enable': () => ({}),
+    'DOM.getDocument': () => ({ root: { nodeId: 1 } }),
+    'DOM.querySelectorAll': () => { throw new Error('DOM Error while querying'); },
+  });
+  const deps = installDeps(client);
+  try {
+    const { stdout, exitCode } = await runCmd(() => cmdPageClick(parsedFor([accessibleName]), []));
+    assert.equal(exitCode, 1);
+    assert.match(stdout, /<error command="page click" code="invalid_css_selector">/);
+    assert.match(stdout, /was rejected by DOM\.querySelectorAll as a CSS selector/);
+    assert.ok(stdout.includes(`capture page click ax:${accessibleName}`), stdout);
+    assert.ok(!client.calls.some((call) => call.method === 'Input.dispatchMouseEvent'));
+  } finally {
+    deps.restore();
+  }
+});
+
 test('page click: missing target is a structured invalid_input error', async () => {
   const client = stubClient({});
   const deps = installDeps(client);

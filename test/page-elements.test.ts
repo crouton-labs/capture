@@ -95,10 +95,10 @@ test('default lists only interactive roles, each record carrying role, name, and
 
   const output = renderResult(buildElementsResult(records, { all: false, limit: DEFAULT_LIMIT }));
   assert.ok(output.startsWith('<elements scope="interactive" count="4">'));
-  assert.ok(output.includes('button "Send" backend:201'));
-  assert.ok(output.includes('button "Send later" backend:202'));
-  assert.ok(output.includes('textbox "Message" backend:203'));
-  assert.ok(output.includes('link "Docs" backend:204'));
+  assert.ok(output.includes('button "Send" target:ax:Send backend:201'));
+  assert.ok(output.includes('button "Send later" target:ax:Send later backend:202'));
+  assert.ok(output.includes('textbox "Message" target:ax:Message backend:203'));
+  assert.ok(output.includes('link "Docs" target:ax:Docs backend:204'));
   // Non-interactive fixture nodes never appear.
   assert.ok(!output.includes('heading'));
   assert.ok(!output.includes('RootWebArea'));
@@ -175,7 +175,7 @@ test('--all returns the full exposed tree, including non-interactive and non-DOM
 
   const output = renderResult(buildElementsResult(records, { all: true, limit: DEFAULT_LIMIT }));
   assert.ok(output.startsWith('<elements scope="all" count="9">'));
-  assert.ok(output.includes('heading "Inbox" backend:110'));
+  assert.ok(output.includes('heading "Inbox" target:ax:Inbox backend:110'));
   // A node without a DOM node renders without the backend discriminator.
   assert.ok(output.includes('group "Toolbar group (no DOM node)"'));
   assert.ok(!output.includes('group "Toolbar group (no DOM node)" backend:'));
