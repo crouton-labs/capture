@@ -618,7 +618,18 @@ async function start(parsed: ParsedArgs): Promise<void> {
       }
 
       if (url) {
-        target = await startWorld.openTab(cdpPort!, url);
+        try {
+          target = await startWorld.openTab(cdpPort!, url);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.toLowerCase().includes('not supported')) {
+            throw worldFailure(
+              `Target.createTarget is unsupported on port ${cdpPort}: ${message}. Use an existing tab: \`capture session start --hold --port ${cdpPort}\`, then \`capture cdp <method> --browser --target <target-id>\`.`,
+              error,
+            );
+          }
+          throw error;
+        }
         const openedPort = cdpPort!;
         const openedTargetId = target.id;
         acquired.push({ label: 'opened target', release: () => startWorld.closeTarget(openedPort, openedTargetId) });

@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { CDPClient } from '../src/cdp/client.js';
-import { sessionMain, waitForPageLoad } from '../src/session/commands.js';
+import { __setSessionStartWorld, sessionMain, waitForPageLoad } from '../src/session/commands.js';
 import { getActiveSession, clearActiveSession } from '../src/session-context.js';
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
 import type { ParsedArgs } from '../src/cdp/types.js';
@@ -226,6 +226,28 @@ test('session start failure emits start_failed, sets exitCode 1, and leaves no s
 
   // A failed start must not register an active session.
   assert.equal(getActiveSession(), null);
+});
+
+test('session start explains the held existing-tab workflow when Target.createTarget is unsupported', async () => {
+  const out = captureStdout();
+  __setSessionStartWorld({
+    createHar: async () => 'fake-har',
+    deleteHar: async () => {},
+    openTab: async () => { throw new Error('Not supported'); },
+  });
+  try {
+    await sessionMain(sessionArgs(['start'], { url: 'http://localhost:3069/', port: 9333 }), []);
+  } finally {
+    __setSessionStartWorld();
+    out.restore();
+  }
+
+  const text = out.logs.join('');
+  assert.match(text, /Target\.createTarget/);
+  assert.match(text, /capture session start --hold --port 9333/);
+  assert.match(text, /capture cdp &lt;method&gt; --browser --target &lt;target-id&gt;/);
+  assert.equal(getActiveSession(), null);
+  process.exitCode = 0;
 });
 
 test('session start --url file: opens a tab and stop bundles shots (not a11y)', liveChromeOpts, async () => {
