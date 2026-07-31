@@ -164,8 +164,6 @@ export class HARRecorder {
   private readonly recordedKeys = new Set<string>();
   /** Snapshot mode only — streaming mode retains no materialized values. */
   private readonly materializedByKey = new Map<string, Materialized>();
-  /** Last terminal remains comparable until this CDP id opens its next generation. */
-  private readonly closedTerminals = new Map<string, Terminal>();
   /** Sockets opened while this recorder is attached — CDP does not replay creation events for pre-existing sockets. */
   private readonly webSockets = new Map<string, WebSocketConnection>();
   private readonly bodyTasks = new Set<Promise<void>>();
@@ -245,11 +243,13 @@ export class HARRecorder {
     const hasRedirect = 'redirectResponse' in params && params.redirectResponse !== undefined;
     if (previous && !hasRedirect) fail('duplicate active requestId without redirectResponse');
     if (hasRedirect && previous) {
-      const redirect = this.parseResponse(params.redirectResponse, 'redirectResponse');
-      if (redirect.status < 300 || redirect.status > 399) fail('redirectResponse.status');
+      // CDP uses status 0 when a redirect response is observable but never
+      // reached HTTP (for example, an extension redirect during navigation).
+      // Preserve that factual response rather than aborting the whole session.
+      const redirect = this.parseResponse(params.redirectResponse, 'redirectResponse', true);
+      if (redirect.status !== 0 && (redirect.status < 300 || redirect.status > 399)) fail('redirectResponse.status');
       this.assignTerminal(previous, { kind: 'redirect', timestamp: monotonic }, redirect);
     }
-    this.closedTerminals.delete(requestId);
     const generation = this.nextGenerationByRequestId.get(requestId) ?? 1;
     this.nextGenerationByRequestId.set(requestId, generation + 1);
     this.activeByRequestId.set(requestId, {
@@ -338,11 +338,11 @@ export class HARRecorder {
     });
   }
 
-  private parseResponse(value: unknown, name: string): RedirectResponse {
+  private parseResponse(value: unknown, name: string, allowNoHttpStatus = false): RedirectResponse {
     if (!isPlainObject(value)) fail(name);
     nonempty(value.url, `${name}.url`);
     const status = finite(value.status, `${name}.status`);
-    if (!Number.isInteger(status) || status < 100 || status > 599) fail(`${name}.status`);
+    if (!Number.isInteger(status) || status < 0 || status > 599 || (status < 100 && !(allowNoHttpStatus && status === 0))) fail(`${name}.status`);
     return { status, headers: headers(value.headers, `${name}.headers`) };
   }
 
@@ -366,11 +366,13 @@ export class HARRecorder {
     const requestId = this.eventRequestId(params);
     if (!requestId) return;
     const current = this.activeByRequestId.get(requestId);
-    const closed = this.closedTerminals.has(requestId);
-    if (!current && !closed) return;
+    // Chromium can follow a loadingFailed with loadingFinished for the same
+    // request (for example, a blocked iframe during navigation). Once the
+    // first terminal materializes its generation, a later terminal cannot be
+    // assigned safely, so the first factual terminal remains authoritative.
+    if (!current) return;
     const event = params as Record<string, unknown>;
     const terminal: Terminal = { kind: 'finished', timestamp: finite(event.timestamp, 'timestamp'), encodedDataLength: finite(event.encodedDataLength, 'encodedDataLength') };
-    if (!current) return this.compareClosedTerminal(requestId, terminal);
     if (!current.response) fail('loadingFinished without responseReceived');
     this.assignTerminal(current, terminal);
   }
@@ -379,8 +381,7 @@ export class HARRecorder {
     const requestId = this.eventRequestId(params);
     if (!requestId) return;
     const current = this.activeByRequestId.get(requestId);
-    const closed = this.closedTerminals.has(requestId);
-    if (!current && !closed) return;
+    if (!current) return;
     const event = params as Record<string, unknown>;
     const terminal: Terminal = {
       kind: 'failed',
@@ -390,22 +391,15 @@ export class HARRecorder {
       blockedReason: event.blockedReason === undefined ? null : typeof event.blockedReason === 'string' ? event.blockedReason : fail('blockedReason'),
       resourceType: event.type === undefined ? null : typeof event.type === 'string' ? event.type : fail('type'),
     };
-    if (!current) return this.compareClosedTerminal(requestId, terminal);
     this.assignTerminal(current, terminal);
-  }
-
-  private compareClosedTerminal(requestId: string, terminal: Terminal): void {
-    const previous = this.closedTerminals.get(requestId);
-    if (previous && !same(previous, terminal)) fail('conflicting terminal event');
   }
 
   private assignTerminal(current: Generation, terminal: Terminal, redirectResponse?: RedirectResponse): void {
     if (current.terminal) {
-      if (!same(current.terminal, terminal)) fail('conflicting terminal event');
+      if (!same(current.terminal, terminal)) fail(`conflicting terminal event for requestId ${current.requestId} generation ${current.generation}`);
       return;
     }
     current.terminal = terminal;
-    this.closedTerminals.set(current.requestId, terminal);
     if (redirectResponse) {
       current.redirectResponse = redirectResponse;
       this.materialize(current, { state: 'not_applicable', reason: 'redirect' });

@@ -113,11 +113,25 @@ test('redirects form independent request generations and do not fetch redirect b
   assert.equal(client.calls.filter((call) => call.method === 'Network.getResponseBody').length, 1);
 });
 
-test('failure and duplicate terminal events produce one factual terminal entry', async () => {
+test('records a zero-status CDP redirect response instead of aborting the active HAR', async () => {
+  const { client, recorder: har } = await recorder();
+  client.fire('Network.requestWillBeSent', request('same'));
+  client.fire('Network.requestWillBeSent', request('same', { timestamp: 20, wallTime: 1_700_000_001, redirectResponse: { url: 'chrome-extension://example/redirected.js', status: 0, headers: {} } }));
+  client.fire('Network.responseReceived', response('same', 21));
+  client.fire('Network.loadingFinished', finished('same', 22));
+  const result = await har.finish();
+  assert.equal(result.log.entries.length, 2);
+  assert.equal(result.log.entries[0].response.status, 0);
+  assert.deepEqual(result.log.entries[0]._capture.terminal, { kind: 'redirect' });
+  assertValid(result);
+});
+
+test('a loadingFinished duplicate after loadingFailed retains the first factual terminal', async () => {
   const { client, recorder: har } = await recorder();
   client.fire('Network.requestWillBeSent', request());
   client.fire('Network.loadingFailed', { requestId: 'r', timestamp: 13, errorText: 'net::ERR_FAILED', canceled: false, blockedReason: 'other', type: 'Document' });
-  client.fire('Network.loadingFailed', { requestId: 'r', timestamp: 13, errorText: 'net::ERR_FAILED', canceled: false, blockedReason: 'other', type: 'Document' });
+  // Chromium emits this pair for some blocked navigation subresources.
+  client.fire('Network.loadingFinished', finished('r', 14));
   const result = await har.finish();
   assert.equal(result.log.entries.length, 1);
   const entry = result.log.entries[0];
@@ -284,6 +298,14 @@ test('makes clock disorder incomplete evidence without inventing redirect respon
   assert.equal(incomplete.violation, 'terminal_before_request');
   assertValid(result);
 
+  const noHttpRedirect = await recorder();
+  noHttpRedirect.client.fire('Network.requestWillBeSent', request('redirect-zero'));
+  noHttpRedirect.client.fire('Network.requestWillBeSent', request('redirect-zero', { timestamp: 9, redirectResponse: { url: 'chrome-extension://example/redirected.js', status: 0, headers: {} } }));
+  const noHttpResult = await noHttpRedirect.recorder.finish();
+  const noHttpIncomplete = noHttpResult.incompleteLifecycles[0] as Extract<(typeof noHttpResult.incompleteLifecycles)[number], { kind: 'invalid_clock_order' }>;
+  assert.deepEqual(noHttpIncomplete.response, { status: 0, headers: [], responseMonotonic: null });
+  assertValid(noHttpResult);
+
   const invalidRedirects = [
     { ...incomplete, response: { ...incomplete.response!, status: 200 } },
     { ...incomplete, response: null },
@@ -358,10 +380,14 @@ test('malformed body payloads become factual fetch failures', async () => {
 
 test('conflicting terminal and derived validator failures retain one fatal authority', async () => {
   const conflicting = await recorder();
+  const pendingBody = deferred<unknown>();
+  conflicting.client.body = pendingBody.promise;
   conflicting.client.fire('Network.requestWillBeSent', request());
-  conflicting.client.fire('Network.loadingFailed', { requestId: 'r', timestamp: 12, errorText: 'first' });
+  conflicting.client.fire('Network.responseReceived', response());
+  conflicting.client.fire('Network.loadingFinished', finished('r', 12));
   conflicting.client.fire('Network.loadingFailed', { requestId: 'r', timestamp: 13, errorText: 'second' });
-  await assert.rejects(conflicting.recorder.finish(), /conflicting terminal event/);
+  await assert.rejects(conflicting.recorder.finish(), /conflicting terminal event for requestId r generation 1/);
+  pendingBody.resolve({ body: '', base64Encoded: false });
 
   const { client, recorder: har } = await recorder();
   client.fire('Network.requestWillBeSent', request('overflow', { timestamp: 0 }));

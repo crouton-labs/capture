@@ -552,8 +552,8 @@ function vEntry(v: unknown, source: string, path: string): HAREntry {
 
   // Response-state ⇄ status coupling.
   if (capResponse.state === 'received') {
-    if (status < 100 || status > 599) {
-      fail(source, `${path}.response.status`, 'a received response requires status 100..599');
+    if ((status < 100 || status > 599) && !(terminal.kind === 'redirect' && status === 0)) {
+      fail(source, `${path}.response.status`, 'a received response requires status 100..599 (or 0 for a redirect with no HTTP response)');
     }
   } else {
     // unavailable
@@ -566,8 +566,8 @@ function vEntry(v: unknown, source: string, path: string): HAREntry {
       fail(source, `${path}._capture.clocks.responseMonotonic`, 'must be null when no response was received');
     }
   }
-  if (status === 0 && capResponse.state !== 'unavailable') {
-    fail(source, `${path}.response.status`, 'status 0 is permitted only when _capture.response.state is "unavailable"');
+  if (status === 0 && capResponse.state !== 'unavailable' && terminal.kind !== 'redirect') {
+    fail(source, `${path}.response.status`, 'status 0 is permitted only for an unavailable response or a redirect with no HTTP response');
   }
 
   // Terminal ⇄ response/status/body coupling.
@@ -582,8 +582,8 @@ function vEntry(v: unknown, source: string, path: string): HAREntry {
     if (capResponse.state !== 'received') {
       fail(source, `${path}._capture.response.state`, 'a redirect requires a received response');
     }
-    if (status < 300 || status > 399) {
-      fail(source, `${path}.response.status`, 'a redirect requires status 300..399');
+    if (status !== 0 && (status < 300 || status > 399)) {
+      fail(source, `${path}.response.status`, 'a redirect requires status 0 (no HTTP response) or 300..399');
     }
     if (body.state !== 'not_applicable' || body.reason !== 'redirect') {
       fail(source, `${path}._capture.body`, 'a redirect requires body not_applicable/redirect');
@@ -666,17 +666,18 @@ function vIncompleteResponse(
   path: string,
   minResponseMonotonic: number,
   allowUnknownClock = false,
+  allowNoHttpStatus = false,
 ): IncompleteResponse {
   const o = vObject(v, source, path);
   exactKeys(o, ['status', 'headers', 'responseMonotonic'], source, path);
   const responseMonotonic = o.responseMonotonic === null
     ? allowUnknownClock ? null : fail(source, `${path}.responseMonotonic`, 'must be a finite number')
     : vFiniteMin(o.responseMonotonic, minResponseMonotonic, source, `${path}.responseMonotonic`);
-  return {
-    status: vIntInRange(o.status, 100, 599, source, `${path}.status`),
-    headers: vHeaders(o.headers, source, `${path}.headers`),
-    responseMonotonic,
-  };
+  const status = vIntInRange(o.status, 0, 599, source, `${path}.status`);
+  if ((status < 100 && status !== 0) || (status === 0 && (!allowNoHttpStatus || responseMonotonic !== null))) {
+    fail(source, `${path}.status`, 'must be 100..599 (or 0 for a redirect with no HTTP response)');
+  }
+  return { status, headers: vHeaders(o.headers, source, `${path}.headers`), responseMonotonic };
 }
 
 function vStoppedBeforeTerminal(
@@ -754,9 +755,9 @@ function vInvalidClockOrder(
   const generation = vSafeIntMin(o.generation, 1, source, `${path}.generation`);
   const startedDateTime = vString(o.startedDateTime, source, `${path}.startedDateTime`);
   const request = vRequest(o.request, source, `${path}.request`);
-  const response =
-    o.response === null ? null : vIncompleteResponse(o.response, source, `${path}.response`, 0, true);
   const terminal = vInvalidClockTerminal(o.terminal, source, `${path}.terminal`);
+  const response =
+    o.response === null ? null : vIncompleteResponse(o.response, source, `${path}.response`, 0, true, terminal.kind === 'redirect');
 
   const cap = vObject(o._capture, source, `${path}._capture`);
   exactKeys(cap, ['schemaVersion', 'requestWallTime', 'requestMonotonic'], source, `${path}._capture`);
@@ -775,8 +776,8 @@ function vInvalidClockOrder(
   // CDP redirectResponse preserves redirect facts but has no independently observed response clock.
   if (terminal.kind === 'redirect') {
     if (response === null) fail(source, `${path}.response`, 'a redirect terminal requires an observed response');
-    if (response.status < 300 || response.status > 399) {
-      fail(source, `${path}.response.status`, 'a redirect terminal requires status 300..399');
+    if (response.status !== 0 && (response.status < 300 || response.status > 399)) {
+      fail(source, `${path}.response.status`, 'a redirect terminal requires status 0 (no HTTP response) or 300..399');
     }
     if (response.responseMonotonic !== null) {
       fail(source, `${path}.response.responseMonotonic`, 'must be null for a redirect terminal');

@@ -9612,8 +9612,8 @@ function vEntry(v, source, path31) {
     fail(source, `${path31}.time`, "must equal (terminalMonotonic - requestMonotonic) * 1000");
   }
   if (capResponse.state === "received") {
-    if (status < 100 || status > 599) {
-      fail(source, `${path31}.response.status`, "a received response requires status 100..599");
+    if ((status < 100 || status > 599) && !(terminal.kind === "redirect" && status === 0)) {
+      fail(source, `${path31}.response.status`, "a received response requires status 100..599 (or 0 for a redirect with no HTTP response)");
     }
   } else {
     if (terminal.kind !== "failed") {
@@ -9625,8 +9625,8 @@ function vEntry(v, source, path31) {
       fail(source, `${path31}._capture.clocks.responseMonotonic`, "must be null when no response was received");
     }
   }
-  if (status === 0 && capResponse.state !== "unavailable") {
-    fail(source, `${path31}.response.status`, 'status 0 is permitted only when _capture.response.state is "unavailable"');
+  if (status === 0 && capResponse.state !== "unavailable" && terminal.kind !== "redirect") {
+    fail(source, `${path31}.response.status`, "status 0 is permitted only for an unavailable response or a redirect with no HTTP response");
   }
   if (terminal.kind === "finished") {
     if (capResponse.state !== "received") {
@@ -9639,8 +9639,8 @@ function vEntry(v, source, path31) {
     if (capResponse.state !== "received") {
       fail(source, `${path31}._capture.response.state`, "a redirect requires a received response");
     }
-    if (status < 300 || status > 399) {
-      fail(source, `${path31}.response.status`, "a redirect requires status 300..399");
+    if (status !== 0 && (status < 300 || status > 399)) {
+      fail(source, `${path31}.response.status`, "a redirect requires status 0 (no HTTP response) or 300..399");
     }
     if (body.state !== "not_applicable" || body.reason !== "redirect") {
       fail(source, `${path31}._capture.body`, "a redirect requires body not_applicable/redirect");
@@ -9694,15 +9694,15 @@ function vEntry(v, source, path31) {
     _capture: { schemaVersion: 1, requestId, generation, clocks, terminal, response: capResponse, body }
   };
 }
-function vIncompleteResponse(v, source, path31, minResponseMonotonic, allowUnknownClock = false) {
+function vIncompleteResponse(v, source, path31, minResponseMonotonic, allowUnknownClock = false, allowNoHttpStatus = false) {
   const o = vObject(v, source, path31);
   exactKeys2(o, ["status", "headers", "responseMonotonic"], source, path31);
   const responseMonotonic = o.responseMonotonic === null ? allowUnknownClock ? null : fail(source, `${path31}.responseMonotonic`, "must be a finite number") : vFiniteMin(o.responseMonotonic, minResponseMonotonic, source, `${path31}.responseMonotonic`);
-  return {
-    status: vIntInRange(o.status, 100, 599, source, `${path31}.status`),
-    headers: vHeaders(o.headers, source, `${path31}.headers`),
-    responseMonotonic
-  };
+  const status = vIntInRange(o.status, 0, 599, source, `${path31}.status`);
+  if (status < 100 && status !== 0 || status === 0 && (!allowNoHttpStatus || responseMonotonic !== null)) {
+    fail(source, `${path31}.status`, "must be 100..599 (or 0 for a redirect with no HTTP response)");
+  }
+  return { status, headers: vHeaders(o.headers, source, `${path31}.headers`), responseMonotonic };
 }
 function vStoppedBeforeTerminal(o, source, path31) {
   exactKeys2(o, ["kind", "requestId", "generation", "startedDateTime", "request", "_capture"], source, path31);
@@ -9759,8 +9759,8 @@ function vInvalidClockOrder(o, source, path31) {
   const generation = vSafeIntMin(o.generation, 1, source, `${path31}.generation`);
   const startedDateTime = vString(o.startedDateTime, source, `${path31}.startedDateTime`);
   const request = vRequest(o.request, source, `${path31}.request`);
-  const response = o.response === null ? null : vIncompleteResponse(o.response, source, `${path31}.response`, 0, true);
   const terminal = vInvalidClockTerminal(o.terminal, source, `${path31}.terminal`);
+  const response = o.response === null ? null : vIncompleteResponse(o.response, source, `${path31}.response`, 0, true, terminal.kind === "redirect");
   const cap2 = vObject(o._capture, source, `${path31}._capture`);
   exactKeys2(cap2, ["schemaVersion", "requestWallTime", "requestMonotonic"], source, `${path31}._capture`);
   vLiteral(cap2.schemaVersion, 1, source, `${path31}._capture.schemaVersion`);
@@ -9774,8 +9774,8 @@ function vInvalidClockOrder(o, source, path31) {
   assertStartedDateTime(startedDateTime, requestWallTime, source, `${path31}._capture.requestWallTime`, `${path31}.startedDateTime`);
   if (terminal.kind === "redirect") {
     if (response === null) fail(source, `${path31}.response`, "a redirect terminal requires an observed response");
-    if (response.status < 300 || response.status > 399) {
-      fail(source, `${path31}.response.status`, "a redirect terminal requires status 300..399");
+    if (response.status !== 0 && (response.status < 300 || response.status > 399)) {
+      fail(source, `${path31}.response.status`, "a redirect terminal requires status 0 (no HTTP response) or 300..399");
     }
     if (response.responseMonotonic !== null) {
       fail(source, `${path31}.response.responseMonotonic`, "must be null for a redirect terminal");
@@ -11676,8 +11676,6 @@ var init_har_recorder = __esm({
       recordedKeys = /* @__PURE__ */ new Set();
       /** Snapshot mode only — streaming mode retains no materialized values. */
       materializedByKey = /* @__PURE__ */ new Map();
-      /** Last terminal remains comparable until this CDP id opens its next generation. */
-      closedTerminals = /* @__PURE__ */ new Map();
       /** Sockets opened while this recorder is attached — CDP does not replay creation events for pre-existing sockets. */
       webSockets = /* @__PURE__ */ new Map();
       bodyTasks = /* @__PURE__ */ new Set();
@@ -11747,11 +11745,10 @@ var init_har_recorder = __esm({
         const hasRedirect = "redirectResponse" in params && params.redirectResponse !== void 0;
         if (previous && !hasRedirect) fail2("duplicate active requestId without redirectResponse");
         if (hasRedirect && previous) {
-          const redirect = this.parseResponse(params.redirectResponse, "redirectResponse");
-          if (redirect.status < 300 || redirect.status > 399) fail2("redirectResponse.status");
+          const redirect = this.parseResponse(params.redirectResponse, "redirectResponse", true);
+          if (redirect.status !== 0 && (redirect.status < 300 || redirect.status > 399)) fail2("redirectResponse.status");
           this.assignTerminal(previous, { kind: "redirect", timestamp: monotonic }, redirect);
         }
-        this.closedTerminals.delete(requestId);
         const generation = this.nextGenerationByRequestId.get(requestId) ?? 1;
         this.nextGenerationByRequestId.set(requestId, generation + 1);
         this.activeByRequestId.set(requestId, {
@@ -11830,11 +11827,11 @@ var init_har_recorder = __esm({
           };
         });
       }
-      parseResponse(value, name) {
+      parseResponse(value, name, allowNoHttpStatus = false) {
         if (!isPlainObject2(value)) fail2(name);
         nonempty(value.url, `${name}.url`);
         const status = finite(value.status, `${name}.status`);
-        if (!Number.isInteger(status) || status < 100 || status > 599) fail2(`${name}.status`);
+        if (!Number.isInteger(status) || status < 0 || status > 599 || status < 100 && !(allowNoHttpStatus && status === 0)) fail2(`${name}.status`);
         return { status, headers: headers(value.headers, `${name}.headers`) };
       }
       eventRequestId(params) {
@@ -11855,11 +11852,9 @@ var init_har_recorder = __esm({
         const requestId = this.eventRequestId(params);
         if (!requestId) return;
         const current = this.activeByRequestId.get(requestId);
-        const closed = this.closedTerminals.has(requestId);
-        if (!current && !closed) return;
+        if (!current) return;
         const event = params;
         const terminal = { kind: "finished", timestamp: finite(event.timestamp, "timestamp"), encodedDataLength: finite(event.encodedDataLength, "encodedDataLength") };
-        if (!current) return this.compareClosedTerminal(requestId, terminal);
         if (!current.response) fail2("loadingFinished without responseReceived");
         this.assignTerminal(current, terminal);
       }
@@ -11867,8 +11862,7 @@ var init_har_recorder = __esm({
         const requestId = this.eventRequestId(params);
         if (!requestId) return;
         const current = this.activeByRequestId.get(requestId);
-        const closed = this.closedTerminals.has(requestId);
-        if (!current && !closed) return;
+        if (!current) return;
         const event = params;
         const terminal = {
           kind: "failed",
@@ -11878,20 +11872,14 @@ var init_har_recorder = __esm({
           blockedReason: event.blockedReason === void 0 ? null : typeof event.blockedReason === "string" ? event.blockedReason : fail2("blockedReason"),
           resourceType: event.type === void 0 ? null : typeof event.type === "string" ? event.type : fail2("type")
         };
-        if (!current) return this.compareClosedTerminal(requestId, terminal);
         this.assignTerminal(current, terminal);
-      }
-      compareClosedTerminal(requestId, terminal) {
-        const previous = this.closedTerminals.get(requestId);
-        if (previous && !same(previous, terminal)) fail2("conflicting terminal event");
       }
       assignTerminal(current, terminal, redirectResponse) {
         if (current.terminal) {
-          if (!same(current.terminal, terminal)) fail2("conflicting terminal event");
+          if (!same(current.terminal, terminal)) fail2(`conflicting terminal event for requestId ${current.requestId} generation ${current.generation}`);
           return;
         }
         current.terminal = terminal;
-        this.closedTerminals.set(current.requestId, terminal);
         if (redirectResponse) {
           current.redirectResponse = redirectResponse;
           this.materialize(current, { state: "not_applicable", reason: "redirect" });
