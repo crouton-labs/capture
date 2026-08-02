@@ -118,6 +118,47 @@ function makeWriter(dir: string, artifacts: string[]): SnapshotWriter {
 // Orchestrator
 // ============================================================================
 
+/** One CDP operation is bounded so a page-side script or browser command that never returns cannot strand the CLI behind CDPClient's 60-second default. */
+export const SNAPSHOT_REQUEST_TIMEOUT_MS = 5_000;
+
+/** A snapshot operation timed out after writing zero or more partial artifacts. */
+export class SnapshotCaptureTimeout extends Error {
+  readonly code = 'snapshot_capture_timeout';
+
+  constructor(
+    readonly phase: string,
+    readonly method: string,
+    readonly timeoutMs: number,
+    readonly partialPath: string,
+  ) {
+    super(`snapshot capture timed out in ${phase} while waiting for ${method} after ${timeoutMs}ms; partial artifacts: ${partialPath}`);
+    this.name = 'SnapshotCaptureTimeout';
+  }
+}
+
+/** Bounds one snapshot CDP request and labels the phase that owns it. */
+function boundedClient(client: CDPClient, phase: string, partialPath: string): CDPClient {
+  const bounded = Object.create(client) as CDPClient;
+  bounded.send = (method: string, params: Record<string, unknown> = {}, timeout = 60_000, sessionId?: string): Promise<unknown> => {
+    const timeoutMs = Math.min(timeout, SNAPSHOT_REQUEST_TIMEOUT_MS);
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath)), timeoutMs);
+    });
+    const request = Promise.resolve().then(() => client.send(method, params, timeoutMs, sessionId)).catch((error: unknown) => {
+      if (error instanceof SnapshotCaptureTimeout) throw error;
+      if (error instanceof Error && error.message.startsWith('CDP request timeout')) {
+        throw new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath);
+      }
+      throw error;
+    });
+    return Promise.race([request, deadline]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  };
+  return bounded;
+}
+
 /**
  * Captures one snapshot substrate directory: enables the CDP domains,
  * runs the settledness gate, and — when the page settled or the caller
@@ -140,8 +181,10 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
   // Apply the shared artifact-string cap once at the source. URL contents
   // otherwise survive unchanged in meta.json, the result, and collector context.
   const url = options.url ? sanitizeString(options.url) : null;
+  const artifacts: string[] = [];
+  const phaseClient = (phase: string): CDPClient => boundedClient(client, phase, dir);
 
-  await enableDomainsForSnap(client);
+  await enableDomainsForSnap(phaseClient('domains'));
 
   // I-6: capture each animation's pre-freeze origin BEFORE this, the first
   // mutation, and restore it exception-safely — `animationFreezeHandle`/
@@ -173,7 +216,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
   let freezeIncomplete: boolean | undefined;
   let unfrozenCount: number | undefined;
   if (freezeAnimations) {
-    animationFreezeHandle = await freezeAnimationsBeforeCapture(client);
+    animationFreezeHandle = await freezeAnimationsBeforeCapture(phaseClient('freeze-animations'));
     freezeOverrideApplied = animationFreezeHandle?.rateOverrideApplied;
     freezeIncomplete = animationFreezeHandle?.freezeIncomplete;
     unfrozenCount = animationFreezeHandle?.unfrozenCount;
@@ -185,12 +228,12 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
     if (!animationFreezeHandle) return;
     const handle = animationFreezeHandle;
     animationFreezeHandle = undefined;
-    const result = await restoreAnimationsAfterCapture(client, handle);
+    const result = await restoreAnimationsAfterCapture(phaseClient('restore-animations'), handle);
     animationsRestored = result.restored;
   };
 
   try {
-    const churnHandle = await injectChurnObservers(client);
+    const churnHandle = await injectChurnObservers(phaseClient('settle-observers'));
 
     // The churn observers (MutationObserver/ResizeObserver) MUST be torn down
     // even if sampling throws (a CDP failure mid-poll) — otherwise they leak
@@ -204,7 +247,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
     let settleResult: Awaited<ReturnType<typeof pollForSettle<string>>>;
     try {
       settleResult = await pollForSettle({
-        captureSample: buildDomSettleSampler(client, churnHandle),
+        captureSample: buildDomSettleSampler(phaseClient('settle'), churnHandle),
         isEqual: domSignaturesEqual,
         settleTimeoutMs,
         quietThresholdMs,
@@ -212,7 +255,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
       });
     } catch (pollError) {
       try {
-        await collectChurnEvidence(client, churnHandle);
+        await collectChurnEvidence(phaseClient('settle-cleanup'), churnHandle);
       } catch {
         // Secondary teardown failure — the original poll error is what matters.
       }
@@ -220,13 +263,12 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
     }
 
     // Always call — cleanup, and potential evidence, regardless of settledness.
-    const churnEvidenceRaw = await collectChurnEvidence(client, churnHandle);
+    const churnEvidenceRaw = await collectChurnEvidence(phaseClient('settle-cleanup'), churnHandle);
 
     const settled = settleResult.settled;
     const captured = settled || captureUnsettled;
     const unstable = !settled;
 
-    const artifacts: string[] = [];
     let unstableRegions: readonly UnstableRegion[] = [];
     // I-5: set only inside the `captured` branch below (the only place
     // `dom.html` is ever attempted) — stays `undefined` on the evidence-only
@@ -235,7 +277,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
     let domHtmlFact: SnapshotMeta['domHtml'];
 
     if (unstable) {
-      const animationEvidence = await collectAnimationEvidence(client);
+      const animationEvidence = await collectAnimationEvidence(phaseClient('settle-evidence'));
       const grouped = groupChurnEvidence(churnEvidenceRaw, animationEvidence, settleResult.elapsedMs, settleTimeoutMs);
       unstableRegions = grouped.unstableRegions;
       writeJsonPrivate(path.join(dir, 'churn.json'), grouped.report);
@@ -265,17 +307,27 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
       const collectors = options.collectors ?? COLLECTORS;
       const baseline = collectors.filter((c) => c.phase === 'baseline');
       const mutating = collectors.filter((c) => c.phase === 'mutating');
+      const runCollector = (collector: CollectorDescriptor): Promise<void> => {
+        let timer: NodeJS.Timeout | undefined;
+        const deadline = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new SnapshotCaptureTimeout(`collector:${collector.name}`, '<collector>', SNAPSHOT_REQUEST_TIMEOUT_MS, dir)), SNAPSHOT_REQUEST_TIMEOUT_MS);
+        });
+        const run = collector.fn({ ...ctx, client: phaseClient(`collector:${collector.name}`) });
+        return Promise.race([run, deadline]).finally(() => {
+          if (timer) clearTimeout(timer);
+        });
+      };
 
       // Phase 1 — baseline collectors observe the page exactly as it settled;
       // they run in parallel and must ALL finish before the baseline
       // artifacts are captured.
-      await Promise.all(baseline.map((c) => c.fn(ctx)));
+      await Promise.all(baseline.map(runCollector));
 
       // Baseline boundary — capture screenshot.png + dom.html BEFORE any
       // mutating collector runs, so a mutating collector's DOM/focus/scroll/
       // background change (or a failed restoration) can never contaminate
       // these artifacts.
-      const screenshotResponse = (await client.send('Page.captureScreenshot', { format: 'png' })) as { data: string };
+      const screenshotResponse = (await phaseClient('baseline-screenshot').send('Page.captureScreenshot', { format: 'png' })) as { data: string };
       writeBinaryPrivate(path.join(dir, 'screenshot.png'), Buffer.from(screenshotResponse.data, 'base64'));
       artifacts.push('screenshot.png');
 
@@ -288,7 +340,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
       let domHtmlValue: string | undefined;
       let domHtmlUnavailableReason: string | undefined;
       try {
-        const domResponse = (await client.send('Runtime.evaluate', {
+        const domResponse = (await phaseClient('baseline-dom').send('Runtime.evaluate', {
           expression: 'document.documentElement.outerHTML',
           returnByValue: true,
         })) as { result?: { value?: string } };
@@ -319,7 +371,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
       // captured, and SERIALIZED (one at a time) so their mutations and
       // restorations cannot contaminate each other.
       for (const c of mutating) {
-        await c.fn(ctx);
+        await runCollector(c);
       }
     } else {
       // Evidence-only branch (unstable, not captured) — nothing depends on
@@ -379,6 +431,26 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
       artifacts,
       meta,
     };
+  } catch (error) {
+    if (error instanceof SnapshotCaptureTimeout) {
+      try {
+        writeJsonPrivate(path.join(dir, 'capture-timeout.json'), {
+          schemaVersion: 1,
+          id: snapId,
+          status: 'timeout',
+          phase: error.phase,
+          method: error.method,
+          timeoutMs: error.timeoutMs,
+          partialPath: dir,
+          artifacts,
+          capturedAt: new Date().toISOString(),
+        });
+        artifacts.push('capture-timeout.json');
+      } catch {
+        // Preserve the timeout and its directory even if recovery metadata cannot be written.
+      }
+    }
+    throw error;
   } finally {
     // I-6 exception safety net: if anything above threw before either
     // natural restore point ran, still restore the page against the

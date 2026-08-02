@@ -63,6 +63,7 @@ export class CDPClient {
     sessionId?: string,
   ): Promise<unknown> {
     await this.ready;
+    if (this.ws.readyState !== WebSocket.OPEN) throw new Error('CDP client is closed');
     const id = ++this.messageId;
 
     return new Promise((resolve, reject) => {
@@ -103,7 +104,15 @@ export class CDPClient {
   }
 
   close(): void {
-    // Clear all pending timeouts to allow process to exit
+    // Reject pending requests before clearing their timers. Leaving their
+    // promises unresolved strands collectors that were interrupted by a
+    // bounded command timeout, so the CLI never reaches its structured
+    // partial-artifact result or exits after the socket closes.
+    const error = new Error('CDP client closed');
+    for (const [id, pending] of this.pendingRequests) {
+      pending.reject(error);
+      this.pendingRequests.delete(id);
+    }
     for (const timer of this.pendingTimeouts.values()) {
       clearTimeout(timer);
     }

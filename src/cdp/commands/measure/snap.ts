@@ -6,7 +6,7 @@ import { type ParsedArgs } from '../../types.js';
 import { withConnection } from '../../connection.js';
 import { isRecorderHeldClient } from '../../recorder-client.js';
 import { parseViewport, type Viewport } from '../../viewport.js';
-import { captureSnapshotSubstrate } from '../../measure/snapshot.js';
+import { captureSnapshotSubstrate, SnapshotCaptureTimeout } from '../../measure/snapshot.js';
 import { sanitizeString } from '../../measure/redaction.js';
 import { DEFAULT_SETTLE_TIMEOUT_MS } from '../../measure/settle.js';
 import { createOneshotSession } from '../../../session/commands.js';
@@ -262,7 +262,7 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
     if (!snapDir) throw new Error('measure snap did not allocate an artifact directory');
     return { id: snapId, dir: snapDir, artifacts, ...(base ? { base } : {}) };
   } catch (err) {
-    if (allocatedRoot) removeArtifactTree(allocatedRoot);
+    if (allocatedRoot && !(err instanceof SnapshotCaptureTimeout)) removeArtifactTree(allocatedRoot);
     throw err;
   }
 }
@@ -312,6 +312,9 @@ interface SnapErrorDetails {
   readonly status: string;
   readonly message: string;
   readonly resolution?: ArtifactResolutionError;
+  readonly phase?: string;
+  readonly method?: string;
+  readonly partialPath?: string;
 }
 
 function safeErrorDetail(value: unknown): string {
@@ -319,6 +322,9 @@ function safeErrorDetail(value: unknown): string {
 }
 
 export function classifySnapError(err: unknown): SnapErrorDetails {
+  if (err instanceof SnapshotCaptureTimeout) {
+    return { status: 'snapshot_capture_timeout', message: safeErrorDetail(err), phase: err.phase, method: err.method, partialPath: err.partialPath };
+  }
   if (err instanceof ArtifactResolutionError) {
     return { status: 'snapshot_ref_unavailable', message: safeErrorDetail(err), resolution: err };
   }
@@ -399,6 +405,9 @@ export async function cmdMeasureSnap(parsed: ParsedArgs, _args: string[]): Promi
       attrs: {
         command: 'measure snap',
         status: classified.status,
+        ...(classified.phase ? { phase: classified.phase } : {}),
+        ...(classified.method ? { method: classified.method } : {}),
+        ...(classified.partialPath ? { 'partial-path': classified.partialPath } : {}),
         ...(classified.resolution ? {
           recovery: 'artifact-resolution-error',
           ref: sanitizeString(classified.resolution.ref),

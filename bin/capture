@@ -3719,6 +3719,7 @@ var init_client = __esm({
       }
       async send(method, params = {}, timeout = 6e4, sessionId) {
         await this.ready;
+        if (this.ws.readyState !== wrapper_default.OPEN) throw new Error("CDP client is closed");
         const id = ++this.messageId;
         return new Promise((resolve11, reject) => {
           this.pendingRequests.set(id, { resolve: resolve11, reject });
@@ -3753,6 +3754,11 @@ var init_client = __esm({
         this.ws.on("close", handler);
       }
       close() {
+        const error = new Error("CDP client closed");
+        for (const [id, pending] of this.pendingRequests) {
+          pending.reject(error);
+          this.pendingRequests.delete(id);
+        }
         for (const timer of this.pendingTimeouts.values()) {
           clearTimeout(timer);
         }
@@ -235115,6 +235121,27 @@ function makeWriter(dir, artifacts) {
     }
   };
 }
+function boundedClient(client, phase, partialPath) {
+  const bounded = Object.create(client);
+  bounded.send = (method, params = {}, timeout = 6e4, sessionId) => {
+    const timeoutMs = Math.min(timeout, SNAPSHOT_REQUEST_TIMEOUT_MS);
+    let timer;
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath)), timeoutMs);
+    });
+    const request = Promise.resolve().then(() => client.send(method, params, timeoutMs, sessionId)).catch((error) => {
+      if (error instanceof SnapshotCaptureTimeout) throw error;
+      if (error instanceof Error && error.message.startsWith("CDP request timeout")) {
+        throw new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath);
+      }
+      throw error;
+    });
+    return Promise.race([request, deadline]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  };
+  return bounded;
+}
 async function captureSnapshotSubstrate(options) {
   const client = options.target.client;
   const dir = ensurePrivateDir(options.path);
@@ -235128,14 +235155,16 @@ async function captureSnapshotSubstrate(options) {
   const state = options.state ?? [];
   const viewport2 = options.viewport ?? null;
   const url = options.url ? sanitizeString(options.url) : null;
-  await enableDomainsForSnap(client);
+  const artifacts = [];
+  const phaseClient = (phase) => boundedClient(client, phase, dir);
+  await enableDomainsForSnap(phaseClient("domains"));
   let animationFreezeHandle;
   let animationsRestored = freezeAnimations ? false : void 0;
   let freezeOverrideApplied;
   let freezeIncomplete;
   let unfrozenCount;
   if (freezeAnimations) {
-    animationFreezeHandle = await freezeAnimationsBeforeCapture(client);
+    animationFreezeHandle = await freezeAnimationsBeforeCapture(phaseClient("freeze-animations"));
     freezeOverrideApplied = animationFreezeHandle?.rateOverrideApplied;
     freezeIncomplete = animationFreezeHandle?.freezeIncomplete;
     unfrozenCount = animationFreezeHandle?.unfrozenCount;
@@ -235144,15 +235173,15 @@ async function captureSnapshotSubstrate(options) {
     if (!animationFreezeHandle) return;
     const handle = animationFreezeHandle;
     animationFreezeHandle = void 0;
-    const result = await restoreAnimationsAfterCapture(client, handle);
+    const result = await restoreAnimationsAfterCapture(phaseClient("restore-animations"), handle);
     animationsRestored = result.restored;
   };
   try {
-    const churnHandle = await injectChurnObservers(client);
+    const churnHandle = await injectChurnObservers(phaseClient("settle-observers"));
     let settleResult;
     try {
       settleResult = await pollForSettle({
-        captureSample: buildDomSettleSampler(client, churnHandle),
+        captureSample: buildDomSettleSampler(phaseClient("settle"), churnHandle),
         isEqual: domSignaturesEqual,
         settleTimeoutMs,
         quietThresholdMs,
@@ -235160,20 +235189,19 @@ async function captureSnapshotSubstrate(options) {
       });
     } catch (pollError) {
       try {
-        await collectChurnEvidence(client, churnHandle);
+        await collectChurnEvidence(phaseClient("settle-cleanup"), churnHandle);
       } catch {
       }
       throw pollError;
     }
-    const churnEvidenceRaw = await collectChurnEvidence(client, churnHandle);
+    const churnEvidenceRaw = await collectChurnEvidence(phaseClient("settle-cleanup"), churnHandle);
     const settled = settleResult.settled;
     const captured = settled || captureUnsettled;
     const unstable = !settled;
-    const artifacts = [];
     let unstableRegions = [];
     let domHtmlFact;
     if (unstable) {
-      const animationEvidence = await collectAnimationEvidence(client);
+      const animationEvidence = await collectAnimationEvidence(phaseClient("settle-evidence"));
       const grouped = groupChurnEvidence(churnEvidenceRaw, animationEvidence, settleResult.elapsedMs, settleTimeoutMs);
       unstableRegions = grouped.unstableRegions;
       writeJsonPrivate(path19.join(dir, "churn.json"), grouped.report);
@@ -235201,14 +235229,24 @@ async function captureSnapshotSubstrate(options) {
       const collectors = options.collectors ?? COLLECTORS;
       const baseline = collectors.filter((c) => c.phase === "baseline");
       const mutating = collectors.filter((c) => c.phase === "mutating");
-      await Promise.all(baseline.map((c) => c.fn(ctx)));
-      const screenshotResponse = await client.send("Page.captureScreenshot", { format: "png" });
+      const runCollector = (collector) => {
+        let timer;
+        const deadline = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new SnapshotCaptureTimeout(`collector:${collector.name}`, "<collector>", SNAPSHOT_REQUEST_TIMEOUT_MS, dir)), SNAPSHOT_REQUEST_TIMEOUT_MS);
+        });
+        const run = collector.fn({ ...ctx, client: phaseClient(`collector:${collector.name}`) });
+        return Promise.race([run, deadline]).finally(() => {
+          if (timer) clearTimeout(timer);
+        });
+      };
+      await Promise.all(baseline.map(runCollector));
+      const screenshotResponse = await phaseClient("baseline-screenshot").send("Page.captureScreenshot", { format: "png" });
       writeBinaryPrivate(path19.join(dir, "screenshot.png"), Buffer.from(screenshotResponse.data, "base64"));
       artifacts.push("screenshot.png");
       let domHtmlValue;
       let domHtmlUnavailableReason;
       try {
-        const domResponse = await client.send("Runtime.evaluate", {
+        const domResponse = await phaseClient("baseline-dom").send("Runtime.evaluate", {
           expression: "document.documentElement.outerHTML",
           returnByValue: true
         });
@@ -235229,7 +235267,7 @@ async function captureSnapshotSubstrate(options) {
       }
       await restoreAnimationsOnce();
       for (const c of mutating) {
-        await c.fn(ctx);
+        await runCollector(c);
       }
     } else {
       await restoreAnimationsOnce();
@@ -235285,11 +235323,30 @@ async function captureSnapshotSubstrate(options) {
       artifacts,
       meta
     };
+  } catch (error) {
+    if (error instanceof SnapshotCaptureTimeout) {
+      try {
+        writeJsonPrivate(path19.join(dir, "capture-timeout.json"), {
+          schemaVersion: 1,
+          id: snapId,
+          status: "timeout",
+          phase: error.phase,
+          method: error.method,
+          timeoutMs: error.timeoutMs,
+          partialPath: dir,
+          artifacts,
+          capturedAt: (/* @__PURE__ */ new Date()).toISOString()
+        });
+        artifacts.push("capture-timeout.json");
+      } catch {
+      }
+    }
+    throw error;
   } finally {
     await restoreAnimationsOnce();
   }
 }
-var path19, COLLECTORS;
+var path19, COLLECTORS, SNAPSHOT_REQUEST_TIMEOUT_MS, SnapshotCaptureTimeout;
 var init_snapshot = __esm({
   "src/cdp/measure/snapshot.ts"() {
     path19 = __toESM(require("path"));
@@ -235327,6 +235384,18 @@ var init_snapshot = __esm({
       { name: "states", phase: "mutating", fn: collectStates },
       { name: "pixels", phase: "mutating", fn: collectPixels }
     ];
+    SNAPSHOT_REQUEST_TIMEOUT_MS = 5e3;
+    SnapshotCaptureTimeout = class extends Error {
+      constructor(phase, method, timeoutMs, partialPath) {
+        super(`snapshot capture timed out in ${phase} while waiting for ${method} after ${timeoutMs}ms; partial artifacts: ${partialPath}`);
+        this.phase = phase;
+        this.method = method;
+        this.timeoutMs = timeoutMs;
+        this.partialPath = partialPath;
+        this.name = "SnapshotCaptureTimeout";
+      }
+      code = "snapshot_capture_timeout";
+    };
   }
 });
 
@@ -235777,7 +235846,7 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
     if (!snapDir) throw new Error("measure snap did not allocate an artifact directory");
     return { id: snapId, dir: snapDir, artifacts, ...base ? { base } : {} };
   } catch (err) {
-    if (allocatedRoot) removeArtifactTree(allocatedRoot);
+    if (allocatedRoot && !(err instanceof SnapshotCaptureTimeout)) removeArtifactTree(allocatedRoot);
     throw err;
   }
 }
@@ -235812,6 +235881,9 @@ function safeErrorDetail(value) {
   return sanitizeString(value instanceof Error ? value.message : String(value));
 }
 function classifySnapError(err) {
+  if (err instanceof SnapshotCaptureTimeout) {
+    return { status: "snapshot_capture_timeout", message: safeErrorDetail(err), phase: err.phase, method: err.method, partialPath: err.partialPath };
+  }
   if (err instanceof ArtifactResolutionError) {
     return { status: "snapshot_ref_unavailable", message: safeErrorDetail(err), resolution: err };
   }
@@ -235889,6 +235961,9 @@ async function cmdMeasureSnap(parsed, _args) {
       attrs: {
         command: "measure snap",
         status: classified.status,
+        ...classified.phase ? { phase: classified.phase } : {},
+        ...classified.method ? { method: classified.method } : {},
+        ...classified.partialPath ? { "partial-path": classified.partialPath } : {},
         ...classified.resolution ? {
           recovery: "artifact-resolution-error",
           ref: sanitizeString(classified.resolution.ref),
@@ -240043,7 +240118,8 @@ async function cmdMotionMask(parsed, _args) {
     const ref = resolveRecRef(parsed.positional[0]);
     const meta = readMeta(ref);
     const state = typeof meta.state === "string" ? meta.state : "unknown";
-    if (state !== "finalized" && state !== "orphaned-finalized") {
+    const readablePartial = state === "partial" && meta.reason === "no_frames";
+    if (state !== "finalized" && state !== "orphaned-finalized" && !readablePartial) {
       return emitCommandError2(parsed, "recording_not_finalized", `Recording ${ref.id} has state ${state}; finalize it with \`capture motion rec --stop\` before creating a mask.`);
     }
     const mask = createMotionMask(ref);
@@ -240622,7 +240698,8 @@ function longTask(source, timingDomain, startMs, durationMs2, droppedFrames) {
 function readMotionJank(ref) {
   const meta = readMeta(ref);
   const state = typeof meta.state === "string" ? meta.state : void 0;
-  if (state !== "finalized" && state !== "orphaned-finalized") {
+  const readablePartial = state === "partial" && meta.reason === "no_frames";
+  if (state !== "finalized" && state !== "orphaned-finalized" && !readablePartial) {
     throw new Error(`recording ${JSON.stringify(ref.id)} is state ${JSON.stringify(state ?? "unknown")}, not finalized; finalize it with: capture motion rec --stop`);
   }
   return { analysis: analyzeMotionJank({ rects: readRects(ref), events: readEvents(ref), markers: readMarkers(ref), state }), meta };
