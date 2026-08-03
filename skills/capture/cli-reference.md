@@ -53,4 +53,4 @@ capture session stop "$SESSION_ID"
 capture session view "$SESSION_ID" --filter shots
 ```
 
-Set `SESSION_ID` to the id emitted by `session start` before the final two calls. Use `capture session har -h` for traffic filters, `capture measure -h` for static instruments, and `capture motion -h` for recording instruments.
+Set `SESSION_ID` to the id emitted by `session start` before the final two calls. If the CDP endpoint is Electron or another implementation that rejects `Target.createTarget`, do not retry the URL-targeted start; use `capture session start --hold --port <port>`, `capture tab list --port <port>`, then `capture page navigate <url> --target <target-id> --port <port>`. The navigate command adopts the existing tab and later page commands use it automatically. Use `capture session har -h` for traffic filters, `capture measure -h` for static instruments, and `capture motion -h` for recording instruments.

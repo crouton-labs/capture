@@ -244,8 +244,10 @@ test('session start explains the held existing-tab workflow when Target.createTa
 
   const text = out.logs.join('');
   assert.match(text, /Target\.createTarget/);
+  assert.match(text, /Target\.createTarget is unsupported on port 9333/);
+  assert.match(text, /capture page navigate &lt;url&gt; --target &lt;target-id&gt; --port 9333/);
   assert.match(text, /capture session start --hold --port 9333/);
-  assert.match(text, /capture cdp &lt;method&gt; --browser --target &lt;target-id&gt;/);
+  assert.match(text, /capture tab list/);
   assert.equal(getActiveSession(), null);
   process.exitCode = 0;
 });

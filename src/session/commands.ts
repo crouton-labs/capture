@@ -327,32 +327,40 @@ export async function waitForPageLoad(
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="session">
-the artifact container — a session opens a tab, records HAR, and bundles every artifact; while active, every command auto-targets its tab
+the artifact container — a session records HAR and bundles every artifact; it may open a tab or adopt one later; while active, every command auto-targets its tab
 use when starting scoped work against a page: start first, then every other capture command needs no --target/--port threading
   start · stop · list · view · har · log — \`capture session -h\`
 </command>`;
 
-const START_USAGE = `capture session start [--url <url>] [--hold] — open a tab, record HAR, and set the active capture context.
+const START_USAGE = `capture session start [--url <url>] [--hold] — open or prepare a tab, record HAR, and set the active capture context.
 
 input:
-  --url <url>    Absolute URL to open in a fresh tab. Omit to start a session
-                 with no tab (HAR-only until a later command targets one).
+  --url <url>    Absolute URL to open in a fresh tab through CDP's
+                 Target.createTarget. Some endpoints, including Electron,
+                 expose existing tabs but reject Target.createTarget; on those
+                 endpoints --url cannot be used.
   --hold         Hold one CDP browser connection open for the session's
                  lifetime, so browser-level state (permission grants,
                  ServiceWorker enablement) survives across separate commands.
-                 With no --url, later --target <existing-id> commands adopt
-                 an already-open tab without creating a new one.
+                 With no --url, start a held session and adopt an existing tab
+                 with this supported workflow:
+                   capture session start --hold --port <port>
+                   capture tab list --port <port>
+                   capture page navigate <url> --target <target-id> --port <port>
+                 The navigate command adopts that target for the session; later
+                 page commands then auto-target it.
   --port <n>     CDP port to attach to; default is auto-detected across localhost.
 
 Output:
   One <session id=… path=… [url=…]> block: the session id, bundle dir, opened
-  tab, HAR recording id, and held-bridge pid when applicable. --json mirrors
-  the same fields.
+  tab when --url succeeds, HAR recording id, and held-bridge pid when
+  applicable. --json mirrors the same fields.
 
 effects:
-  Creates a private session dir with shots/, starts a HAR recording, opens the
-  tab (with --url), optionally holds a CDP bridge, and registers the session as
-  the active capture context so subsequent commands auto-target it.`;
+  Creates a private session dir with shots/, starts a HAR recording, opens a
+  fresh tab only when --url is supplied, optionally holds a CDP bridge, and
+  registers the session as the active capture context so subsequent commands
+  auto-target it.`;
 
 const STOP_USAGE = `capture session stop <session-id> — finalize a session and write its bundle manifest.
 
@@ -449,13 +457,13 @@ effects:
   the identity-bearing tailer record is registered in the session metadata.`;
 
 function printSessionHelp(): void {
-  console.log(`capture session — the artifact container: opens a tab, records HAR, bundles every artifact.
+  console.log(`capture session — the artifact container: records HAR and bundles artifacts; it may open a tab or adopt one later.
 
 An active session auto-targets its tab and auto-appends recorded traffic — no
 --target/--har threading. \`stop\` finalizes the session and writes its bundle
 manifest; \`view\` reads that manifest back.
 
-  <subcommand name="start" args="[--url <url>] [--hold]" whenToUse="open a tab, start HAR, and set the active capture context"/>
+  <subcommand name="start" args="[--url <url>] [--hold]" whenToUse="open or prepare a tab, start HAR, and set the active capture context"/>
   <subcommand name="stop" args="<session-id>" whenToUse="finalize the session and write its bundle manifest"/>
   <subcommand name="list" args="" whenToUse="show active and stopped sessions"/>
   <subcommand name="view" args="<session-id> [--filter shots|har|logs|measure|motion|other]" whenToUse="read back a stopped session's bundle manifest"/>
@@ -624,7 +632,7 @@ async function start(parsed: ParsedArgs): Promise<void> {
           const message = error instanceof Error ? error.message : String(error);
           if (message.toLowerCase().includes('not supported')) {
             throw worldFailure(
-              `Target.createTarget is unsupported on port ${cdpPort}: ${message}. Use an existing tab: \`capture session start --hold --port ${cdpPort}\`, then \`capture cdp <method> --browser --target <target-id>\`.`,
+              `Target.createTarget is unsupported on port ${cdpPort}. Use existing tab: \`capture page navigate <url> --target <target-id> --port ${cdpPort}\` after \`capture session start --hold --port ${cdpPort}\` and \`capture tab list\`.`,
               error,
             );
           }
