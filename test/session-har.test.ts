@@ -13,7 +13,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { sessionMain } from '../src/session/commands.js';
 import { __setLogTailWorld } from '../src/session/log-tailer.js';
-import { appendToHarRecording, type HAREntry } from '../src/har-manager.js';
+import { appendToHarRecording, type HAREntry, type IncompleteLifecycle } from '../src/har-manager.js';
 import { getActiveSession, clearActiveSession } from '../src/session-context.js';
 import { workerExecArgv } from './fixtures/worker-exec-argv.js';
 import type { ParsedArgs } from '../src/cdp/types.js';
@@ -133,6 +133,56 @@ function entry(over: {
 
 let FIXTURE_SEED = 0;
 
+/** One retained `stopped_before_terminal` record — a request the recorder saw
+ * start (and optionally answer) but never terminate. `wallTime` is explicit so
+ * a record can be placed BETWEEN two completed entries. */
+function stoppedBeforeTerminal(over: {
+  url: string;
+  method?: string;
+  wallTime: number;
+  status?: number;
+}): IncompleteLifecycle {
+  return {
+    kind: 'stopped_before_terminal',
+    requestId: `inc-stopped-${over.wallTime}`,
+    generation: 1,
+    startedDateTime: new Date(over.wallTime * 1000).toISOString(),
+    request: {
+      method: over.method ?? 'GET',
+      url: over.url,
+      headers: [{ name: 'accept', value: 'text/event-stream' }],
+    },
+    _capture: {
+      schemaVersion: 1,
+      requestWallTime: over.wallTime,
+      requestMonotonic: 5,
+      response: over.status === undefined
+        ? null
+        : { status: over.status, headers: [{ name: 'content-type', value: 'text/event-stream' }], responseMonotonic: 7 },
+    },
+  };
+}
+
+/** One retained `invalid_clock_order` record — Chrome reported the terminal
+ * before the response, so the entry could not be modeled as completed. */
+function terminalBeforeResponse(over: { url: string; wallTime: number }): IncompleteLifecycle {
+  return {
+    kind: 'invalid_clock_order',
+    requestId: `inc-clock-${over.wallTime}`,
+    generation: 1,
+    startedDateTime: new Date(over.wallTime * 1000).toISOString(),
+    request: {
+      method: 'POST',
+      url: over.url,
+      headers: [{ name: 'accept', value: 'application/json' }],
+    },
+    response: { status: 204, headers: [{ name: 'content-type', value: 'application/json' }], responseMonotonic: 40 },
+    terminal: { kind: 'finished', terminalMonotonic: 30, encodedDataLength: 0 },
+    _capture: { schemaVersion: 1, requestWallTime: over.wallTime, requestMonotonic: 10 },
+    violation: 'terminal_before_response',
+  };
+}
+
 const HOSTILE_URL = 'https://api.example.com/x?q=<img src=x onerror=alert(1)>';
 const SECRET_BODY = 'SECRET_BODY_TOKEN_abc123';
 const POST_BODY = 'POST_BODY_TOKEN_xyz789';
@@ -243,6 +293,113 @@ test('session har works against a STOPPED session\'s bundled har.json, and --jso
     assert.equal(json.attrs.id, id);
     assert.equal(json.attrs.source, 'bundle');
     assert.equal(json.attrs.total, 4);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    clearActiveSession();
+  }
+});
+
+test('session har lists incomplete lifecycle records beside completed entries, in one chronological selection', async () => {
+  // The Cloudflare bundle that motivated this: 24 completed entries beside 739
+  // retained incomplete records, none of which any `session har` read could see.
+  const incomplete = [
+    // 00:00:00.500 — between fixture entries 0 (00:00:00) and 1 (00:00:01).
+    stoppedBeforeTerminal({ url: 'https://api.example.com/stream', wallTime: 1783814400.5, status: 200 }),
+    // No response ever observed — no status to filter on.
+    stoppedBeforeTerminal({ url: 'https://api.example.com/pending', method: 'PUT', wallTime: 1783814410 }),
+    terminalBeforeResponse({ url: 'https://api.example.com/events', wallTime: 1783814411 }),
+  ];
+  await runSession(['start']);
+  const active = getActiveSession();
+  assert.ok(active?.harId);
+  const { sessionId: id, dir } = active!;
+  await appendToHarRecording(active!.harId!, { entries: FIXTURE_ENTRIES, incompleteLifecycles: incomplete });
+
+  try {
+    const all = await runSession(['har']);
+    assert.ok(all.includes('entries="4"'), all);
+    assert.ok(all.includes('incomplete="3"'), all);
+    assert.ok(all.includes('total="4"'), all);
+    assert.ok(all.includes('total-incomplete="3"'), all);
+    assert.ok(all.includes('incomplete: stopped_before_terminal'), all);
+    // A clock violation names the violation, not just the kind.
+    assert.ok(all.includes('incomplete: invalid_clock_order/terminal_before_response'), all);
+    // A record with no observed response says so instead of inventing a status.
+    assert.ok(all.includes('PUT no-response'), all);
+
+    // Chronological merge: the 00:00:00.500 record sits between entry 1 and 2.
+    const rows = all.split('\n').filter((l) => /^\d+\. /.test(l.trim()));
+    const streamRow = rows.findIndex((r) => r.includes('/stream'));
+    assert.equal(streamRow, 1, rows.join('\n'));
+
+    // Filters select across both populations.
+    const byMethod = await runSession(['har'], { filterMethod: 'PUT' });
+    assert.ok(byMethod.includes('entries="0"') && byMethod.includes('incomplete="1"'), byMethod);
+    const byStatus = await runSession(['har'], { filterStatus: '204' });
+    assert.ok(byStatus.includes('entries="0"') && byStatus.includes('incomplete="1"'), byStatus);
+    // A status filter never matches a record with no observed response.
+    const byUrl = await runSession(['har'], { filterUrl: 'pending', filterStatus: '2' });
+    assert.ok(byUrl.includes('incomplete="0"'), byUrl);
+
+    // The bound is truthful about what it left out.
+    const limited = await runSession(['har'], { limit: 2 });
+    assert.ok(limited.includes('truncated="true"'), limited);
+    assert.ok(limited.includes('5 further matching rows are not listed'), limited);
+
+    // --full explains WHY the lifecycle never completed.
+    const full = await runSession(['har'], { full: true, filterUrl: 'events' });
+    assert.ok(full.includes('terminal: finished'), full);
+    assert.ok(full.includes('res content-type: application/json'), full);
+
+    const json = JSON.parse(await runSession(['har'], { json: true }));
+    assert.equal(json.attrs.incomplete, 3);
+    assert.equal(json.attrs['total-incomplete'], 3);
+  } finally {
+    await runSession(['stop', id], { json: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+    clearActiveSession();
+  }
+});
+
+test('session har redacts credential query values in rendered URLs while the HAR artifact keeps them', async () => {
+  const SECRET = 'cf-live-key-abc123XYZ';
+  const credentialUrl = `https://dash.cloudflare.com/api/tail?account=acct-42&key=${SECRET}&page=2`;
+  const oauthUrl = `https://auth.example.com/callback?code=${SECRET}&state=keep-me#access_token=${SECRET}`;
+  await runSession(['start']);
+  const active = getActiveSession();
+  assert.ok(active?.harId);
+  const { sessionId: id, dir } = active!;
+  await appendToHarRecording(active!.harId!, {
+    entries: [entry({ url: credentialUrl, status: 200 })],
+    incompleteLifecycles: [stoppedBeforeTerminal({ url: oauthUrl, wallTime: 1783814500 })],
+  });
+
+  try {
+    const rendered = await runSession(['har']);
+    assert.ok(!rendered.includes(SECRET), rendered);
+    assert.ok(rendered.includes('key=REDACTED'), rendered);
+    assert.ok(rendered.includes('code=REDACTED'), rendered);
+    assert.ok(rendered.includes('access_token=REDACTED'), rendered);
+    // Only credential-named parameters are touched.
+    assert.ok(rendered.includes('account=acct-42'), rendered);
+    assert.ok(rendered.includes('page=2'), rendered);
+    assert.ok(rendered.includes('state=keep-me'), rendered);
+
+    // --full opts into bodies and headers, never back into credential values.
+    const full = await runSession(['har'], { full: true });
+    assert.ok(!full.includes(SECRET), full);
+    assert.ok(full.includes('key=REDACTED'), full);
+
+    // Filters match the URL AS CAPTURED, so the real value still selects.
+    const filtered = await runSession(['har'], { filterUrl: SECRET });
+    assert.ok(filtered.includes('entries="1"') && filtered.includes('incomplete="1"'), filtered);
+
+    // The full-fidelity artifact is untouched — both live and bundled.
+    const live = fs.readFileSync(path.join(dir, '.har', fs.readdirSync(path.join(dir, '.har'))[0]), 'utf-8');
+    assert.ok(live.includes(SECRET), 'live HAR store must keep the captured value');
+    await runSession(['stop', id], { json: true });
+    const bundled = fs.readFileSync(path.join(dir, 'har.json'), 'utf-8');
+    assert.ok(bundled.includes(SECRET), 'bundled har.json must keep the captured value');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     clearActiveSession();

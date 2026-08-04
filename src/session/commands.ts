@@ -8,6 +8,8 @@ import {
   validateHarFile,
   type HarFile,
   type HAREntry,
+  type Header,
+  type IncompleteLifecycle,
 } from '../har-manager.js';
 import {
   getActiveSession,
@@ -49,6 +51,7 @@ import {
 } from './artifacts.js';
 import { beginSessionStop, admitSessionOperation, withSessionLifecycle, withSessionScopeLifecycle } from './coordinator.js';
 import { parseStatusFilter, type StatusPredicate } from './har-filter.js';
+import { redactUrlCredentials } from './har-redact.js';
 
 type Session = ActiveSessionState;
 
@@ -408,30 +411,45 @@ Output:
 effects:
   None — reads bundle.json only.`;
 
+/** Default row bound for one `session har` read. A busy page produces
+ * thousands of records; an unbounded list buries the row the agent came for.
+ * `--limit` overrides it in either direction. */
+const DEFAULT_HAR_ROWS = 100;
+
 const HAR_USAGE = `capture session har [<session-id>] — read a session's recorded HTTP traffic as a selection list.
 
 input:
   <session-id>              session to read; defaults to the active session. A
                             running session reads its live accumulating HAR; a
                             stopped one reads the bundled har.json.
-  --filter-url <pattern>    substring or regex match on the request URL
+  --filter-url <pattern>    substring or regex match on the request URL (matched
+                            against the URL as captured, before redaction)
   --filter-status <spec>    exact status (100-599), one-digit class prefix
                             (1-5, e.g. 4 = every 4xx), or ordered range
-                            (e.g. 400-499); any other token is invalid_filter
+                            (e.g. 400-499); any other token is invalid_filter.
+                            A record with no observed response never matches.
   --filter-method <method>  HTTP method (GET, POST, …)
-  --limit <n>               first n matching entries
-  --full                    inline per-entry detail (headers, post data,
+  --limit <n>               list at most n matching rows; default ${DEFAULT_HAR_ROWS}
+  --full                    inline per-record detail (headers, post data,
                             response body — escaped and capped); bodies are
                             never inlined without it
 
 output:
-  One <session-har id=… path=… source=live|bundle entries=… total=…> block,
-  one row per entry: method, status, URL, body size, start time. The path
-  attribute is the HAR file's absolute path — the full-fidelity pointer.
-  --json mirrors the same fields. WebSockets opened while a command was
-  recording appear as entries with _resourceType "websocket" and their frames
-  in _webSocketMessages (capped at 200 frames/socket, 4KB/frame); sockets
-  opened before recording started are not visible.
+  One <session-har id=… path=… source=live|bundle entries=… incomplete=…
+  total=… total-incomplete=… [truncated=true]> block listing BOTH populations
+  in one chronological selection: completed entries (method, status, URL, body
+  size, start time) and the incomplete lifecycle records the recorder retained
+  for requests that never completed — rendered as "incomplete: <kind>" (an
+  out-of-order clock also names its violation, e.g.
+  invalid_clock_order/terminal_before_response). The path attribute is the HAR
+  file's absolute path — the full-fidelity pointer, which holds every record
+  including the ones this list bounds away. --json mirrors the same fields.
+  Credential-like query parameter values (key, token, secret, signature, auth,
+  password, oauth code, …) render as REDACTED; the HAR file keeps the real
+  value. WebSockets opened while a command was recording appear as entries with
+  _resourceType "websocket" and their frames in _webSocketMessages (capped at
+  200 frames/socket, 4KB/frame); sockets opened before recording started are
+  not visible.
 
 effects:
   None — reads recorded HAR data only.`;
@@ -467,7 +485,7 @@ manifest; \`view\` reads that manifest back.
   <subcommand name="stop" args="<session-id>" whenToUse="finalize the session and write its bundle manifest"/>
   <subcommand name="list" args="" whenToUse="show active and stopped sessions"/>
   <subcommand name="view" args="<session-id> [--filter shots|har|logs|measure|motion|other]" whenToUse="read back a stopped session's bundle manifest"/>
-  <subcommand name="har" args="[<session-id>] [--filter-url <pattern>] [--filter-status <code>] [--filter-method <method>] [--limit <n>] [--full]" whenToUse="inspect recorded traffic — the live accumulating HAR of a running session or a stopped session's bundled har.json"/>
+  <subcommand name="har" args="[<session-id>] [--filter-url <pattern>] [--filter-status <code>] [--filter-method <method>] [--limit <n>] [--full]" whenToUse="inspect recorded traffic — completed entries and retained incomplete lifecycle records, from the live accumulating HAR of a running session or a stopped session's bundled har.json"/>
   <subcommand name="log" args="<path> [--name <label>] [--session <id>]" whenToUse="tail an external log file into the session's logs/ dir"/>
 
   capture session <leaf> -h    Per-leaf usage`);
@@ -906,6 +924,89 @@ async function locateSessionHar(session: Session): Promise<HarSource | { unavail
   }
 }
 
+/**
+ * The `session har` selection population is BOTH of the HAR file's records:
+ * the completed entries under `log.entries` and the incomplete lifecycle
+ * records under `incompleteLifecycles`. A request whose lifecycle the recorder
+ * could not complete (the page was still in flight at session stop, or Chrome
+ * reported clocks out of order) is retained evidence, not lost traffic —
+ * rendering only `log.entries` hid it from every read, which is exactly when an
+ * agent is looking for the request that did not finish.
+ */
+type HarSelection = {
+  /** Original captured URL — what every filter matches against. */
+  url: string;
+  method: string;
+  /** Response status when one was observed; null when the record has no response. */
+  status: number | null;
+  startedDateTime: string;
+  /** Capture order, the deterministic tie-breaker for equal start times. */
+  order: number;
+} & (
+  | { kind: 'complete'; entry: HAREntry }
+  | { kind: 'incomplete'; record: IncompleteLifecycle }
+);
+
+/** The response an incomplete record observed before it was cut short, if any. */
+function incompleteResponse(record: IncompleteLifecycle): { status: number; headers: Header[] } | null {
+  switch (record.kind) {
+    case 'stopped_before_terminal':
+      return record._capture.response;
+    case 'invalid_clock_order':
+      return record.response;
+    case 'stopped_during_body':
+      return record.response;
+  }
+}
+
+/** The incomplete record's kind, qualified by the clock violation when it has one. */
+function incompleteLabel(record: IncompleteLifecycle): string {
+  return record.kind === 'invalid_clock_order' ? `${record.kind}/${record.violation}` : record.kind;
+}
+
+/**
+ * Merges completed entries and incomplete lifecycle records into one
+ * chronologically ordered population. Ordering is deterministic for a given
+ * HAR file: start time first, then capture order (entries before incomplete
+ * records at an identical timestamp).
+ */
+function buildHarSelection(har: HarFile): HarSelection[] {
+  const items: HarSelection[] = [];
+  for (const entry of har.log.entries) {
+    items.push({
+      kind: 'complete',
+      entry,
+      url: entry.request.url,
+      method: entry.request.method,
+      status: entry.response.status,
+      startedDateTime: entry.startedDateTime,
+      order: items.length,
+    });
+  }
+  for (const record of har.incompleteLifecycles) {
+    items.push({
+      kind: 'incomplete',
+      record,
+      url: record.request.url,
+      method: record.request.method,
+      status: incompleteResponse(record)?.status ?? null,
+      startedDateTime: record.startedDateTime,
+      order: items.length,
+    });
+  }
+  return items.sort((a, b) =>
+    a.startedDateTime === b.startedDateTime
+      ? a.order - b.order
+      : (a.startedDateTime < b.startedDateTime ? -1 : 1),
+  );
+}
+
+/** Every rendered URL passes through render-time credential redaction; the HAR
+ * artifact and the `--filter-url` match target keep the original value. */
+function harUrl(url: string): FactLine {
+  return data(redactUrlCredentials(url), 300);
+}
+
 /** One selection-list row: method, status, URL, body size, start time. Body
  * content is NEVER inlined here (I-7) — `--full` is the only opt-in. */
 function harEntryRow(e: HAREntry): FactLine {
@@ -915,10 +1016,24 @@ function harEntryRow(e: HAREntry): FactLine {
     : text`body not captured`;
   return line(
     fact`${e.request.method} ${e.response.status} `,
-    data(e.request.url, 300),
+    harUrl(e.request.url),
     text` — `,
     sizePart,
     fact` — started ${e.startedDateTime}`,
+  );
+}
+
+/** One selection-list row for an incomplete lifecycle record: it names the
+ * kind (and clock violation) in place of the body size a completed entry
+ * reports, so a row is never mistaken for finished traffic. */
+function harIncompleteRow(record: IncompleteLifecycle): FactLine {
+  const response = incompleteResponse(record);
+  return line(
+    fact`${record.request.method} ${response ? response.status : 'no-response'} `,
+    harUrl(record.request.url),
+    text` — `,
+    fact`incomplete: ${incompleteLabel(record)}`,
+    fact` — started ${record.startedDateTime}`,
   );
 }
 
@@ -941,6 +1056,33 @@ function harEntryDetail(e: HAREntry, index: number): FactLine {
       ? fact`   body: ${capped(bodyText, 2000)}`
       : text`   body: not captured`,
   );
+  return lineList(rows);
+}
+
+/** `--full` inline detail for one incomplete lifecycle record: the same
+ * headers/post data a completed entry shows, plus the provenance that explains
+ * why the lifecycle never completed. */
+function harIncompleteDetail(record: IncompleteLifecycle, index: number): FactLine {
+  const rows: FactLine[] = [line(fact`${index + 1}. `, harIncompleteRow(record))];
+  rows.push(fact`   request ${record.requestId} (generation ${record.generation})`);
+  for (const h of record.request.headers ?? []) {
+    rows.push(fact`   req ${h.name}: ${h.value}`);
+  }
+  if (record.request.postData?.text !== undefined) {
+    rows.push(fact`   post data: ${capped(record.request.postData.text, 2000)}`);
+  }
+  const response = incompleteResponse(record);
+  for (const h of response?.headers ?? []) {
+    rows.push(fact`   res ${h.name}: ${h.value}`);
+  }
+  if (record.kind === 'invalid_clock_order') {
+    rows.push(fact`   terminal: ${record.terminal.kind}`);
+    if (record.terminal.kind === 'failed') {
+      rows.push(fact`   error: ${record.terminal.errorText} (canceled=${String(record.terminal.canceled)})`);
+    }
+  } else {
+    rows.push(text`   terminal: never observed`);
+  }
   return lineList(rows);
 }
 
@@ -1012,41 +1154,57 @@ async function har(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
-  let entries = located.har.log.entries;
-  const total = entries.length;
+  let selection = buildHarSelection(located.har);
+  const total = located.har.log.entries.length;
+  const totalIncomplete = located.har.incompleteLifecycles.length;
   const filters: string[] = [];
 
+  // Every filter matches the ORIGINAL captured URL/method/status — redaction is
+  // applied at render time only, so a `--filter-url` pattern still selects on
+  // what the browser actually requested.
   if (parsed.filterUrl) {
     const pattern = parsed.filterUrl;
     let re: RegExp | null = null;
     try { re = new RegExp(pattern, 'i'); } catch { re = null; }
-    entries = entries.filter((e) =>
-      re ? re.test(e.request.url) : e.request.url.toLowerCase().includes(pattern.toLowerCase()),
+    selection = selection.filter((item) =>
+      re ? re.test(item.url) : item.url.toLowerCase().includes(pattern.toLowerCase()),
     );
     filters.push(`url~${pattern}`);
   }
   if (statusMatch) {
     const matches = statusMatch;
-    entries = entries.filter((e) => matches(e.response.status));
+    // A record with no observed response cannot satisfy a status filter.
+    selection = selection.filter((item) => item.status !== null && matches(item.status));
     filters.push(`status=${parsed.filterStatus}`);
   }
   if (parsed.filterMethod) {
     const m = parsed.filterMethod.toUpperCase();
-    entries = entries.filter((e) => e.request.method.toUpperCase() === m);
+    selection = selection.filter((item) => item.method.toUpperCase() === m);
     filters.push(`method=${m}`);
   }
-  if (typeof parsed.limit === 'number' && parsed.limit > 0) {
-    entries = entries.slice(0, parsed.limit);
-    filters.push(`limit=${parsed.limit}`);
-  }
 
-  const summary = filters.length > 0
-    ? fact`${entries.length} of ${total} entries match (${filters.join(', ')}).`
-    : fact`${total} entries.`;
+  const requestedLimit = typeof parsed.limit === 'number' && parsed.limit > 0 ? parsed.limit : null;
+  if (requestedLimit !== null) filters.push(`limit=${requestedLimit}`);
+  const bound = requestedLimit ?? DEFAULT_HAR_ROWS;
+  const matched = selection.length;
+  const shown = selection.slice(0, bound);
+  const truncated = matched > shown.length;
+
+  const shownEntries = shown.filter((item) => item.kind === 'complete').length;
+  const shownIncomplete = shown.length - shownEntries;
+
+  const filterNote = filters.length > 0 ? ` (${filters.join(', ')})` : '';
+  const truncationNote = truncated
+    ? ` ${matched - shown.length} further matching rows are not listed — raise the bound with --limit.`
+    : '';
+  const summary = fact`${shownEntries} of ${total} complete entries and ${shownIncomplete} of ${totalIncomplete} incomplete lifecycle records listed${filterNote}.${truncationNote}`;
 
   const sections = parsed.full
-    ? entries.map((e, i) => harEntryDetail(e, i))
-    : [lineList(entries.map((e, i) => line(fact`${i + 1}. `, harEntryRow(e))))];
+    ? shown.map((item, i) => (item.kind === 'complete' ? harEntryDetail(item.entry, i) : harIncompleteDetail(item.record, i)))
+    : [lineList(shown.map((item, i) => line(
+      fact`${i + 1}. `,
+      item.kind === 'complete' ? harEntryRow(item.entry) : harIncompleteRow(item.record),
+    )))];
 
   emitResult({
     tag: 'session-har',
@@ -1054,8 +1212,11 @@ async function har(parsed: ParsedArgs): Promise<void> {
       id,
       path: located.path,
       source: located.source,
-      entries: entries.length,
+      entries: shownEntries,
+      incomplete: shownIncomplete,
       total,
+      'total-incomplete': totalIncomplete,
+      truncated: truncated ? true : undefined,
     },
     summary,
     sections,
