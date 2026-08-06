@@ -552,6 +552,12 @@ export async function submitPost(
   } else if (args.text) {
     body.text = args.text;
   }
+  if (args.flairId !== undefined) {
+    body.flair_id = args.flairId;
+  }
+  if (args.flairText !== undefined) {
+    body.flair_text = args.flairText;
+  }
 
   const resp = await redditPost('/api/submit', body, args.modhash);
   const json = await resp.json();

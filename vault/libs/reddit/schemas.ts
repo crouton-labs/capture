@@ -525,6 +525,16 @@ export const submitPostSchema = {
       .string()
       .optional()
       .describe('URL for link posts (omit for text posts)'),
+    flairId: z
+      .string()
+      .optional()
+      .describe(
+        'Flair template ID from getPostFlairs; flair-required subreddits reject submissions without one',
+      ),
+    flairText: z
+      .string()
+      .optional()
+      .describe('Custom flair text; only set when the selected flair is textEditable'),
   }),
   output: z.object({
     id: z.string().describe('New post fullname (t3_xxx)'),
