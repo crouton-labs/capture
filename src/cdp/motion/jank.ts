@@ -426,7 +426,14 @@ function longTask(source: 'observer' | 'trace', timingDomain: LongTaskTimingDoma
 export function readMotionJank(ref: RecRef): { analysis: MotionJankAnalysis; meta: Record<string, unknown> } {
   const meta = readMeta<Record<string, unknown>>(ref);
   const state = typeof meta.state === 'string' ? meta.state : undefined;
-  if (state !== 'finalized' && state !== 'orphaned-finalized') {
+  // A one-shot recording that captured zero screencast frames is still a
+  // completed recording, not one awaiting `--stop` (which only applies to an
+  // active composed lifecycle recording) — its retained event/trace records
+  // remain readable, so long-task and layout-shift facts stay available;
+  // only frame-derived counts fall back to "incomplete" via cadenceMs===null.
+  // Mirrors the same exception already made in response.ts's loadResponseTimeline.
+  const readablePartial = state === 'partial' && meta.reason === 'no_frames';
+  if (state !== 'finalized' && state !== 'orphaned-finalized' && !readablePartial) {
     throw new Error(`recording ${JSON.stringify(ref.id)} is state ${JSON.stringify(state ?? 'unknown')}, not finalized; finalize it with: capture motion rec --stop`);
   }
   return { analysis: analyzeMotionJank({ rects: readRects(ref), events: readEvents(ref), markers: readMarkers<Markers>(ref), state }), meta };

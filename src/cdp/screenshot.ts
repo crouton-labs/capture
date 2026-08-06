@@ -102,7 +102,7 @@ async function viewportScopedCapture(
     }
 
     if (options?.fullPage) {
-      const layoutMetrics = (await client.send('Page.getLayoutMetrics')) as {
+      const layoutMetrics = (await client.send('Page.getLayoutMetrics', {}, 5000)) as {
         contentSize?: { width: number; height: number };
         cssVisualViewport?: { clientWidth: number };
       };
@@ -124,7 +124,7 @@ async function viewportScopedCapture(
     };
 
     try {
-      const metrics = (await client.send('Page.getLayoutMetrics')) as {
+      const metrics = (await client.send('Page.getLayoutMetrics', {}, 5000)) as {
         cssVisualViewport?: { clientWidth: number; clientHeight: number; pageX: number; pageY: number };
       };
       // Snap the clip to integer CSS pixels: browser zoom (e.g. 110%) makes the
@@ -139,7 +139,7 @@ async function viewportScopedCapture(
       const dprResult = (await client.send('Runtime.evaluate', {
         expression: 'window.devicePixelRatio',
         returnByValue: true,
-      })) as { result: { value: number } };
+      }, 5000)) as { result: { value: number } };
       const dpr = dprResult.result.value ?? 1;
 
       const actualMaxSide = Math.max(vw, vh) * dpr;
@@ -155,6 +155,7 @@ async function viewportScopedCapture(
     const result = (await client.send(
       'Page.captureScreenshot',
       screenshotOpts,
+      15000,
     )) as { data?: string };
     let png = Buffer.from(result.data ?? '', 'base64');
 
@@ -167,7 +168,7 @@ async function viewportScopedCapture(
       const retry = (await client.send('Page.captureScreenshot', {
         ...screenshotOpts,
         clip: { ...clip, scale: 1 },
-      })) as { data?: string };
+      }, 15000)) as { data?: string };
       png = Buffer.from(retry.data ?? '', 'base64');
       if (png.length > 0) png = downscalePngToFit(png, MAX_DIM);
     }
@@ -178,7 +179,7 @@ async function viewportScopedCapture(
       const retry = (await client.send('Page.captureScreenshot', {
         format: 'png',
         captureBeyondViewport: false,
-      })) as { data?: string };
+      }, 15000)) as { data?: string };
       png = Buffer.from(retry.data ?? '', 'base64');
       if (png.length > 0) png = downscalePngToFit(png, MAX_DIM);
     }

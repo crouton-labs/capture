@@ -24,9 +24,15 @@ export async function cmdMotionMask(parsed: ParsedArgs, _args: string[]): Promis
 
   try {
     const ref = resolveRecRef(parsed.positional[0]);
-    const meta = readMeta<{ state?: unknown }>(ref);
+    const meta = readMeta<{ state?: unknown; reason?: unknown }>(ref);
     const state = typeof meta.state === 'string' ? meta.state : 'unknown';
-    if (state !== 'finalized' && state !== 'orphaned-finalized') {
+    // A one-shot recording that captured zero screencast frames is a completed
+    // recording, not one awaiting `--stop` (which only finalizes an active
+    // composed lifecycle recording) — let it through and rely on
+    // createMotionMask's own accurate "needs at least two frames" rejection
+    // below, matching the same exception in response.ts's loadResponseTimeline.
+    const readablePartial = state === 'partial' && meta.reason === 'no_frames';
+    if (state !== 'finalized' && state !== 'orphaned-finalized' && !readablePartial) {
       return emitCommandError(parsed, 'recording_not_finalized', `Recording ${ref.id} has state ${state}; finalize it with \`capture motion rec --stop\` before creating a mask.`);
     }
     const mask = createMotionMask(ref);

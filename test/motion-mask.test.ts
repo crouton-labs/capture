@@ -285,3 +285,21 @@ test('motion mask reports a recoverable missing-frames condition', () => {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+test('cmdMotionMask reads a one-shot partial no_frames recording through to createMotionMask\'s own accurate rejection, instead of the misleading --stop gate', async () => {
+  const sessionDir = path.join(CAPTURE_ROOT, `motion-mask-no-frames-${process.pid}-${Date.now()}`);
+  const recDir = path.join(sessionDir, 'motion', 'recs', 'rec-no-frames');
+  const framesDir = path.join(recDir, 'frames');
+  try {
+    ensurePrivateDir(framesDir);
+    writeJsonPrivate(path.join(recDir, 'meta.json'), { id: 'rec-no-frames', action: 'scroll:.stage,to=bottom', frames: 0, durationMs: 2000, state: 'partial', reason: 'no_frames' });
+    writeNdjsonPrivate(path.join(recDir, 'rects.jsonl'), []);
+    writeNdjsonPrivate(path.join(recDir, 'events.jsonl'), []);
+
+    const output = await captureOutput(() => cmdMotionMask({ command: 'motion', positional: [recDir] }, []));
+    assert.doesNotMatch(output, /not finalized|finalize it with `capture motion rec --stop`/);
+    assert.match(output, /needs at least two frames/);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});

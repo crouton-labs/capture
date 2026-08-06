@@ -286,3 +286,30 @@ test('motion jank reads finalized recording artifacts through the resolver and r
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+test('motion jank reads a one-shot partial no_frames recording instead of rejecting it as unfinalized', async () => {
+  const sessionDir = path.join(CAPTURE_ROOT, `u27-session-no-frames-${process.pid}-${Date.now()}`);
+  const recDir = path.join(sessionDir, 'motion', 'recs', 'rec-no-frames');
+  ensurePrivateDir(recDir);
+  writeNdjsonPrivate(path.join(recDir, 'rects.jsonl'), []);
+  writeNdjsonPrivate(path.join(recDir, 'events.jsonl'), events);
+  writeJsonPrivate(path.join(recDir, 'markers.json'), markers);
+  writeJsonPrivate(path.join(recDir, 'meta.json'), { id: 'rec-no-frames', state: 'partial', reason: 'no_frames', frames: 0, durationMs: 80, action: null });
+  await setActiveSession({ sessionId: 'u27-session-no-frames', dir: sessionDir, harId: null, targetId: null, stepCount: 0 });
+
+  try {
+    const result = readMotionJank(resolveRecRef('rec-no-frames'));
+    assert.equal(result.analysis.frameCount, 0);
+    assert.equal(result.analysis.droppedFramesIncomplete, true, 'zero frames cannot establish a cadence');
+    // Long-task and layout-shift facts derive from events.jsonl, independent of
+    // screencast frames — a zero-frame recording must not lose them.
+    assert.equal(result.analysis.longTasks.length, 1);
+    assert.equal(result.analysis.layoutShifts.length, 1);
+
+    const output = await captureStdout(() => cmdMotionJank({ command: 'motion', positional: ['rec-no-frames'] }, []));
+    assert.match(output, /frames="0"/);
+  } finally {
+    clearActiveSession();
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
