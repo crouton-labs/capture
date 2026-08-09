@@ -161,11 +161,10 @@ async function viewportScopedCapture(
       captureBeyondViewport: false,
     };
 
-    // The CSS-pixel region the returned image covers. Set from the clip that is
-    // actually sent, and re-stated from the raw (unrounded) visual viewport if a
-    // fallback below captures unclipped instead.
+    // The CSS-pixel region the returned image covers, set from the clip that is
+    // actually sent. An unclipped capture clears it again and it is read from the
+    // live visual viewport below instead.
     let capturedRegion: CapturedRegion | undefined;
-    let visualViewport: CapturedRegion | undefined;
 
     try {
       const metrics = (await client.send('Page.getLayoutMetrics', {}, 5000)) as {
@@ -192,12 +191,6 @@ async function viewportScopedCapture(
         ...screenshotOpts,
         clip: { x: sx, y: sy, width: vw, height: vh, scale },
       };
-      visualViewport = validRegion({
-        x: metrics.cssVisualViewport?.pageX ?? 0,
-        y: metrics.cssVisualViewport?.pageY ?? 0,
-        width: metrics.cssVisualViewport?.clientWidth ?? 0,
-        height: metrics.cssVisualViewport?.clientHeight ?? 0,
-      });
       // The clip is what the image is cut from, rounding included — not the
       // fractional viewport it was derived from.
       capturedRegion = validRegion({ x: sx, y: sy, width: vw, height: vh });
@@ -235,14 +228,16 @@ async function viewportScopedCapture(
       }, 15000)) as { data?: string };
       png = Buffer.from(retry.data ?? '', 'base64');
       if (png.length > 0) png = downscalePngToFit(png, MAX_DIM);
-      // An unclipped capture covers the visual viewport itself, at its true
-      // fractional size — not the integer clip that was refused.
-      if (png.length > 0) capturedRegion = visualViewport;
+      // An unclipped capture covers the visual viewport itself, not the integer
+      // clip that was refused — and the two failed attempts above can have taken
+      // 30 seconds, so the viewport sampled before them is no longer evidence.
+      if (png.length > 0) capturedRegion = undefined;
     }
 
-    // No clip was ever sent (the metrics probe failed), so the image covers the
-    // visual viewport. Read it directly rather than reporting the layout
-    // viewport, which differs from it under page zoom.
+    // The image was captured unclipped (no clip was ever sent, or the clipped
+    // attempts were refused), so it covers the visual viewport. Read it as it
+    // stands now rather than reporting the layout viewport, which is a different
+    // space under page zoom, or a sample taken before a failed attempt.
     if (includeCssViewport && !capturedRegion) {
       try {
         const response = (await client.send('Runtime.evaluate', {

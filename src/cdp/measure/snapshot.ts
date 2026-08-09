@@ -11,7 +11,7 @@
 
 import * as path from 'path';
 
-import { ensurePrivateDir, writeJsonPrivate, writeBinaryPrivate, writePrivateFile } from '../../session/artifacts.js';
+import { ensurePrivateDir, writeJsonPrivate, writeBinaryPrivate, writePrivateFile, unlinkPrivateFile } from '../../session/artifacts.js';
 import type { CDPClient } from '../client.js';
 import { enableDomainsForSnap } from '../domains.js';
 import {
@@ -105,7 +105,12 @@ function resolveScopedArtifactPath(dir: string, filename: string): string {
   return target;
 }
 
-function makeWriter(dir: string, artifacts: string[]): SnapshotWriter {
+/** The snap-directory writer, plus the un-write a failed collector commit needs to leave nothing behind. */
+interface RollbackWriter extends SnapshotWriter {
+  remove(filename: string): void;
+}
+
+function makeWriter(dir: string, artifacts: string[]): RollbackWriter {
   return {
     json(filename: string, value: unknown): void {
       writeJsonPrivate(resolveScopedArtifactPath(dir, filename), value);
@@ -115,11 +120,27 @@ function makeWriter(dir: string, artifacts: string[]): SnapshotWriter {
       writeBinaryPrivate(resolveScopedArtifactPath(dir, filename), data);
       artifacts.push(filename);
     },
+    remove(filename: string): void {
+      const index = artifacts.lastIndexOf(filename);
+      if (index !== -1) artifacts.splice(index, 1);
+      try {
+        unlinkPrivateFile(resolveScopedArtifactPath(dir, filename));
+      } catch {
+        // The file is already gone, or the snap dir itself is unwritable; the
+        // artifact list no longer advertises it either way.
+      }
+    },
   };
 }
 
-/** A collector publishes its artifacts only after it returns cleanly; one that throws publishes nothing, so a partial artifact never lands in a completed snapshot. */
-function makeCollectorWriter(writer: SnapshotWriter): { writer: SnapshotWriter; commit: () => void; discard: () => void } {
+/**
+ * A collector publishes its artifacts only after it returns cleanly, and only
+ * as a set: a write that throws part-way through `commit` un-writes the ones
+ * that already landed and rethrows, so the collector is recorded as `error`
+ * with nothing of its own left in the snapshot. A partial artifact never
+ * reaches a completed snapshot by either route.
+ */
+function makeCollectorWriter(writer: RollbackWriter): { writer: SnapshotWriter; commit: () => void; discard: () => void } {
   const staged: Array<{ filename: string; value: unknown } | { filename: string; data: Buffer }> = [];
   let open = true;
   return {
@@ -134,11 +155,19 @@ function makeCollectorWriter(writer: SnapshotWriter): { writer: SnapshotWriter; 
     commit(): void {
       if (!open) return;
       open = false;
-      for (const artifact of staged) {
-        if ('data' in artifact) writer.binary(artifact.filename, artifact.data);
-        else writer.json(artifact.filename, artifact.value);
+      const written: string[] = [];
+      try {
+        for (const artifact of staged) {
+          if ('data' in artifact) writer.binary(artifact.filename, artifact.data);
+          else writer.json(artifact.filename, artifact.value);
+          written.push(artifact.filename);
+        }
+      } catch (error) {
+        for (const filename of written.reverse()) writer.remove(filename);
+        throw error;
+      } finally {
+        staged.length = 0;
       }
-      staged.length = 0;
     },
     discard(): void {
       open = false;

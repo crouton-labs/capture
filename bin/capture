@@ -8198,7 +8198,6 @@ async function viewportScopedCapture(client, viewport2, options, includeCssViewp
       captureBeyondViewport: false
     };
     let capturedRegion;
-    let visualViewport;
     try {
       const metrics = await client.send("Page.getLayoutMetrics", {}, 5e3);
       const vw = Math.round(metrics.cssVisualViewport?.clientWidth ?? 0);
@@ -8216,12 +8215,6 @@ async function viewportScopedCapture(client, viewport2, options, includeCssViewp
         ...screenshotOpts,
         clip: { x: sx, y: sy, width: vw, height: vh, scale }
       };
-      visualViewport = validRegion({
-        x: metrics.cssVisualViewport?.pageX ?? 0,
-        y: metrics.cssVisualViewport?.pageY ?? 0,
-        width: metrics.cssVisualViewport?.clientWidth ?? 0,
-        height: metrics.cssVisualViewport?.clientHeight ?? 0
-      });
       capturedRegion = validRegion({ x: sx, y: sy, width: vw, height: vh });
     } catch {
     }
@@ -8247,7 +8240,7 @@ async function viewportScopedCapture(client, viewport2, options, includeCssViewp
       }, 15e3);
       png = Buffer.from(retry.data ?? "", "base64");
       if (png.length > 0) png = downscalePngToFit(png, MAX_DIM);
-      if (png.length > 0) capturedRegion = visualViewport;
+      if (png.length > 0) capturedRegion = void 0;
     }
     if (includeCssViewport && !capturedRegion) {
       try {
@@ -235374,6 +235367,14 @@ function makeWriter(dir, artifacts) {
     binary(filename, data2) {
       writeBinaryPrivate(resolveScopedArtifactPath(dir, filename), data2);
       artifacts.push(filename);
+    },
+    remove(filename) {
+      const index = artifacts.lastIndexOf(filename);
+      if (index !== -1) artifacts.splice(index, 1);
+      try {
+        unlinkPrivateFile(resolveScopedArtifactPath(dir, filename));
+      } catch {
+      }
     }
   };
 }
@@ -235392,11 +235393,19 @@ function makeCollectorWriter(writer) {
     commit() {
       if (!open) return;
       open = false;
-      for (const artifact of staged) {
-        if ("data" in artifact) writer.binary(artifact.filename, artifact.data);
-        else writer.json(artifact.filename, artifact.value);
+      const written = [];
+      try {
+        for (const artifact of staged) {
+          if ("data" in artifact) writer.binary(artifact.filename, artifact.data);
+          else writer.json(artifact.filename, artifact.value);
+          written.push(artifact.filename);
+        }
+      } catch (error) {
+        for (const filename of written.reverse()) writer.remove(filename);
+        throw error;
+      } finally {
+        staged.length = 0;
       }
-      staged.length = 0;
     },
     discard() {
       open = false;
