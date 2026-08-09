@@ -87,7 +87,6 @@ const COLLECTORS: readonly CollectorDescriptor[] = [
 ];
 
 export const COLLECTOR_NAMES = COLLECTORS.map((collector) => collector.name);
-export const DEFAULT_COLLECTOR_TIMEOUT_MS = 30_000;
 
 /**
  * Resolves `filename` against the snap `dir` and rejects (throws) anything
@@ -119,7 +118,7 @@ function makeWriter(dir: string, artifacts: string[]): SnapshotWriter {
   };
 }
 
-/** A collector publishes its artifacts only after it completes within budget. */
+/** A collector publishes its artifacts only after it returns cleanly; one that throws publishes nothing, so a partial artifact never lands in a completed snapshot. */
 function makeCollectorWriter(writer: SnapshotWriter): { writer: SnapshotWriter; commit: () => void; discard: () => void } {
   const staged: Array<{ filename: string; value: unknown } | { filename: string; data: Buffer }> = [];
   let open = true;
@@ -353,44 +352,40 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
       const skipCollectors = new Set(options.skipCollectors ?? []);
       const baseline = collectors.filter((c) => c.phase === 'baseline');
       const mutating = collectors.filter((c) => c.phase === 'mutating');
-      const collectorTimeoutMs = options.collectorTimeout ?? DEFAULT_COLLECTOR_TIMEOUT_MS;
       const runCollector = async (collector: CollectorDescriptor): Promise<CollectorOutcome> => {
         if (skipCollectors.has(collector.name)) return { name: collector.name, status: 'skipped' };
 
         const startedAt = Date.now();
         let requestTimeouts = 0;
         const collectorWriter = makeCollectorWriter(ctx.write);
-        const run = Promise.resolve().then(() => collector.fn({
-          ...ctx,
-          client: boundedClient(client, `collector:${collector.name}`, dir, () => { requestTimeouts += 1; }),
-          write: collectorWriter.writer,
-        }));
-        // A collector can still be awaiting a browser response after its wall-clock
-        // deadline. Its writer is discarded before the next collector starts, so it
-        // cannot publish a late or partial artifact into this completed snapshot.
-        run.catch(() => undefined);
-        let timer: NodeJS.Timeout | undefined;
-        const completion = await Promise.race([
-          run.then(() => 'complete' as const, () => 'error' as const),
-          new Promise<'timeout'>((resolve) => {
-            timer = setTimeout(() => resolve('timeout'), collectorTimeoutMs);
-          }),
-        ]);
-        if (timer) clearTimeout(timer);
-        const ms = Date.now() - startedAt;
-        if (completion === 'complete') {
+        try {
+          // Await the collector itself, not a wall-clock race around it. Each CDP
+          // request is still bounded at five seconds; awaiting the collector keeps
+          // any cleanup and pending browser work quiescent before the next shared-
+          // connection collector starts.
+          await collector.fn({
+            ...ctx,
+            client: boundedClient(client, `collector:${collector.name}`, dir, () => { requestTimeouts += 1; }),
+            write: collectorWriter.writer,
+          });
+          const ms = Date.now() - startedAt;
           collectorWriter.commit();
           return requestTimeouts > 0
             ? { name: collector.name, status: 'degraded', ms, requestTimeouts }
             : { name: collector.name, status: 'ok', ms };
+        } catch {
+          const ms = Date.now() - startedAt;
+          collectorWriter.discard();
+          return { name: collector.name, status: 'error', ms, ...(requestTimeouts > 0 ? { requestTimeouts } : {}) };
         }
-        collectorWriter.discard();
-        return { name: collector.name, status: completion, ms, ...(requestTimeouts > 0 ? { requestTimeouts } : {}) };
       };
 
       // Phase 1 — baseline collectors observe the page exactly as it settled.
-      // They are serialized because CDP commands share one browser connection;
-      // every completed result is published before the baseline boundary.
+      // They are serialized to COMPLETION because CDP commands share one browser
+      // connection: the next collector starts only once the previous one has
+      // returned or thrown, so no abandoned collector can still be issuing CDP
+      // commands (or restoring page state) underneath its successor. Every
+      // completed result is published before the baseline boundary.
       for (const collector of baseline) collectorOutcomes.push(await runCollector(collector));
 
       // Baseline boundary — capture screenshot.png + dom.html BEFORE any
@@ -482,7 +477,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
       // `freezeIncomplete`, matching the handle's own documented contract.
       ...(freezeIncomplete === true ? { freezeIncomplete: true as const, unfrozenCount: unfrozenCount ?? 0 } : {}),
       ...(domHtmlFact ? { domHtml: domHtmlFact } : {}),
-      ...(captured ? { collectors: collectorOutcomes, collectorTimeoutMs: options.collectorTimeout ?? DEFAULT_COLLECTOR_TIMEOUT_MS } : {}),
+      ...(captured ? { collectors: collectorOutcomes } : {}),
     };
     writeJsonPrivate(path.join(dir, 'meta.json'), meta);
     artifacts.push('meta.json');

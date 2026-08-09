@@ -246,7 +246,6 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
     else if (arg === '--freeze-animations') parsed.freezeAnimations = true;
     else if (arg === '--settle-timeout') { parsed.settleTimeout = integer(valueFor(arg, next), '--settle-timeout', 1, 2_147_483_647); i++; }
     else if (arg === '--capture-unsettled') parsed.captureUnsettled = true;
-    else if (arg === '--collector-timeout') { parsed.collectorTimeout = integer(valueFor(arg, next), '--collector-timeout', 1, 2_147_483_647); i++; }
     else if (arg === '--skip-collector') { (parsed.skipCollector ??= []).push(valueFor(arg, next)); i++; }
     else if (arg === '--pixels') parsed.pixels = true;
     else if (arg === '--state') { (parsed.state ??= []).push(valueFor(arg, next)); i++; }

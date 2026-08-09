@@ -73,8 +73,6 @@ export interface CaptureSnapshotOptions {
    * the real collector set `snapshot.ts` defines.
    */
   readonly collectors?: readonly CollectorDescriptor[];
-  /** `--collector-timeout <ms>`; default {@link DEFAULT_COLLECTOR_TIMEOUT_MS} (30000). Wall-clock budget for ONE collector, independent of the per-CDP-request bound. */
-  readonly collectorTimeout?: number;
   /** `--skip-collector <name>` (repeatable); collectors to leave out of this capture entirely. Each one is recorded in {@link SnapshotMeta.collectors} as `skipped`, so an absent artifact is never mistaken for a failed read. */
   readonly skipCollectors?: readonly string[];
 }
@@ -89,14 +87,14 @@ export interface CaptureSnapshotOptions {
  *   killed by the per-request bound. The artifact exists and its own
  *   per-record failure markers are honest, but some of what it reports is a
  *   timed-out read rather than a measurement — `requestTimeouts` counts them.
- * - `timeout`: exceeded its wall-clock budget and was abandoned. Its artifact
- *   is absent because writes publish only after collector completion.
- * - `error`: threw before completing. Same absent-artifact consequence as `timeout`.
+ * - `error`: threw before completing (including a CDP request killed by the
+ *   per-request bound that the collector did not itself absorb). Its artifact is
+ *   absent because writes publish only after collector completion.
  * - `skipped`: excluded by `--skip-collector`; never ran.
  */
 export interface CollectorOutcome {
   readonly name: string;
-  readonly status: 'ok' | 'degraded' | 'timeout' | 'error' | 'skipped';
+  readonly status: 'ok' | 'degraded' | 'error' | 'skipped';
   /** Wall-clock ms the collector ran. Absent for `skipped` — it never ran. */
   readonly ms?: number;
   /** Present only when at least one of this collector's CDP requests was killed by the per-request bound. */
@@ -124,8 +122,6 @@ export interface SnapshotMeta extends SnapMeta {
   readonly domHtml?: { readonly available: boolean; readonly unavailableReason?: string };
   /** Per-collector outcome ledger — present only on a capture that reached the collector phase (`captured`), never on an evidence-only unsettled capture where no collector ran. See {@link CollectorOutcome}. */
   readonly collectors?: readonly CollectorOutcome[];
-  /** The wall-clock budget each collector in {@link collectors} was given. Present alongside `collectors`. */
-  readonly collectorTimeoutMs?: number;
 }
 
 /** Return value of {@link captureSnapshotSubstrate}. */

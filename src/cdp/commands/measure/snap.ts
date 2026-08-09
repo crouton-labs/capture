@@ -6,7 +6,7 @@ import { type ParsedArgs } from '../../types.js';
 import { withConnection } from '../../connection.js';
 import { isRecorderHeldClient } from '../../recorder-client.js';
 import { parseViewport, type Viewport } from '../../viewport.js';
-import { captureSnapshotSubstrate, COLLECTOR_NAMES, DEFAULT_COLLECTOR_TIMEOUT_MS, SnapshotCaptureTimeout } from '../../measure/snapshot.js';
+import { captureSnapshotSubstrate, COLLECTOR_NAMES, SnapshotCaptureTimeout } from '../../measure/snapshot.js';
 import type { CollectorOutcome } from '../../measure/types.js';
 import { sanitizeString } from '../../measure/redaction.js';
 import { DEFAULT_SETTLE_TIMEOUT_MS } from '../../measure/settle.js';
@@ -32,8 +32,7 @@ input:
   --freeze-animations         pause CSS/WAAPI animation before capture
   --settle-timeout <ms>       override the default 5000ms settle wait
   --capture-unsettled         write the full substrate despite non-settlement, marking unstable regions
-  --collector-timeout <ms>    per-collector wall-clock budget (default 30000ms); a collector that exceeds it is abandoned and recorded, and every other collector's substrate is still written
-  --skip-collector <name>     leave one collector out entirely (repeatable): ax, styles, queries, animation, layers, media, geometry, hittest, text, forms, focus, scroll, states, pixels
+  --skip-collector <name>     leave one collector out entirely (repeatable): ax, styles, queries, animation, layers, media, geometry, hittest, text, forms, focus, scroll, states, pixels. A collector that fails is recorded and skipped; every other collector's substrate is still written
   --pixels                    also write per-element raster crops
   --state <state[:selector]>  force a pseudo-state or real control state (repeatable)
   --viewport <WxH>            temporarily capture at a CSS-pixel viewport (repeatable); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace
@@ -192,13 +191,13 @@ export async function withAppliedViewport<T>(client: ViewportClient, viewport: V
 }
 
 /** One line naming every collector whose substrate is absent or degraded, and what to do about it. */
-function collectorNote(incomplete: readonly CollectorOutcome[], collectorTimeoutMs: number | undefined) {
+function collectorNote(incomplete: readonly CollectorOutcome[]) {
   const described = incomplete
     .map((c) => `${sanitizeString(c.name)} (${c.status}${c.requestTimeouts ? `, ${c.requestTimeouts} timed-out request(s)` : ''})`)
     .join(', ');
-  const timedOut = incomplete.some((c) => c.status === 'timeout');
+  const failed = incomplete.some((c) => c.status === 'error' || c.status === 'degraded');
   return fact`collectors incomplete: ${described}. Every other collector's substrate is valid and queryable.${
-    timedOut ? ` Raise \`--collector-timeout\` above ${collectorTimeoutMs ?? DEFAULT_COLLECTOR_TIMEOUT_MS}ms to give them longer.` : ''
+    failed ? ` Re-run with \`--skip-collector <name>\` to omit one deliberately rather than have it fail.` : ''
   }`;
 }
 
@@ -223,9 +222,6 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
   }
   if (parsed.settleTimeout !== undefined && (!Number.isFinite(parsed.settleTimeout) || parsed.settleTimeout <= 0)) {
     throw invalidInput('--settle-timeout must be a positive number of milliseconds');
-  }
-  if (parsed.collectorTimeout !== undefined && (!Number.isFinite(parsed.collectorTimeout) || parsed.collectorTimeout <= 0)) {
-    throw invalidInput('--collector-timeout must be a positive number of milliseconds');
   }
   for (const name of parsed.skipCollector ?? []) {
     if (!COLLECTOR_NAMES.includes(name)) {
@@ -276,7 +272,6 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
           pixels: parsed.pixels,
           state: parsed.state ?? [],
           viewport: viewport?.label ?? null,
-          collectorTimeout: parsed.collectorTimeout ?? DEFAULT_COLLECTOR_TIMEOUT_MS,
           skipCollectors: parsed.skipCollector ?? [],
         });
         artifacts = result.artifacts;
@@ -301,7 +296,6 @@ function buildSnapshotResult(captured: MeasureSnapCapture): RenderableResult {
     unstableRegionCount: number;
     states: readonly string[];
     collectors?: readonly CollectorOutcome[];
-    collectorTimeoutMs?: number;
   }>({ kind: 'snap', id: captured.id, dir: captured.dir });
   const incomplete = (meta.collectors ?? []).filter((c) => c.status !== 'ok');
   const elements = readArrayCount(path.join(captured.dir, 'geometry.json'), 'elements');
@@ -332,7 +326,7 @@ function buildSnapshotResult(captured: MeasureSnapCapture): RenderableResult {
     // not only in meta.json — its artifact is absent (timeout/error/skipped)
     // or partly built from timed-out reads (degraded), and a caller who reads
     // the remaining substrate as a whole page would be reading a hole.
-    ...(incomplete.length ? { sections: [collectorNote(incomplete, meta.collectorTimeoutMs)] } : {}),
+    ...(incomplete.length ? { sections: [collectorNote(incomplete)] } : {}),
     artifacts: formatArtifactList(artifacts),
     followUp: meta.settled || capturedFullSubstrate
       ? fact`Query snapshot ${captured.id} with \`capture measure check ${captured.id}\`, \`capture measure census --snap ${captured.id} --axis color\`, or \`capture measure map focus ${captured.id}\`.`
