@@ -56,6 +56,8 @@ export const RESULT_TAGS = [
   'tab-opened',
   'tab-closed',
   'tab-reset',
+  'browser-launched',
+  'browser-quit',
   'network',
   'cdp-result',
   'libs',

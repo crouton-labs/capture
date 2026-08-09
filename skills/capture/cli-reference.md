@@ -10,7 +10,7 @@ Capture has exactly seven root nouns:
 capture
 ├─ session  start · stop · list · view · har · log
 ├─ page     elements · click · type · shot · navigate · exec · scroll
-├─ tab      list · open · reset · network
+├─ tab      launch · quit · list · open · close · reset · network
 ├─ measure  snap · check · diff · census · explain · sweep · map
 │  └─ map   focus · scroll · layers · ax
 ├─ motion   rec · mask · timeline · jank · response
@@ -20,7 +20,7 @@ capture
 
 - `session` is the artifact container. An active session supplies its tab as the default target, accumulates recorded traffic, and finalizes shots, logs, snapshots, recordings, and HAR into one bundle.
 - `page` addresses live tab content. Its driving leaves resolve exactly one current element; `elements` supplies role, accessible name, and `backend:<id>` discriminators; `shot` captures visual orientation.
-- `tab` handles browser endpoint discovery, tab lifecycle, and connection-level network emulation. `capture tab list` is the browser probe.
+- `tab` handles browser lifecycle, endpoint discovery, tab lifecycle, and connection-level network emulation. `capture tab list` is the browser probe; when it finds nothing, `capture tab launch` starts a browser capture owns on a free port with its own private profile, and reaps it on `capture tab quit` or once it has gone idle. Never hand-roll a detached browser — nothing reaps that. Capture signals only browsers it launched itself, so an endpoint you reach with `--port` (including the user's own) is never touched.
 - `measure` writes one settled snapshot substrate with `snap`; its query leaves read static facts from that artifact. A URL target creates a snapshot before the query.
 - `motion` writes a recording with `rec`; its query leaves read facts from a finalized recording.
 - `cdp` sends raw protocol methods or waits for protocol events.
@@ -39,7 +39,7 @@ capture
 ## Representative flow
 
 ```bash
-capture tab list
+capture tab list          # nothing running? capture tab launch
 capture session start --url http://localhost:3000
 capture page elements
 capture page click "ax:Open settings"

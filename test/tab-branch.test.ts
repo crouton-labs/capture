@@ -343,7 +343,7 @@ test('bin: `tab network bogus` is a structured <error> naming the accepted value
 
 test('bin: each tab leaf -h is the D6 leaf shape — summary/input/output/effects, no examples, no "Next:" coaching', () => {
   withTempRoot((tempRoot) => {
-    for (const leaf of ['list', 'open', 'close', 'reset', 'network']) {
+    for (const leaf of ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network']) {
       const result = run(['tab', leaf, '-h'], tempRoot);
       assert.equal(result.status, 0, `tab ${leaf} -h: ${result.stderr}`);
       assert.equal(result.stderr, '', `tab ${leaf} -h must not write to stderr`);

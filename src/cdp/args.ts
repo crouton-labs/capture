@@ -60,7 +60,7 @@ function validateKnownLeaf(command: string, positional: readonly string[]): void
   const branches: Record<string, readonly string[]> = {
     session: ['start', 'stop', 'list', 'view', 'har', 'log'],
     page: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements'],
-    tab: ['list', 'open', 'close', 'reset', 'network'],
+    tab: ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network'],
     measure: ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map'],
     motion: ['rec', 'mask', 'timeline', 'jank', 'response'],
     lib: ['list', 'search', 'show', 'read'],
@@ -130,7 +130,11 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
   }
 
   if (parsed.command === 'tab') {
-    requireCount(values, leaf === 'list' ? 0 : 1, leaf === 'list' ? 0 : 1, `tab ${leaf}`);
+    // `launch` takes no target at all (its browser does not exist yet) and
+    // `quit` takes an optional port; every other tab leaf names exactly one.
+    if (leaf === 'launch' || leaf === 'list') requireCount(values, 0, 0, `tab ${leaf}`);
+    else if (leaf === 'quit') requireCount(values, 0, 1, 'tab quit');
+    else requireCount(values, 1, 1, `tab ${leaf}`);
     if (leaf === 'network' && values[0] !== 'offline' && values[0] !== 'online') {
       throw invalidInput('tab network requires offline or online.');
     }
@@ -223,6 +227,7 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
     else if (arg === '--settle') { parsed.settle = integer(valueFor(arg, next), '--settle', 0, 2_147_483_647); i++; }
     else if (arg === '--file') { parsed.file = valueFor(arg, next); i++; }
     else if (arg === '--new') parsed.new = true;
+    else if (arg === '--headed') parsed.headed = true;
     else if (arg === '--target') { parsed.target = valueFor(arg, next); parsed.targetSource = 'flag'; i++; }
     else if (arg === '--url') { const value = valueFor(arg, next); parsed.url = value; (parsed.urls ??= []).push(value); i++; }
     else if (arg === '--into') { parsed.into = valueFor(arg, next); i++; }
@@ -295,6 +300,12 @@ function needsEndpointResolution(parsed: ParsedArgs): boolean {
     && (parsed.positional.length === 0 || (parsed.command === 'measure' && parsed.positional.length === 1 && parsed.positional[0] === 'map'));
   if (branchOnly) return false;
   if (parsed.command === 'session' && parsed.positional[0] !== 'start') return false;
+  // `tab launch` CREATES an endpoint and `tab quit` addresses capture's own
+  // registry, so neither may inherit one: an ambient CDP_PORT (or a session's
+  // port) must never silently become the port a new browser is told to bind,
+  // nor the browser a quit reaches. Only an explicit --port flag, parsed in
+  // `parseCliSyntax`, applies to these two.
+  if (parsed.command === 'tab' && (parsed.positional[0] === 'launch' || parsed.positional[0] === 'quit')) return false;
   return true;
 }
 

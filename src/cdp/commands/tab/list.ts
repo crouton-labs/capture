@@ -13,6 +13,7 @@ import {
   pickPreferredEndpoint,
 } from '../../detect.js';
 import { listTargets } from '../../targets.js';
+import { ownedBrowsersByPort, sweepOwnedBrowsers } from '../../browser-process.js';
 import { type ParsedArgs } from '../../types.js';
 import {
   data,
@@ -30,8 +31,8 @@ const USAGE = `capture tab list — discover CDP endpoints and list the page tab
 input:
   --port <port>   probe one endpoint only, instead of discovering every localhost CDP endpoint
 
-output: <tabs endpoints=… tabs=…> — one section per reachable endpoint (port, app, page-tab count, preferred marker) listing each page tab's target id (first 8 chars, enough for --target), title, and url; an endpoint that failed the tab fetch is an endpoints-unreachable fact, never a silent omission.
-effects: read-only — probes local CDP endpoints over HTTP/WebSocket; no page-observable writes.`;
+output: <tabs endpoints=… tabs=…> — one section per reachable endpoint (port, app, page-tab count, preferred marker, and a capture-owned pid marker on any browser \`tab launch\` started) listing each page tab's target id (first 8 chars, enough for --target), title, and url; an endpoint that failed the tab fetch is an endpoints-unreachable fact, never a silent omission.
+effects: probes local CDP endpoints over HTTP/WebSocket; no page-observable writes. Also sweeps capture-launched browsers, stopping any that have exited, stopped answering CDP, or gone idle — browsers capture did not start are never signalled.`;
 
 export interface TabRow {
   id: string;
@@ -45,6 +46,9 @@ export interface EndpointTabs {
   app?: string;
   /** Marked on the endpoint auto-discovery would pick for port-less commands. */
   preferred: boolean;
+  /** The pid of the capture-launched browser serving this endpoint, when this
+   * is one capture owns — absent for every foreign/user-owned endpoint. */
+  ownedPid?: number;
   pages: TabRow[];
 }
 
@@ -76,6 +80,7 @@ export function buildTabsResult(
       ...(ep.app !== undefined ? [line(text` — `, data(ep.app, 80))] : []),
       fact` — ${ep.pages.length} page tab(s)`,
       ...(ep.preferred ? [text` [preferred]`] : []),
+      ...(ep.ownedPid !== undefined ? [line(fact` [capture-owned pid=${ep.ownedPid}]`)] : []),
     );
     const rows = ep.pages.map((t) =>
       line(text`  `, data(t.id.slice(0, 8)), text`  "`, data(t.title, 120), text`"  `, data(t.url, 300)),
@@ -121,6 +126,11 @@ export async function cmdTabList(parsed: ParsedArgs, _args: string[]): Promise<v
     return;
   }
 
+  // The probe agents run constantly is also where abandoned owned browsers
+  // die: sweeping here is what keeps a launch from outliving the agent that
+  // made it, without any daemon in the picture.
+  await sweepOwnedBrowsers();
+  const owned = ownedBrowsersByPort();
   const reachable: EndpointTabs[] = [];
   const unreachable: UnreachableEndpoint[] = [];
 
@@ -130,6 +140,7 @@ export async function cmdTabList(parsed: ParsedArgs, _args: string[]): Promise<v
       reachable.push({
         port: parsed.port,
         preferred: false,
+        ...(owned.has(parsed.port) ? { ownedPid: owned.get(parsed.port)!.pid } : {}),
         pages: targets
           .filter((t) => t.type === 'page')
           .map((t) => ({ id: t.id, title: t.title, url: t.url })),
@@ -149,6 +160,7 @@ export async function cmdTabList(parsed: ParsedArgs, _args: string[]): Promise<v
             port: ep.port,
             app: ep.app,
             preferred: ep.port === preferredPort,
+            ...(owned.has(ep.port) ? { ownedPid: owned.get(ep.port)!.pid } : {}),
             pages: targets
               .filter((t) => t.type === 'page')
               .map((t) => ({ id: t.id, title: t.title, url: t.url })),

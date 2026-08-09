@@ -1,5 +1,6 @@
 import { CDPClient } from './client.js';
 import { detectCdpPortsAsync } from './detect.js';
+import { touchOwnedBrowser } from './browser-process.js';
 import { type CDPTarget } from './types.js';
 
 /**
@@ -30,6 +31,10 @@ export async function getBrowserClient(
   }
   const client = new CDPClient(version.webSocketDebuggerUrl);
   await client.waitReady();
+  // Every browser-level connection funnels through here, which makes this the
+  // one place that can tell capture's idle sweep the browser is still in use.
+  // A port capture did not launch has no registry record and this is a no-op.
+  touchOwnedBrowser(port);
   return { client, browserWsUrl: version.webSocketDebuggerUrl };
 }
 

@@ -12,7 +12,7 @@ origin:
 
 # capture
 
-`@crouton-kit/capture` is a CDP browser automation and UI measurement CLI with exactly seven root nouns: `session`, `page`, `tab`, `measure`, `motion`, `cdp`, and `lib`. `page` contains `elements`, `click`, `type`, `shot`, `navigate`, `exec`, and `scroll`; `tab` contains `list`, `open`, `reset`, and `network`; traffic and external logs are read through `session har` and `session log`. Agents usually reach it as `crtr capture <args>` (verbatim forwarding).
+`@crouton-kit/capture` is a CDP browser automation and UI measurement CLI with exactly seven root nouns: `session`, `page`, `tab`, `measure`, `motion`, `cdp`, and `lib`. `page` contains `elements`, `click`, `type`, `shot`, `navigate`, `exec`, and `scroll`; `tab` contains `launch`, `quit`, `list`, `open`, `close`, `reset`, and `network` — `tab launch` starts a browser capture owns and reaps (never hand-roll a detached browser), and capture signals only browsers it started itself; traffic and external logs are read through `session har` and `session log`. Agents usually reach it as `crtr capture <args>` (verbatim forwarding).
 
 When operating the CLI, run `capture -h`, then the selected branch and leaf `-h`, because built help is the executable source of truth for each noun's model and each leaf's inputs, outputs, effects, and targeting.
 

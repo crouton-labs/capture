@@ -25,6 +25,8 @@ export interface ParsedArgs {
    * can auto-append recorded traffic to the session HAR. */
   har?: string;
   new?: boolean;
+  /** `tab launch --headed` — a visible window instead of headless. */
+  headed?: boolean;
   target?: string;
   /** Where `target` was assigned from: an actual `--target` flag, active-session
    * autofill, or the ambient `CDP_TARGET` env var. Recorded at the assignment
