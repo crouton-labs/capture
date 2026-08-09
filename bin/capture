@@ -8143,14 +8143,23 @@ function downscalePngToFit(png, maxDim) {
   return import_pngjs.PNG.sync.write(dst);
 }
 async function captureScreenshot(client, viewport2, options) {
-  return withScopeSerialization(
+  const result = await withScopeSerialization(
     client,
     "viewport",
     "screenshot capture",
     () => viewportScopedCapture(client, viewport2, options)
   );
+  return result.png;
 }
-async function viewportScopedCapture(client, viewport2, options) {
+async function captureScreenshotWithCssViewport(client, viewport2, options) {
+  return withScopeSerialization(
+    client,
+    "viewport",
+    "screenshot capture",
+    () => viewportScopedCapture(client, viewport2, options, true)
+  );
+}
+async function viewportScopedCapture(client, viewport2, options, includeCssViewport = false) {
   const MAX_DIM = 1600;
   let ownsDeviceMetricsOverride = false;
   let primaryFailed = false;
@@ -8202,6 +8211,20 @@ async function viewportScopedCapture(client, viewport2, options) {
       };
     } catch {
     }
+    let cssViewport;
+    if (includeCssViewport) {
+      try {
+        const response = await client.send("Runtime.evaluate", {
+          expression: "({ width: window.innerWidth, height: window.innerHeight })",
+          returnByValue: true
+        }, 5e3);
+        const value = response.result?.value;
+        if (typeof value?.width === "number" && Number.isFinite(value.width) && value.width > 0 && typeof value.height === "number" && Number.isFinite(value.height) && value.height > 0) {
+          cssViewport = { width: value.width, height: value.height };
+        }
+      } catch {
+      }
+    }
     const result = await client.send(
       "Page.captureScreenshot",
       screenshotOpts,
@@ -8230,7 +8253,7 @@ async function viewportScopedCapture(client, viewport2, options) {
         "Page.captureScreenshot returned no image data (the tab may not be rendering); refusing to write a 0-byte PNG"
       );
     }
-    return png;
+    return { png, ...cssViewport ? { cssViewport } : {} };
   } catch (error) {
     primaryFailed = true;
     primaryError = error;
@@ -227278,7 +227301,9 @@ function writeScreenshot(outPath, png) {
   writeBinaryPrivate(outPath, png);
 }
 function buildScreenshotResult(f) {
+  const scale = f.dimensions && f.cssViewport ? { x: f.dimensions.width / f.cssViewport.width, y: f.dimensions.height / f.cssViewport.height } : void 0;
   const sections = [
+    scale && f.cssViewport ? fact`CSS-to-image scale: ${scale.x.toFixed(6)} image px/CSS px horizontally and ${scale.y.toFixed(6)} image px/CSS px vertically (CSS viewport ${f.cssViewport.width}×${f.cssViewport.height}).` : text`CSS-to-image scale unavailable: the browser did not return a valid CSS viewport.`,
     f.emulation === "none" ? text`emulation: none — the browser's actual current viewport was captured; no Emulation call was made.` : f.emulation === "viewport" ? fact`emulation: transient ${f.viewport.width}x${f.viewport.height} device-metrics override applied for the capture and cleared after — two page-observable resizes.` : f.viewport ? fact`emulation: transient full-page device-metrics override (from ${f.viewport.width}x${f.viewport.height}) applied for the capture and cleared after — two page-observable resizes.` : text`emulation: transient full-page device-metrics override applied for the capture and cleared after — two page-observable resizes.`
   ];
   return {
@@ -227287,6 +227312,10 @@ function buildScreenshotResult(f) {
       path: f.path,
       width: f.dimensions?.width,
       height: f.dimensions?.height,
+      "css-width": f.cssViewport?.width,
+      "css-height": f.cssViewport?.height,
+      "css-to-image-x": scale?.x.toFixed(6),
+      "css-to-image-y": scale?.y.toFixed(6),
       emulation: f.emulation
     },
     summary: f.dimensions ? fact`saved ${f.path} — ${f.dimensions.width}x${f.dimensions.height}px, ${f.bytes} bytes.` : fact`saved ${f.path} — ${f.bytes} bytes.`,
@@ -227331,10 +227360,10 @@ async function cmdPageShot(parsed, _args) {
   const result = await deps4.withConnection(
     { ...parsed, command: "shot" },
     async (client) => {
-      const png = await captureScreenshot(client, viewport2, { fullPage: parsed.fullPage });
+      const screenshot = await captureScreenshotWithCssViewport(client, viewport2, { fullPage: parsed.fullPage });
       const outPath = await resolveOutPath(parsed);
-      writeScreenshot(outPath, png);
-      return { path: outPath, bytes: png.length, dimensions: pngDimensions(png) };
+      writeScreenshot(outPath, screenshot.png);
+      return { path: outPath, bytes: screenshot.png.length, dimensions: pngDimensions(screenshot.png), cssViewport: screenshot.cssViewport };
     },
     { settle: 0 }
   );
@@ -227361,7 +227390,7 @@ input:
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json            mirror the result as JSON
 output:
-  <screenshot path=\u2026 width=\u2026 height=\u2026 emulation=none|viewport|full-page> \u2014 saved path, PNG pixel dimensions, byte size, and the emulation fact (whether a transient override was applied, or its absence)
+  <screenshot path=\u2026 width=\u2026 height=\u2026 css-width=\u2026 css-height=\u2026 css-to-image-x=\u2026 css-to-image-y=\u2026 emulation=none|viewport|full-page> \u2014 saved path, PNG pixel dimensions, CSS-to-image scale when the viewport read succeeds, byte size, and the emulation fact (whether a transient override was applied, or its absence)
 effects:
   no flags: none \u2014 the capture reads the viewport as-is, with zero Emulation.* calls. With --viewport/--full-page: applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture \u2014 two page-observable resizes (resize events fire; media queries flip and flip back)`;
     deps4 = { withConnection, nextStepPath, createOneshotSession };

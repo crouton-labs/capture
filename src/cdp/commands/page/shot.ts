@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { type ParsedArgs } from '../../types.js';
 import { withConnection } from '../../connection.js';
-import { captureScreenshot } from '../../screenshot.js';
+import { captureScreenshotWithCssViewport } from '../../screenshot.js';
 import { parseViewport, type Viewport } from '../../viewport.js';
 import { nextStepPath } from '../../../session-context.js';
 import { createOneshotSession } from '../../../session/commands.js';
@@ -40,7 +40,7 @@ input:
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json            mirror the result as JSON
 output:
-  <screenshot path=… width=… height=… emulation=none|viewport|full-page> — saved path, PNG pixel dimensions, byte size, and the emulation fact (whether a transient override was applied, or its absence)
+  <screenshot path=… width=… height=… css-width=… css-height=… css-to-image-x=… css-to-image-y=… emulation=none|viewport|full-page> — saved path, PNG pixel dimensions, CSS-to-image scale when the viewport read succeeds, byte size, and the emulation fact (whether a transient override was applied, or its absence)
 effects:
   no flags: none — the capture reads the viewport as-is, with zero Emulation.* calls. With --viewport/--full-page: applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture — two page-observable resizes (resize events fire; media queries flip and flip back)`;
 
@@ -120,10 +120,17 @@ export function buildScreenshotResult(f: {
   path: string;
   bytes: number;
   dimensions: { width: number; height: number } | null;
+  cssViewport?: { width: number; height: number };
   emulation: EmulationMode;
   viewport?: { width: number; height: number };
 }): RenderableResult {
+  const scale = f.dimensions && f.cssViewport
+    ? { x: f.dimensions.width / f.cssViewport.width, y: f.dimensions.height / f.cssViewport.height }
+    : undefined;
   const sections: FactLine[] = [
+    scale && f.cssViewport
+      ? fact`CSS-to-image scale: ${scale.x.toFixed(6)} image px/CSS px horizontally and ${scale.y.toFixed(6)} image px/CSS px vertically (CSS viewport ${f.cssViewport.width}×${f.cssViewport.height}).`
+      : text`CSS-to-image scale unavailable: the browser did not return a valid CSS viewport.`,
     f.emulation === 'none'
       ? text`emulation: none — the browser's actual current viewport was captured; no Emulation call was made.`
       : f.emulation === 'viewport'
@@ -138,6 +145,10 @@ export function buildScreenshotResult(f: {
       path: f.path,
       width: f.dimensions?.width,
       height: f.dimensions?.height,
+      'css-width': f.cssViewport?.width,
+      'css-height': f.cssViewport?.height,
+      'css-to-image-x': scale?.x.toFixed(6),
+      'css-to-image-y': scale?.y.toFixed(6),
       emulation: f.emulation,
     },
     summary: f.dimensions
@@ -196,10 +207,10 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
   const result = await deps.withConnection(
     { ...parsed, command: 'shot' },
     async (client) => {
-      const png = await captureScreenshot(client, viewport, { fullPage: parsed.fullPage });
+      const screenshot = await captureScreenshotWithCssViewport(client, viewport, { fullPage: parsed.fullPage });
       const outPath = await resolveOutPath(parsed);
-      writeScreenshot(outPath, png);
-      return { path: outPath, bytes: png.length, dimensions: pngDimensions(png) };
+      writeScreenshot(outPath, screenshot.png);
+      return { path: outPath, bytes: screenshot.png.length, dimensions: pngDimensions(screenshot.png), cssViewport: screenshot.cssViewport };
     },
     { settle: 0 },
   );

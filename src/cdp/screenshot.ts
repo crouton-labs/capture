@@ -65,8 +65,20 @@ export async function captureScreenshot(
   viewport?: { width: number; height: number },
   options?: { fullPage?: boolean },
 ): Promise<Buffer> {
-  return withScopeSerialization(client, 'viewport', 'screenshot capture', () =>
+  const result = await withScopeSerialization(client, 'viewport', 'screenshot capture', () =>
     viewportScopedCapture(client, viewport, options),
+  );
+  return result.png;
+}
+
+/** Captures a PNG and the CSS viewport used to map image pixels back to page coordinates. */
+export async function captureScreenshotWithCssViewport(
+  client: CDPClient,
+  viewport?: { width: number; height: number },
+  options?: { fullPage?: boolean },
+): Promise<{ png: Buffer; cssViewport?: { width: number; height: number } }> {
+  return withScopeSerialization(client, 'viewport', 'screenshot capture', () =>
+    viewportScopedCapture(client, viewport, options, true),
   );
 }
 
@@ -81,7 +93,8 @@ async function viewportScopedCapture(
   client: CDPClient,
   viewport?: { width: number; height: number },
   options?: { fullPage?: boolean },
-): Promise<Buffer> {
+  includeCssViewport = false,
+): Promise<{ png: Buffer; cssViewport?: { width: number; height: number } }> {
   const MAX_DIM = 1600; // headroom below Anthropic's 2000px many-image limit
   let ownsDeviceMetricsOverride = false;
   let primaryFailed = false;
@@ -152,6 +165,22 @@ async function viewportScopedCapture(
       // Capture without downscaling when the optional metrics probe is unavailable.
     }
 
+    let cssViewport: { width: number; height: number } | undefined;
+    if (includeCssViewport) {
+      try {
+        const response = (await client.send('Runtime.evaluate', {
+          expression: '({ width: window.innerWidth, height: window.innerHeight })',
+          returnByValue: true,
+        }, 5000)) as { result?: { value?: { width?: unknown; height?: unknown } } };
+        const value = response.result?.value;
+        if (typeof value?.width === 'number' && Number.isFinite(value.width) && value.width > 0 && typeof value.height === 'number' && Number.isFinite(value.height) && value.height > 0) {
+          cssViewport = { width: value.width, height: value.height };
+        }
+      } catch {
+        // The image remains usable; only its CSS-coordinate mapping is unavailable.
+      }
+    }
+
     const result = (await client.send(
       'Page.captureScreenshot',
       screenshotOpts,
@@ -190,7 +219,7 @@ async function viewportScopedCapture(
       );
     }
 
-    return png;
+    return { png, ...(cssViewport ? { cssViewport } : {}) };
   } catch (error) {
     primaryFailed = true;
     primaryError = error;

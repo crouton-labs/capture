@@ -67,7 +67,9 @@ function captureHandlers(png: Buffer, opts: { emulation?: boolean; contentHeight
       contentSize: { width: 1280, height: opts.contentHeight ?? 800 },
       cssVisualViewport: { clientWidth: 1280, clientHeight: 800, pageX: 0, pageY: 0 },
     }),
-    'Runtime.evaluate': () => ({ result: { value: 1 } }),
+    'Runtime.evaluate': (params) => String(params.expression ?? '').includes('window.innerWidth')
+      ? ({ result: { value: { width: 1280, height: 800 } } })
+      : ({ result: { value: 1 } }),
     'Page.captureScreenshot': () => ({ data: png.toString('base64') }),
   };
   if (opts.emulation) {
@@ -204,8 +206,9 @@ test('plain page shot performs zero Emulation.* calls and reports the no-emulati
     assert.ok(client.calls.some((c) => c.method === 'Page.captureScreenshot'));
 
     assert.match(stdout, /<screenshot [^>]*emulation="none"/);
-    assert.match(stdout, /width="1280" height="800"/);
+    assert.match(stdout, /width="1280" height="800" css-width="1280" css-height="800" css-to-image-x="1\.000000" css-to-image-y="1\.000000"/);
     assert.ok(stdout.includes(outPath));
+    assert.match(stdout, /CSS-to-image scale: 1\.000000 image px\/CSS px horizontally and 1\.000000 image px\/CSS px vertically/);
     assert.match(stdout, /emulation: none — the browser's actual current viewport was captured/);
     assert.ok(fs.existsSync(outPath));
 
