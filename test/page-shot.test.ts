@@ -206,7 +206,7 @@ test('plain page shot performs zero Emulation.* calls and reports the no-emulati
     assert.ok(client.calls.some((c) => c.method === 'Page.captureScreenshot'));
 
     assert.match(stdout, /<screenshot [^>]*emulation="none"/);
-    assert.match(stdout, /width="1280" height="800" css-width="1280" css-height="800" css-to-image-x="1\.000000" css-to-image-y="1\.000000"/);
+    assert.match(stdout, /width="1280" height="800" css-width="1280" css-height="800" css-x="0" css-y="0" css-to-image-x="1\.000000" css-to-image-y="1\.000000"/);
     assert.ok(stdout.includes(outPath));
     assert.match(stdout, /CSS-to-image scale: 1\.000000 image px\/CSS px horizontally and 1\.000000 image px\/CSS px vertically/);
     assert.match(stdout, /emulation: none — the browser's actual current viewport was captured/);
@@ -216,6 +216,38 @@ test('plain page shot performs zero Emulation.* calls and reports the no-emulati
     // verb (stderr diagnostics identify the leaf, not the branch token).
     assert.equal(state.settleSeen, 0);
     assert.equal(state.commandSeen, 'shot');
+  } finally {
+    cleanup(state);
+    fs.rmSync(outPath, { force: true });
+  }
+});
+
+// A zoomed page's layout viewport (window.innerWidth/innerHeight) is a
+// different coordinate space from the visual viewport the PNG is clipped to.
+// Reporting the former produced a false scale — at page-scale 1.5 a 1000x700
+// layout viewport yields a 667x467 image whose true CSS-to-image scale is ~1,
+// not 0.667.
+test('under page zoom the scale is measured against the captured clip, not the layout viewport', async () => {
+  const outPath = path.join(os.tmpdir(), `u07-zoom-${process.pid}.png`);
+  const client = stubClient({
+    'Page.getLayoutMetrics': () => ({
+      contentSize: { width: 1000, height: 700 },
+      cssVisualViewport: { clientWidth: 666.6667, clientHeight: 466.6667, pageX: 0, pageY: 0 },
+    }),
+    'Runtime.evaluate': (params) => String(params.expression ?? '').includes('devicePixelRatio')
+      ? ({ result: { value: 1 } })
+      : ({ result: { value: { width: 1000, height: 700 } } }),
+    'Page.captureScreenshot': () => ({ data: makePng(667, 467).toString('base64') }),
+  });
+  const state = installDeps(client);
+  try {
+    const { stdout, exitCode } = await runCmd(() => cmdPageShot(parsedFor({ out: outPath }), []));
+    assert.equal(exitCode, undefined);
+
+    const clip = client.calls.find((c) => c.method === 'Page.captureScreenshot')?.params.clip as Record<string, number>;
+    assert.deepEqual({ width: clip.width, height: clip.height }, { width: 667, height: 467 });
+    assert.match(stdout, /css-width="667" css-height="467"/);
+    assert.match(stdout, /css-to-image-x="1\.000000" css-to-image-y="1\.000000"/);
   } finally {
     cleanup(state);
     fs.rmSync(outPath, { force: true });

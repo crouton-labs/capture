@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { type ParsedArgs } from '../../types.js';
 import { withConnection } from '../../connection.js';
-import { captureScreenshotWithCssViewport } from '../../screenshot.js';
+import { captureScreenshotWithCssViewport, type CapturedRegion } from '../../screenshot.js';
 import { parseViewport, type Viewport } from '../../viewport.js';
 import { nextStepPath } from '../../../session-context.js';
 import { createOneshotSession } from '../../../session/commands.js';
@@ -40,7 +40,7 @@ input:
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json            mirror the result as JSON
 output:
-  <screenshot path=… width=… height=… css-width=… css-height=… css-to-image-x=… css-to-image-y=… emulation=none|viewport|full-page> — saved path, PNG pixel dimensions, CSS-to-image scale when the viewport read succeeds, byte size, and the emulation fact (whether a transient override was applied, or its absence)
+  <screenshot path=… width=… height=… css-width=… css-height=… css-x=… css-y=… css-to-image-x=… css-to-image-y=… emulation=none|viewport|full-page> — saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, byte size, and the emulation fact (whether a transient override was applied, or its absence)
 effects:
   no flags: none — the capture reads the viewport as-is, with zero Emulation.* calls. With --viewport/--full-page: applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture — two page-observable resizes (resize events fire; media queries flip and flip back)`;
 
@@ -116,21 +116,29 @@ function writeScreenshot(outPath: string, png: Buffer): void {
 
 export type EmulationMode = 'none' | 'viewport' | 'full-page';
 
+/** Renders a CSS-pixel measurement without inventing precision: an integer stays an integer, a fractional zoomed viewport keeps six decimals. */
+function round6(value: number): number {
+  return Math.round(value * 1e6) / 1e6;
+}
+
 export function buildScreenshotResult(f: {
   path: string;
   bytes: number;
   dimensions: { width: number; height: number } | null;
-  cssViewport?: { width: number; height: number };
+  cssViewport?: CapturedRegion;
   emulation: EmulationMode;
   viewport?: { width: number; height: number };
 }): RenderableResult {
+  // The denominator is the CSS region the image was actually cut from, so the
+  // ratio stays true under page zoom, device pixel ratio, and the local
+  // downscale — the layout viewport is a different space and is never used here.
   const scale = f.dimensions && f.cssViewport
     ? { x: f.dimensions.width / f.cssViewport.width, y: f.dimensions.height / f.cssViewport.height }
     : undefined;
   const sections: FactLine[] = [
     scale && f.cssViewport
-      ? fact`CSS-to-image scale: ${scale.x.toFixed(6)} image px/CSS px horizontally and ${scale.y.toFixed(6)} image px/CSS px vertically (CSS viewport ${f.cssViewport.width}×${f.cssViewport.height}).`
-      : text`CSS-to-image scale unavailable: the browser did not return a valid CSS viewport.`,
+      ? fact`CSS-to-image scale: ${scale.x.toFixed(6)} image px/CSS px horizontally and ${scale.y.toFixed(6)} image px/CSS px vertically (captured CSS region ${round6(f.cssViewport.width)}×${round6(f.cssViewport.height)} at page origin ${round6(f.cssViewport.x)},${round6(f.cssViewport.y)}).`
+      : text`CSS-to-image scale unavailable: the browser did not return the CSS region this capture covers.`,
     f.emulation === 'none'
       ? text`emulation: none — the browser's actual current viewport was captured; no Emulation call was made.`
       : f.emulation === 'viewport'
@@ -145,8 +153,10 @@ export function buildScreenshotResult(f: {
       path: f.path,
       width: f.dimensions?.width,
       height: f.dimensions?.height,
-      'css-width': f.cssViewport?.width,
-      'css-height': f.cssViewport?.height,
+      'css-width': f.cssViewport === undefined ? undefined : round6(f.cssViewport.width),
+      'css-height': f.cssViewport === undefined ? undefined : round6(f.cssViewport.height),
+      'css-x': f.cssViewport === undefined ? undefined : round6(f.cssViewport.x),
+      'css-y': f.cssViewport === undefined ? undefined : round6(f.cssViewport.y),
       'css-to-image-x': scale?.x.toFixed(6),
       'css-to-image-y': scale?.y.toFixed(6),
       emulation: f.emulation,

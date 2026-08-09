@@ -8104,6 +8104,11 @@ var init_scope_lock = __esm({
 });
 
 // src/cdp/screenshot.ts
+function validRegion(region) {
+  const finite4 = [region.x, region.y, region.width, region.height].every((n) => typeof n === "number" && Number.isFinite(n));
+  if (!finite4 || region.width <= 0 || region.height <= 0) return void 0;
+  return region;
+}
 function downscalePngToFit(png, maxDim) {
   const src = import_pngjs.PNG.sync.read(png);
   const maxSide = Math.max(src.width, src.height);
@@ -8192,6 +8197,8 @@ async function viewportScopedCapture(client, viewport2, options, includeCssViewp
       format: "png",
       captureBeyondViewport: false
     };
+    let capturedRegion;
+    let visualViewport;
     try {
       const metrics = await client.send("Page.getLayoutMetrics", {}, 5e3);
       const vw = Math.round(metrics.cssVisualViewport?.clientWidth ?? 0);
@@ -8209,21 +8216,14 @@ async function viewportScopedCapture(client, viewport2, options, includeCssViewp
         ...screenshotOpts,
         clip: { x: sx, y: sy, width: vw, height: vh, scale }
       };
+      visualViewport = validRegion({
+        x: metrics.cssVisualViewport?.pageX ?? 0,
+        y: metrics.cssVisualViewport?.pageY ?? 0,
+        width: metrics.cssVisualViewport?.clientWidth ?? 0,
+        height: metrics.cssVisualViewport?.clientHeight ?? 0
+      });
+      capturedRegion = validRegion({ x: sx, y: sy, width: vw, height: vh });
     } catch {
-    }
-    let cssViewport;
-    if (includeCssViewport) {
-      try {
-        const response = await client.send("Runtime.evaluate", {
-          expression: "({ width: window.innerWidth, height: window.innerHeight })",
-          returnByValue: true
-        }, 5e3);
-        const value = response.result?.value;
-        if (typeof value?.width === "number" && Number.isFinite(value.width) && value.width > 0 && typeof value.height === "number" && Number.isFinite(value.height) && value.height > 0) {
-          cssViewport = { width: value.width, height: value.height };
-        }
-      } catch {
-      }
     }
     const result = await client.send(
       "Page.captureScreenshot",
@@ -8247,13 +8247,32 @@ async function viewportScopedCapture(client, viewport2, options, includeCssViewp
       }, 15e3);
       png = Buffer.from(retry.data ?? "", "base64");
       if (png.length > 0) png = downscalePngToFit(png, MAX_DIM);
+      if (png.length > 0) capturedRegion = visualViewport;
+    }
+    if (includeCssViewport && !capturedRegion) {
+      try {
+        const response = await client.send("Runtime.evaluate", {
+          expression: "(() => { const v = window.visualViewport; return v ? { x: v.pageLeft, y: v.pageTop, width: v.width, height: v.height } : null; })()",
+          returnByValue: true
+        }, 5e3);
+        const value = response.result?.value;
+        if (value) {
+          capturedRegion = validRegion({
+            x: Number(value.x),
+            y: Number(value.y),
+            width: Number(value.width),
+            height: Number(value.height)
+          });
+        }
+      } catch {
+      }
     }
     if (png.length === 0) {
       throw new Error(
         "Page.captureScreenshot returned no image data (the tab may not be rendering); refusing to write a 0-byte PNG"
       );
     }
-    return { png, ...cssViewport ? { cssViewport } : {} };
+    return { png, ...includeCssViewport && capturedRegion ? { cssViewport: capturedRegion } : {} };
   } catch (error) {
     primaryFailed = true;
     primaryError = error;
@@ -8994,10 +9013,7 @@ function parseCliSyntax(argv) {
       parsed.settleTimeout = integer(valueFor(arg, next), "--settle-timeout", 1, 2147483647);
       i++;
     } else if (arg === "--capture-unsettled") parsed.captureUnsettled = true;
-    else if (arg === "--collector-timeout") {
-      parsed.collectorTimeout = integer(valueFor(arg, next), "--collector-timeout", 1, 2147483647);
-      i++;
-    } else if (arg === "--skip-collector") {
+    else if (arg === "--skip-collector") {
       (parsed.skipCollector ??= []).push(valueFor(arg, next));
       i++;
     } else if (arg === "--pixels") parsed.pixels = true;
@@ -227300,10 +227316,13 @@ function writeScreenshot(outPath, png) {
   }
   writeBinaryPrivate(outPath, png);
 }
+function round6(value) {
+  return Math.round(value * 1e6) / 1e6;
+}
 function buildScreenshotResult(f) {
   const scale = f.dimensions && f.cssViewport ? { x: f.dimensions.width / f.cssViewport.width, y: f.dimensions.height / f.cssViewport.height } : void 0;
   const sections = [
-    scale && f.cssViewport ? fact`CSS-to-image scale: ${scale.x.toFixed(6)} image px/CSS px horizontally and ${scale.y.toFixed(6)} image px/CSS px vertically (CSS viewport ${f.cssViewport.width}×${f.cssViewport.height}).` : text`CSS-to-image scale unavailable: the browser did not return a valid CSS viewport.`,
+    scale && f.cssViewport ? fact`CSS-to-image scale: ${scale.x.toFixed(6)} image px/CSS px horizontally and ${scale.y.toFixed(6)} image px/CSS px vertically (captured CSS region ${round6(f.cssViewport.width)}×${round6(f.cssViewport.height)} at page origin ${round6(f.cssViewport.x)},${round6(f.cssViewport.y)}).` : text`CSS-to-image scale unavailable: the browser did not return the CSS region this capture covers.`,
     f.emulation === "none" ? text`emulation: none — the browser's actual current viewport was captured; no Emulation call was made.` : f.emulation === "viewport" ? fact`emulation: transient ${f.viewport.width}x${f.viewport.height} device-metrics override applied for the capture and cleared after — two page-observable resizes.` : f.viewport ? fact`emulation: transient full-page device-metrics override (from ${f.viewport.width}x${f.viewport.height}) applied for the capture and cleared after — two page-observable resizes.` : text`emulation: transient full-page device-metrics override applied for the capture and cleared after — two page-observable resizes.`
   ];
   return {
@@ -227312,8 +227331,10 @@ function buildScreenshotResult(f) {
       path: f.path,
       width: f.dimensions?.width,
       height: f.dimensions?.height,
-      "css-width": f.cssViewport?.width,
-      "css-height": f.cssViewport?.height,
+      "css-width": f.cssViewport === void 0 ? void 0 : round6(f.cssViewport.width),
+      "css-height": f.cssViewport === void 0 ? void 0 : round6(f.cssViewport.height),
+      "css-x": f.cssViewport === void 0 ? void 0 : round6(f.cssViewport.x),
+      "css-y": f.cssViewport === void 0 ? void 0 : round6(f.cssViewport.y),
       "css-to-image-x": scale?.x.toFixed(6),
       "css-to-image-y": scale?.y.toFixed(6),
       emulation: f.emulation
@@ -227390,7 +227411,7 @@ input:
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json            mirror the result as JSON
 output:
-  <screenshot path=\u2026 width=\u2026 height=\u2026 css-width=\u2026 css-height=\u2026 css-to-image-x=\u2026 css-to-image-y=\u2026 emulation=none|viewport|full-page> \u2014 saved path, PNG pixel dimensions, CSS-to-image scale when the viewport read succeeds, byte size, and the emulation fact (whether a transient override was applied, or its absence)
+  <screenshot path=\u2026 width=\u2026 height=\u2026 css-width=\u2026 css-height=\u2026 css-x=\u2026 css-y=\u2026 css-to-image-x=\u2026 css-to-image-y=\u2026 emulation=none|viewport|full-page> \u2014 saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, byte size, and the emulation fact (whether a transient override was applied, or its absence)
 effects:
   no flags: none \u2014 the capture reads the viewport as-is, with zero Emulation.* calls. With --viewport/--full-page: applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture \u2014 two page-observable resizes (resize events fire; media queries flip and flip back)`;
     deps4 = { withConnection, nextStepPath, createOneshotSession };
@@ -235503,35 +235524,27 @@ async function captureSnapshotSubstrate(options) {
       const skipCollectors = new Set(options.skipCollectors ?? []);
       const baseline = collectors.filter((c) => c.phase === "baseline");
       const mutating = collectors.filter((c) => c.phase === "mutating");
-      const collectorTimeoutMs = options.collectorTimeout ?? DEFAULT_COLLECTOR_TIMEOUT_MS;
       const runCollector = async (collector) => {
         if (skipCollectors.has(collector.name)) return { name: collector.name, status: "skipped" };
         const startedAt = Date.now();
         let requestTimeouts = 0;
         const collectorWriter = makeCollectorWriter(ctx.write);
-        const run = Promise.resolve().then(() => collector.fn({
-          ...ctx,
-          client: boundedClient(client, `collector:${collector.name}`, dir, () => {
-            requestTimeouts += 1;
-          }),
-          write: collectorWriter.writer
-        }));
-        run.catch(() => void 0);
-        let timer;
-        const completion = await Promise.race([
-          run.then(() => "complete", () => "error"),
-          new Promise((resolve11) => {
-            timer = setTimeout(() => resolve11("timeout"), collectorTimeoutMs);
-          })
-        ]);
-        if (timer) clearTimeout(timer);
-        const ms = Date.now() - startedAt;
-        if (completion === "complete") {
+        try {
+          await collector.fn({
+            ...ctx,
+            client: boundedClient(client, `collector:${collector.name}`, dir, () => {
+              requestTimeouts += 1;
+            }),
+            write: collectorWriter.writer
+          });
+          const ms = Date.now() - startedAt;
           collectorWriter.commit();
           return requestTimeouts > 0 ? { name: collector.name, status: "degraded", ms, requestTimeouts } : { name: collector.name, status: "ok", ms };
+        } catch {
+          const ms = Date.now() - startedAt;
+          collectorWriter.discard();
+          return { name: collector.name, status: "error", ms, ...requestTimeouts > 0 ? { requestTimeouts } : {} };
         }
-        collectorWriter.discard();
-        return { name: collector.name, status: completion, ms, ...requestTimeouts > 0 ? { requestTimeouts } : {} };
       };
       for (const collector of baseline) collectorOutcomes.push(await runCollector(collector));
       const screenshotResponse = await phaseClient("baseline-screenshot").send("Page.captureScreenshot", { format: "png" });
@@ -235599,7 +235612,7 @@ async function captureSnapshotSubstrate(options) {
       // `freezeIncomplete`, matching the handle's own documented contract.
       ...freezeIncomplete === true ? { freezeIncomplete: true, unfrozenCount: unfrozenCount ?? 0 } : {},
       ...domHtmlFact ? { domHtml: domHtmlFact } : {},
-      ...captured ? { collectors: collectorOutcomes, collectorTimeoutMs: options.collectorTimeout ?? DEFAULT_COLLECTOR_TIMEOUT_MS } : {}
+      ...captured ? { collectors: collectorOutcomes } : {}
     };
     writeJsonPrivate(path19.join(dir, "meta.json"), meta);
     artifacts.push("meta.json");
@@ -235640,7 +235653,7 @@ async function captureSnapshotSubstrate(options) {
     await restoreAnimationsOnce();
   }
 }
-var path19, COLLECTORS, COLLECTOR_NAMES, DEFAULT_COLLECTOR_TIMEOUT_MS, SNAPSHOT_REQUEST_TIMEOUT_MS, SnapshotCaptureTimeout;
+var path19, COLLECTORS, COLLECTOR_NAMES, SNAPSHOT_REQUEST_TIMEOUT_MS, SnapshotCaptureTimeout;
 var init_snapshot = __esm({
   "src/cdp/measure/snapshot.ts"() {
     path19 = __toESM(require("path"));
@@ -235679,7 +235692,6 @@ var init_snapshot = __esm({
       { name: "pixels", phase: "mutating", fn: collectPixels }
     ];
     COLLECTOR_NAMES = COLLECTORS.map((collector) => collector.name);
-    DEFAULT_COLLECTOR_TIMEOUT_MS = 3e4;
     SNAPSHOT_REQUEST_TIMEOUT_MS = 5e3;
     SnapshotCaptureTimeout = class extends Error {
       constructor(phase, method, timeoutMs, partialPath) {
@@ -236088,10 +236100,10 @@ async function withAppliedViewport(client, viewport2, fn) {
     }
   }
 }
-function collectorNote(incomplete, collectorTimeoutMs) {
+function collectorNote(incomplete) {
   const described = incomplete.map((c) => `${sanitizeString(c.name)} (${c.status}${c.requestTimeouts ? `, ${c.requestTimeouts} timed-out request(s)` : ""})`).join(", ");
-  const timedOut = incomplete.some((c) => c.status === "timeout");
-  return fact`collectors incomplete: ${described}. Every other collector's substrate is valid and queryable.${timedOut ? ` Raise \`--collector-timeout\` above ${collectorTimeoutMs ?? DEFAULT_COLLECTOR_TIMEOUT_MS}ms to give them longer.` : ""}`;
+  const failed = incomplete.some((c) => c.status === "error" || c.status === "degraded");
+  return fact`collectors incomplete: ${described}. Every other collector's substrate is valid and queryable.${failed ? ` Re-run with \`--skip-collector <name>\` to omit one deliberately rather than have it fail.` : ""}`;
 }
 function settledNote(settled, captured, settleMs, settleTimeoutMs, unstableCount) {
   if (settled) {
@@ -236108,9 +236120,6 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
   }
   if (parsed.settleTimeout !== void 0 && (!Number.isFinite(parsed.settleTimeout) || parsed.settleTimeout <= 0)) {
     throw invalidInput("--settle-timeout must be a positive number of milliseconds");
-  }
-  if (parsed.collectorTimeout !== void 0 && (!Number.isFinite(parsed.collectorTimeout) || parsed.collectorTimeout <= 0)) {
-    throw invalidInput("--collector-timeout must be a positive number of milliseconds");
   }
   for (const name of parsed.skipCollector ?? []) {
     if (!COLLECTOR_NAMES.includes(name)) {
@@ -236148,7 +236157,6 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
           pixels: parsed.pixels,
           state: parsed.state ?? [],
           viewport: viewport2?.label ?? null,
-          collectorTimeout: parsed.collectorTimeout ?? DEFAULT_COLLECTOR_TIMEOUT_MS,
           skipCollectors: parsed.skipCollector ?? []
         });
         artifacts = result.artifacts;
@@ -236189,7 +236197,7 @@ function buildSnapshotResult(captured) {
     // not only in meta.json — its artifact is absent (timeout/error/skipped)
     // or partly built from timed-out reads (degraded), and a caller who reads
     // the remaining substrate as a whole page would be reading a hole.
-    ...incomplete.length ? { sections: [collectorNote(incomplete, meta.collectorTimeoutMs)] } : {},
+    ...incomplete.length ? { sections: [collectorNote(incomplete)] } : {},
     artifacts: formatArtifactList(artifacts),
     followUp: meta.settled || capturedFullSubstrate ? fact`Query snapshot ${captured.id} with \`capture measure check ${captured.id}\`, \`capture measure census --snap ${captured.id} --axis color\`, or \`capture measure map focus ${captured.id}\`.` : fact`Re-run with \`--freeze-animations\`, a longer \`--settle-timeout\`, or \`--capture-unsettled\` to choose a queryable capture.`
   };
@@ -236321,8 +236329,7 @@ input:
   --freeze-animations         pause CSS/WAAPI animation before capture
   --settle-timeout <ms>       override the default 5000ms settle wait
   --capture-unsettled         write the full substrate despite non-settlement, marking unstable regions
-  --collector-timeout <ms>    per-collector wall-clock budget (default 30000ms); a collector that exceeds it is abandoned and recorded, and every other collector's substrate is still written
-  --skip-collector <name>     leave one collector out entirely (repeatable): ax, styles, queries, animation, layers, media, geometry, hittest, text, forms, focus, scroll, states, pixels
+  --skip-collector <name>     leave one collector out entirely (repeatable): ax, styles, queries, animation, layers, media, geometry, hittest, text, forms, focus, scroll, states, pixels. A collector that fails is recorded and skipped; every other collector's substrate is still written
   --pixels                    also write per-element raster crops
   --state <state[:selector]>  force a pseudo-state or real control state (repeatable)
   --viewport <WxH>            temporarily capture at a CSS-pixel viewport (repeatable); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace

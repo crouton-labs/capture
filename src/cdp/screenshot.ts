@@ -5,6 +5,25 @@ import { writeBinaryPrivate } from '../session/artifacts.js';
 import { withScopeSerialization } from './scope-lock.js';
 
 /**
+ * The CSS-pixel rectangle a captured PNG covers: its page-coordinate origin and
+ * its size. `image px / width` (and `/ height`) is the capture's true CSS-to-
+ * image scale, and `x`/`y` turn a page coordinate into an image coordinate.
+ */
+export interface CapturedRegion {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** A region is reportable only if every number is finite and its size is positive; anything else would produce a fabricated scale. */
+function validRegion(region: CapturedRegion): CapturedRegion | undefined {
+  const finite = [region.x, region.y, region.width, region.height].every((n) => typeof n === 'number' && Number.isFinite(n));
+  if (!finite || region.width <= 0 || region.height <= 0) return undefined;
+  return region;
+}
+
+/**
  * Downscales a PNG so its longest side fits within maxDim, using a box
  * filter. Used when a clipped/scaled CDP capture is unavailable and the raw
  * capture exceeds the dimension budget.
@@ -71,12 +90,18 @@ export async function captureScreenshot(
   return result.png;
 }
 
-/** Captures a PNG and the CSS viewport used to map image pixels back to page coordinates. */
+/**
+ * Captures a PNG and the CSS-pixel region the image actually covers — the clip
+ * sent to `Page.captureScreenshot` (or, for an unclipped capture, the visual
+ * viewport). Dividing the PNG's pixel dimensions by that region's size is the
+ * true CSS-to-image scale; the layout viewport (`window.innerWidth`) is a
+ * different coordinate space under page zoom and must not stand in for it.
+ */
 export async function captureScreenshotWithCssViewport(
   client: CDPClient,
   viewport?: { width: number; height: number },
   options?: { fullPage?: boolean },
-): Promise<{ png: Buffer; cssViewport?: { width: number; height: number } }> {
+): Promise<{ png: Buffer; cssViewport?: CapturedRegion }> {
   return withScopeSerialization(client, 'viewport', 'screenshot capture', () =>
     viewportScopedCapture(client, viewport, options, true),
   );
@@ -94,7 +119,7 @@ async function viewportScopedCapture(
   viewport?: { width: number; height: number },
   options?: { fullPage?: boolean },
   includeCssViewport = false,
-): Promise<{ png: Buffer; cssViewport?: { width: number; height: number } }> {
+): Promise<{ png: Buffer; cssViewport?: CapturedRegion }> {
   const MAX_DIM = 1600; // headroom below Anthropic's 2000px many-image limit
   let ownsDeviceMetricsOverride = false;
   let primaryFailed = false;
@@ -136,6 +161,12 @@ async function viewportScopedCapture(
       captureBeyondViewport: false,
     };
 
+    // The CSS-pixel region the returned image covers. Set from the clip that is
+    // actually sent, and re-stated from the raw (unrounded) visual viewport if a
+    // fallback below captures unclipped instead.
+    let capturedRegion: CapturedRegion | undefined;
+    let visualViewport: CapturedRegion | undefined;
+
     try {
       const metrics = (await client.send('Page.getLayoutMetrics', {}, 5000)) as {
         cssVisualViewport?: { clientWidth: number; clientHeight: number; pageX: number; pageY: number };
@@ -161,24 +192,17 @@ async function viewportScopedCapture(
         ...screenshotOpts,
         clip: { x: sx, y: sy, width: vw, height: vh, scale },
       };
+      visualViewport = validRegion({
+        x: metrics.cssVisualViewport?.pageX ?? 0,
+        y: metrics.cssVisualViewport?.pageY ?? 0,
+        width: metrics.cssVisualViewport?.clientWidth ?? 0,
+        height: metrics.cssVisualViewport?.clientHeight ?? 0,
+      });
+      // The clip is what the image is cut from, rounding included — not the
+      // fractional viewport it was derived from.
+      capturedRegion = validRegion({ x: sx, y: sy, width: vw, height: vh });
     } catch {
       // Capture without downscaling when the optional metrics probe is unavailable.
-    }
-
-    let cssViewport: { width: number; height: number } | undefined;
-    if (includeCssViewport) {
-      try {
-        const response = (await client.send('Runtime.evaluate', {
-          expression: '({ width: window.innerWidth, height: window.innerHeight })',
-          returnByValue: true,
-        }, 5000)) as { result?: { value?: { width?: unknown; height?: unknown } } };
-        const value = response.result?.value;
-        if (typeof value?.width === 'number' && Number.isFinite(value.width) && value.width > 0 && typeof value.height === 'number' && Number.isFinite(value.height) && value.height > 0) {
-          cssViewport = { width: value.width, height: value.height };
-        }
-      } catch {
-        // The image remains usable; only its CSS-coordinate mapping is unavailable.
-      }
     }
 
     const result = (await client.send(
@@ -211,6 +235,32 @@ async function viewportScopedCapture(
       }, 15000)) as { data?: string };
       png = Buffer.from(retry.data ?? '', 'base64');
       if (png.length > 0) png = downscalePngToFit(png, MAX_DIM);
+      // An unclipped capture covers the visual viewport itself, at its true
+      // fractional size — not the integer clip that was refused.
+      if (png.length > 0) capturedRegion = visualViewport;
+    }
+
+    // No clip was ever sent (the metrics probe failed), so the image covers the
+    // visual viewport. Read it directly rather than reporting the layout
+    // viewport, which differs from it under page zoom.
+    if (includeCssViewport && !capturedRegion) {
+      try {
+        const response = (await client.send('Runtime.evaluate', {
+          expression: '(() => { const v = window.visualViewport; return v ? { x: v.pageLeft, y: v.pageTop, width: v.width, height: v.height } : null; })()',
+          returnByValue: true,
+        }, 5000)) as { result?: { value?: Record<string, unknown> | null } };
+        const value = response.result?.value;
+        if (value) {
+          capturedRegion = validRegion({
+            x: Number(value.x),
+            y: Number(value.y),
+            width: Number(value.width),
+            height: Number(value.height),
+          });
+        }
+      } catch {
+        // The image remains usable; only its CSS-coordinate mapping is unavailable.
+      }
     }
 
     if (png.length === 0) {
@@ -219,7 +269,7 @@ async function viewportScopedCapture(
       );
     }
 
-    return { png, ...(cssViewport ? { cssViewport } : {}) };
+    return { png, ...(includeCssViewport && capturedRegion ? { cssViewport: capturedRegion } : {}) };
   } catch (error) {
     primaryFailed = true;
     primaryError = error;
