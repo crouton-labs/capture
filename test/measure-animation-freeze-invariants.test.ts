@@ -240,39 +240,30 @@ class FreezeStubCdpClient {
   }
 }
 
-// Test 1 — exception safety: a throwing baseline collector must still
-// trigger a real restore attempt against the captured freeze origin.
-//
-// MUST FAIL PRE-FIX: pre-fix, `freezeAnimationsBeforeCapture` returned
-// `Promise<void>` and there was no handle/restore call at all — the
-// `Runtime.callFunctionOn` restore-call assertion below would find nothing
-// to match, and the second `Animation.setPlaybackRate({playbackRate:1})`
-// call (the exception-safety net) never happened because `snapshot.ts` had
-// no `finally`-guarded restore closure to run it from.
-test('captureSnapshotSubstrate: a throwing baseline collector still triggers real animation restoration (Finding A / I-6 exception safety)', async () => {
+// A failed collector is recorded while the surrounding capture restores its frozen origin.
+test('captureSnapshotSubstrate: a throwing baseline collector is recorded and still triggers real animation restoration', async () => {
   const dir = freshSnapDir('exception-safety');
   const client = new FreezeStubCdpClient();
   try {
-    await assert.rejects(
-      captureSnapshotSubstrate({
-        target: { client: asClient(client) },
-        url: 'http://example.test',
-        path: dir,
-        settleTimeout: 500,
-        pollIntervalMs: 20,
-        freezeAnimations: true,
-        collectors: [
-          {
-            name: 'boom',
-            phase: 'baseline',
-            fn: async () => {
-              throw new Error('boom');
-            },
+    const result = await captureSnapshotSubstrate({
+      target: { client: asClient(client) },
+      url: 'http://example.test',
+      path: dir,
+      settleTimeout: 500,
+      pollIntervalMs: 20,
+      freezeAnimations: true,
+      collectors: [
+        {
+          name: 'boom',
+          phase: 'baseline',
+          fn: async () => {
+            throw new Error('boom');
           },
-        ],
-      }),
-      /boom/,
-    );
+        },
+      ],
+    });
+    assert.equal(result.collectors[0]?.name, 'boom');
+    assert.equal(result.collectors[0]?.status, 'error');
 
     const restoreCalls = client.calls.filter(
       (c) =>

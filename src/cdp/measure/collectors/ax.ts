@@ -7,10 +7,9 @@
  * shared with `styles.json`/`media.json` per the U04 contract — no
  * coordination with those files is needed.
  *
- * "geometry ids ... when possible": U07's `geometry.json` is a
- * concurrently-written sibling collector (`Promise.all` in `snapshot.ts`,
- * no cross-collector read ordering) that this file must not depend on or
- * read at capture time. Read here as "attach a `rect` fact directly per AX
+ * "geometry ids ... when possible": `geometry.json` is a separate
+ * collector artifact that this file does not depend on or read at capture
+ * time. Read here as "attach a `rect` fact directly per AX
  * node via a best-effort `DOM.getBoxModel` lookup" rather than a join
  * against `geometry.json` — a deliberate, bounded reading documented in
  * the U08 build-plan report, not a defect.

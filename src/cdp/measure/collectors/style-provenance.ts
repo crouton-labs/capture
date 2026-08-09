@@ -29,22 +29,10 @@
  * re-invoking `CSS.enable` while the domain is ALREADY enabled is a
  * no-op that redelivers nothing — only a `CSS.disable` + `CSS.enable`
  * pair forces Chrome to resend every currently-known stylesheet's
- * header). Both `styles.ts` and `layers.ts` run in the same `baseline`
- * `Promise.all` (see `snapshot.ts`), and `enableDomainsForSnap` already
- * enabled CSS once before either collector starts — so a caller-owned
- * listener registered only after that point would otherwise never see
- * the headers for stylesheets already parsed at that time. Each caller
- * runs `captureStyleSheetHeaders` independently, as the very first thing
- * it does (before any other CSS-domain call), and awaits it before
- * issuing any of its own `CSS.*` calls. Because listener registration is
- * synchronous (before any `await`), and JS never yields to socket I/O
- * mid-way through `Promise.all`'s synchronous dispatch of every baseline
- * collector, both this file's and the other collector's listeners are
- * always attached before either's disable/enable pair reaches Chrome —
- * so neither can miss the other's redelivery burst, and once both
- * callers' own `captureStyleSheetHeaders` calls resolve, the CSS domain
- * is stably enabled for the rest of the snapshot (neither file disables
- * it again).
+ * header). `enableDomainsForSnap` already enabled CSS before either
+ * collector starts, so each collector captures its own headers as its
+ * first CSS-domain action and awaits that capture before its provenance
+ * reads. This keeps either artifact self-contained.
  */
 
 import { resolveAuthoredSourceLocation, type ResolvedSourceLocation } from '../../source-map.js';

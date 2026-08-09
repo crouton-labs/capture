@@ -68,6 +68,10 @@ export interface ParsedArgs {
   settleTimeout?: number;
   /** `snap --capture-unsettled` — write full substrate despite non-settlement. */
   captureUnsettled?: boolean;
+  /** `snap --collector-timeout <ms>` — per-collector wall-clock budget; default 30000. */
+  collectorTimeout?: number;
+  /** `snap --skip-collector <name>` — repeatable; one entry per occurrence. */
+  skipCollector?: string[];
   /** `snap|diff|mask --pixels` — include raster crop/diff facts. */
   pixels?: boolean;
   /** `snap --state <state[:selector]>` — repeatable; one entry per occurrence. */

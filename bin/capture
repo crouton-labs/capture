@@ -8971,7 +8971,13 @@ function parseCliSyntax(argv) {
       parsed.settleTimeout = integer(valueFor(arg, next), "--settle-timeout", 1, 2147483647);
       i++;
     } else if (arg === "--capture-unsettled") parsed.captureUnsettled = true;
-    else if (arg === "--pixels") parsed.pixels = true;
+    else if (arg === "--collector-timeout") {
+      parsed.collectorTimeout = integer(valueFor(arg, next), "--collector-timeout", 1, 2147483647);
+      i++;
+    } else if (arg === "--skip-collector") {
+      (parsed.skipCollector ??= []).push(valueFor(arg, next));
+      i++;
+    } else if (arg === "--pixels") parsed.pixels = true;
     else if (arg === "--state") {
       (parsed.state ??= []).push(valueFor(arg, next));
       i++;
@@ -230360,6 +230366,18 @@ function normalizeComputed(raw) {
 function resolvedIdentity3(backendNodeId2) {
   return backendNodeId2 === void 0 ? { backendNodeId: null, identityUnresolved: true } : { backendNodeId: backendNodeId2 };
 }
+async function mapWithConcurrency(values, limit, fn) {
+  const result = new Array(values.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < values.length) {
+      const index = next++;
+      result[index] = await fn(values[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, worker));
+  return result;
+}
 async function collectStylesInner(ctx, styleSheetUrls, styleSheetHeaders) {
   const { client } = ctx;
   let inventory;
@@ -230408,43 +230426,41 @@ async function collectStylesInner(ctx, styleSheetUrls, styleSheetHeaders) {
     resolved = facts.map(() => void 0);
   }
   const sourceCache = /* @__PURE__ */ new Map();
-  const elements = await Promise.all(
-    facts.map(async (fact4, index) => {
-      const ref = resolved[index];
-      const computed2 = normalizeComputed(fact4.computed);
-      let winningDeclarations;
-      let provenanceUnavailable;
-      if (ref?.nodeId !== void 0) {
-        try {
-          const matched = await client.send("CSS.getMatchedStylesForNode", {
-            nodeId: ref.nodeId
-          });
-          winningDeclarations = await buildWinningDeclarations(
-            client,
-            matched,
-            computed2,
-            sourceCache,
-            styleSheetUrls,
-            PROVENANCE_PROPERTIES
-          );
-        } catch {
-          winningDeclarations = [];
-          provenanceUnavailable = true;
-        }
-      } else {
+  const elements = await mapWithConcurrency(facts, PROVENANCE_CONCURRENCY, async (fact4, index) => {
+    const ref = resolved[index];
+    const computed2 = normalizeComputed(fact4.computed);
+    let winningDeclarations;
+    let provenanceUnavailable;
+    if (ref?.nodeId !== void 0) {
+      try {
+        const matched = await client.send("CSS.getMatchedStylesForNode", {
+          nodeId: ref.nodeId
+        });
+        winningDeclarations = await buildWinningDeclarations(
+          client,
+          matched,
+          computed2,
+          sourceCache,
+          styleSheetUrls,
+          PROVENANCE_PROPERTIES
+        );
+      } catch {
         winningDeclarations = [];
         provenanceUnavailable = true;
       }
-      return {
-        id: `s-${index}`,
-        selector: sanitizeString(fact4.cssPath),
-        ...resolvedIdentity3(ref?.backendNodeId),
-        computed: computed2,
-        winningDeclarations,
-        provenanceUnavailable
-      };
-    })
-  );
+    } else {
+      winningDeclarations = [];
+      provenanceUnavailable = true;
+    }
+    return {
+      id: `s-${index}`,
+      selector: sanitizeString(fact4.cssPath),
+      ...resolvedIdentity3(ref?.backendNodeId),
+      computed: computed2,
+      winningDeclarations,
+      provenanceUnavailable
+    };
+  });
   ctx.write.json("styles.json", {
     elements,
     coverage: {
@@ -230461,12 +230477,13 @@ async function collectStylesInner(ctx, styleSheetUrls, styleSheetHeaders) {
     ...unavailableReason ? { unavailableReason } : {}
   });
 }
-var STYLES_MAX_ELEMENTS, COMPUTED_PROPERTIES, PROVENANCE_PROPERTIES, EXCLUDED_TAGS, STYLES_SCRIPT, collectStyles;
+var STYLES_MAX_ELEMENTS, PROVENANCE_CONCURRENCY, COMPUTED_PROPERTIES, PROVENANCE_PROPERTIES, EXCLUDED_TAGS, STYLES_SCRIPT, collectStyles;
 var init_styles = __esm({
   "src/cdp/measure/collectors/styles.ts"() {
     init_redaction();
     init_style_provenance();
     STYLES_MAX_ELEMENTS = 150;
+    PROVENANCE_CONCURRENCY = 8;
     COMPUTED_PROPERTIES = [
       "display",
       "position",
@@ -235310,17 +235327,54 @@ function makeWriter(dir, artifacts) {
     }
   };
 }
-function boundedClient(client, phase, partialPath) {
+function makeCollectorWriter(writer) {
+  const staged = [];
+  let open = true;
+  return {
+    writer: {
+      json(filename, value) {
+        if (open) staged.push({ filename, value });
+      },
+      binary(filename, data2) {
+        if (open) staged.push({ filename, data: data2 });
+      }
+    },
+    commit() {
+      if (!open) return;
+      open = false;
+      for (const artifact of staged) {
+        if ("data" in artifact) writer.binary(artifact.filename, artifact.data);
+        else writer.json(artifact.filename, artifact.value);
+      }
+      staged.length = 0;
+    },
+    discard() {
+      open = false;
+      staged.length = 0;
+    }
+  };
+}
+function boundedClient(client, phase, partialPath, onTimeout) {
   const bounded = Object.create(client);
   bounded.send = (method, params = {}, timeout = 6e4, sessionId) => {
     const timeoutMs = Math.min(timeout, SNAPSHOT_REQUEST_TIMEOUT_MS);
     let timer;
+    let timedOut = false;
+    const markTimedOut = () => {
+      if (timedOut) return;
+      timedOut = true;
+      onTimeout?.();
+    };
     const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath)), timeoutMs);
+      timer = setTimeout(() => {
+        markTimedOut();
+        reject(new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath));
+      }, timeoutMs);
     });
     const request = Promise.resolve().then(() => client.send(method, params, timeoutMs, sessionId)).catch((error) => {
       if (error instanceof SnapshotCaptureTimeout) throw error;
       if (error instanceof Error && error.message.startsWith("CDP request timeout")) {
+        markTimedOut();
         throw new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath);
       }
       throw error;
@@ -235389,6 +235443,7 @@ async function captureSnapshotSubstrate(options) {
     const unstable = !settled;
     let unstableRegions = [];
     let domHtmlFact;
+    const collectorOutcomes = [];
     if (unstable) {
       const animationEvidence = await collectAnimationEvidence(phaseClient("settle-evidence"));
       const grouped = groupChurnEvidence(churnEvidenceRaw, animationEvidence, settleResult.elapsedMs, settleTimeoutMs);
@@ -235416,19 +235471,40 @@ async function captureSnapshotSubstrate(options) {
         write: makeWriter(dir, artifacts)
       };
       const collectors = options.collectors ?? COLLECTORS;
+      const skipCollectors = new Set(options.skipCollectors ?? []);
       const baseline = collectors.filter((c) => c.phase === "baseline");
       const mutating = collectors.filter((c) => c.phase === "mutating");
-      const runCollector = (collector) => {
+      const collectorTimeoutMs = options.collectorTimeout ?? DEFAULT_COLLECTOR_TIMEOUT_MS;
+      const runCollector = async (collector) => {
+        if (skipCollectors.has(collector.name)) return { name: collector.name, status: "skipped" };
+        const startedAt = Date.now();
+        let requestTimeouts = 0;
+        const collectorWriter = makeCollectorWriter(ctx.write);
+        const run = Promise.resolve().then(() => collector.fn({
+          ...ctx,
+          client: boundedClient(client, `collector:${collector.name}`, dir, () => {
+            requestTimeouts += 1;
+          }),
+          write: collectorWriter.writer
+        }));
+        run.catch(() => void 0);
         let timer;
-        const deadline = new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new SnapshotCaptureTimeout(`collector:${collector.name}`, "<collector>", SNAPSHOT_REQUEST_TIMEOUT_MS, dir)), SNAPSHOT_REQUEST_TIMEOUT_MS);
-        });
-        const run = collector.fn({ ...ctx, client: phaseClient(`collector:${collector.name}`) });
-        return Promise.race([run, deadline]).finally(() => {
-          if (timer) clearTimeout(timer);
-        });
+        const completion = await Promise.race([
+          run.then(() => "complete", () => "error"),
+          new Promise((resolve11) => {
+            timer = setTimeout(() => resolve11("timeout"), collectorTimeoutMs);
+          })
+        ]);
+        if (timer) clearTimeout(timer);
+        const ms = Date.now() - startedAt;
+        if (completion === "complete") {
+          collectorWriter.commit();
+          return requestTimeouts > 0 ? { name: collector.name, status: "degraded", ms, requestTimeouts } : { name: collector.name, status: "ok", ms };
+        }
+        collectorWriter.discard();
+        return { name: collector.name, status: completion, ms, ...requestTimeouts > 0 ? { requestTimeouts } : {} };
       };
-      await Promise.all(baseline.map(runCollector));
+      for (const collector of baseline) collectorOutcomes.push(await runCollector(collector));
       const screenshotResponse = await phaseClient("baseline-screenshot").send("Page.captureScreenshot", { format: "png" });
       writeBinaryPrivate(path19.join(dir, "screenshot.png"), Buffer.from(screenshotResponse.data, "base64"));
       artifacts.push("screenshot.png");
@@ -235455,9 +235531,7 @@ async function captureSnapshotSubstrate(options) {
         domHtmlFact = { available: true };
       }
       await restoreAnimationsOnce();
-      for (const c of mutating) {
-        await runCollector(c);
-      }
+      for (const collector of mutating) collectorOutcomes.push(await runCollector(collector));
     } else {
       await restoreAnimationsOnce();
     }
@@ -235495,7 +235569,8 @@ async function captureSnapshotSubstrate(options) {
       // other cases. `unfrozenCount` is only ever emitted alongside a `true`
       // `freezeIncomplete`, matching the handle's own documented contract.
       ...freezeIncomplete === true ? { freezeIncomplete: true, unfrozenCount: unfrozenCount ?? 0 } : {},
-      ...domHtmlFact ? { domHtml: domHtmlFact } : {}
+      ...domHtmlFact ? { domHtml: domHtmlFact } : {},
+      ...captured ? { collectors: collectorOutcomes, collectorTimeoutMs: options.collectorTimeout ?? DEFAULT_COLLECTOR_TIMEOUT_MS } : {}
     };
     writeJsonPrivate(path19.join(dir, "meta.json"), meta);
     artifacts.push("meta.json");
@@ -235510,6 +235585,7 @@ async function captureSnapshotSubstrate(options) {
       settleTimeoutMs,
       unstableRegions,
       artifacts,
+      collectors: collectorOutcomes,
       meta
     };
   } catch (error) {
@@ -235535,7 +235611,7 @@ async function captureSnapshotSubstrate(options) {
     await restoreAnimationsOnce();
   }
 }
-var path19, COLLECTORS, SNAPSHOT_REQUEST_TIMEOUT_MS, SnapshotCaptureTimeout;
+var path19, COLLECTORS, COLLECTOR_NAMES, DEFAULT_COLLECTOR_TIMEOUT_MS, SNAPSHOT_REQUEST_TIMEOUT_MS, SnapshotCaptureTimeout;
 var init_snapshot = __esm({
   "src/cdp/measure/snapshot.ts"() {
     path19 = __toESM(require("path"));
@@ -235558,13 +235634,13 @@ var init_snapshot = __esm({
     init_states();
     init_media();
     COLLECTORS = [
+      { name: "geometry", phase: "baseline", fn: collectGeometry },
       { name: "ax", phase: "baseline", fn: collectAx },
       { name: "styles", phase: "baseline", fn: collectStyles },
       { name: "queries", phase: "baseline", fn: collectQueries },
       { name: "animation", phase: "baseline", fn: collectAnimation },
       { name: "layers", phase: "baseline", fn: collectLayers },
       { name: "media", phase: "baseline", fn: collectMedia },
-      { name: "geometry", phase: "baseline", fn: collectGeometry },
       { name: "hittest", phase: "baseline", fn: collectHittest },
       { name: "text", phase: "baseline", fn: collectText },
       { name: "forms", phase: "baseline", fn: collectForms },
@@ -235573,6 +235649,8 @@ var init_snapshot = __esm({
       { name: "states", phase: "mutating", fn: collectStates },
       { name: "pixels", phase: "mutating", fn: collectPixels }
     ];
+    COLLECTOR_NAMES = COLLECTORS.map((collector) => collector.name);
+    DEFAULT_COLLECTOR_TIMEOUT_MS = 3e4;
     SNAPSHOT_REQUEST_TIMEOUT_MS = 5e3;
     SnapshotCaptureTimeout = class extends Error {
       constructor(phase, method, timeoutMs, partialPath) {
@@ -235981,6 +236059,11 @@ async function withAppliedViewport(client, viewport2, fn) {
     }
   }
 }
+function collectorNote(incomplete, collectorTimeoutMs) {
+  const described = incomplete.map((c) => `${sanitizeString(c.name)} (${c.status}${c.requestTimeouts ? `, ${c.requestTimeouts} timed-out request(s)` : ""})`).join(", ");
+  const timedOut = incomplete.some((c) => c.status === "timeout");
+  return fact`collectors incomplete: ${described}. Every other collector's substrate is valid and queryable.${timedOut ? ` Raise \`--collector-timeout\` above ${collectorTimeoutMs ?? DEFAULT_COLLECTOR_TIMEOUT_MS}ms to give them longer.` : ""}`;
+}
 function settledNote(settled, captured, settleMs, settleTimeoutMs, unstableCount) {
   if (settled) {
     return fact`Settled after ${settleMs}ms (two consecutive identical captures; DOM quiet ≥300ms).`;
@@ -235996,6 +236079,14 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
   }
   if (parsed.settleTimeout !== void 0 && (!Number.isFinite(parsed.settleTimeout) || parsed.settleTimeout <= 0)) {
     throw invalidInput("--settle-timeout must be a positive number of milliseconds");
+  }
+  if (parsed.collectorTimeout !== void 0 && (!Number.isFinite(parsed.collectorTimeout) || parsed.collectorTimeout <= 0)) {
+    throw invalidInput("--collector-timeout must be a positive number of milliseconds");
+  }
+  for (const name of parsed.skipCollector ?? []) {
+    if (!COLLECTOR_NAMES.includes(name)) {
+      throw invalidInput(`--skip-collector must name a collector: ${COLLECTOR_NAMES.join(", ")} (got ${sanitizeString(name)})`);
+    }
   }
   const viewport2 = viewportValue === void 0 ? void 0 : { label: viewportValue, ...parseViewport(viewportValue) };
   let base;
@@ -236027,7 +236118,9 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
           captureUnsettled: parsed.captureUnsettled,
           pixels: parsed.pixels,
           state: parsed.state ?? [],
-          viewport: viewport2?.label ?? null
+          viewport: viewport2?.label ?? null,
+          collectorTimeout: parsed.collectorTimeout ?? DEFAULT_COLLECTOR_TIMEOUT_MS,
+          skipCollectors: parsed.skipCollector ?? []
         });
         artifacts = result.artifacts;
       });
@@ -236041,6 +236134,7 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
 }
 function buildSnapshotResult(captured) {
   const meta = readMeta({ kind: "snap", id: captured.id, dir: captured.dir });
+  const incomplete = (meta.collectors ?? []).filter((c) => c.status !== "ok");
   const elements = readArrayCount(path21.join(captured.dir, "geometry.json"), "elements");
   const artifacts = artifactEntries(captured.dir, captured.artifacts);
   const capturedFullSubstrate = fs19.existsSync(path21.join(captured.dir, "geometry.json"));
@@ -236062,6 +236156,11 @@ function buildSnapshotResult(captured) {
       ...meta.states.length ? { states: meta.states.length } : {}
     },
     summary: meta.settled || capturedFullSubstrate ? text`Snapshot substrate captured.` : text`The evidence snapshot is not queryable because the settledness requirement was not met.`,
+    // A collector that did not complete cleanly must be visible in the block,
+    // not only in meta.json — its artifact is absent (timeout/error/skipped)
+    // or partly built from timed-out reads (degraded), and a caller who reads
+    // the remaining substrate as a whole page would be reading a hole.
+    ...incomplete.length ? { sections: [collectorNote(incomplete, meta.collectorTimeoutMs)] } : {},
     artifacts: formatArtifactList(artifacts),
     followUp: meta.settled || capturedFullSubstrate ? fact`Query snapshot ${captured.id} with \`capture measure check ${captured.id}\`, \`capture measure census --snap ${captured.id} --axis color\`, or \`capture measure map focus ${captured.id}\`.` : fact`Re-run with \`--freeze-animations\`, a longer \`--settle-timeout\`, or \`--capture-unsettled\` to choose a queryable capture.`
   };
@@ -236193,6 +236292,8 @@ input:
   --freeze-animations         pause CSS/WAAPI animation before capture
   --settle-timeout <ms>       override the default 5000ms settle wait
   --capture-unsettled         write the full substrate despite non-settlement, marking unstable regions
+  --collector-timeout <ms>    per-collector wall-clock budget (default 30000ms); a collector that exceeds it is abandoned and recorded, and every other collector's substrate is still written
+  --skip-collector <name>     leave one collector out entirely (repeatable): ax, styles, queries, animation, layers, media, geometry, hittest, text, forms, focus, scroll, states, pixels
   --pixels                    also write per-element raster crops
   --state <state[:selector]>  force a pseudo-state or real control state (repeatable)
   --viewport <WxH>            temporarily capture at a CSS-pixel viewport (repeatable); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace

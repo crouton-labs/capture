@@ -73,6 +73,34 @@ export interface CaptureSnapshotOptions {
    * the real collector set `snapshot.ts` defines.
    */
   readonly collectors?: readonly CollectorDescriptor[];
+  /** `--collector-timeout <ms>`; default {@link DEFAULT_COLLECTOR_TIMEOUT_MS} (30000). Wall-clock budget for ONE collector, independent of the per-CDP-request bound. */
+  readonly collectorTimeout?: number;
+  /** `--skip-collector <name>` (repeatable); collectors to leave out of this capture entirely. Each one is recorded in {@link SnapshotMeta.collectors} as `skipped`, so an absent artifact is never mistaken for a failed read. */
+  readonly skipCollectors?: readonly string[];
+}
+
+/**
+ * What one collector did in this capture — the honest ledger written to
+ * `meta.json`'s `collectors` field, so an absent artifact always names its
+ * reason.
+ *
+ * - `ok`: ran to completion; its artifact is present and trustworthy.
+ * - `degraded`: ran to completion, but at least one of its CDP requests was
+ *   killed by the per-request bound. The artifact exists and its own
+ *   per-record failure markers are honest, but some of what it reports is a
+ *   timed-out read rather than a measurement — `requestTimeouts` counts them.
+ * - `timeout`: exceeded its wall-clock budget and was abandoned. Its artifact
+ *   is absent because writes publish only after collector completion.
+ * - `error`: threw before completing. Same absent-artifact consequence as `timeout`.
+ * - `skipped`: excluded by `--skip-collector`; never ran.
+ */
+export interface CollectorOutcome {
+  readonly name: string;
+  readonly status: 'ok' | 'degraded' | 'timeout' | 'error' | 'skipped';
+  /** Wall-clock ms the collector ran. Absent for `skipped` — it never ran. */
+  readonly ms?: number;
+  /** Present only when at least one of this collector's CDP requests was killed by the per-request bound. */
+  readonly requestTimeouts?: number;
 }
 
 /** `meta.json`'s on-disk shape — a {@link SnapMeta} (the U03 contract) plus snapshot-specific detail. */
@@ -94,6 +122,10 @@ export interface SnapshotMeta extends SnapMeta {
   readonly unfrozenCount?: number;
   /** Present only when the snapshot reached the baseline boundary (`captured`) — whether `document.documentElement.outerHTML` was actually read (I-5). `false` means the CDP read threw or returned no value: `dom.html` is NOT written in that case (an absent file, never a benign empty one), and `unavailableReason` names why. */
   readonly domHtml?: { readonly available: boolean; readonly unavailableReason?: string };
+  /** Per-collector outcome ledger — present only on a capture that reached the collector phase (`captured`), never on an evidence-only unsettled capture where no collector ran. See {@link CollectorOutcome}. */
+  readonly collectors?: readonly CollectorOutcome[];
+  /** The wall-clock budget each collector in {@link collectors} was given. Present alongside `collectors`. */
+  readonly collectorTimeoutMs?: number;
 }
 
 /** Return value of {@link captureSnapshotSubstrate}. */
@@ -110,6 +142,8 @@ export interface CaptureSnapshotResult {
   readonly unstableRegions: readonly UnstableRegion[];
   /** Filenames written under `dir`, relative to it. */
   readonly artifacts: readonly string[];
+  /** Per-collector outcome ledger; empty on an evidence-only capture where no collector ran. */
+  readonly collectors: readonly CollectorOutcome[];
   readonly meta: SnapshotMeta;
 }
 
@@ -159,8 +193,8 @@ export type Collector = (ctx: SnapshotContext) => Promise<void>;
  * Which snapshot phase a collector belongs to — the ordering guarantee the
  * orchestrator enforces:
  *  - `baseline`: pure/measuring collectors that must observe the page as it
- *    settled. They run in PARALLEL, and ALL finish before `screenshot.png`
- *    + `dom.html` are captured at the baseline boundary.
+ *    settled. They run in descriptor order, and all finish before
+ *    `screenshot.png` + `dom.html` are captured at the baseline boundary.
  *  - `mutating`: collectors that mutate DOM/focus/scroll/background
  *    (focus, scroll, states, pixels). They run AFTER the baseline artifacts
  *    are captured, and SERIALIZED (one at a time) so their mutations and

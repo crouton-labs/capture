@@ -1,8 +1,8 @@
 /**
  * The `measure snap` orchestrator — drives the settledness gate, then (when
- * captured) runs the collectors in two phases: `baseline` collectors in
- * parallel, then `screenshot.png`/`dom.html` at the baseline boundary,
- * then `mutating` collectors serialized (so their DOM/focus/scroll/
+ * captured) runs the collectors in two phases: serialized `baseline`
+ * collectors, then `screenshot.png`/`dom.html` at the baseline boundary,
+ * then serialized `mutating` collectors (so their DOM/focus/scroll/
  * background changes can't contaminate the baseline artifacts). `meta.json`
  * is ALWAYS written last. This is the one function
  * `src/cdp/commands/measure/snap.ts` (U15) calls; nothing else drives a
@@ -12,6 +12,7 @@
 import * as path from 'path';
 
 import { ensurePrivateDir, writeJsonPrivate, writeBinaryPrivate, writePrivateFile } from '../../session/artifacts.js';
+import type { CDPClient } from '../client.js';
 import { enableDomainsForSnap } from '../domains.js';
 import {
   DEFAULT_SETTLE_TIMEOUT_MS,
@@ -37,6 +38,7 @@ import type {
   SnapshotWriter,
   UnstableRegion,
   CollectorDescriptor,
+  CollectorOutcome,
 } from './types.js';
 
 import { collectGeometry } from './collectors/geometry.js';
@@ -55,9 +57,9 @@ import { collectStates } from './collectors/states.js';
 import { collectMedia } from './collectors/media.js';
 
 /**
- * The collector set, split by phase. `baseline` collectors run in parallel
- * and are all finished before `screenshot.png`/`dom.html` are captured;
- * `mutating` collectors run afterward, serialized, so their
+ * The collector set, split by phase. Every collector shares one browser CDP
+ * connection, so both phases run in descriptor order. Baseline collectors
+ * finish before `screenshot.png`/`dom.html`; `mutating` collectors run afterward, so their
  * DOM/focus/scroll/background mutations cannot contaminate the baseline
  * artifacts. Geometry/hittest/text/forms are safely `baseline`: none of
  * them ever mutates the DOM — each resolves its elements' `backendNodeId`
@@ -68,13 +70,13 @@ import { collectMedia } from './collectors/media.js';
  * `screenshot.png`/`dom.html` capture could observe ever changes.
  */
 const COLLECTORS: readonly CollectorDescriptor[] = [
+  { name: 'geometry', phase: 'baseline', fn: collectGeometry },
   { name: 'ax', phase: 'baseline', fn: collectAx },
   { name: 'styles', phase: 'baseline', fn: collectStyles },
   { name: 'queries', phase: 'baseline', fn: collectQueries },
   { name: 'animation', phase: 'baseline', fn: collectAnimation },
   { name: 'layers', phase: 'baseline', fn: collectLayers },
   { name: 'media', phase: 'baseline', fn: collectMedia },
-  { name: 'geometry', phase: 'baseline', fn: collectGeometry },
   { name: 'hittest', phase: 'baseline', fn: collectHittest },
   { name: 'text', phase: 'baseline', fn: collectText },
   { name: 'forms', phase: 'baseline', fn: collectForms },
@@ -83,6 +85,9 @@ const COLLECTORS: readonly CollectorDescriptor[] = [
   { name: 'states', phase: 'mutating', fn: collectStates },
   { name: 'pixels', phase: 'mutating', fn: collectPixels },
 ];
+
+export const COLLECTOR_NAMES = COLLECTORS.map((collector) => collector.name);
+export const DEFAULT_COLLECTOR_TIMEOUT_MS = 30_000;
 
 /**
  * Resolves `filename` against the snap `dir` and rejects (throws) anything
@@ -114,6 +119,35 @@ function makeWriter(dir: string, artifacts: string[]): SnapshotWriter {
   };
 }
 
+/** A collector publishes its artifacts only after it completes within budget. */
+function makeCollectorWriter(writer: SnapshotWriter): { writer: SnapshotWriter; commit: () => void; discard: () => void } {
+  const staged: Array<{ filename: string; value: unknown } | { filename: string; data: Buffer }> = [];
+  let open = true;
+  return {
+    writer: {
+      json(filename: string, value: unknown): void {
+        if (open) staged.push({ filename, value });
+      },
+      binary(filename: string, data: Buffer): void {
+        if (open) staged.push({ filename, data });
+      },
+    },
+    commit(): void {
+      if (!open) return;
+      open = false;
+      for (const artifact of staged) {
+        if ('data' in artifact) writer.binary(artifact.filename, artifact.data);
+        else writer.json(artifact.filename, artifact.value);
+      }
+      staged.length = 0;
+    },
+    discard(): void {
+      open = false;
+      staged.length = 0;
+    },
+  };
+}
+
 // ============================================================================
 // Orchestrator
 // ============================================================================
@@ -137,17 +171,27 @@ export class SnapshotCaptureTimeout extends Error {
 }
 
 /** Bounds one snapshot CDP request and labels the phase that owns it. */
-function boundedClient(client: CDPClient, phase: string, partialPath: string): CDPClient {
+function boundedClient(client: CDPClient, phase: string, partialPath: string, onTimeout?: () => void): CDPClient {
   const bounded = Object.create(client) as CDPClient;
   bounded.send = (method: string, params: Record<string, unknown> = {}, timeout = 60_000, sessionId?: string): Promise<unknown> => {
     const timeoutMs = Math.min(timeout, SNAPSHOT_REQUEST_TIMEOUT_MS);
     let timer: NodeJS.Timeout | undefined;
+    let timedOut = false;
+    const markTimedOut = (): void => {
+      if (timedOut) return;
+      timedOut = true;
+      onTimeout?.();
+    };
     const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath)), timeoutMs);
+      timer = setTimeout(() => {
+        markTimedOut();
+        reject(new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath));
+      }, timeoutMs);
     });
     const request = Promise.resolve().then(() => client.send(method, params, timeoutMs, sessionId)).catch((error: unknown) => {
       if (error instanceof SnapshotCaptureTimeout) throw error;
       if (error instanceof Error && error.message.startsWith('CDP request timeout')) {
+        markTimedOut();
         throw new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath);
       }
       throw error;
@@ -275,6 +319,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
     // branch, where `meta.json`'s spread omits the field entirely rather than
     // implying a read that never happened.
     let domHtmlFact: SnapshotMeta['domHtml'];
+    const collectorOutcomes: CollectorOutcome[] = [];
 
     if (unstable) {
       const animationEvidence = await collectAnimationEvidence(phaseClient('settle-evidence'));
@@ -305,23 +350,48 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
       };
 
       const collectors = options.collectors ?? COLLECTORS;
+      const skipCollectors = new Set(options.skipCollectors ?? []);
       const baseline = collectors.filter((c) => c.phase === 'baseline');
       const mutating = collectors.filter((c) => c.phase === 'mutating');
-      const runCollector = (collector: CollectorDescriptor): Promise<void> => {
+      const collectorTimeoutMs = options.collectorTimeout ?? DEFAULT_COLLECTOR_TIMEOUT_MS;
+      const runCollector = async (collector: CollectorDescriptor): Promise<CollectorOutcome> => {
+        if (skipCollectors.has(collector.name)) return { name: collector.name, status: 'skipped' };
+
+        const startedAt = Date.now();
+        let requestTimeouts = 0;
+        const collectorWriter = makeCollectorWriter(ctx.write);
+        const run = Promise.resolve().then(() => collector.fn({
+          ...ctx,
+          client: boundedClient(client, `collector:${collector.name}`, dir, () => { requestTimeouts += 1; }),
+          write: collectorWriter.writer,
+        }));
+        // A collector can still be awaiting a browser response after its wall-clock
+        // deadline. Its writer is discarded before the next collector starts, so it
+        // cannot publish a late or partial artifact into this completed snapshot.
+        run.catch(() => undefined);
         let timer: NodeJS.Timeout | undefined;
-        const deadline = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new SnapshotCaptureTimeout(`collector:${collector.name}`, '<collector>', SNAPSHOT_REQUEST_TIMEOUT_MS, dir)), SNAPSHOT_REQUEST_TIMEOUT_MS);
-        });
-        const run = collector.fn({ ...ctx, client: phaseClient(`collector:${collector.name}`) });
-        return Promise.race([run, deadline]).finally(() => {
-          if (timer) clearTimeout(timer);
-        });
+        const completion = await Promise.race([
+          run.then(() => 'complete' as const, () => 'error' as const),
+          new Promise<'timeout'>((resolve) => {
+            timer = setTimeout(() => resolve('timeout'), collectorTimeoutMs);
+          }),
+        ]);
+        if (timer) clearTimeout(timer);
+        const ms = Date.now() - startedAt;
+        if (completion === 'complete') {
+          collectorWriter.commit();
+          return requestTimeouts > 0
+            ? { name: collector.name, status: 'degraded', ms, requestTimeouts }
+            : { name: collector.name, status: 'ok', ms };
+        }
+        collectorWriter.discard();
+        return { name: collector.name, status: completion, ms, ...(requestTimeouts > 0 ? { requestTimeouts } : {}) };
       };
 
-      // Phase 1 — baseline collectors observe the page exactly as it settled;
-      // they run in parallel and must ALL finish before the baseline
-      // artifacts are captured.
-      await Promise.all(baseline.map(runCollector));
+      // Phase 1 — baseline collectors observe the page exactly as it settled.
+      // They are serialized because CDP commands share one browser connection;
+      // every completed result is published before the baseline boundary.
+      for (const collector of baseline) collectorOutcomes.push(await runCollector(collector));
 
       // Baseline boundary — capture screenshot.png + dom.html BEFORE any
       // mutating collector runs, so a mutating collector's DOM/focus/scroll/
@@ -368,11 +438,9 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
       await restoreAnimationsOnce();
 
       // Phase 2 — mutating collectors run AFTER the baseline artifacts are
-      // captured, and SERIALIZED (one at a time) so their mutations and
-      // restorations cannot contaminate each other.
-      for (const c of mutating) {
-        await runCollector(c);
-      }
+      // captured, one at a time, so their mutations and restorations cannot
+      // contaminate each other.
+      for (const collector of mutating) collectorOutcomes.push(await runCollector(collector));
     } else {
       // Evidence-only branch (unstable, not captured) — nothing depends on
       // animations staying frozen any longer, so restore now.
@@ -414,6 +482,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
       // `freezeIncomplete`, matching the handle's own documented contract.
       ...(freezeIncomplete === true ? { freezeIncomplete: true as const, unfrozenCount: unfrozenCount ?? 0 } : {}),
       ...(domHtmlFact ? { domHtml: domHtmlFact } : {}),
+      ...(captured ? { collectors: collectorOutcomes, collectorTimeoutMs: options.collectorTimeout ?? DEFAULT_COLLECTOR_TIMEOUT_MS } : {}),
     };
     writeJsonPrivate(path.join(dir, 'meta.json'), meta);
     artifacts.push('meta.json');
@@ -429,6 +498,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
       settleTimeoutMs,
       unstableRegions,
       artifacts,
+      collectors: collectorOutcomes,
       meta,
     };
   } catch (error) {

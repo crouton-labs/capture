@@ -14,9 +14,8 @@
  * file's `CSS.getMatchedStylesForNode` calls (which need a CDP `nodeId`,
  * not just a `backendNodeId`) and reused by `media.ts` for its own
  * per-element `backendNodeId` correlation. Both `styles.ts` and `media.ts`
- * independently issue their own `Runtime.evaluate`/`DOM.getDocument`
- * calls — they run concurrently in `snapshot.ts`'s `Promise.all`, so there
- * is no cross-collector call sharing beyond this shared, stateless logic.
+ * independently issue their own `Runtime.evaluate`/`DOM.getDocument` calls,
+ * so there is no cross-collector call sharing beyond this shared, stateless logic.
  */
 
 import type { ResolvedSourceLocation } from '../../source-map.js';
@@ -35,6 +34,7 @@ export { computeSpecificity, resolveNodeIds };
 export type { Specificity, CSSRange, WinningDeclaration } from './style-provenance.js';
 
 const STYLES_MAX_ELEMENTS = 150;
+const PROVENANCE_CONCURRENCY = 8;
 
 /** Full computed-style snapshot tracked per element — broad, cheap (no CDP round trip; read via `getComputedStyle` in one `Runtime.evaluate`). */
 const COMPUTED_PROPERTIES = [
@@ -205,6 +205,20 @@ function resolvedIdentity(backendNodeId: number | undefined): { backendNodeId: n
   return backendNodeId === undefined ? { backendNodeId: null, identityUnresolved: true } : { backendNodeId };
 }
 
+/** Limits expensive per-element CDP provenance reads without changing document order. */
+async function mapWithConcurrency<T, R>(values: readonly T[], limit: number, fn: (value: T, index: number) => Promise<R>): Promise<R[]> {
+  const result = new Array<R>(values.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < values.length) {
+      const index = next++;
+      result[index] = await fn(values[index]!, index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, worker));
+  return result;
+}
+
 // ============================================================================
 // Collector
 // ============================================================================
@@ -213,9 +227,8 @@ export const collectStyles: Collector = async (ctx) => {
   const { client } = ctx;
 
   // Registers the CSS.styleSheetAdded listener and forces header redelivery
-  // BEFORE anything else touches the CSS domain — see style-provenance.ts's
-  // module doc for why this must run first and why it's safe alongside the
-  // concurrently-running `layers` collector's own copy of the same step.
+  // BEFORE this collector uses the CSS domain — see style-provenance.ts's
+  // module doc for why header capture must begin before provenance reads.
   const {
     urls: styleSheetUrls,
     stop: stopTrackingStyleSheets,
@@ -292,8 +305,7 @@ async function collectStylesInner(
 
   const sourceCache = new Map<string, Promise<ResolvedSourceLocation>>();
 
-  const elements: StylesElementRecord[] = await Promise.all(
-    facts.map(async (fact, index) => {
+  const elements = await mapWithConcurrency(facts, PROVENANCE_CONCURRENCY, async (fact, index): Promise<StylesElementRecord> => {
       const ref = resolved[index];
       const computed = normalizeComputed(fact.computed);
 
@@ -334,8 +346,7 @@ async function collectStylesInner(
         winningDeclarations,
         provenanceUnavailable,
       };
-    }),
-  );
+    });
 
   ctx.write.json('styles.json', {
     elements,

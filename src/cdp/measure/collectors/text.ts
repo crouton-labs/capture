@@ -27,8 +27,7 @@
  * identifier `CSS.getPlatformFontsForNode` accepts — and `backendNodeId`.
  * No `setAttribute`/`removeAttribute` pair and no page-observable global
  * either, so nothing in the emitted `screenshot.png`/`dom.html`/any other
- * baseline collector running concurrently in the same `Promise.all` (see
- * `snapshot.ts`) can ever observe this collector having run.
+ * baseline artifact capture can ever observe this collector having run.
  */
 
 import type { CDPClient } from '../../client.js';
@@ -421,9 +420,8 @@ async function resolveIndexedObjectIds(
 export const collectText: Collector = async (ctx) => {
   // The walk's return value is a plain in-memory `{ facts, elements }`
   // object — never a `window` global, never a live-DOM attribute — so
-  // nothing another baseline collector or the `screenshot.png`/`dom.html`
-  // capture running concurrently in the same `Promise.all` (see
-  // `snapshot.ts`) could ever observe. `Runtime.evaluate({returnByValue:
+  // nothing another baseline artifact capture could ever observe.
+  // `Runtime.evaluate({returnByValue:
   // false})` hands that object back as a CDP `RemoteObject` (an `objectId`
   // with zero page visibility into it); every held `objectId` (the
   // container, `facts`, `elements`) is released via `Runtime.releaseObject`

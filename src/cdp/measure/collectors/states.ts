@@ -5,12 +5,7 @@
  * Written ONLY when at least one `--state` was requested (`ctx.state.length
  * > 0`); otherwise this is a no-op (no file written). Owned by U12.
  *
- * Independent of the other 13 collectors (they all fan out via
- * `Promise.all` in `snapshot.ts` — there is no cross-collector read
- * ordering, and `geometry.json`/`styles.json`/`hittest.json` may not exist
- * yet when this runs), so this collector drives its own minimal
- * geometry/style/hittest re-capture per forced element rather than reading
- * those files. Scope: top-frame light DOM only — elements inside an
+ * This collector drives its own minimal geometry/style/hittest re-capture per forced element rather than reading those files. Scope: top-frame light DOM only — elements inside an
  * iframe or a shadow root are out of reach of `DOM.querySelectorAll`'s
  * plain (non-piercing) subtree walk and are not visited here; frame/shadow
  * stitching is `geometry.json`'s concern, not this collector's.

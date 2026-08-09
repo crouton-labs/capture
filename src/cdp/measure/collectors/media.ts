@@ -4,8 +4,7 @@
  * state, and (for `object-fit`-bearing elements) computed crop/letterbox
  * facts. One `Runtime.evaluate` gathers raw per-element facts in-page;
  * `backendNodeId` correlation reuses `resolveNodeIds` from `./styles.js`
- * (this file issues its own `DOM.getDocument` call — collectors run
- * concurrently, so no CDP call is shared across files).
+ * while issuing its own `DOM.getDocument` call.
  *
  * This is a `phase: 'baseline'` collector, so it must not create or pin
  * any page-observable state: `canvas.getContext(...)` is deliberately NOT
