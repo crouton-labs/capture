@@ -18,7 +18,7 @@ import {
   collectChurnEvidence,
   domSignaturesEqual,
 } from '../src/cdp/measure/settle.js';
-import { captureSnapshotSubstrate } from '../src/cdp/measure/snapshot.js';
+import { captureSnapshotSubstrate, SnapshotCaptureTimeout } from '../src/cdp/measure/snapshot.js';
 import { liveChromeOpts } from './fixtures/live-chrome.js';
 
 // A 1x1 transparent PNG, base64-encoded — stands in for `Page.captureScreenshot`'s `data`.
@@ -1015,6 +1015,58 @@ test('mutating collectors run only after baseline finishes and after screenshot+
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a timed-out styles request ends the capture before another collector can share its connection', async () => {
+  const dir = freshSnapDir('styles-timeout-terminal');
+  const events: string[] = [];
+  let browserFinished = false;
+  let resolveBrowserFinished: (() => void) | undefined;
+  const browserFinishedSignal = new Promise<void>((resolve) => { resolveBrowserFinished = resolve; });
+  class TimedOutStylesStub extends StubCdpClient {
+    override async send(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+      if (method === 'Styles.slowRead') {
+        await new Promise((resolve) => setTimeout(resolve, 5_100));
+        browserFinished = true;
+        resolveBrowserFinished?.();
+        return {};
+      }
+      return super.send(method, params);
+    }
+  }
+  const collectors: CollectorDescriptor[] = [
+    {
+      name: 'styles',
+      phase: 'baseline',
+      fn: async ({ client }) => {
+        await client.send('Styles.slowRead');
+        events.push('styles-completed');
+      },
+    },
+    {
+      name: 'after-styles',
+      phase: 'baseline',
+      fn: async () => { events.push('after-styles'); },
+    },
+  ];
+  try {
+    await assert.rejects(
+      () => captureSnapshotSubstrate({
+        target: { client: asClient(new TimedOutStylesStub('stable')) },
+        url: 'http://example.test',
+        path: dir,
+        settleTimeout: 500,
+        pollIntervalMs: 20,
+        collectors,
+      }),
+      SnapshotCaptureTimeout,
+    );
+    assert.deepEqual(events, [], 'the next collector never starts after a timed-out styles browser request');
+    await browserFinishedSignal;
+    assert.equal(browserFinished, true, 'the timed-out browser request remains observable after the capture stops');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}, { timeout: 10_000 });
 
 // ============================================================================
 // 10. D-block real-Chrome: the churn-observer state must never be assigned

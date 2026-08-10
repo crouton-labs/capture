@@ -230926,17 +230926,23 @@ function normalizeComputed(raw) {
 function resolvedIdentity3(backendNodeId2) {
   return backendNodeId2 === void 0 ? { backendNodeId: null, identityUnresolved: true } : { backendNodeId: backendNodeId2 };
 }
-async function mapWithConcurrency(values, limit, fn) {
-  const result = new Array(values.length);
+async function mapWithConcurrency(values, limit, budgetMs, fn) {
+  const result = Array(values.length).fill(void 0);
+  const deadline = Date.now() + budgetMs;
   let next = 0;
+  let truncated = false;
   const worker = async () => {
     while (next < values.length) {
+      if (Date.now() >= deadline) {
+        truncated = true;
+        return;
+      }
       const index = next++;
       result[index] = await fn(values[index], index);
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, values.length) }, worker));
-  return result;
+  return { values: result, truncated };
 }
 async function collectStylesInner(ctx, styleSheetUrls, styleSheetHeaders) {
   const { client } = ctx;
@@ -230986,7 +230992,7 @@ async function collectStylesInner(ctx, styleSheetUrls, styleSheetHeaders) {
     resolved = facts.map(() => void 0);
   }
   const sourceCache = /* @__PURE__ */ new Map();
-  const elements = await mapWithConcurrency(facts, PROVENANCE_CONCURRENCY, async (fact4, index) => {
+  const provenance = await mapWithConcurrency(facts, PROVENANCE_CONCURRENCY, PROVENANCE_BUDGET_MS, async (fact4, index) => {
     const ref = resolved[index];
     const computed2 = normalizeComputed(fact4.computed);
     let winningDeclarations;
@@ -231021,6 +231027,7 @@ async function collectStylesInner(ctx, styleSheetUrls, styleSheetHeaders) {
       provenanceUnavailable
     };
   });
+  const elements = provenance.values.filter((element) => element !== void 0);
   ctx.write.json("styles.json", {
     elements,
     coverage: {
@@ -231029,7 +231036,9 @@ async function collectStylesInner(ctx, styleSheetUrls, styleSheetHeaders) {
       shadowRootsNotWalked: inventory.shadowRootsNotWalked,
       totalCandidateElements: inventory.total,
       keptElements: elements.length,
-      elementsTruncated: inventory.total > elements.length
+      elementsTruncated: inventory.total > facts.length,
+      provenanceTruncated: provenance.truncated,
+      ...provenance.truncated ? { provenanceTruncationReason: "collector-time-budget" } : {}
     },
     styleSheetHeaders,
     identity: identity3,
@@ -231037,13 +231046,14 @@ async function collectStylesInner(ctx, styleSheetUrls, styleSheetHeaders) {
     ...unavailableReason ? { unavailableReason } : {}
   });
 }
-var STYLES_MAX_ELEMENTS, PROVENANCE_CONCURRENCY, COMPUTED_PROPERTIES, PROVENANCE_PROPERTIES, EXCLUDED_TAGS, STYLES_SCRIPT, collectStyles;
+var STYLES_MAX_ELEMENTS, PROVENANCE_CONCURRENCY, PROVENANCE_BUDGET_MS, COMPUTED_PROPERTIES, PROVENANCE_PROPERTIES, EXCLUDED_TAGS, STYLES_SCRIPT, collectStyles;
 var init_styles = __esm({
   "src/cdp/measure/collectors/styles.ts"() {
     init_redaction();
     init_style_provenance();
     STYLES_MAX_ELEMENTS = 150;
     PROVENANCE_CONCURRENCY = 8;
+    PROVENANCE_BUDGET_MS = 5e3;
     COMPUTED_PROPERTIES = [
       "display",
       "position",
@@ -235936,22 +235946,24 @@ function boundedClient(client, phase, partialPath, onTimeout) {
     const timeoutMs = Math.min(timeout, SNAPSHOT_REQUEST_TIMEOUT_MS);
     let timer;
     let timedOut = false;
-    const markTimedOut = () => {
+    const markTimedOut = (error) => {
       if (timedOut) return;
       timedOut = true;
-      onTimeout?.();
+      onTimeout?.(error);
     };
     const deadline = new Promise((_, reject) => {
       timer = setTimeout(() => {
-        markTimedOut();
-        reject(new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath));
+        const error = new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath);
+        markTimedOut(error);
+        reject(error);
       }, timeoutMs);
     });
     const request = Promise.resolve().then(() => client.send(method, params, timeoutMs, sessionId)).catch((error) => {
       if (error instanceof SnapshotCaptureTimeout) throw error;
       if (error instanceof Error && error.message.startsWith("CDP request timeout")) {
-        markTimedOut();
-        throw new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath);
+        const timeoutError = new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath);
+        markTimedOut(timeoutError);
+        throw timeoutError;
       }
       throw error;
     });
@@ -236055,21 +236067,25 @@ async function captureSnapshotSubstrate(options) {
         if (skipCollectors.has(collector.name)) return { name: collector.name, status: "skipped" };
         const startedAt = Date.now();
         let requestTimeouts = 0;
+        let timeoutError;
         const collectorWriter = makeCollectorWriter(ctx.write);
         try {
           await collector.fn({
             ...ctx,
-            client: boundedClient(client, `collector:${collector.name}`, dir, () => {
+            client: boundedClient(client, `collector:${collector.name}`, dir, (error) => {
               requestTimeouts += 1;
+              timeoutError ??= error;
             }),
             write: collectorWriter.writer
           });
+          if (collector.name === "styles" && timeoutError) throw timeoutError;
           const ms = Date.now() - startedAt;
           collectorWriter.commit();
           return requestTimeouts > 0 ? { name: collector.name, status: "degraded", ms, requestTimeouts } : { name: collector.name, status: "ok", ms };
-        } catch {
+        } catch (error) {
           const ms = Date.now() - startedAt;
           collectorWriter.discard();
+          if (collector.name === "styles" && error instanceof SnapshotCaptureTimeout) throw error;
           return { name: collector.name, status: "error", ms, ...requestTimeouts > 0 ? { requestTimeouts } : {} };
         }
       };

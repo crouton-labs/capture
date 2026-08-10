@@ -199,28 +199,30 @@ export class SnapshotCaptureTimeout extends Error {
 }
 
 /** Bounds one snapshot CDP request and labels the phase that owns it. */
-function boundedClient(client: CDPClient, phase: string, partialPath: string, onTimeout?: () => void): CDPClient {
+function boundedClient(client: CDPClient, phase: string, partialPath: string, onTimeout?: (error: SnapshotCaptureTimeout) => void): CDPClient {
   const bounded = Object.create(client) as CDPClient;
   bounded.send = (method: string, params: Record<string, unknown> = {}, timeout = 60_000, sessionId?: string): Promise<unknown> => {
     const timeoutMs = Math.min(timeout, SNAPSHOT_REQUEST_TIMEOUT_MS);
     let timer: NodeJS.Timeout | undefined;
     let timedOut = false;
-    const markTimedOut = (): void => {
+    const markTimedOut = (error: SnapshotCaptureTimeout): void => {
       if (timedOut) return;
       timedOut = true;
-      onTimeout?.();
+      onTimeout?.(error);
     };
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        markTimedOut();
-        reject(new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath));
+        const error = new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath);
+        markTimedOut(error);
+        reject(error);
       }, timeoutMs);
     });
     const request = Promise.resolve().then(() => client.send(method, params, timeoutMs, sessionId)).catch((error: unknown) => {
       if (error instanceof SnapshotCaptureTimeout) throw error;
       if (error instanceof Error && error.message.startsWith('CDP request timeout')) {
-        markTimedOut();
-        throw new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath);
+        const timeoutError = new SnapshotCaptureTimeout(phase, method, timeoutMs, partialPath);
+        markTimedOut(timeoutError);
+        throw timeoutError;
       }
       throw error;
     });
@@ -387,25 +389,34 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
 
         const startedAt = Date.now();
         let requestTimeouts = 0;
+        let timeoutError: SnapshotCaptureTimeout | undefined;
         const collectorWriter = makeCollectorWriter(ctx.write);
         try {
-          // Await the collector itself, not a wall-clock race around it. Each CDP
-          // request is still bounded at five seconds; awaiting the collector keeps
-          // any cleanup and pending browser work quiescent before the next shared-
-          // connection collector starts.
+          // Await the collector itself, not a wall-clock race around it. The
+          // collector owns its cleanup, and timeout handling below decides whether
+          // this capture can safely move on to another shared-connection collector.
           await collector.fn({
             ...ctx,
-            client: boundedClient(client, `collector:${collector.name}`, dir, () => { requestTimeouts += 1; }),
+            client: boundedClient(client, `collector:${collector.name}`, dir, (error) => {
+              requestTimeouts += 1;
+              timeoutError ??= error;
+            }),
             write: collectorWriter.writer,
           });
+          // A styles timeout may be caught per-record by the provenance collector,
+          // but its browser operation can still belong to this shared connection.
+          // End this capture instead of letting another collector issue commands
+          // under that outstanding operation.
+          if (collector.name === 'styles' && timeoutError) throw timeoutError;
           const ms = Date.now() - startedAt;
           collectorWriter.commit();
           return requestTimeouts > 0
             ? { name: collector.name, status: 'degraded', ms, requestTimeouts }
             : { name: collector.name, status: 'ok', ms };
-        } catch {
+        } catch (error) {
           const ms = Date.now() - startedAt;
           collectorWriter.discard();
+          if (collector.name === 'styles' && error instanceof SnapshotCaptureTimeout) throw error;
           return { name: collector.name, status: 'error', ms, ...(requestTimeouts > 0 ? { requestTimeouts } : {}) };
         }
       };

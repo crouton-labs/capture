@@ -35,6 +35,8 @@ export type { Specificity, CSSRange, WinningDeclaration } from './style-provenan
 
 const STYLES_MAX_ELEMENTS = 150;
 const PROVENANCE_CONCURRENCY = 8;
+/** Bounds queued provenance work without abandoning in-flight CDP requests on the shared snap connection. Matches snapshot.ts's per-request bound but remains local to avoid a collector/orchestrator import cycle. */
+const PROVENANCE_BUDGET_MS = 5_000;
 
 /** Full computed-style snapshot tracked per element — broad, cheap (no CDP round trip; read via `getComputedStyle` in one `Runtime.evaluate`). */
 const COMPUTED_PROPERTIES = [
@@ -95,6 +97,10 @@ export interface StylesCoverage {
   keptElements: number;
   /** `true` when {@link STYLES_MAX_ELEMENTS} dropped one or more candidate elements from enumeration — an explicit fact (I-5), never a silent cap. */
   elementsTruncated: boolean;
+  /** `true` when the bounded provenance pass stopped starting element reads before every enumerated element was inspected; completed in-flight reads are still included. */
+  provenanceTruncated: boolean;
+  /** Present only when {@link provenanceTruncated} is true; names the factual bound that stopped additional provenance requests. */
+  provenanceTruncationReason?: 'collector-time-budget';
 }
 
 export interface StylesReport {
@@ -205,18 +211,33 @@ function resolvedIdentity(backendNodeId: number | undefined): { backendNodeId: n
   return backendNodeId === undefined ? { backendNodeId: null, identityUnresolved: true } : { backendNodeId };
 }
 
-/** Limits expensive per-element CDP provenance reads without changing document order. */
-async function mapWithConcurrency<T, R>(values: readonly T[], limit: number, fn: (value: T, index: number) => Promise<R>): Promise<R[]> {
-  const result = new Array<R>(values.length);
+/**
+ * Limits expensive per-element CDP provenance reads without changing document
+ * order. Once its budget expires it starts no more reads, but awaits the
+ * current worker batch so no CDP work is left running under the next collector.
+ */
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  limit: number,
+  budgetMs: number,
+  fn: (value: T, index: number) => Promise<R>,
+): Promise<{ values: Array<R | undefined>; truncated: boolean }> {
+  const result = Array<R | undefined>(values.length).fill(undefined);
+  const deadline = Date.now() + budgetMs;
   let next = 0;
+  let truncated = false;
   const worker = async (): Promise<void> => {
     while (next < values.length) {
+      if (Date.now() >= deadline) {
+        truncated = true;
+        return;
+      }
       const index = next++;
       result[index] = await fn(values[index]!, index);
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, values.length) }, worker));
-  return result;
+  return { values: result, truncated };
 }
 
 // ============================================================================
@@ -305,48 +326,49 @@ async function collectStylesInner(
 
   const sourceCache = new Map<string, Promise<ResolvedSourceLocation>>();
 
-  const elements = await mapWithConcurrency(facts, PROVENANCE_CONCURRENCY, async (fact, index): Promise<StylesElementRecord> => {
-      const ref = resolved[index];
-      const computed = normalizeComputed(fact.computed);
+  const provenance = await mapWithConcurrency(facts, PROVENANCE_CONCURRENCY, PROVENANCE_BUDGET_MS, async (fact, index): Promise<StylesElementRecord> => {
+    const ref = resolved[index];
+    const computed = normalizeComputed(fact.computed);
 
-      // A `noDeclarationRecord` is reserved for a SUCCESSFUL matched-styles response that genuinely had
-      // no candidate for a property — an honest "nothing declares this" fact. When provenance itself
-      // couldn't be inspected (no CDP nodeId, or `CSS.getMatchedStylesForNode` failed), that's a different
-      // fact — "unknown", not "none" — so `winningDeclarations` is left empty and `provenanceUnavailable`
-      // is set, rather than conflating the two into misleading no-declaration records.
-      let winningDeclarations: WinningDeclaration[];
-      let provenanceUnavailable: boolean | undefined;
-      if (ref?.nodeId !== undefined) {
-        try {
-          const matched = (await client.send('CSS.getMatchedStylesForNode', {
-            nodeId: ref.nodeId,
-          })) as CDPMatchedStylesResponse;
-          winningDeclarations = await buildWinningDeclarations(
-            client,
-            matched,
-            computed,
-            sourceCache,
-            styleSheetUrls,
-            PROVENANCE_PROPERTIES,
-          );
-        } catch {
-          winningDeclarations = [];
-          provenanceUnavailable = true;
-        }
-      } else {
+    // A `noDeclarationRecord` is reserved for a SUCCESSFUL matched-styles response that genuinely had
+    // no candidate for a property — an honest "nothing declares this" fact. When provenance itself
+    // couldn't be inspected (no CDP nodeId, or `CSS.getMatchedStylesForNode` failed), that's a different
+    // fact — "unknown", not "none" — so `winningDeclarations` is left empty and `provenanceUnavailable`
+    // is set, rather than conflating the two into misleading no-declaration records.
+    let winningDeclarations: WinningDeclaration[];
+    let provenanceUnavailable: boolean | undefined;
+    if (ref?.nodeId !== undefined) {
+      try {
+        const matched = (await client.send('CSS.getMatchedStylesForNode', {
+          nodeId: ref.nodeId,
+        })) as CDPMatchedStylesResponse;
+        winningDeclarations = await buildWinningDeclarations(
+          client,
+          matched,
+          computed,
+          sourceCache,
+          styleSheetUrls,
+          PROVENANCE_PROPERTIES,
+        );
+      } catch {
         winningDeclarations = [];
         provenanceUnavailable = true;
       }
+    } else {
+      winningDeclarations = [];
+      provenanceUnavailable = true;
+    }
 
-      return {
-        id: `s-${index}`,
-        selector: sanitizeString(fact.cssPath),
-        ...resolvedIdentity(ref?.backendNodeId),
-        computed,
-        winningDeclarations,
-        provenanceUnavailable,
-      };
-    });
+    return {
+      id: `s-${index}`,
+      selector: sanitizeString(fact.cssPath),
+      ...resolvedIdentity(ref?.backendNodeId),
+      computed,
+      winningDeclarations,
+      provenanceUnavailable,
+    };
+  });
+  const elements = provenance.values.filter((element): element is StylesElementRecord => element !== undefined);
 
   ctx.write.json('styles.json', {
     elements,
@@ -356,7 +378,9 @@ async function collectStylesInner(
       shadowRootsNotWalked: inventory.shadowRootsNotWalked,
       totalCandidateElements: inventory.total,
       keptElements: elements.length,
-      elementsTruncated: inventory.total > elements.length,
+      elementsTruncated: inventory.total > facts.length,
+      provenanceTruncated: provenance.truncated,
+      ...(provenance.truncated ? { provenanceTruncationReason: 'collector-time-budget' as const } : {}),
     },
     styleSheetHeaders: styleSheetHeaders,
     identity,

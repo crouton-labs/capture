@@ -294,6 +294,55 @@ test('collectStyles resolves authored source-map provenance for the winning padd
   }
 });
 
+test('collectStyles finishes its in-flight provenance batch and reports the collector budget instead of queuing every element', async () => {
+  const dir = freshSnapDir('styles-provenance-budget');
+  const facts = Array.from({ length: 12 }, (_, index) => ({
+    cssPath: `div:nth-of-type(${index + 1})`,
+    computed: { color: 'rgb(0, 0, 0)' },
+  }));
+  let matchedStylesCalls = 0;
+  try {
+    class SlowProvenanceStub {
+      async send(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+        if (method === 'Runtime.evaluate') {
+          const expression = String((params as { expression?: unknown }).expression ?? '');
+          if (expression.includes('__captureStylesInventory')) {
+            return { result: { value: { elements: facts, total: facts.length, iframesNotWalked: 0, shadowRootsNotWalked: 0 } } };
+          }
+          return { result: {} };
+        }
+        if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+        if (method === 'DOM.querySelector') return { nodeId: 42 };
+        if (method === 'DOM.describeNode') return { node: { backendNodeId: 999 } };
+        if (method === 'CSS.getMatchedStylesForNode') {
+          matchedStylesCalls += 1;
+          await new Promise((resolve) => setTimeout(resolve, 5_100));
+          return { matchedCSSRules: [] };
+        }
+        return {};
+      }
+    }
+    const ctx = makeCtx(new SlowProvenanceStub() as unknown as StubCdpClient, dir);
+    await collectStyles(ctx);
+
+    const styles = readJson(path.join(dir, 'styles.json'));
+    assert.equal(matchedStylesCalls, 8, 'only the initial concurrency batch reaches CDP after the budget expires');
+    assert.equal(styles.elements.length, 8, 'the completed in-flight batch is retained');
+    assert.deepEqual(styles.coverage, {
+      scope: 'top-document',
+      iframesNotWalked: 0,
+      shadowRootsNotWalked: 0,
+      totalCandidateElements: 12,
+      keptElements: 8,
+      elementsTruncated: false,
+      provenanceTruncated: true,
+      provenanceTruncationReason: 'collector-time-budget',
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}, { timeout: 10_000 });
+
 test('collectStyles reports the COMPUTED value as `value`, keeping the raw declaration as `declaredValue`', async () => {
   const dir = freshSnapDir('styles-computed-value');
   try {
