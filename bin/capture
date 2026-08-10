@@ -9154,6 +9154,9 @@ function validateCliInvocation(parsed) {
         throw invalidInput(`Invalid --viewport: ${parsed.viewport}.`);
       }
     }
+    if (leaf === "shot" && parsed.colorScheme !== void 0 && parsed.colorScheme !== "dark" && parsed.colorScheme !== "light") {
+      throw invalidInput(`Invalid --color-scheme: ${parsed.colorScheme}; expected dark or light.`);
+    }
     return;
   }
   if (parsed.command === "tab") {
@@ -9167,6 +9170,9 @@ function validateCliInvocation(parsed) {
   }
   if (parsed.command === "measure") {
     if (leaf === "snap" || leaf === "check" || leaf === "sweep") requireCount(values, 0, 1, `measure ${leaf}`);
+    if (leaf === "snap" && parsed.colorScheme !== void 0 && parsed.colorScheme !== "dark" && parsed.colorScheme !== "light") {
+      throw invalidInput(`Invalid --color-scheme: ${parsed.colorScheme}; expected dark or light.`);
+    }
     if (leaf === "diff" || leaf === "census") requireCount(values, 0, 0, `measure ${leaf}`);
     if (leaf === "diff" && (!parsed.before || !parsed.after)) throw invalidInput("measure diff requires --before and --after.");
     if (leaf === "census" && !["color", "font", "spacing", "radius", "shadow", "animation", "geometry", "media", "queries"].includes(parsed.axis ?? "")) {
@@ -9271,6 +9277,9 @@ function parseCliSyntax(argv) {
       const value = valueFor(arg, next);
       parsed.viewport = value;
       (parsed.viewports ??= []).push(value);
+      i++;
+    } else if (arg === "--color-scheme") {
+      parsed.colorScheme = valueFor(arg, next);
       i++;
     } else if (arg === "--full-page") parsed.fullPage = true;
     else if (arg === "--all") parsed.all = true;
@@ -9431,6 +9440,7 @@ var init_args = __esm({
       "--url",
       "--into",
       "--viewport",
+      "--color-scheme",
       "--session",
       "--filter",
       "--name",
@@ -227597,6 +227607,49 @@ var init_viewport = __esm({
   }
 });
 
+// src/cdp/color-scheme.ts
+function parseColorScheme(value) {
+  if (value === void 0) return void 0;
+  if (value === "dark" || value === "light") return value;
+  throw new Error("--color-scheme must be dark or light");
+}
+async function withAppliedColorScheme(client, colorScheme, fn) {
+  if (!colorScheme) return fn();
+  let ownsMediaOverride = false;
+  let primaryFailed = false;
+  let primaryError;
+  try {
+    ownsMediaOverride = true;
+    await client.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-color-scheme", value: colorScheme }]
+    });
+    return await fn();
+  } catch (error) {
+    primaryFailed = true;
+    primaryError = error;
+    throw error;
+  } finally {
+    if (ownsMediaOverride) {
+      try {
+        await client.send("Emulation.setEmulatedMedia", { features: [] });
+      } catch (cleanupError) {
+        if (primaryFailed) {
+          throw new AggregateError(
+            [primaryError, cleanupError],
+            "Color-scheme capture failed and media-emulation cleanup also failed.",
+            { cause: primaryError }
+          );
+        }
+        throw cleanupError;
+      }
+    }
+  }
+}
+var init_color_scheme = __esm({
+  "src/cdp/color-scheme.ts"() {
+  }
+});
+
 // src/cdp/commands/page/shot.ts
 function pngDimensions(png) {
   if (png.length < 24) return null;
@@ -227625,7 +227678,8 @@ function buildScreenshotResult(f) {
   const scale = f.dimensions && f.cssViewport ? { x: f.dimensions.width / f.cssViewport.width, y: f.dimensions.height / f.cssViewport.height } : void 0;
   const sections = [
     scale && f.cssViewport ? fact`CSS-to-image scale: ${scale.x.toFixed(6)} image px/CSS px horizontally and ${scale.y.toFixed(6)} image px/CSS px vertically (captured CSS region ${round6(f.cssViewport.width)}×${round6(f.cssViewport.height)} at page origin ${round6(f.cssViewport.x)},${round6(f.cssViewport.y)}).` : text`CSS-to-image scale unavailable: the browser did not return the CSS region this capture covers.`,
-    f.emulation === "none" ? text`emulation: none — the browser's actual current viewport was captured; no Emulation call was made.` : f.emulation === "viewport" ? fact`emulation: transient ${f.viewport.width}x${f.viewport.height} device-metrics override applied for the capture and cleared after — two page-observable resizes.` : f.viewport ? fact`emulation: transient full-page device-metrics override (from ${f.viewport.width}x${f.viewport.height}) applied for the capture and cleared after — two page-observable resizes.` : text`emulation: transient full-page device-metrics override applied for the capture and cleared after — two page-observable resizes.`
+    f.emulation === "none" ? text`viewport emulation: none — the browser's actual current viewport was captured.` : f.emulation === "viewport" ? fact`emulation: transient ${f.viewport.width}x${f.viewport.height} device-metrics override applied for the capture and cleared after — two page-observable resizes.` : f.viewport ? fact`emulation: transient full-page device-metrics override (from ${f.viewport.width}x${f.viewport.height}) applied for the capture and cleared after — two page-observable resizes.` : text`emulation: transient full-page device-metrics override applied for the capture and cleared after — two page-observable resizes.`,
+    f.colorScheme ? fact`color scheme: transient prefers-color-scheme=${f.colorScheme} override applied for the capture and cleared after.` : text`color scheme: browser default — no Emulation.setEmulatedMedia call was made.`
   ];
   return {
     tag: "screenshot",
@@ -227639,7 +227693,8 @@ function buildScreenshotResult(f) {
       "css-y": f.cssViewport === void 0 ? void 0 : round6(f.cssViewport.y),
       "css-to-image-x": scale?.x.toFixed(6),
       "css-to-image-y": scale?.y.toFixed(6),
-      emulation: f.emulation
+      emulation: f.emulation,
+      "color-scheme": f.colorScheme
     },
     summary: f.dimensions ? fact`saved ${f.path} — ${f.dimensions.width}x${f.dimensions.height}px, ${f.bytes} bytes.` : fact`saved ${f.path} — ${f.bytes} bytes.`,
     sections
@@ -227655,7 +227710,7 @@ async function cmdPageShot(parsed, _args) {
       {
         tag: "error",
         attrs: { command: "page shot", code: "invalid_input" },
-        summary: fact`received: ${parsed.positional.length} positional arguments; expected none — \`capture page shot [--viewport <WxH>] [--full-page] [--out <path>]\`.`
+        summary: fact`received: ${parsed.positional.length} positional arguments; expected none — \`capture page shot [--viewport <WxH>] [--full-page] [--color-scheme <dark|light>] [--out <path>]\`.`
       },
       { json: parsed.json }
     );
@@ -227679,18 +227734,33 @@ async function cmdPageShot(parsed, _args) {
       return;
     }
   }
+  let colorScheme;
+  try {
+    colorScheme = parseColorScheme(parsed.colorScheme);
+  } catch {
+    emitResult(
+      {
+        tag: "error",
+        attrs: { command: "page shot", code: "invalid_color_scheme" },
+        summary: fact`received: --color-scheme ${parsed.colorScheme}; expected dark or light.`
+      },
+      { json: parsed.json }
+    );
+    process.exitCode = 1;
+    return;
+  }
   const emulation = parsed.fullPage ? "full-page" : viewport2 ? "viewport" : "none";
   const result = await deps4.withConnection(
     { ...parsed, command: "shot" },
-    async (client) => {
+    async (client) => withAppliedColorScheme(client, colorScheme, async () => {
       const screenshot = await captureScreenshotWithCssViewport(client, viewport2, { fullPage: parsed.fullPage });
       const outPath = await resolveOutPath(parsed);
       writeScreenshot(outPath, screenshot.png);
       return { path: outPath, bytes: screenshot.png.length, dimensions: pngDimensions(screenshot.png), cssViewport: screenshot.cssViewport };
-    },
+    }),
     { settle: 0 }
   );
-  emitResult(buildScreenshotResult({ ...result, emulation, viewport: viewport2 }), { json: parsed.json });
+  emitResult(buildScreenshotResult({ ...result, emulation, viewport: viewport2, colorScheme }), { json: parsed.json });
 }
 var fs15, path17, USAGE6, deps4, PNG_SIGNATURE;
 var init_shot = __esm({
@@ -227700,6 +227770,7 @@ var init_shot = __esm({
     init_connection();
     init_screenshot();
     init_viewport();
+    init_color_scheme();
     init_session_context();
     init_commands();
     init_artifacts();
@@ -227709,13 +227780,14 @@ var init_shot = __esm({
 input:
   --viewport <WxH>  transient device-metrics override for this capture; grammar: <positive-safe-int>x<positive-safe-int>, exact lowercase x with no whitespace \u2014 preset names are not accepted. Absent \u2192 no emulation, the browser's actual current viewport is captured
   --full-page       transient override to the full scrollable content height for this capture
+  --color-scheme <dark|light>  transient prefers-color-scheme override for this capture; cleared afterward
   --out <path>      destination file; default: the active session's shots/ sequence, or a fresh oneshot-*/page/ dir under the capture root when no session is active
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json            mirror the result as JSON
 output:
-  <screenshot path=\u2026 width=\u2026 height=\u2026 css-width=\u2026 css-height=\u2026 css-x=\u2026 css-y=\u2026 css-to-image-x=\u2026 css-to-image-y=\u2026 emulation=none|viewport|full-page> \u2014 saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, byte size, and the emulation fact (whether a transient override was applied, or its absence)
+  <screenshot path=\u2026 width=\u2026 height=\u2026 css-width=\u2026 css-height=\u2026 css-x=\u2026 css-y=\u2026 css-to-image-x=\u2026 css-to-image-y=\u2026 emulation=none|viewport|full-page color-scheme=dark|light> \u2014 saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, byte size, and any requested transient emulation
 effects:
-  no flags: none \u2014 the capture reads the viewport as-is, with zero Emulation.* calls. With --viewport/--full-page: applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture \u2014 two page-observable resizes (resize events fire; media queries flip and flip back)`;
+  no flags: none \u2014 the capture reads the viewport as-is, with zero Emulation.* calls. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture \u2014 two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture.`;
     deps4 = { withConnection, nextStepPath, createOneshotSession };
     PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   }
@@ -227856,7 +227928,7 @@ During a live composed recording every verb routes through the recorder.
 <subcommand name="scroll" args="<target> --to <top|bottom|px> [--no-screenshot]" whenToUse="scroll one resolved container to a position"/>
 <subcommand name="navigate" args="<url> [--settle <ms>]" whenToUse="navigate the tab and wait for load + settle"/>
 <subcommand name="exec" args="<code> | --file <path>" whenToUse="run arbitrary JS in the tab (expressions, return, await)"/>
-<subcommand name="shot" args="[--viewport <WxH>] [--full-page] [--out <path>]" whenToUse="look at the page right now without acting"/>
+<subcommand name="shot" args="[--viewport <WxH>] [--full-page] [--color-scheme <dark|light>] [--out <path>]" whenToUse="look at the page right now without acting"/>
 <subcommand name="elements" args="[--all] [--limit <n>]" whenToUse="list what can be acted on \u2014 role, name, backend:<id> per element"/>
 
 capture page <leaf> -h    Per-leaf usage`;
@@ -235901,6 +235973,7 @@ async function captureSnapshotSubstrate(options) {
   const pixels = options.pixels ?? false;
   const state = options.state ?? [];
   const viewport2 = options.viewport ?? null;
+  const colorScheme = options.colorScheme;
   const url = options.url ? sanitizeString(options.url) : null;
   const artifacts = [];
   const phaseClient = (phase) => boundedClient(client, phase, dir);
@@ -236043,6 +236116,7 @@ async function captureSnapshotSubstrate(options) {
       captureUnsettled,
       pixels,
       states: state.map((spec) => sanitizeString(spec)),
+      ...colorScheme ? { colorScheme } : {},
       unstableRegionCount: unstableRegions.length,
       ...freezeAnimations ? { animationsRestored: animationsRestored ?? false } : {},
       // #8: the browser-wide `Animation.setPlaybackRate({playbackRate:0})`
@@ -236568,7 +236642,7 @@ function settledNote(settled, captured, settleMs, settleTimeoutMs, unstableCount
   }
   return fact`Page did not settle within ${settleTimeoutMs}ms. No queryable substrate was written; evidence artifacts only (${unstableCount} unstable region(s)).`;
 }
-async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], viewportValue = parsed.viewport) {
+async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], viewportValue = parsed.viewport, colorSchemeValue = parsed.colorScheme) {
   if (parsed.positional.length > 1) {
     throw invalidInput("measure snap accepts at most one positional URL or snapshot reference");
   }
@@ -236581,6 +236655,7 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
     }
   }
   const viewport2 = viewportValue === void 0 ? void 0 : { label: viewportValue, ...parseViewport(viewportValue) };
+  const colorScheme = parseColorScheme(colorSchemeValue);
   let base;
   let baseUrl = null;
   if (targetRef && !isUrlRef(targetRef)) {
@@ -236595,7 +236670,7 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
   try {
     let artifacts = [];
     await withConnection(connectionArgs, async (client, tab) => {
-      await withAppliedViewport(client, viewport2, async () => {
+      await withAppliedColorScheme(client, colorScheme, async () => withAppliedViewport(client, viewport2, async () => {
         const oneshot = active ? void 0 : createOneshotSession("measure");
         const destination = active ? path22.join(active.dir, "measure", "snaps") : oneshot.artifactsDir;
         snapDir = path22.join(destination, snapId);
@@ -236611,10 +236686,11 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
           pixels: parsed.pixels,
           state: parsed.state ?? [],
           viewport: viewport2?.label ?? null,
+          colorScheme,
           skipCollectors: parsed.skipCollector ?? []
         });
         artifacts = result.artifacts;
-      });
+      }));
     }, { settle: 0 });
     if (!snapDir) throw new Error("measure snap did not allocate an artifact directory");
     return { id: snapId, dir: snapDir, artifacts, ...base ? { base } : {} };
@@ -236640,6 +236716,7 @@ function buildSnapshotResult(captured) {
     attrs: {
       url: meta.url ?? void 0,
       viewport: meta.viewport ?? void 0,
+      "color-scheme": meta.colorScheme,
       elements,
       settled: meta.settled,
       "settle-ms": meta.settleMs,
@@ -236670,7 +236747,7 @@ function classifySnapError(err) {
   if (message.startsWith("--viewport cannot ")) {
     return { status: "viewport_unavailable", message };
   }
-  if (message.startsWith("measure snap accepts") || message.startsWith("--settle-timeout") || message.startsWith("--viewport")) {
+  if (message.startsWith("measure snap accepts") || message.startsWith("--settle-timeout") || message.startsWith("--viewport") || message.startsWith("--color-scheme")) {
     return { status: "invalid_input", message };
   }
   if (message.includes("No tab found") || message.includes("Use --target") || message.includes("Tab has no WebSocket debugger URL")) {
@@ -236715,9 +236792,10 @@ async function cmdMeasureSnap(parsed, _args) {
       if (value === void 0) return void 0;
       return { label: value, ...parseViewport(value) };
     });
+    const colorScheme = parseColorScheme(parsed.colorScheme);
     const results = [];
     for (const viewport2 of viewports) {
-      const capture = await captureMeasureSnap(parsed, parsed.positional[0], viewport2?.label);
+      const capture = await captureMeasureSnap(parsed, parsed.positional[0], viewport2?.label, colorScheme);
       captures.push(capture);
       results.push(buildSnapshotResult(capture));
     }
@@ -236767,6 +236845,7 @@ var init_snap = __esm({
     init_connection();
     init_recorder_client();
     init_viewport();
+    init_color_scheme();
     init_snapshot();
     init_redaction();
     init_settle();
@@ -236787,8 +236866,9 @@ input:
   --pixels                    also write per-element raster crops
   --state <state[:selector]>  force a pseudo-state or real control state (repeatable)
   --viewport <WxH>            temporarily capture at a CSS-pixel viewport (repeatable); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace
+  --color-scheme <dark|light> temporarily capture under this prefers-color-scheme value; cleared afterward
 output: <snapshot id=\u2026 path=\u2026> \u2014 the settled artifact directory (geometry, styles, hit-test, text, forms, animation, ax, queries, focus, scroll, layers; per-element crops with --pixels) every other measure/motion query leaf reads instead of re-driving the browser; --json mirrors
-effects: drives the target page to capture; writes one snapshot artifact directory under the active (or a private one-shot) session`;
+effects: drives the target page to capture; writes one snapshot artifact directory under the active (or a private one-shot) session. --color-scheme transiently applies Emulation.setEmulatedMedia and clears it after capture.`;
   }
 });
 
@@ -240154,7 +240234,7 @@ Every leaf defaults to rendered prose; --json mirrors the same result.
 Findings exit 0 \u2014 a report, not a failure.
 \`--gate\` (exit 2 on findings/changes) is accepted only by check and diff.
 
-<subcommand name="snap" args="[url|snap] [--freeze-animations] [--settle-timeout <ms>] [--capture-unsettled] [--pixels] [--state <state[:selector]>]... [--viewport <WxH>]..." whenToUse="drive + write the settled snapshot substrate every other leaf reads"/>
+<subcommand name="snap" args="[url|snap] [--freeze-animations] [--settle-timeout <ms>] [--capture-unsettled] [--pixels] [--state <state[:selector]>]... [--viewport <WxH>]... [--color-scheme <dark|light>]" whenToUse="drive + write the settled snapshot substrate every other leaf reads"/>
 <subcommand name="check" args="[url|snap] [--for <checks>] [--gate]" whenToUse="read threshold/fact measurements from one snapshot"/>
 <subcommand name="diff" args="--before <snap> --after <snap> [--pixels] [--full] [--gate]" whenToUse="structured before/after delta between two snapshots"/>
 <subcommand name="census" args="[--snap <id>]... [--url <url>]... [--set-file <path>] --axis <axis>" whenToUse="value distributions across one or more snapshots"/>

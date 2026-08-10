@@ -53,6 +53,8 @@ export interface CaptureSnapshotOptions {
   /** `--state <state[:selector]>` (repeatable); default `[]`. */
   readonly state?: readonly string[];
   readonly viewport?: string | null;
+  /** Transient `prefers-color-scheme` media override used while capturing. */
+  readonly colorScheme?: 'dark' | 'light';
   /**
    * Poll interval for the settledness loop; default {@link DEFAULT_POLL_INTERVAL_MS}
    * (100ms). Not part of the CLI surface — a test-only override so the
@@ -109,6 +111,8 @@ export interface SnapshotMeta extends SnapMeta {
   readonly captureUnsettled: boolean;
   readonly pixels: boolean;
   readonly states: readonly string[];
+  /** Present only when this snapshot applied a transient color-scheme override. */
+  readonly colorScheme?: 'dark' | 'light';
   readonly unstableRegionCount: number;
   /** Present only when `freezeAnimations` is true — whether every animation `freezeAnimationsBeforeCapture` paused was confirmed resumed to its pre-freeze `playState` (I-6). `false` means restoration could not be guaranteed (origin capture failed, or the restore call itself threw) — never omitted to imply a clean restore. */
   readonly animationsRestored?: boolean;

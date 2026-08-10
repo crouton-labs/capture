@@ -4,8 +4,9 @@
  * The navigational look: vision as navigator, never inspector — cheap, no
  * settling, no collectors. With no flags it captures the browser's ACTUAL
  * current viewport and performs zero `Emulation.*` calls; emulation exists
- * only when explicitly asked (`--viewport <WxH>` / `--full-page`), applied
- * as a transient `Emulation.setDeviceMetricsOverride` (+ ~150ms re-layout)
+ * only when explicitly asked (`--viewport <WxH>` / `--full-page` /
+ * `--color-scheme dark|light`), applied transiently; viewport emulation uses
+ * `Emulation.setDeviceMetricsOverride` (+ ~150ms re-layout)
  * and cleared after — two page-observable resizes, declared as the leaf's
  * effect in `-h` (I-1/I-2 posture). Explicit viewport emulation uses the
  * single `WxH` grammar (D10).
@@ -20,6 +21,7 @@ import { type ParsedArgs } from '../../types.js';
 import { withConnection } from '../../connection.js';
 import { captureScreenshotWithCssViewport, type CapturedRegion } from '../../screenshot.js';
 import { parseViewport, type Viewport } from '../../viewport.js';
+import { parseColorScheme, withAppliedColorScheme, type ColorScheme } from '../../color-scheme.js';
 import { nextStepPath } from '../../../session-context.js';
 import { createOneshotSession } from '../../../session/commands.js';
 import { assertUnderCaptureRoot, writeBinaryPrivate } from '../../../session/artifacts.js';
@@ -36,13 +38,14 @@ const USAGE = `capture page shot — capture a PNG of the tab as it is right now
 input:
   --viewport <WxH>  transient device-metrics override for this capture; grammar: <positive-safe-int>x<positive-safe-int>, exact lowercase x with no whitespace — preset names are not accepted. Absent → no emulation, the browser's actual current viewport is captured
   --full-page       transient override to the full scrollable content height for this capture
+  --color-scheme <dark|light>  transient prefers-color-scheme override for this capture; cleared afterward
   --out <path>      destination file; default: the active session's shots/ sequence, or a fresh oneshot-*/page/ dir under the capture root when no session is active
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json            mirror the result as JSON
 output:
-  <screenshot path=… width=… height=… css-width=… css-height=… css-x=… css-y=… css-to-image-x=… css-to-image-y=… emulation=none|viewport|full-page> — saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, byte size, and the emulation fact (whether a transient override was applied, or its absence)
+  <screenshot path=… width=… height=… css-width=… css-height=… css-x=… css-y=… css-to-image-x=… css-to-image-y=… emulation=none|viewport|full-page color-scheme=dark|light> — saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, byte size, and any requested transient emulation
 effects:
-  no flags: none — the capture reads the viewport as-is, with zero Emulation.* calls. With --viewport/--full-page: applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture — two page-observable resizes (resize events fire; media queries flip and flip back)`;
+  no flags: none — the capture reads the viewport as-is, with zero Emulation.* calls. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture — two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture.`;
 
 // ---------------------------------------------------------------------------
 // Test-injectable dependency seam (the CDP-stub test pattern; the capture
@@ -128,6 +131,7 @@ export function buildScreenshotResult(f: {
   cssViewport?: CapturedRegion;
   emulation: EmulationMode;
   viewport?: { width: number; height: number };
+  colorScheme?: ColorScheme;
 }): RenderableResult {
   // The denominator is the CSS region the image was actually cut from, so the
   // ratio stays true under page zoom, device pixel ratio, and the local
@@ -140,12 +144,15 @@ export function buildScreenshotResult(f: {
       ? fact`CSS-to-image scale: ${scale.x.toFixed(6)} image px/CSS px horizontally and ${scale.y.toFixed(6)} image px/CSS px vertically (captured CSS region ${round6(f.cssViewport.width)}×${round6(f.cssViewport.height)} at page origin ${round6(f.cssViewport.x)},${round6(f.cssViewport.y)}).`
       : text`CSS-to-image scale unavailable: the browser did not return the CSS region this capture covers.`,
     f.emulation === 'none'
-      ? text`emulation: none — the browser's actual current viewport was captured; no Emulation call was made.`
+      ? text`viewport emulation: none — the browser's actual current viewport was captured.`
       : f.emulation === 'viewport'
         ? fact`emulation: transient ${f.viewport!.width}x${f.viewport!.height} device-metrics override applied for the capture and cleared after — two page-observable resizes.`
         : f.viewport
           ? fact`emulation: transient full-page device-metrics override (from ${f.viewport.width}x${f.viewport.height}) applied for the capture and cleared after — two page-observable resizes.`
           : text`emulation: transient full-page device-metrics override applied for the capture and cleared after — two page-observable resizes.`,
+    f.colorScheme
+      ? fact`color scheme: transient prefers-color-scheme=${f.colorScheme} override applied for the capture and cleared after.`
+      : text`color scheme: browser default — no Emulation.setEmulatedMedia call was made.`,
   ];
   return {
     tag: 'screenshot',
@@ -160,6 +167,7 @@ export function buildScreenshotResult(f: {
       'css-to-image-x': scale?.x.toFixed(6),
       'css-to-image-y': scale?.y.toFixed(6),
       emulation: f.emulation,
+      'color-scheme': f.colorScheme,
     },
     summary: f.dimensions
       ? fact`saved ${f.path} — ${f.dimensions.width}x${f.dimensions.height}px, ${f.bytes} bytes.`
@@ -183,7 +191,7 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
       {
         tag: 'error',
         attrs: { command: 'page shot', code: 'invalid_input' },
-        summary: fact`received: ${parsed.positional.length} positional arguments; expected none — \`capture page shot [--viewport <WxH>] [--full-page] [--out <path>]\`.`,
+        summary: fact`received: ${parsed.positional.length} positional arguments; expected none — \`capture page shot [--viewport <WxH>] [--full-page] [--color-scheme <dark|light>] [--out <path>]\`.`,
       },
       { json: parsed.json },
     );
@@ -209,6 +217,22 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
     }
   }
 
+  let colorScheme: ColorScheme | undefined;
+  try {
+    colorScheme = parseColorScheme(parsed.colorScheme);
+  } catch {
+    emitResult(
+      {
+        tag: 'error',
+        attrs: { command: 'page shot', code: 'invalid_color_scheme' },
+        summary: fact`received: --color-scheme ${parsed.colorScheme}; expected dark or light.`,
+      },
+      { json: parsed.json },
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const emulation: EmulationMode = parsed.fullPage ? 'full-page' : viewport ? 'viewport' : 'none';
 
   // connection.ts derives the recorder-routed action label from
@@ -216,14 +240,14 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
   // restore the verb so stderr diagnostics identify this leaf.
   const result = await deps.withConnection(
     { ...parsed, command: 'shot' },
-    async (client) => {
+    async (client) => withAppliedColorScheme(client, colorScheme, async () => {
       const screenshot = await captureScreenshotWithCssViewport(client, viewport, { fullPage: parsed.fullPage });
       const outPath = await resolveOutPath(parsed);
       writeScreenshot(outPath, screenshot.png);
       return { path: outPath, bytes: screenshot.png.length, dimensions: pngDimensions(screenshot.png), cssViewport: screenshot.cssViewport };
-    },
+    }),
     { settle: 0 },
   );
 
-  emitResult(buildScreenshotResult({ ...result, emulation, viewport }), { json: parsed.json });
+  emitResult(buildScreenshotResult({ ...result, emulation, viewport, colorScheme }), { json: parsed.json });
 }

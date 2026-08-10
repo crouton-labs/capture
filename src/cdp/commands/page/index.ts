@@ -39,7 +39,7 @@ During a live composed recording every verb routes through the recorder.
 <subcommand name="scroll" args="<target> --to <top|bottom|px> [--no-screenshot]" whenToUse="scroll one resolved container to a position"/>
 <subcommand name="navigate" args="<url> [--settle <ms>]" whenToUse="navigate the tab and wait for load + settle"/>
 <subcommand name="exec" args="<code> | --file <path>" whenToUse="run arbitrary JS in the tab (expressions, return, await)"/>
-<subcommand name="shot" args="[--viewport <WxH>] [--full-page] [--out <path>]" whenToUse="look at the page right now without acting"/>
+<subcommand name="shot" args="[--viewport <WxH>] [--full-page] [--color-scheme <dark|light>] [--out <path>]" whenToUse="look at the page right now without acting"/>
 <subcommand name="elements" args="[--all] [--limit <n>]" whenToUse="list what can be acted on — role, name, backend:<id> per element"/>
 
 capture page <leaf> -h    Per-leaf usage`;

@@ -6,6 +6,7 @@ import { type ParsedArgs } from '../../types.js';
 import { withConnection } from '../../connection.js';
 import { isRecorderHeldClient } from '../../recorder-client.js';
 import { parseViewport, type Viewport } from '../../viewport.js';
+import { parseColorScheme, withAppliedColorScheme, type ColorScheme } from '../../color-scheme.js';
 import { captureSnapshotSubstrate, COLLECTOR_NAMES, SnapshotCaptureTimeout } from '../../measure/snapshot.js';
 import type { CollectorOutcome } from '../../measure/types.js';
 import { sanitizeString } from '../../measure/redaction.js';
@@ -36,8 +37,9 @@ input:
   --pixels                    also write per-element raster crops
   --state <state[:selector]>  force a pseudo-state or real control state (repeatable)
   --viewport <WxH>            temporarily capture at a CSS-pixel viewport (repeatable); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace
+  --color-scheme <dark|light> temporarily capture under this prefers-color-scheme value; cleared afterward
 output: <snapshot id=… path=…> — the settled artifact directory (geometry, styles, hit-test, text, forms, animation, ax, queries, focus, scroll, layers; per-element crops with --pixels) every other measure/motion query leaf reads instead of re-driving the browser; --json mirrors
-effects: drives the target page to capture; writes one snapshot artifact directory under the active (or a private one-shot) session`;
+effects: drives the target page to capture; writes one snapshot artifact directory under the active (or a private one-shot) session. --color-scheme transiently applies Emulation.setEmulatedMedia and clears it after capture.`;
 
 interface SnapshotMetaForBase {
   readonly url?: string | null;
@@ -216,7 +218,7 @@ function settledNote(settled: boolean, captured: boolean, settleMs: number, sett
  * seam rather than importing the substrate directly, preserving snap as the
  * sole live-driving primitive.
  */
-export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.positional[0], viewportValue = parsed.viewport): Promise<MeasureSnapCapture> {
+export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.positional[0], viewportValue = parsed.viewport, colorSchemeValue = parsed.colorScheme): Promise<MeasureSnapCapture> {
   if (parsed.positional.length > 1) {
     throw invalidInput('measure snap accepts at most one positional URL or snapshot reference');
   }
@@ -231,6 +233,7 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
   const viewport: ViewportSpec | undefined = viewportValue === undefined
     ? undefined
     : { label: viewportValue, ...parseViewport(viewportValue) };
+  const colorScheme = parseColorScheme(colorSchemeValue);
 
   let base: SnapRef | undefined;
   let baseUrl: string | null = null;
@@ -256,7 +259,7 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
   try {
     let artifacts: readonly string[] = [];
     await withConnection(connectionArgs, async (client, tab) => {
-      await withAppliedViewport(client, viewport, async () => {
+      await withAppliedColorScheme(client, colorScheme, async () => withAppliedViewport(client, viewport, async () => {
         const oneshot = active ? undefined : createOneshotSession('measure');
         const destination = active ? path.join(active.dir, 'measure', 'snaps') : oneshot!.artifactsDir;
         snapDir = path.join(destination, snapId);
@@ -272,10 +275,11 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
           pixels: parsed.pixels,
           state: parsed.state ?? [],
           viewport: viewport?.label ?? null,
+          colorScheme,
           skipCollectors: parsed.skipCollector ?? [],
         });
         artifacts = result.artifacts;
-      });
+      }));
     }, { settle: 0 });
 
     if (!snapDir) throw new Error('measure snap did not allocate an artifact directory');
@@ -290,6 +294,7 @@ function buildSnapshotResult(captured: MeasureSnapCapture): RenderableResult {
   const meta = readMeta<{
     url: string | null;
     viewport: string | null;
+    colorScheme?: ColorScheme;
     settled: boolean;
     settleMs: number;
     settleTimeoutMs: number;
@@ -313,6 +318,7 @@ function buildSnapshotResult(captured: MeasureSnapCapture): RenderableResult {
     attrs: {
       url: meta.url ?? undefined,
       viewport: meta.viewport ?? undefined,
+      'color-scheme': meta.colorScheme,
       elements,
       settled: meta.settled,
       'settle-ms': meta.settleMs,
@@ -358,7 +364,7 @@ export function classifySnapError(err: unknown): SnapErrorDetails {
   if (message.startsWith('--viewport cannot ')) {
     return { status: 'viewport_unavailable', message };
   }
-  if (message.startsWith('measure snap accepts') || message.startsWith('--settle-timeout') || message.startsWith('--viewport')) {
+  if (message.startsWith('measure snap accepts') || message.startsWith('--settle-timeout') || message.startsWith('--viewport') || message.startsWith('--color-scheme')) {
     return { status: 'invalid_input', message };
   }
   if (message.includes('No tab found') || message.includes('Use --target') || message.includes('Tab has no WebSocket debugger URL')) {
@@ -408,9 +414,10 @@ export async function cmdMeasureSnap(parsed: ParsedArgs, _args: string[]): Promi
       if (value === undefined) return undefined;
       return { label: value, ...parseViewport(value) };
     });
+    const colorScheme = parseColorScheme(parsed.colorScheme);
     const results = [] as RenderableResult[];
     for (const viewport of viewports) {
-      const capture = await captureMeasureSnap(parsed, parsed.positional[0], viewport?.label);
+      const capture = await captureMeasureSnap(parsed, parsed.positional[0], viewport?.label, colorScheme);
       captures.push(capture);
       results.push(buildSnapshotResult(capture));
     }

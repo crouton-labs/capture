@@ -38,6 +38,8 @@ export interface ParsedArgs {
   into?: string;
   noScreenshot?: boolean;
   viewport?: string;
+  /** `page shot|measure snap --color-scheme dark|light` — transient media override. */
+  colorScheme?: string;
   fullPage?: boolean;
   help?: boolean;
   /** `--all` — boolean scope-widener (per-leaf semantics). */

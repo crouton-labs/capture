@@ -15,7 +15,7 @@ export function expandEqualsFlags(argv: string[]): string[] {
 }
 
 const VALUE_FLAGS = new Set([
-  '--port', '--out', '--duration', '--settle', '--file', '--target', '--url', '--into', '--viewport', '--session',
+  '--port', '--out', '--duration', '--settle', '--file', '--target', '--url', '--into', '--viewport', '--color-scheme', '--session',
   '--filter', '--name', '--filter-url', '--filter-status', '--filter-method', '--limit', '--params', '--wait-event',
   '--timeout', '--socket', '--settle-timeout', '--state', '--for', '--before', '--after', '--snap', '--set-file',
   '--axis', '--from', '--to', '--viewport-height', '--rec-id', '--selector', '--do', '--element', '--prop', '--action', '--occurrence',
@@ -126,6 +126,9 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
         throw invalidInput(`Invalid --viewport: ${parsed.viewport}.`);
       }
     }
+    if (leaf === 'shot' && parsed.colorScheme !== undefined && parsed.colorScheme !== 'dark' && parsed.colorScheme !== 'light') {
+      throw invalidInput(`Invalid --color-scheme: ${parsed.colorScheme}; expected dark or light.`);
+    }
     return;
   }
 
@@ -143,6 +146,9 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
 
   if (parsed.command === 'measure') {
     if (leaf === 'snap' || leaf === 'check' || leaf === 'sweep') requireCount(values, 0, 1, `measure ${leaf}`);
+    if (leaf === 'snap' && parsed.colorScheme !== undefined && parsed.colorScheme !== 'dark' && parsed.colorScheme !== 'light') {
+      throw invalidInput(`Invalid --color-scheme: ${parsed.colorScheme}; expected dark or light.`);
+    }
     if (leaf === 'diff' || leaf === 'census') requireCount(values, 0, 0, `measure ${leaf}`);
     if (leaf === 'diff' && (!parsed.before || !parsed.after)) throw invalidInput('measure diff requires --before and --after.');
     if (leaf === 'census' && !['color', 'font', 'spacing', 'radius', 'shadow', 'animation', 'geometry', 'media', 'queries'].includes(parsed.axis ?? '')) {
@@ -233,6 +239,7 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
     else if (arg === '--into') { parsed.into = valueFor(arg, next); i++; }
     else if (arg === '--no-screenshot') parsed.noScreenshot = true;
     else if (arg === '--viewport') { const value = valueFor(arg, next); parsed.viewport = value; (parsed.viewports ??= []).push(value); i++; }
+    else if (arg === '--color-scheme') { parsed.colorScheme = valueFor(arg, next); i++; }
     else if (arg === '--full-page') parsed.fullPage = true;
     else if (arg === '--all') parsed.all = true;
     else if (arg === '--session') { parsed.session = valueFor(arg, next); i++; }

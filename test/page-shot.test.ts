@@ -61,7 +61,7 @@ function makePng(width: number, height: number): Buffer {
 /** The CDP surface the real captureScreenshot drives for a plain (no
  * emulation) capture. Emulation handlers are added only by the tests that
  * expect them — any other method throws, which is itself the proof. */
-function captureHandlers(png: Buffer, opts: { emulation?: boolean; contentHeight?: number } = {}): Handlers {
+function captureHandlers(png: Buffer, opts: { emulation?: boolean; media?: boolean; contentHeight?: number } = {}): Handlers {
   const handlers: Handlers = {
     'Page.getLayoutMetrics': () => ({
       contentSize: { width: 1280, height: opts.contentHeight ?? 800 },
@@ -76,6 +76,7 @@ function captureHandlers(png: Buffer, opts: { emulation?: boolean; contentHeight
     handlers['Emulation.setDeviceMetricsOverride'] = () => ({});
     handlers['Emulation.clearDeviceMetricsOverride'] = () => ({});
   }
+  if (opts.media) handlers['Emulation.setEmulatedMedia'] = () => ({});
   return handlers;
 }
 
@@ -281,6 +282,29 @@ test('--viewport 390x844 applies the transient override and clears it after the 
 
     assert.match(stdout, /<screenshot [^>]*emulation="viewport"/);
     assert.match(stdout, /transient 390x844 device-metrics override applied .* and cleared/);
+  } finally {
+    cleanup(state);
+    fs.rmSync(outPath, { force: true });
+  }
+});
+
+test('--color-scheme dark applies media emulation through the screenshot and clears it afterward', async () => {
+  const outPath = path.join(os.tmpdir(), `u07-dark-${process.pid}.png`);
+  const client = stubClient(captureHandlers(makePng(1280, 800), { media: true }));
+  const state = installDeps(client);
+  try {
+    const { stdout, exitCode } = await runCmd(() => cmdPageShot(parsedFor({ colorScheme: 'dark', out: outPath }), []));
+    assert.equal(exitCode, undefined);
+    const mediaCalls = client.calls.filter((call) => call.method === 'Emulation.setEmulatedMedia');
+    assert.deepEqual(mediaCalls.map((call) => call.params), [
+      { features: [{ name: 'prefers-color-scheme', value: 'dark' }] },
+      { features: [] },
+    ]);
+    const methods = client.calls.map((call) => call.method);
+    assert.ok(methods.indexOf('Page.captureScreenshot') > methods.indexOf('Emulation.setEmulatedMedia'));
+    assert.equal(methods.at(-1), 'Emulation.setEmulatedMedia');
+    assert.match(stdout, /color-scheme="dark"/);
+    assert.match(stdout, /prefers-color-scheme=dark override applied .* cleared/);
   } finally {
     cleanup(state);
     fs.rmSync(outPath, { force: true });
@@ -551,6 +575,7 @@ test('-h is the leaf shape: summary, input/output/effects, declared resizes, no 
     assert.match(stdout, /^output:$/m);
     assert.match(stdout, /^effects:$/m);
     assert.match(stdout, /--viewport <WxH>/);
+    assert.match(stdout, /--color-scheme <dark\|light>/);
     // The two page-observable resizes are the declared effect; the no-flag
     // default declares its absence of any Emulation call.
     assert.match(stdout, /two page-observable resizes/);

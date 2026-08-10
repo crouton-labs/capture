@@ -36,7 +36,7 @@ Every leaf defaults to rendered prose; --json mirrors the same result.
 Findings exit 0 — a report, not a failure.
 \`--gate\` (exit 2 on findings/changes) is accepted only by check and diff.
 
-<subcommand name="snap" args="[url|snap] [--freeze-animations] [--settle-timeout <ms>] [--capture-unsettled] [--pixels] [--state <state[:selector]>]... [--viewport <WxH>]..." whenToUse="drive + write the settled snapshot substrate every other leaf reads"/>
+<subcommand name="snap" args="[url|snap] [--freeze-animations] [--settle-timeout <ms>] [--capture-unsettled] [--pixels] [--state <state[:selector]>]... [--viewport <WxH>]... [--color-scheme <dark|light>]" whenToUse="drive + write the settled snapshot substrate every other leaf reads"/>
 <subcommand name="check" args="[url|snap] [--for <checks>] [--gate]" whenToUse="read threshold/fact measurements from one snapshot"/>
 <subcommand name="diff" args="--before <snap> --after <snap> [--pixels] [--full] [--gate]" whenToUse="structured before/after delta between two snapshots"/>
 <subcommand name="census" args="[--snap <id>]... [--url <url>]... [--set-file <path>] --axis <axis>" whenToUse="value distributions across one or more snapshots"/>

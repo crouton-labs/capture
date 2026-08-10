@@ -250,6 +250,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
   const pixels = options.pixels ?? false;
   const state = options.state ?? [];
   const viewport = options.viewport ?? null;
+  const colorScheme = options.colorScheme;
   // Apply the shared artifact-string cap once at the source. URL contents
   // otherwise survive unchanged in meta.json, the result, and collector context.
   const url = options.url ? sanitizeString(options.url) : null;
@@ -483,6 +484,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
       captureUnsettled,
       pixels,
       states: state.map((spec) => sanitizeString(spec)),
+      ...(colorScheme ? { colorScheme } : {}),
       unstableRegionCount: unstableRegions.length,
       ...(freezeAnimations ? { animationsRestored: animationsRestored ?? false } : {}),
       // #8: the browser-wide `Animation.setPlaybackRate({playbackRate:0})`
