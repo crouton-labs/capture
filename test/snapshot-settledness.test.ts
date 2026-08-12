@@ -18,7 +18,7 @@ import {
   collectChurnEvidence,
   domSignaturesEqual,
 } from '../src/cdp/measure/settle.js';
-import { captureSnapshotSubstrate } from '../src/cdp/measure/snapshot.js';
+import { captureSnapshotSubstrate, SnapshotCaptureTimeout } from '../src/cdp/measure/snapshot.js';
 import { liveChromeOpts } from './fixtures/live-chrome.js';
 
 // A 1x1 transparent PNG, base64-encoded — stands in for `Page.captureScreenshot`'s `data`.
