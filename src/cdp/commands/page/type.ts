@@ -18,6 +18,7 @@ import {
 import { emitResult, fact, lineList, type FactLine } from '../../../output/render.js';
 import {
   pageInputDeps,
+  capturePageInputScreenshot,
   effectiveSettle,
   emitInvalidInput,
   emitResolutionError,
@@ -31,7 +32,7 @@ input:
   --settle <ms>     network-settle window applied after typing (default: 500; 1500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <typed> — the typed text, the resolved field identity (backend-node-id, role, name) and focus-click coordinates when --into was given, the measured settle (requested/waited), screenshot artifact path; --json mirrors the same fields
+  <typed> — the typed text, the resolved field identity (backend-node-id, role, name) and focus-click coordinates when --into was given, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
   dispatches a real focus click (when --into) followed by real text insertion; writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
 
@@ -69,8 +70,8 @@ export async function cmdPageType(parsed: ParsedArgs, _args: string[]): Promise<
         await typeText(live, textArg);
       }
       // Screenshot label identifies the field, never the typed content.
-      const screenshot = await deps.autoScreenshot(client, 'type', parsed.into ?? 'focused element', parsed.noScreenshot);
-      return { dispatch, screenshot } as const;
+      const screenshotResult = await capturePageInputScreenshot(client, 'type', parsed.into ?? 'focused element', parsed.noScreenshot);
+      return { dispatch, ...screenshotResult } as const;
     },
   );
 
@@ -78,7 +79,7 @@ export async function cmdPageType(parsed: ParsedArgs, _args: string[]): Promise<
     return emitResolutionError(parsed, 'page type', outcome.failure);
   }
 
-  const { dispatch, screenshot } = outcome;
+  const { dispatch, screenshot, screenshotWarning } = outcome;
   const rows: FactLine[] = [
     dispatch
       ? fact`typed "${textArg}" into ${dispatch.role ?? 'unknown'} "${dispatch.name ?? ''}" (backend:${dispatch.backendNodeId}), focus click at x=${dispatch.x} y=${dispatch.y}`
@@ -86,6 +87,7 @@ export async function cmdPageType(parsed: ParsedArgs, _args: string[]): Promise<
     fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`,
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
+  if (screenshotWarning) rows.push(fact`screenshot-warning: ${screenshotWarning}`);
 
   emitResult(
     {

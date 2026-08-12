@@ -13,6 +13,7 @@ import { resolveLiveTarget, scrollResolved, type LiveClient } from '../../../int
 import { emitResult, fact, lineList, type FactLine } from '../../../output/render.js';
 import {
   pageInputDeps,
+  capturePageInputScreenshot,
   effectiveSettle,
   emitInvalidInput,
   emitResolutionError,
@@ -26,7 +27,7 @@ input:
   --settle <ms>     network-settle window applied after the scroll (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <scrolled backend-node-id=… role=… name=…> — resolved identity, destination, the container's resulting scrollTop, the measured settle (requested/waited), screenshot artifact path; --json mirrors the same fields
+  <scrolled backend-node-id=… role=… name=…> — resolved identity, destination, the container's resulting scrollTop, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
   assigns the container's scrollTop in-page (may trigger lazy-load network); writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
 
@@ -74,8 +75,8 @@ export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promis
       // Same landmark shape `motion rec --do scroll:` records; carried by
       // the one mutating call when the transport records landmarks.
       const dispatch = await scrollResolved(live, resolved, to, { mark: `scroll:${target},to=${to}` });
-      const screenshot = await deps.autoScreenshot(client, 'scroll', target, parsed.noScreenshot);
-      return { dispatch, screenshot } as const;
+      const screenshotResult = await capturePageInputScreenshot(client, 'scroll', target, parsed.noScreenshot);
+      return { dispatch, ...screenshotResult } as const;
     },
   );
 
@@ -83,12 +84,13 @@ export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promis
     return emitResolutionError(parsed, 'page scroll', outcome.failure);
   }
 
-  const { dispatch, screenshot } = outcome;
+  const { dispatch, screenshot, screenshotWarning } = outcome;
   const rows: FactLine[] = [
     fact`scrolled ${dispatch.role ?? 'unknown'} "${dispatch.name ?? ''}" (backend:${dispatch.backendNodeId}) to ${dispatch.to} — scrollTop now ${dispatch.scrollTop}`,
     fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`,
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
+  if (screenshotWarning) rows.push(fact`screenshot-warning: ${screenshotWarning}`);
 
   emitResult(
     {

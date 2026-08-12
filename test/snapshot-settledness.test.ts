@@ -1016,6 +1016,51 @@ test('mutating collectors run only after baseline finishes and after screenshot+
   }
 });
 
+test('a baseline screenshot timeout preserves and identifies the partial snapshot instead of publishing success', async () => {
+  const dir = freshSnapDir('baseline-screenshot-timeout');
+  class ScreenshotTimeoutStub extends StubCdpClient {
+    override async send(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+      if (method === 'Page.captureScreenshot') {
+        throw new Error('CDP request timeout (5000ms): Page.captureScreenshot');
+      }
+      return super.send(method, params);
+    }
+  }
+  try {
+    let caught: unknown;
+    try {
+      await captureSnapshotSubstrate({
+        target: { client: asClient(new ScreenshotTimeoutStub('stable')) },
+        url: 'http://example.test',
+        path: dir,
+        settleTimeout: 500,
+        pollIntervalMs: 20,
+        collectors: [],
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught instanceof SnapshotCaptureTimeout);
+    assert.equal(caught.phase, 'baseline-screenshot');
+    assert.equal(caught.method, 'Page.captureScreenshot');
+    assert.equal(caught.partialPath, dir);
+    assert.equal(fs.existsSync(path.join(dir, 'meta.json')), false, 'an incomplete snapshot is never published as queryable');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'capture-timeout.json'), 'utf8')), {
+      schemaVersion: 1,
+      id: path.basename(dir),
+      status: 'timeout',
+      phase: 'baseline-screenshot',
+      method: 'Page.captureScreenshot',
+      timeoutMs: 5000,
+      partialPath: dir,
+      artifacts: [],
+      capturedAt: JSON.parse(fs.readFileSync(path.join(dir, 'capture-timeout.json'), 'utf8')).capturedAt,
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('a timed-out styles request ends the capture before another collector can share its connection', async () => {
   const dir = freshSnapDir('styles-timeout-terminal');
   const events: string[] = [];

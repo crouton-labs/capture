@@ -52,6 +52,33 @@ export function pageInputDeps(): PageInputDeps {
   return deps;
 }
 
+export interface PageInputScreenshot {
+  readonly screenshot: string | null;
+  readonly screenshotWarning: string | null;
+}
+
+/** A dispatched page action stays successful when only its follow-up screenshot times out. */
+export async function capturePageInputScreenshot(
+  client: Parameters<typeof autoScreenshot>[0],
+  action: string,
+  label: string,
+  noScreenshot?: boolean,
+): Promise<PageInputScreenshot> {
+  try {
+    return {
+      screenshot: await deps.autoScreenshot(client, action, label, noScreenshot),
+      screenshotWarning: null,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/^CDP request timeout \(\d+ms\): Page\.captureScreenshot$/.test(message)) throw error;
+    return {
+      screenshot: null,
+      screenshotWarning: `automatic screenshot timed out after the page action completed; no screenshot was saved (${message})`,
+    };
+  }
+}
+
 /**
  * The verb's settle window: `--settle <ms>` (including 0) wins outright;
  * otherwise the default is keyed off active-session presence (the in-session
@@ -147,7 +174,7 @@ input:
   --settle <ms>     network-settle window applied after the click (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <clicked backend-node-id=… role=… name=…> — resolved identity, dispatched coordinates, the measured settle (requested/waited), screenshot artifact path; --json mirrors the same fields
+  <clicked backend-node-id=… role=… name=…> — resolved identity, dispatched coordinates, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
   scrolls the target into view, then dispatches a real mouse press/release at its center; writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
 
@@ -177,8 +204,8 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
       const resolved = await resolveLiveTarget(live, target);
       if (!resolved.ok) return { failure: resolved } as const;
       const dispatch = await clickResolved(live, resolved);
-      const screenshot = await deps.autoScreenshot(client, 'click', target, parsed.noScreenshot);
-      return { dispatch, screenshot } as const;
+      const screenshotResult = await capturePageInputScreenshot(client, 'click', target, parsed.noScreenshot);
+      return { dispatch, ...screenshotResult } as const;
     },
   );
 
@@ -186,12 +213,13 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
     return emitResolutionError(parsed, 'page click', outcome.failure);
   }
 
-  const { dispatch, screenshot } = outcome;
+  const { dispatch, screenshot, screenshotWarning } = outcome;
   const rows: FactLine[] = [
     fact`clicked ${dispatch.role ?? 'unknown'} "${dispatch.name ?? ''}" (backend:${dispatch.backendNodeId}) at x=${dispatch.x} y=${dispatch.y}`,
     fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`,
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
+  if (screenshotWarning) rows.push(fact`screenshot-warning: ${screenshotWarning}`);
 
   emitResult(
     {
