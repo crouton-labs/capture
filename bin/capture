@@ -15943,6 +15943,21 @@ var init_interact = __esm({
 function pageInputDeps() {
   return deps2;
 }
+async function capturePageInputScreenshot(client, action, label2, noScreenshot) {
+  try {
+    return {
+      screenshot: await deps2.autoScreenshot(client, action, label2, noScreenshot),
+      screenshotWarning: null
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/^CDP request timeout \(\d+ms\): Page\.captureScreenshot$/.test(message)) throw error;
+    return {
+      screenshot: null,
+      screenshotWarning: `automatic screenshot timed out after the page action completed; no screenshot was saved (${message})`
+    };
+  }
+}
 function effectiveSettle(parsed, defaults) {
   if (parsed.settle !== void 0) return parsed.settle;
   return deps2.getActiveSession() !== null ? defaults.session : defaults.standalone;
@@ -16024,19 +16039,20 @@ async function cmdPageClick(parsed, _args) {
       const resolved = await resolveLiveTarget(live, target);
       if (!resolved.ok) return { failure: resolved };
       const dispatch2 = await clickResolved(live, resolved);
-      const screenshot2 = await deps2.autoScreenshot(client, "click", target, parsed.noScreenshot);
-      return { dispatch: dispatch2, screenshot: screenshot2 };
+      const screenshotResult = await capturePageInputScreenshot(client, "click", target, parsed.noScreenshot);
+      return { dispatch: dispatch2, ...screenshotResult };
     }
   );
   if ("failure" in outcome) {
     return emitResolutionError(parsed, "page click", outcome.failure);
   }
-  const { dispatch, screenshot } = outcome;
+  const { dispatch, screenshot, screenshotWarning } = outcome;
   const rows = [
     fact`clicked ${dispatch.role ?? "unknown"} "${dispatch.name ?? ""}" (backend:${dispatch.backendNodeId}) at x=${dispatch.x} y=${dispatch.y}`,
     fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
+  if (screenshotWarning) rows.push(fact`screenshot-warning: ${screenshotWarning}`);
   emitResult(
     {
       tag: "clicked",
@@ -16066,7 +16082,7 @@ input:
   --settle <ms>     network-settle window applied after the click (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <clicked backend-node-id=\u2026 role=\u2026 name=\u2026> \u2014 resolved identity, dispatched coordinates, the measured settle (requested/waited), screenshot artifact path; --json mirrors the same fields
+  <clicked backend-node-id=\u2026 role=\u2026 name=\u2026> \u2014 resolved identity, dispatched coordinates, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
   scrolls the target into view, then dispatches a real mouse press/release at its center; writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
   }
@@ -16101,19 +16117,20 @@ async function cmdPageType(parsed, _args) {
       } else {
         await typeText(live, textArg);
       }
-      const screenshot2 = await deps7.autoScreenshot(client, "type", parsed.into ?? "focused element", parsed.noScreenshot);
-      return { dispatch: dispatch2, screenshot: screenshot2 };
+      const screenshotResult = await capturePageInputScreenshot(client, "type", parsed.into ?? "focused element", parsed.noScreenshot);
+      return { dispatch: dispatch2, ...screenshotResult };
     }
   );
   if ("failure" in outcome) {
     return emitResolutionError(parsed, "page type", outcome.failure);
   }
-  const { dispatch, screenshot } = outcome;
+  const { dispatch, screenshot, screenshotWarning } = outcome;
   const rows = [
     dispatch ? fact`typed "${textArg}" into ${dispatch.role ?? "unknown"} "${dispatch.name ?? ""}" (backend:${dispatch.backendNodeId}), focus click at x=${dispatch.x} y=${dispatch.y}` : fact`typed "${textArg}" into the focused element`,
     fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
+  if (screenshotWarning) rows.push(fact`screenshot-warning: ${screenshotWarning}`);
   emitResult(
     {
       tag: "typed",
@@ -16141,7 +16158,7 @@ input:
   --settle <ms>     network-settle window applied after typing (default: 500; 1500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <typed> \u2014 the typed text, the resolved field identity (backend-node-id, role, name) and focus-click coordinates when --into was given, the measured settle (requested/waited), screenshot artifact path; --json mirrors the same fields
+  <typed> \u2014 the typed text, the resolved field identity (backend-node-id, role, name) and focus-click coordinates when --into was given, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
   dispatches a real focus click (when --into) followed by real text insertion; writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
   }
@@ -16186,19 +16203,20 @@ async function cmdPageScroll(parsed, _args) {
       const resolved = await resolveLiveTarget(live, target);
       if (!resolved.ok) return { failure: resolved };
       const dispatch2 = await scrollResolved(live, resolved, to, { mark: `scroll:${target},to=${to}` });
-      const screenshot2 = await deps7.autoScreenshot(client, "scroll", target, parsed.noScreenshot);
-      return { dispatch: dispatch2, screenshot: screenshot2 };
+      const screenshotResult = await capturePageInputScreenshot(client, "scroll", target, parsed.noScreenshot);
+      return { dispatch: dispatch2, ...screenshotResult };
     }
   );
   if ("failure" in outcome) {
     return emitResolutionError(parsed, "page scroll", outcome.failure);
   }
-  const { dispatch, screenshot } = outcome;
+  const { dispatch, screenshot, screenshotWarning } = outcome;
   const rows = [
     fact`scrolled ${dispatch.role ?? "unknown"} "${dispatch.name ?? ""}" (backend:${dispatch.backendNodeId}) to ${dispatch.to} — scrollTop now ${dispatch.scrollTop}`,
     fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
+  if (screenshotWarning) rows.push(fact`screenshot-warning: ${screenshotWarning}`);
   emitResult(
     {
       tag: "scrolled",
@@ -16229,7 +16247,7 @@ input:
   --settle <ms>     network-settle window applied after the scroll (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <scrolled backend-node-id=\u2026 role=\u2026 name=\u2026> \u2014 resolved identity, destination, the container's resulting scrollTop, the measured settle (requested/waited), screenshot artifact path; --json mirrors the same fields
+  <scrolled backend-node-id=\u2026 role=\u2026 name=\u2026> \u2014 resolved identity, destination, the container's resulting scrollTop, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
   assigns the container's scrollTop in-page (may trigger lazy-load network); writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
   }

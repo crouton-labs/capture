@@ -116,7 +116,7 @@ interface InstalledDeps {
 /** Injects the connection/session/screenshot seams around a stub client. */
 function installDeps(
   client: { send: (m: string, p?: Record<string, unknown>) => Promise<unknown> },
-  opts: { session?: boolean; screenshotPath?: string | null } = {},
+  opts: { session?: boolean; screenshotPath?: string | null; screenshotError?: Error } = {},
 ): InstalledDeps {
   const state: InstalledDeps = { settleSeen: undefined, commandSeen: undefined, shots: [], restore: () => {} };
   state.restore = __setPageInputDepsForTest({
@@ -139,6 +139,7 @@ function installDeps(
     autoScreenshot: (async (_c: unknown, action: string, label: string, noScreenshot?: boolean) => {
       state.shots.push({ action, label, noScreenshot });
       if (noScreenshot) return null;
+      if (opts.screenshotError) throw opts.screenshotError;
       return opts.screenshotPath ?? null;
     }) as never,
   });
@@ -327,6 +328,24 @@ test('page click: missing target is a structured invalid_input error', async () 
     assert.equal(exitCode, 1);
     assert.match(stdout, /<error command="page click" code="invalid_input">/);
     assert.equal(client.calls.length, 0);
+  } finally {
+    deps.restore();
+  }
+});
+
+test('page click: a timed-out follow-up screenshot warns without failing the dispatched action', async () => {
+  const client = stubClient({ ...axHandlers(), ...clickDispatchHandlers() });
+  const deps = installDeps(client, {
+    session: true,
+    screenshotError: new Error('CDP request timeout (15000ms): Page.captureScreenshot'),
+  });
+  try {
+    const { stdout, exitCode } = await runCmd(() => cmdPageClick(parsedFor(['ax:later']), []));
+    assert.equal(exitCode, undefined);
+    assert.match(stdout, /<clicked /);
+    assert.match(stdout, /screenshot-warning: automatic screenshot timed out after the page action completed; no screenshot was saved/);
+    assert.ok(!stdout.includes('screenshot: /'));
+    assert.equal(client.calls.filter((call) => call.method === 'Input.dispatchMouseEvent').length, 2);
   } finally {
     deps.restore();
   }
