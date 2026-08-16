@@ -2,12 +2,13 @@
 kind: knowledge
 when-and-why-to-read: When working in capture, this knowledge should be read because its esbuild single-bundle build and publish-on-main rules keep changes buildable and stop a hand-bumped version from colliding with CI.
 short-form: capture
-system-prompt-visibility: content
-file-read-visibility: content
 origin:
   created: 2026-07-10T17:23:49.216Z
   cwd: /Users/silasrhyneer/Code/cli/personal-apps
   node: mrf6atx6-61642ac6
+surfaces:
+  - on: boot
+    at: content
 ---
 
 # capture

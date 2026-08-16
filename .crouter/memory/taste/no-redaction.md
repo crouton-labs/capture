@@ -6,8 +6,6 @@ when-and-why-to-read: When designing or changing Capture collection, artifacts,
   security threat model the CLI does not have.
 short-form: "Capture does not redact captured browser evidence, with one
   carve-out: credential-like query values are masked where a URL is RENDERED."
-system-prompt-visibility: preview
-file-read-visibility: none
 rationale: A privacy-oriented review treated ordinary form text and
   secret-shaped identifiers as disclosure risks, but Silas explicitly rejected
   the entire redaction premise for Capture rather than merely choosing
@@ -16,6 +14,9 @@ origin:
   created: 2026-07-12T19:41:32.731Z
   cwd: /Users/silasrhyneer/Code/cli/crouter
   node: mri4g3we-48b5b151
+surfaces:
+  - on: boot
+    at: preview
 ---
 
 # Capture does not redact browser evidence

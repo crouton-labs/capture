@@ -6,8 +6,6 @@ when-and-why-to-read: When designing or reviewing any capture output surface —
   output shape decisions keep re-litigating that line.
 short-form: Capture reports measurements, never diagnoses or prescriptions;
   design general primitives, not today's failure modes.
-system-prompt-visibility: preview
-file-read-visibility: preview
 rationale: "The measure/motion design draft graded results against an --expect
   prediction and emitted coaching lines ('fix the winning rule', 'cause
   candidate: X', 'fixes ordered by blast radius'); Silas rejected the whole
@@ -16,6 +14,9 @@ origin:
   created: 2026-07-08T18:41:48.163Z
   cwd: /Users/silasrhyneer/Code/cli/crouter
   node: mrccr4ld-26b23a4a
+surfaces:
+  - on: boot
+    at: preview
 ---
 
 # Capture is a measuring stick, not a coach
