@@ -10231,7 +10231,7 @@ function validateHarAppendBatch(value, source) {
   return { entries, incompleteLifecycles };
 }
 function captureVersion() {
-  const version = "1.3.20";
+  const version = "1.3.21";
   return typeof version === "string" && version.length > 0 ? version : "development";
 }
 function token() {
@@ -11990,7 +11990,7 @@ function wallTime(value) {
   }
 }
 function captureVersion2() {
-  const version = "1.3.20";
+  const version = "1.3.21";
   return typeof version === "string" && version.length > 0 ? version : "development";
 }
 function deepFreeze(value) {
@@ -242212,7 +242212,7 @@ CDP_PORT / CDP_TARGET pin the browser + tab for orchestrators \u2014 precedence:
 explicit flag > active session > env.`;
 }
 function printVersion() {
-  const declared = "1.3.20";
+  const declared = "1.3.21";
   if (declared) {
     console.log(declared);
     return;
