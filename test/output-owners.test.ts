@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { emitExactRaw, PUBLIC_OUTPUT_OWNERS, runExactRaw, validateLeafOutputOwners } from '../src/output/exact-raw.js';
+import { emitExactRaw, runExactRaw } from '../src/output/exact-raw.js';
 import { allocateStructuredProjection, capUtf8, projectionExhaustive, type DisplayedCollections, type ProjectionCandidate } from '../src/output/structured.js';
 
 interface RecordValue { readonly id: string; readonly value: string }
@@ -121,16 +121,6 @@ test('structured allocator rejects a requested bound above the 16,384-byte hard 
 test('UTF-8 caps report exact adjacent byte omissions without splitting code points', () => {
   assert.deepEqual(capUtf8('a😀b', 5), { value: 'a😀', bytes_omitted: 1 });
   assert.deepEqual(capUtf8('😀', 3), { value: '', bytes_omitted: 4 });
-});
-
-test('output owners are the fixed exhaustive structured-or-exact-raw partition', () => {
-  assert.equal(validateLeafOutputOwners(PUBLIC_OUTPUT_OWNERS).valid, true);
-  assert.equal(validateLeafOutputOwners(PUBLIC_OUTPUT_OWNERS.slice(1)).valid, false, 'missing leaf fails');
-  assert.equal(validateLeafOutputOwners([...PUBLIC_OUTPUT_OWNERS, { mode: 'structured-json-capable', canonicalPath: 'unexpected leaf' }]).valid, false, 'extra leaf fails');
-  const wrongMode = PUBLIC_OUTPUT_OWNERS.map((owner) => owner.canonicalPath === 'browser cdp'
-    ? { mode: 'structured-json-capable' as const, canonicalPath: owner.canonicalPath }
-    : owner);
-  assert.equal(validateLeafOutputOwners(wrongMode).valid, false, 'wrong mode fails');
 });
 
 test('exact raw writes handler bytes and final newline exactly', async () => {

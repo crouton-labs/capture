@@ -6,7 +6,6 @@
  */
 export * from './primitives.js';
 export * from './results.js';
-export * from './routes.js';
 export * from './snapshot.js';
 export * from './neutral.js';
 export * from './a11y.js';
