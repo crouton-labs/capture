@@ -5703,12 +5703,14 @@ var init_browser_process = __esm({
 // src/cdp/targets.ts
 var targets_exports = {};
 __export(targets_exports, {
+  AmbiguousPageTargetError: () => AmbiguousPageTargetError,
   closeTarget: () => closeTarget,
   findTab: () => findTab,
   findTabById: () => findTabById,
   findTabByIdAcrossEndpoints: () => findTabByIdAcrossEndpoints,
   findTabByIdInPorts: () => findTabByIdInPorts,
   findTabByUrlAcrossEndpoints: () => findTabByUrlAcrossEndpoints,
+  findUnambiguousPageTabInPorts: () => findUnambiguousPageTabInPorts,
   getBrowserClient: () => getBrowserClient,
   listTargets: () => listTargets,
   openTab: () => openTab,
@@ -5784,6 +5786,17 @@ async function findTabByIdInPorts(targetId, ports, finder = findTabById) {
     }
   }
   return null;
+}
+async function findUnambiguousPageTabInPorts(ports, lister = listTargets) {
+  const candidates = [];
+  for (const port of ports) {
+    try {
+      for (const tab of await lister(port)) if (tab.type === "page") candidates.push({ port, tab });
+    } catch {
+    }
+  }
+  if (candidates.length > 1) throw new AmbiguousPageTargetError(candidates);
+  return candidates[0] ?? null;
 }
 function normalizeUrlForMatch(value) {
   try {
@@ -5883,11 +5896,20 @@ async function openTab(port, url) {
     client.close();
   }
 }
+var AmbiguousPageTargetError;
 var init_targets = __esm({
   "src/cdp/targets.ts"() {
     init_client();
     init_detect();
     init_browser_process();
+    AmbiguousPageTargetError = class extends Error {
+      constructor(candidates) {
+        super(`More than one page tab is available:
+${candidates.map(({ port, tab }) => `  ${tab.id.slice(0, 8)}  port ${port}  ${tab.url}`).join("\n")}
+Use --target <tabId> or --url <pattern> to target a tab.`);
+        this.name = "AmbiguousPageTargetError";
+      }
+    };
   }
 });
 
@@ -15473,8 +15495,10 @@ function getPortFromWebSocketDebuggerUrl(url) {
     return null;
   }
 }
-function defaultResolveTab(parsed) {
-  return parsed.target ? findTabByIdAcrossEndpoints(parsed.target, parsed.port) : findTabByUrlAcrossEndpoints(parsed.url, parsed.port);
+async function defaultResolveTab(parsed) {
+  if (parsed.target) return findTabByIdAcrossEndpoints(parsed.target, parsed.port);
+  if (parsed.url) return findTabByUrlAcrossEndpoints(parsed.url, parsed.port);
+  return findUnambiguousPageTabInPorts(parsed.port === void 0 ? (await detectCdpPortsAsync()).map((endpoint) => endpoint.port) : [parsed.port]);
 }
 async function applyActiveSessionNetworkConditions(client, session, targetId) {
   if (!session || session.targetId !== targetId || session.networkOffline === void 0) return;
@@ -15544,17 +15568,22 @@ async function connectForCommand(parsed) {
     await applyActiveSessionNetworkConditions(routed.client, activeSession, routed.tab.id);
     return routed;
   }
-  if (!parsed.target && !parsed.url) {
-    throw invalidInput('Use --target <tabId> or --url <pattern> to target a tab. Run "capture tab list" to see available tabs.', "missing_target");
+  let resolved;
+  try {
+    resolved = await seams.resolveTab(parsed);
+  } catch (error) {
+    if (error instanceof AmbiguousPageTargetError) {
+      throw captureError("precondition", "target_unavailable", error.message, error);
+    }
+    throw error;
   }
-  const resolved = await seams.resolveTab(parsed);
   const tab = resolved?.tab ?? null;
   if (!tab) {
     const query = parsed.target ?? parsed.url;
     throw captureError(
       "precondition",
       "target_unavailable",
-      `No tab found for ${parsed.target ? "target" : "URL pattern"} "${query}". Run "capture tab list" to see available tabs.`
+      query === void 0 ? 'No page tab found. Run "capture tab list" to see available tabs.' : `No tab found for ${parsed.target ? "target" : "URL pattern"} "${query}". Run "capture tab list" to see available tabs.`
     );
   }
   if (!tab.webSocketDebuggerUrl) {
@@ -15680,6 +15709,7 @@ var init_connection = __esm({
     fs11 = __toESM(require("fs"));
     import_node_perf_hooks = require("node:perf_hooks");
     init_client();
+    init_detect();
     init_targets();
     init_console_recorder();
     init_har_recorder();
@@ -237498,7 +237528,7 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
       }));
     }, { settle: 0 });
     if (!snapDir) throw new Error("measure snap did not allocate an artifact directory");
-    return { id: snapId, dir: snapDir, artifacts, ...base ? { base } : {} };
+    return { id: snapId, dir: snapDir, queryRef: active ? snapId : snapDir, artifacts, ...base ? { base } : {} };
   } catch (err) {
     if (allocatedRoot && !(err instanceof SnapshotCaptureTimeout)) removeArtifactTree(allocatedRoot);
     throw err;
@@ -237536,7 +237566,7 @@ function buildSnapshotResult(captured) {
     // the remaining substrate as a whole page would be reading a hole.
     ...incomplete.length || stateMeasurement ? { sections: [...incomplete.length ? [collectorNote(incomplete)] : [], ...stateMeasurement ? [stateMeasurement] : []] } : {},
     artifacts: formatArtifactList(artifacts),
-    followUp: meta.settled || capturedFullSubstrate ? fact`Query snapshot ${captured.id} with \`capture measure check ${captured.id}\`, \`capture measure census --snap ${captured.id} --axis color\`, or \`capture measure map focus ${captured.id}\`.` : fact`Re-run with \`--freeze-animations\`, a longer \`--settle-timeout\`, or \`--capture-unsettled\` to choose a queryable capture.`
+    followUp: meta.settled || capturedFullSubstrate ? fact`Query snapshot ${captured.id} with \`capture measure check ${captured.queryRef}\`, \`capture measure census --snap ${captured.queryRef} --axis color\`, or \`capture measure map focus ${captured.queryRef}\`.` : fact`Re-run with \`--freeze-animations\`, a longer \`--settle-timeout\`, or \`--capture-unsettled\` to choose a queryable capture.`
   };
 }
 function safeErrorDetail(value) {
