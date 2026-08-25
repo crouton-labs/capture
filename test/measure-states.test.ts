@@ -40,6 +40,9 @@ interface FixtureElement {
   forcedRect?: Rect;
   baseStyle: Record<string, string>;
   hoverStyle?: Record<string, string>;
+  /** Child fixtures can model group-hover styling driven by their forced parent. */
+  hoverStyleWhenParentForced?: Record<string, string>;
+  children?: FixtureElement[];
   focusStyle?: Record<string, string>;
   activeStyle?: Record<string, string>;
   checkedStyle?: Record<string, string>;
@@ -82,7 +85,8 @@ class StubCdpClient {
   private readonly radioMarkerToNodeId = new Map<string, number>();
 
   constructor(elements: FixtureElement[], selectorMap: Record<string, number[]>) {
-    for (const el of elements) this.nodesById.set(el.nodeId, el);
+    const add = (el: FixtureElement) => { this.nodesById.set(el.nodeId, el); for (const child of el.children ?? []) add(child); };
+    for (const el of elements) add(el);
     for (const [selector, nodeIds] of Object.entries(selectorMap)) this.selectorToNodeIds.set(selector, nodeIds);
   }
 
@@ -105,11 +109,25 @@ class StubCdpClient {
     if (method === 'DOM.describeNode') {
       const nodeId = (params as { nodeId: number }).nodeId;
       const el = this.nodesById.get(nodeId);
-      if (el?.identityFails) {
-        return { node: { nodeName: el?.nodeName ?? 'DIV', attributes: el?.attributes ?? [] } };
-      }
-      return { node: { nodeName: el?.nodeName ?? 'DIV', backendNodeId: nodeId * 100, attributes: el?.attributes ?? [] } };
+      const nodeFor = (value: FixtureElement | undefined): Record<string, unknown> => ({ nodeId: value?.nodeId, nodeType: 1, nodeName: value?.nodeName ?? 'DIV', ...(value?.identityFails ? {} : { backendNodeId: (value?.nodeId ?? nodeId) * 100 }), attributes: value?.attributes ?? [], ...(value?.children?.length ? { children: value.children.map((child) => nodeFor(child)) } : {}) });
+      return { node: nodeFor(el) };
     }
+
+    if (method === 'DOM.resolveNode') {
+      const backendNodeId = (params as { backendNodeId?: number }).backendNodeId;
+      const nodeId = backendNodeId === undefined ? (params as { nodeId?: number }).nodeId : backendNodeId / 100;
+      return { object: nodeId === undefined ? undefined : { objectId: `node-${nodeId}` } };
+    }
+
+    if (method === 'Runtime.callFunctionOn') {
+      const objectId = String((params as { objectId?: unknown }).objectId ?? '');
+      const nodeId = Number(objectId.replace('node-', ''));
+      const declaration = String((params as { functionDeclaration?: unknown }).functionDeclaration ?? '');
+      if (declaration.includes('__captureStateNodeFacts')) return { result: { value: this.computeFacts(this.nodesById.get(nodeId)!, nodeId) } };
+      return { result: {} };
+    }
+
+    if (method === 'Runtime.releaseObject') return {};
 
     if (method === 'CSS.forcePseudoState') {
       const nodeId = (params as { nodeId: number }).nodeId;
@@ -302,6 +320,7 @@ class StubCdpClient {
     const forced = this.forcedPseudo.get(nodeId) ?? new Set<string>();
     const style: Record<string, string> = { ...el.baseStyle };
     if (forced.has('hover') && el.hoverStyle) Object.assign(style, el.hoverStyle);
+    if ([...this.forcedPseudo.values()].some((classes) => classes.has('hover')) && el.hoverStyleWhenParentForced) Object.assign(style, el.hoverStyleWhenParentForced);
     if (forced.has('focus') && el.focusStyle) Object.assign(style, el.focusStyle);
     if (forced.has('active') && el.activeStyle) Object.assign(style, el.activeStyle);
     if (el.checked && el.checkedStyle) Object.assign(style, el.checkedStyle);
@@ -386,6 +405,7 @@ interface StatesElementJson {
   geometry?: { before: Rect; after: Rect; delta: { dx: number; dy: number; dwidth: number; dheight: number }; changed: boolean };
   style?: { changed: string[]; before: Record<string, string>; after: Record<string, string> };
   hittest?: { before: HitFacts; after: HitFacts; changed: boolean };
+  affected?: { elements?: Array<{ relation: string; selector?: string; backendNodeId: number | null; geometry?: { before: Rect }; style?: { before: Record<string, string>; after: Record<string, string> } }> };
   factsUnavailable?: true;
   factsUnavailableReason?: string;
 }
@@ -831,7 +851,7 @@ test('hover:selector records a real style delta and restores the forced pseudo-c
 
     const json = readStatesJson(dir);
     assert.equal(json.elements.length, 1);
-    assert.deepEqual(json.scope, { root: 'top-document', shadowDom: 'light-only' });
+    assert.deepEqual(json.scope, { root: 'top-document', shadowDom: 'light-only', affected: { descendants: true, peerSiblings: 'following-sibling-subtrees', maxElements: 100 } });
     const el = json.elements[0];
     assert.equal(el.state, 'hover');
     assert.equal(el.supported, true);
@@ -846,6 +866,25 @@ test('hover:selector records a real style delta and restores the forced pseudo-c
     assert.equal(forceCalls.length, 2, 'forces once, restores once');
     assert.deepEqual(forceCalls[0].params, { nodeId: 10, forcedPseudoClasses: ['hover'] });
     assert.deepEqual(forceCalls[1].params, { nodeId: 10, forcedPseudoClasses: [] });
+  } finally {
+    removeArtifactTree(dir);
+  }
+});
+
+test('hover records target descendants with identity, border rect, and ring styles', async () => {
+  const dir = makeSnapDir('hover-descendant');
+  try {
+    const badge: FixtureElement = { nodeId: 110, nodeName: 'SPAN', attributes: ['class', 'badge'], rect: { x: 10, y: 10, width: 80, height: 30 }, baseStyle: { 'box-shadow': 'rgba(229,229,229,0) 0px 0px 0px 0px', 'outline-width': '0px', 'outline-style': 'none', 'outline-offset': '0px', filter: 'none' }, hoverStyleWhenParentForced: { 'box-shadow': 'rgba(229,229,229,0.2) 0px 0px 0px 2px' }, hit: { isTarget: true, topTag: 'SPAN' } };
+    const parent: FixtureElement = { ...BUTTON, nodeId: 109, children: [badge] };
+    const client = new StubCdpClient([parent], { 'button.send-btn': [109] });
+    await collectStates(makeCtx(dir, asClient(client), ['hover:button.send-btn']));
+    const affected = readStatesJson(dir).elements[0].affected?.elements ?? [];
+    const child = affected.find((element) => element.relation === 'descendant');
+    assert.equal(child?.selector, 'span.badge');
+    assert.equal(child?.backendNodeId, 11000);
+    assert.deepEqual(child?.geometry?.before, badge.rect);
+    assert.equal(child?.style?.before['box-shadow'], 'rgba(229,229,229,0) 0px 0px 0px 0px');
+    assert.equal(child?.style?.after['box-shadow'], 'rgba(229,229,229,0.2) 0px 0px 0px 2px');
   } finally {
     removeArtifactTree(dir);
   }

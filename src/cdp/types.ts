@@ -78,6 +78,21 @@ export interface ParsedArgs {
   pixels?: boolean;
   /** `snap --state <state[:selector]>` — repeatable; one entry per occurrence. */
   state?: string[];
+  /** `snap --state-padding <px>` — CSS-px padding around the state target when
+   * cropping its rendered/diff artifact. */
+  statePadding?: number;
+  /** `snap --list-crops` — print every crop path instead of the count and dir. */
+  listCrops?: boolean;
+  /** `shot --crop <x,y,w,h>` — crop region in CSS px; composite grammar is
+   * validated by the owning leaf, which documents it. */
+  crop?: string;
+  /** `shot --crop-selector <selector>` — crop to this element's live box. */
+  cropSelector?: string;
+  /** `shot --pad <px>` — CSS-px padding added around a resolved crop rect. */
+  pad?: number;
+  /** `shot --zoom <factor>` — scale multiplier for the captured crop;
+   * fractional grammar is validated by the owning leaf, which documents it. */
+  zoom?: string;
   /** `check --for <list>` — comma-separated check names or categories. */
   for?: string;
   /** `diff --before <snap>` */

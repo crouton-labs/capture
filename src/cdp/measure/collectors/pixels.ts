@@ -272,6 +272,7 @@ export const collectPixels: Collector = async (ctx) => {
     ctx.write.json('pixels.json', {
       scope: PIXELS_SCOPE,
       elements: [],
+      cropsByBackend: {},
       backgroundOverrideRestored,
       captureFailed: true,
       elementsTotal: 0,
@@ -311,6 +312,10 @@ export const collectPixels: Collector = async (ctx) => {
   const described = await Promise.all(nodeIds.map((nodeId) => describeElementForCrop(client, nodeId)));
 
   const elements: PixelElementRecord[] = [];
+  // Direct lookup from a live/snapshot backend id to its existing crop path.
+  // The element rows remain the authoritative complete records; this map
+  // removes filename-search arithmetic for the common `backend:<id>` lookup.
+  const cropsByBackend: Record<string, string> = {};
   let index = 0;
   let elementsSkipped = 0;
   let elementsReadFailed = 0;
@@ -361,6 +366,7 @@ export const collectPixels: Collector = async (ctx) => {
     const cropFilename = `crops/${cropFileBase(index, entry)}.png`;
     ctx.write.binary(cropFilename, encodePng(applyMaskTransparent(normalCrop, mask)));
 
+    const crop = `${ctx.snapId}/${cropFilename}`;
     elements.push({
       id: `px-${index}`,
       backendNodeId: entry.backendNodeId,
@@ -372,7 +378,7 @@ export const collectPixels: Collector = async (ctx) => {
       ...(entry.clipInfo.unavailable
         ? { ancestorClipUnavailable: true as const, ancestorClipUnavailableReason: entry.clipInfo.unavailableReason }
         : {}),
-      crop: `${ctx.snapId}/${cropFilename}`,
+      crop,
       maskedPixelFraction: round3(mask.count / (pixelRect.width * pixelRect.height)),
       hash: averageHash(normalCrop, mask),
       avgColor: averageColor(normalCrop, mask),
@@ -381,12 +387,14 @@ export const collectPixels: Collector = async (ctx) => {
       alphaFraction: alphaFraction(transparentCrop, mask),
       visiblePixelFraction: visiblePixelFraction(transparentCrop, mask),
     });
+    if (entry.backendNodeId !== null) cropsByBackend[String(entry.backendNodeId)] = crop;
     index += 1;
   }
 
   ctx.write.json('pixels.json', {
     scope: PIXELS_SCOPE,
     elements,
+    cropsByBackend,
     backgroundOverrideRestored,
     captureFailed: false,
     elementsTotal,

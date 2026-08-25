@@ -284,6 +284,7 @@ function buildGeometryWalkScript(maxElements: number): string {
           idx: idx,
           tag: tag.toLowerCase(),
           selector: __selectorOf(el),
+          attributes: Array.prototype.map.call(el.attributes, function (attr) { return [attr.name, attr.value]; }),
           domPath: __domPathOf(el),
           text: directText(el),
           frame: { frameId: frameId, isTopFrame: isTop, ancestorFrameIds: ancestorFrameIds.slice() },
@@ -292,6 +293,16 @@ function buildGeometryWalkScript(maxElements: number): string {
           stackingContext: { creates: reasons.length > 0, reasons: reasons },
           visibility: { visible: visible, opacity: opacity, displayNone: displayNone, visibilityHidden: visibilityHidden, zeroSize: zeroSize },
           clipping: clippingInfo(el, rect),
+          paint: {
+            'box-shadow': style.boxShadow,
+            'outline-width': style.outlineWidth,
+            'outline-style': style.outlineStyle,
+            'outline-offset': style.outlineOffset,
+            filter: style.filter,
+            transform: style.transform,
+            'clip-path': style.clipPath,
+            'border-radius': style.borderRadius,
+          },
           layout: {
             boxSizing: style.boxSizing,
             position: style.position,
@@ -342,14 +353,11 @@ function buildGeometryWalkScript(maxElements: number): string {
           pushedFact.iframeContentUnavailable = true;
           pushedFact.iframeContentUnavailableReason = 'content-document-read-threw';
         }
-        if (innerDoc && innerDoc.body) {
+        if (innerDoc && innerDoc.documentElement) {
           frameCounter += 1;
           var childFrameId = 'frame-' + frameCounter;
           var childAncestors = ancestorFrameIds.concat([frameId]);
-          var innerKids = innerDoc.body.children;
-          for (var ii = 0; ii < innerKids.length; ii++) {
-            walk(innerKids[ii], childFrameId, false, childAncestors, null);
-          }
+          walk(innerDoc.documentElement, childFrameId, false, childAncestors, null);
         }
         return;
       }
@@ -360,10 +368,7 @@ function buildGeometryWalkScript(maxElements: number): string {
       }
     }
 
-    var bodyKids = document.body ? document.body.children : [];
-    for (var bi = 0; bi < bodyKids.length; bi++) {
-      walk(bodyKids[bi], 'frame-0', true, [], null);
-    }
+    if (document.documentElement) walk(document.documentElement, 'frame-0', true, [], null);
 
     return { facts: facts, elements: elements, meta: { elementsTruncated: elementsOverflowCount } };
   })()`;
@@ -569,6 +574,17 @@ interface RawGridFact {
   };
 }
 
+interface RawPaintFact {
+  readonly 'box-shadow': string;
+  readonly 'outline-width': string;
+  readonly 'outline-style': string;
+  readonly 'outline-offset': string;
+  readonly filter: string;
+  readonly transform: string;
+  readonly 'clip-path': string;
+  readonly 'border-radius': string;
+}
+
 interface RawLayoutFact {
   readonly boxSizing: string;
   readonly position: string;
@@ -609,6 +625,7 @@ interface RawGeometryFact {
   readonly idx: number;
   readonly tag: string;
   readonly selector?: string;
+  readonly attributes?: readonly (readonly [string, string])[];
   readonly domPath: string;
   readonly text?: string;
   readonly frame: RawFrameFact;
@@ -617,6 +634,8 @@ interface RawGeometryFact {
   readonly stackingContext: RawStackingContextFact;
   readonly visibility: RawVisibilityFact;
   readonly clipping: RawClippingFact | null;
+  /** Ink-relevant computed styles retained here rather than styles.json so every retained geometry element is queryable, including shadow/iframe records and records beyond styles.json's 150-element cap. */
+  readonly paint: RawPaintFact;
   readonly layout: RawLayoutFact;
   /** Present only on an `<iframe>` element's own fact when its `contentDocument` read threw (G6) -- see {@link GeometryElementRecord.iframeContentUnavailable}. */
   readonly iframeContentUnavailable?: boolean;
@@ -639,6 +658,10 @@ export interface GeometryBoxModel {
 export interface GeometryElementRecord extends Omit<ElementRecord, 'backendNodeId'> {
   readonly id: string;
   readonly tag: string;
+  /** The element's own HTML attributes, capped by {@link capAttributes}. */
+  readonly attributes: Readonly<Record<string, string>>;
+  /** Number of own attributes omitted by the per-element cap, when nonzero. */
+  readonly attributesTruncated?: number;
   readonly domPath: string;
   readonly frame: RawFrameFact;
   readonly shadow: RawShadowFact | null;
@@ -649,6 +672,8 @@ export interface GeometryElementRecord extends Omit<ElementRecord, 'backendNodeI
   readonly stackingContext: RawStackingContextFact;
   readonly visibility: RawVisibilityFact;
   readonly clipping: RawClippingFact | null;
+  /** Uncapped, per-geometry-record computed styles used for ink extents and clip-source description. Absent in snapshots captured before ink evidence existed. */
+  readonly paint?: RawPaintFact;
   readonly layout: LayoutFact;
   /** `null` (never an omitted key) when this record's identity did not resolve — see {@link identityUnresolved}. */
   readonly backendNodeId: number | null;
@@ -723,8 +748,23 @@ function resolvedIdentity(backendNodeId: number | undefined): { backendNodeId: n
 
 /** Cap for ordinary computed-CSS-value strings (position/display/min-max sizes/flex+grid provenance). */
 const CSS_VALUE_MAX = 200;
+/** Cap on how many HTML attributes are retained for one geometry element. */
+const MAX_ATTRIBUTES = 32;
+/** Cap on attribute names; values use the ordinary CSS/page-string cap. */
+const ATTRIBUTE_NAME_MAX = 100;
 /** Cap on how many grid template-track strings are kept per axis. */
 const MAX_GRID_TRACKS = 64;
+
+function capAttributes(attributes: readonly (readonly [string, string])[]): { readonly values: Readonly<Record<string, string>>; readonly truncated: number } {
+  const capped = capArray(attributes, MAX_ATTRIBUTES);
+  return {
+    values: Object.fromEntries(capped.items.map(([name, value]) => [
+      sanitizeString(name, { max: ATTRIBUTE_NAME_MAX }),
+      sanitizeString(value, { max: CSS_VALUE_MAX }),
+    ])),
+    truncated: capped.truncated,
+  };
+}
 
 function capTrackList(values: readonly string[]): { items: string[]; truncated: number } {
   const { items, truncated } = capArray(values, MAX_GRID_TRACKS);
@@ -976,6 +1016,7 @@ export const collectGeometry: Collector = async (ctx) => {
           }
 
           const geometryUnavailable = geometryUnavailableReason !== undefined;
+          const capturedAttributes = capAttributes(fact.attributes ?? []);
           const rect = quads.length > 0 ? unionRect(quads) : { x: 0, y: 0, width: 0, height: 0 };
           // Only a REAL (non-throwing) quads read can strengthen zeroSize/visible
           // beyond the JS-side facts -- when the quads read itself never proved
@@ -988,6 +1029,8 @@ export const collectGeometry: Collector = async (ctx) => {
             id: `el-${fact.idx}`,
             tag: sanitizeString(fact.tag, { max: 64 }),
             selector: fact.selector !== undefined ? sanitizeString(fact.selector, { max: 300 }) : undefined,
+            attributes: capturedAttributes.values,
+            ...(capturedAttributes.truncated ? { attributesTruncated: capturedAttributes.truncated } : {}),
             domPath: sanitizeString(fact.domPath, { max: 500 }),
             ...resolvedIdentity(backendNodeId),
             text: fact.text !== undefined ? sanitizeString(fact.text, { max: 200 }) : undefined,
@@ -1012,6 +1055,20 @@ export const collectGeometry: Collector = async (ctx) => {
                   clippedFraction: fact.clipping.clippedFraction,
                 }
               : null,
+            ...(fact.paint
+              ? {
+                  paint: {
+                    'box-shadow': sanitizeString(fact.paint['box-shadow']),
+                    'outline-width': sanitizeString(fact.paint['outline-width']),
+                    'outline-style': sanitizeString(fact.paint['outline-style']),
+                    'outline-offset': sanitizeString(fact.paint['outline-offset']),
+                    filter: sanitizeString(fact.paint.filter),
+                    transform: sanitizeString(fact.paint.transform),
+                    'clip-path': sanitizeString(fact.paint['clip-path']),
+                    'border-radius': sanitizeString(fact.paint['border-radius']),
+                  },
+                }
+              : {}),
             layout: capLayoutFact(fact.layout),
             ...(geometryUnavailable ? { geometryUnavailable: true as const, geometryUnavailableReason } : {}),
             ...(fact.iframeContentUnavailable

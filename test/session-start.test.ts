@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { CDPClient } from '../src/cdp/client.js';
+import { parseCliSyntax, resolveCliContext, validateCliInvocation } from '../src/cdp/args.js';
 import { __setSessionStartWorld, sessionMain, waitForPageLoad } from '../src/session/commands.js';
 import { getActiveSession, clearActiveSession } from '../src/session-context.js';
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
@@ -153,6 +154,105 @@ test('session start --json mirrors the <session> result as JSON', async () => {
   }
 });
 
+test('session start --target adopts the resolved tab and records its canonical id and endpoint', async () => {
+  const out = captureStdout();
+  let id: string | undefined;
+  let dir: string | undefined;
+  __setSessionStartWorld({
+    async findTabById(port, targetId) {
+      assert.equal(port, 9333);
+      assert.equal(targetId, 'ABCD');
+      return { id: 'ABCDEF012345', title: 'Existing tab', url: 'https://example.test/adopted', type: 'page' };
+    },
+  });
+  try {
+    await sessionMain(sessionArgs(['start'], { target: 'ABCD', port: 9333 }), []);
+    const active = getActiveSession();
+    assert.ok(active, 'an adopted session should be active');
+    id = active.sessionId;
+    dir = active.dir;
+    assert.equal(active.targetId, 'ABCDEF012345');
+    assert.equal(active.port, 9333);
+    assert.equal(active.url, 'https://example.test/adopted');
+    const text = out.logs.join('');
+    assert.match(text, /target="ABCDEF012345"/);
+    assert.match(text, /port="9333"/);
+    assert.match(text, /tab ABCDEF012345 adopted at https:\/\/example\.test\/adopted/);
+  } finally {
+    __setSessionStartWorld();
+    out.restore();
+    if (id) await stopSilently(id);
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    clearActiveSession();
+  }
+});
+
+test('session start rejects an unresolved --target and rolls back its acquired session', async () => {
+  const before = fs.existsSync(CAPTURE_ROOT) ? new Set(fs.readdirSync(CAPTURE_ROOT)) : new Set<string>();
+  const out = captureStdout();
+  const originalExitCode = process.exitCode;
+  process.exitCode = undefined;
+  __setSessionStartWorld({ findTabById: async () => null });
+  try {
+    await sessionMain(sessionArgs(['start'], { target: 'MISSING', port: 9333 }), []);
+    const text = out.logs.join('');
+    assert.match(text, /code="start_failed"/);
+    assert.match(text, /No tab found for target "MISSING" on port 9333/);
+    assert.equal(process.exitCode, 1);
+    assert.equal(getActiveSession(), null);
+    const after = fs.existsSync(CAPTURE_ROOT) ? new Set(fs.readdirSync(CAPTURE_ROOT)) : new Set<string>();
+    assert.deepEqual(after, before, 'an unresolved target must not leave a session directory or HAR');
+  } finally {
+    __setSessionStartWorld();
+    out.restore();
+    process.exitCode = originalExitCode;
+    clearActiveSession();
+  }
+});
+
+test('session start rejects a non-page target and rolls back its acquired session', async () => {
+  const before = fs.existsSync(CAPTURE_ROOT) ? new Set(fs.readdirSync(CAPTURE_ROOT)) : new Set<string>();
+  const out = captureStdout();
+  const originalExitCode = process.exitCode;
+  process.exitCode = undefined;
+  __setSessionStartWorld({
+    findTabById: async () => ({ id: 'WORKER', title: 'worker', url: 'https://example.test/worker', type: 'service_worker' }),
+  });
+  try {
+    await sessionMain(sessionArgs(['start'], { target: 'WORKER', port: 9333 }), []);
+    const text = out.logs.join('');
+    assert.match(text, /Target "WORKER" on port 9333 is service_worker, not a page tab/);
+    assert.equal(process.exitCode, 1);
+    assert.equal(getActiveSession(), null);
+    const after = fs.existsSync(CAPTURE_ROOT) ? new Set(fs.readdirSync(CAPTURE_ROOT)) : new Set<string>();
+    assert.deepEqual(after, before, 'a non-page target must not leave a session directory or HAR');
+  } finally {
+    __setSessionStartWorld();
+    out.restore();
+    process.exitCode = originalExitCode;
+    clearActiveSession();
+  }
+});
+
+test('session start rejects --url with --target before endpoint resolution', () => {
+  assert.throws(
+    () => validateCliInvocation(parseCliSyntax(['session', 'start', '--url', 'https://example.test/', '--target', 'ABCD'])),
+    /session start cannot combine --url and --target/,
+  );
+});
+
+test('session start does not adopt CDP_TARGET without an explicit --target', () => {
+  const previous = process.env.CDP_TARGET;
+  process.env.CDP_TARGET = 'AMBIENT';
+  try {
+    const parsed = resolveCliContext(parseCliSyntax(['session', 'start']));
+    assert.equal(parsed.target, undefined);
+  } finally {
+    if (previous === undefined) delete process.env.CDP_TARGET;
+    else process.env.CDP_TARGET = previous;
+  }
+});
+
 test('simultaneous session starts publish exactly one live session', async () => {
   clearActiveSession();
   process.exitCode = 0;
@@ -228,7 +328,7 @@ test('session start failure emits start_failed, sets exitCode 1, and leaves no s
   assert.equal(getActiveSession(), null);
 });
 
-test('session start explains the held existing-tab workflow when Target.createTarget is unsupported', async () => {
+test('session start directs unsupported Target.createTarget endpoints to --target adoption', async () => {
   const out = captureStdout();
   __setSessionStartWorld({
     createHar: async () => 'fake-har',
@@ -245,9 +345,8 @@ test('session start explains the held existing-tab workflow when Target.createTa
   const text = out.logs.join('');
   assert.match(text, /Target\.createTarget/);
   assert.match(text, /Target\.createTarget is unsupported on port 9333/);
-  assert.match(text, /capture page navigate &lt;url&gt; --target &lt;target-id&gt; --port 9333/);
-  assert.match(text, /capture session start --hold --port 9333/);
-  assert.match(text, /capture tab list/);
+  assert.match(text, /capture tab list --port 9333/);
+  assert.match(text, /capture session start --target &lt;target-id&gt; --port 9333/);
   assert.equal(getActiveSession(), null);
   process.exitCode = 0;
 });

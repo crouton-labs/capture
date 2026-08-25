@@ -18,11 +18,15 @@ import {
 } from '../../output/artifact.js';
 import { parseSelectorInput, resolveSelectorInput, type ElementRecord, type SelectorInputKind } from '../../output/selector.js';
 import { fact, line, text, type FactLine } from '../../output/render.js';
+import { deriveInkBox, type InkEdges, type InkRect } from './ink.js';
+import { baseInkSource, forcedStateInkSource, isInkSource, quadRect } from './ink-source.js';
 
 export interface ExplainDetailOptions {
   readonly size?: boolean;
   readonly text?: boolean;
   readonly form?: boolean;
+  /** One requested post-force state recorded by `measure snap --state`. */
+  readonly state?: string;
 }
 
 interface ArtifactElement extends ElementRecord {
@@ -47,6 +51,8 @@ interface GeometryElement extends ArtifactElement {
   readonly boxModel?: Record<string, unknown> | null;
   readonly stackingContext?: { readonly creates?: boolean; readonly reasons?: readonly string[] };
   readonly clipping?: { readonly clippedBy?: string; readonly clippedFraction?: number } | null;
+  /** Present on snapshots that recorded uncapped ink-relevant computed styles with geometry. */
+  readonly paint?: Record<string, string | null>;
   readonly visibility?: { readonly visible?: boolean; readonly opacity?: number };
   readonly layout?: Record<string, unknown>;
 }
@@ -97,6 +103,8 @@ export interface ExplainSuccess {
 export interface MissingSelectorRecovery {
   readonly recordCount: number;
   readonly kind: SelectorInputKind;
+  /** Present when a CSS attribute/quoted value was ranked as AX/text evidence before generated CSS paths. */
+  readonly interpretedValue?: string;
   readonly candidates: readonly string[];
 }
 
@@ -177,6 +185,21 @@ function selectorIdentifierDistance(requested: string, candidate: string): numbe
   return requestedTokens.reduce((total, token) => total + Math.min(...candidateTokens.map((other) => editDistance(token, other) / Math.max(token.length, other.length))), 0);
 }
 
+function quotedSelectorValue(value: string): string | undefined {
+  const attribute = /\[[^\]]*?=\s*(?:"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|([^\]\s]+))\]/.exec(value);
+  const quoted = attribute?.[1] ?? attribute?.[2] ?? attribute?.[3] ?? /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'/.exec(value)?.slice(1).find(Boolean);
+  return quoted?.replace(/\\(.)/g, '$1');
+}
+
+function rankCandidates(candidates: string[], requested: string, valueOf: (candidate: string) => string): string[] {
+  return candidates.sort((a, b) => {
+    const aValue = valueOf(a).toLowerCase(), bValue = valueOf(b).toLowerCase();
+    const aIdentifierDistance = selectorIdentifierDistance(requested, aValue), bIdentifierDistance = selectorIdentifierDistance(requested, bValue);
+    const aDistance = editDistance(requested.toLowerCase(), aValue), bDistance = editDistance(requested.toLowerCase(), bValue);
+    return aIdentifierDistance - bIdentifierDistance || aDistance - bDistance || a.length - b.length || a.localeCompare(b);
+  });
+}
+
 function recoveryForms(elements: readonly ElementRecord[], requested: string): MissingSelectorRecovery {
   const input = parseSelectorInput(requested);
   const formFor = (element: ElementRecord): string | undefined => {
@@ -189,14 +212,17 @@ function recoveryForms(elements: readonly ElementRecord[], requested: string): M
     }
   };
   const valueOf = (candidate: string) => input.kind === 'css' ? candidate : candidate.slice(candidate.indexOf(':') + 1);
-  const candidates = [...new Set(elements.map(formFor).filter((candidate): candidate is string => Boolean(candidate)))];
-  candidates.sort((a, b) => {
-    const aValue = valueOf(a).toLowerCase(), bValue = valueOf(b).toLowerCase();
-    const aIdentifierDistance = selectorIdentifierDistance(input.value, aValue), bIdentifierDistance = selectorIdentifierDistance(input.value, bValue);
-    const aDistance = editDistance(input.value.toLowerCase(), aValue), bDistance = editDistance(input.value.toLowerCase(), bValue);
-    return aIdentifierDistance - bIdentifierDistance || aDistance - bDistance || a.length - b.length || a.localeCompare(b);
-  });
-  return { recordCount: elements.length, kind: input.kind, candidates: candidates.slice(0, RECOVERY_CANDIDATE_LIMIT) };
+  const cssCandidates = rankCandidates([...new Set(elements.map(formFor).filter((candidate): candidate is string => Boolean(candidate)))], input.value, valueOf);
+  const interpretedValue = input.kind === 'css' ? quotedSelectorValue(input.value) : undefined;
+  if (!interpretedValue) {
+    return { recordCount: elements.length, kind: input.kind, candidates: cssCandidates.slice(0, RECOVERY_CANDIDATE_LIMIT) };
+  }
+  const identityCandidates = rankCandidates([...new Set(elements.flatMap((element) => [
+    element.axName ? `ax:${element.axName}` : undefined,
+    element.text ? `text:${element.text}` : undefined,
+  ]).filter((candidate): candidate is string => Boolean(candidate)))], interpretedValue, (candidate) => candidate.slice(candidate.indexOf(':') + 1));
+  const candidates = [...identityCandidates, ...cssCandidates.filter((candidate) => !identityCandidates.includes(candidate))];
+  return { recordCount: elements.length, kind: input.kind, interpretedValue, candidates: candidates.slice(0, RECOVERY_CANDIDATE_LIMIT) };
 }
 
 function sourceDescription(declaration: WinningDeclaration): string | undefined {
@@ -257,30 +283,85 @@ function cascadeSection(target: GeometryElement, styles: readonly StyleElement[]
   return { kind: 'cascade', facts };
 }
 
-function stackingClippingSection(target: GeometryElement, geometry: readonly GeometryElement[]): RawSection {
+function formatBox(rect: InkRect): string {
+  return `x=${rect.x}…${rect.x + rect.width} y=${rect.y}…${rect.y + rect.height} (w=${rect.width} h=${rect.height})`;
+}
+
+function overflowEdges(box: InkRect, clip: InkRect): InkEdges {
+  return {
+    top: Math.max(0, clip.y - box.y),
+    right: Math.max(0, box.x + box.width - (clip.x + clip.width)),
+    bottom: Math.max(0, box.y + box.height - (clip.y + clip.height)),
+    left: Math.max(0, clip.x - box.x),
+  };
+}
+
+function formatOverflow(edges: InkEdges): string {
+  const named = (Object.entries(edges) as Array<[keyof InkEdges, number]>).filter(([, value]) => value > 0).map(([edge, value]) => `${edge}=${value}px`);
+  return named.length ? named.join(' ') : 'none';
+}
+
+function stackingClippingSection(target: GeometryElement, geometry: readonly GeometryElement[], states: unknown, state?: string): RawSection {
   const facts: ExplainFact[] = [];
   const ancestors = ancestorElements(geometry, target);
   const stacking = ancestors.filter((element) => element.stackingContext?.creates);
   const root = ancestors[0];
-  if (root) facts.push(factFor(root, fact`Stacking climb root: ${root.selector ?? root.tag ?? root.id}; z-index=${root.zIndex ?? 'auto'}.`));
+  if (root) facts.push(factFor(root, fact`Stacking climb root: ${root.selector ?? root.tag ?? root.id}; z-index=${root.zIndex ?? 'auto'} (base-state geometry record).`));
   for (const ancestor of stacking) {
-    facts.push(factFor(ancestor, fact`Stacking ancestor ${ancestor.selector ?? ancestor.id}: z-index=${ancestor.zIndex ?? 'auto'}; creates context from ${(ancestor.stackingContext?.reasons ?? []).join(', ') || 'recorded context trigger'}.`));
+    facts.push(factFor(ancestor, fact`Stacking ancestor ${ancestor.selector ?? ancestor.id}: z-index=${ancestor.zIndex ?? 'auto'}; creates context from ${(ancestor.stackingContext?.reasons ?? []).join(', ') || 'recorded context trigger'} (base-state geometry record).`));
   }
-  facts.push(factFor(target, fact`Target stacking record: z-index=${target.zIndex ?? 'auto'}; creates-context=${String(Boolean(target.stackingContext?.creates))}; reasons=${(target.stackingContext?.reasons ?? []).join(', ') || 'none recorded'}.`));
+  facts.push(factFor(target, fact`Target stacking record: z-index=${target.zIndex ?? 'auto'}; creates-context=${String(Boolean(target.stackingContext?.creates))}; reasons=${(target.stackingContext?.reasons ?? []).join(', ') || 'none recorded'} (base-state geometry record).`));
 
-  const clippingAncestors = ancestors.filter((element) => {
-    const layout = element.layout ?? {};
-    return [layout.overflowX, layout.overflowY].some((value) => typeof value === 'string' && /hidden|auto|scroll|clip/.test(value));
-  });
-  for (const ancestor of clippingAncestors) {
-    const layout = ancestor.layout ?? {};
-    const active = target.clipping?.clippedBy === ancestor.selector;
-    facts.push(factFor(ancestor, fact`Clipping ancestor ${ancestor.selector ?? ancestor.id}: overflow-x=${String(layout.overflowX ?? 'unknown')}; overflow-y=${String(layout.overflowY ?? 'unknown')}; clips-target=${String(active)}${active && target.clipping?.clippedFraction !== undefined ? `; visible-fraction=${target.clipping.clippedFraction}` : ''}.`));
+  let source = baseInkSource(target);
+  if (state) {
+    const forced = forcedStateInkSource(states, target, state);
+    if (isInkSource(forced)) source = forced;
+    else facts.push(factFor(target, fact`Requested state "${state}" supplied no post-force ink source: ${forced.unavailable}; border/ink and clipping comparisons use the base-state geometry record.`));
   }
-  if (target.clipping?.clippedBy && !clippingAncestors.some((ancestor) => ancestor.selector === target.clipping?.clippedBy)) {
-    facts.push(factFor(target, fact`Recorded clipping source ${target.clipping.clippedBy}; visible-fraction=${target.clipping.clippedFraction ?? 'unknown'}.`));
-  } else if (!target.clipping) {
-    facts.push(factFor(target, text`No clipping source was recorded for the target.`));
+  const borderBox = isInkSource(source) ? source.rect : undefined;
+  const ink = isInkSource(source) ? deriveInkBox(source.rect, source.styles) : undefined;
+  if (ink?.inkBox && borderBox) {
+    const contributors = ink.contributors.length
+      ? ink.contributors.map((contributor) => `${contributor.source}${contributor.index === undefined ? '' : ` ${contributor.index}`} (top=${contributor.edges.top}px right=${contributor.edges.right}px bottom=${contributor.edges.bottom}px left=${contributor.edges.left}px)`).join('; ')
+      : 'none';
+    facts.push(factFor(target, ink.nominal
+      ? fact`Border box (${source.provenance}): ${formatBox(borderBox)}. Nominal ink box (blur-radius extent, ${source.provenance}): ${formatBox(ink.inkBox)}; contributors: ${contributors}.`
+      : fact`Border box (${source.provenance}): ${formatBox(borderBox)}. Ink box (${source.provenance}): ${formatBox(ink.inkBox)}; contributors: ${contributors}.`));
+  } else if (ink) {
+    const reason = ink.missingStyles.length
+      ? `computed styles were not captured: ${ink.missingStyles.join(', ')}`
+      : `paint extents could not be resolved: ${ink.unresolved.join(', ')}`;
+    facts.push(factFor(target, fact`Ink box (${source.provenance}) was not calculated because ${reason}.`));
+  } else {
+    facts.push(factFor(target, text`Ink box was not calculated because ${source.unavailable}.`));
+  }
+
+  const overflowAncestors = ancestors.filter((element) => {
+    const layout = element.layout ?? {};
+    return [layout.overflowX, layout.overflowY].some((value) => typeof value === 'string' && /\b(?:hidden|auto|scroll|clip)\b/.test(value));
+  });
+  const clipPathAncestors = ancestors.filter((element) => {
+    const clipPath = element.paint?.['clip-path'];
+    return typeof clipPath === 'string' && clipPath !== 'none';
+  });
+  for (const ancestor of overflowAncestors) {
+    const layout = ancestor.layout ?? {};
+    const clip = quadRect((ancestor.boxModel ?? {}).padding);
+    const radius = ancestor.paint?.['border-radius'];
+    if (!clip) {
+      facts.push(factFor(ancestor, fact`Clipping ancestor ${ancestor.selector ?? ancestor.id}: overflow-x=${String(layout.overflowX ?? 'unknown')}; overflow-y=${String(layout.overflowY ?? 'unknown')} (base-state geometry record); padding-box clip was not captured, so border-box and ink-box clipping were not calculated.`));
+      continue;
+    }
+    const borderEdges = borderBox ? overflowEdges(borderBox, clip) : undefined;
+    const inkEdges = ink?.inkBox ? overflowEdges(ink.inkBox, clip) : undefined;
+    const targetSource = isInkSource(source) ? source.provenance : source.unavailable;
+    facts.push(factFor(ancestor, fact`Clipping ancestor ${ancestor.selector ?? ancestor.id}: overflow-x=${String(layout.overflowX ?? 'unknown')}; overflow-y=${String(layout.overflowY ?? 'unknown')}; rectangular padding clip (base-state geometry record) ${formatBox(clip)}; border-radius=${radius ?? 'not captured'}${radius && radius !== '0px' ? ' (rounded clip shape not resolved)' : ''}; target border/ink source=${targetSource}; border-box-overflows-padding-clip=${String(Boolean(borderEdges && formatOverflow(borderEdges) !== 'none'))}; border-box-overflow=${borderEdges ? formatOverflow(borderEdges) : 'not calculated'}; ink-box-overflows-padding-clip=${String(Boolean(inkEdges && formatOverflow(inkEdges) !== 'none'))}; ink-box-overflow=${inkEdges ? formatOverflow(inkEdges) : 'not calculated'}.`));
+  }
+  for (const ancestor of clipPathAncestors) {
+    facts.push(factFor(ancestor, fact`Clip-path ancestor ${ancestor.selector ?? ancestor.id}: clip-path=${ancestor.paint?.['clip-path']} (base-state geometry record); shape geometry was not captured, so border-box and ink-box clipping were not calculated for this source.`));
+  }
+  if (!overflowAncestors.length && !clipPathAncestors.length) {
+    facts.push(factFor(target, text`No overflow or clip-path clipping ancestor was recorded for the target.`));
   }
   return { kind: 'stacking-clipping', facts };
 }
@@ -361,7 +442,26 @@ function queriesStatesSection(target: GeometryElement, queries: Record<string, u
     const records = (Array.isArray(states.elements) ? states.elements : [])
       .filter((entry): entry is ArtifactElement & Record<string, unknown> => Boolean(entry && typeof entry === 'object'))
       .filter((entry) => sameTarget(entry, target));
-    facts.push(factFor(target, fact`State matrix context: requested=${requested.join(', ') || 'none'}; matching records=${records.length}.`));
+    // A forced state records the element it forced plus the descendants and following peers whose
+    // style or geometry moved. Counting only the forced-target rows reports `matching records=0` for
+    // an element whose post-force values this same output just derived from an affected row.
+    const affectedRows = (Array.isArray(states.elements) ? states.elements : [])
+      .filter((entry): entry is ArtifactElement & Record<string, unknown> => Boolean(entry && typeof entry === 'object'))
+      .flatMap((entry) => {
+        const affected = entry.affected as Record<string, unknown> | undefined;
+        const rows = affected && typeof affected === 'object' && Array.isArray(affected.elements) ? affected.elements : [];
+        return rows
+          .filter((row): row is ArtifactElement & Record<string, unknown> => Boolean(row && typeof row === 'object'))
+          .filter((row) => String(row.relation ?? '') !== 'target' && sameTarget(row, target))
+          .map((row) => ({ state: String(entry.state ?? 'unknown'), forced: String(entry.selector ?? 'unknown'), row }));
+      });
+    facts.push(factFor(target, fact`State matrix context: requested=${requested.join(', ') || 'none'}; records forcing this element=${records.length}; records where it is an affected descendant or peer=${affectedRows.length}.`));
+    for (const { state, forced, row } of affectedRows) {
+      const changes = row.style && typeof row.style === 'object' && Array.isArray((row.style as Record<string, unknown>).changed)
+        ? ((row.style as Record<string, unknown>).changed as unknown[]).map(String).join(', ')
+        : 'none recorded';
+      facts.push(factFor(target, fact`State ${state}: recorded as ${String(row.relation ?? 'unknown')} of forced target ${forced}; style changes=${changes}; geometry-changed=${String((row.geometry as Record<string, unknown> | undefined)?.changed ?? false)}; hittest-changed=${String((row.hittest as Record<string, unknown> | undefined)?.changed ?? false)}.`));
+    }
     for (const record of records) {
       const changes = record.style && typeof record.style === 'object' && Array.isArray((record.style as Record<string, unknown>).changed)
         ? ((record.style as Record<string, unknown>).changed as unknown[]).map(String).join(', ')
@@ -478,7 +578,7 @@ export function explainSnapshot(ref: SnapRef, selector: string, detailOpts: Expl
   const rawSections: RawSection[] = [
     elementSection(target, matches.length),
     cascadeSection(target, styles),
-    stackingClippingSection(target, geometry),
+    stackingClippingSection(target, geometry, states, detailOpts.state),
     focusScrollSection(target, focus, scroll),
     queriesStatesSection(target, queries, states, styles),
   ];

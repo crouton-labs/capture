@@ -34,6 +34,7 @@ export const RESULT_TAGS = [
   'focus-map',
   'scroll-map',
   'layer-map',
+  'paint-map',
   'recording',
   'motion-mask',
   'timeline',

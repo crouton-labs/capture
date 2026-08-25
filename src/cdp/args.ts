@@ -19,6 +19,7 @@ const VALUE_FLAGS = new Set([
   '--filter', '--name', '--filter-url', '--filter-status', '--filter-method', '--limit', '--params', '--wait-event',
   '--timeout', '--socket', '--settle-timeout', '--state', '--for', '--before', '--after', '--snap', '--set-file',
   '--axis', '--from', '--to', '--viewport-height', '--rec-id', '--selector', '--do', '--element', '--prop', '--action', '--occurrence',
+  '--state-padding', '--crop', '--crop-selector', '--pad', '--zoom',
 ]);
 
 function valueFor(flag: string, next: string | undefined): string {
@@ -69,7 +70,7 @@ function validateKnownLeaf(command: string, positional: readonly string[]): void
   if (known && !known.includes(leaf)) throw invalidInput(`Unknown ${command} leaf: ${leaf}.`, 'unknown_command');
   if (command === 'measure' && leaf === 'map' && positional[1] !== undefined) {
     const mapLeaf = positional[1];
-    if (!['focus', 'scroll', 'layers', 'ax'].includes(mapLeaf)) throw invalidInput(`Unknown measure map leaf: ${mapLeaf}.`, 'unknown_command');
+    if (!['focus', 'scroll', 'layers', 'ax', 'paint'].includes(mapLeaf)) throw invalidInput(`Unknown measure map leaf: ${mapLeaf}.`, 'unknown_command');
   }
 }
 
@@ -107,6 +108,9 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
     };
     const [min, max] = ranges[leaf];
     requireCount(values, min, max, `session ${leaf}`);
+    if (leaf === 'start' && parsed.url !== undefined && parsed.target !== undefined) {
+      throw invalidInput('session start cannot combine --url and --target.');
+    }
     return;
   }
 
@@ -169,7 +173,8 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
       const mapLeaf = values[0];
       if (mapLeaf === undefined) return;
       const targets = values.slice(1);
-      requireCount(targets, mapLeaf === 'focus' || mapLeaf === 'ax' ? 1 : 0, 1, `measure map ${mapLeaf}`);
+      requireCount(targets, ['focus', 'ax', 'paint'].includes(mapLeaf) ? 1 : 0, 1, `measure map ${mapLeaf}`);
+      if (mapLeaf === 'paint' && !parsed.selector?.trim()) throw invalidInput('measure map paint requires --selector.');
     }
     return;
   }
@@ -261,6 +266,12 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
     else if (arg === '--skip-collector') { (parsed.skipCollector ??= []).push(valueFor(arg, next)); i++; }
     else if (arg === '--pixels') parsed.pixels = true;
     else if (arg === '--state') { (parsed.state ??= []).push(valueFor(arg, next)); i++; }
+    else if (arg === '--state-padding') { parsed.statePadding = integer(valueFor(arg, next), '--state-padding', 0, 16_384); i++; }
+    else if (arg === '--list-crops') parsed.listCrops = true;
+    else if (arg === '--crop') { parsed.crop = valueFor(arg, next); i++; }
+    else if (arg === '--crop-selector') { parsed.cropSelector = valueFor(arg, next); i++; }
+    else if (arg === '--pad') { parsed.pad = integer(valueFor(arg, next), '--pad', 0, 16_384); i++; }
+    else if (arg === '--zoom') { parsed.zoom = valueFor(arg, next); i++; }
     else if (arg === '--for') { parsed.for = valueFor(arg, next); i++; }
     else if (arg === '--before') { parsed.before = valueFor(arg, next); i++; }
     else if (arg === '--after') { parsed.after = valueFor(arg, next); i++; }
@@ -326,6 +337,10 @@ function needsEndpointResolution(parsed: ParsedArgs): boolean {
  */
 export function resolveCliContext(parsed: ParsedArgs): ParsedArgs {
   if (!needsEndpointResolution(parsed)) return parsed;
+  // Session start adopts only a target named in its invocation. CDP_TARGET is
+  // an ambient page-command default, not permission to publish a new session
+  // against an implicit tab.
+  const sessionStart = parsed.command === 'session' && parsed.positional[0] === 'start';
   const session = getActiveSession({ cleanStale: false });
   if (session) {
     if (!parsed.har && session.harId) parsed.har = session.harId;
@@ -344,7 +359,7 @@ export function resolveCliContext(parsed: ParsedArgs): ParsedArgs {
   // Preserve historical stale-index cleanup once endpoint validation has
   // succeeded; only the malformed-env throw path deliberately leaves it alone.
   if (!session) getActiveSession();
-  if (!parsed.target && !parsed.url && process.env.CDP_TARGET) { parsed.target = process.env.CDP_TARGET; parsed.targetSource = 'env'; }
+  if (!sessionStart && !parsed.target && !parsed.url && process.env.CDP_TARGET) { parsed.target = process.env.CDP_TARGET; parsed.targetSource = 'env'; }
   return parsed;
 }
 

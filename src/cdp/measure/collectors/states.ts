@@ -85,6 +85,11 @@
  * === after) — a baseline row for the matrix, not a forced capture.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { PNG } from 'pngjs';
+import pixelmatch from 'pixelmatch';
+
 import type { CDPClient } from '../../client.js';
 import type { Rect } from '../../coordinates.js';
 import { forcePseudoStateForNode, type ForcedPseudoClass } from '../../domains.js';
@@ -101,6 +106,12 @@ const MAX_SELECTOR_MATCHES = 10;
 const MAX_AUTO_ELEMENTS = 8;
 /** Per-field length cap applied NODE-SIDE to page-controlled strings (text, aria-label). Passed to {@link sanitizeString} as `{ max }` — a tighter bound than the shared default. */
 const MAX_STRING_LEN = 200;
+/** Bounds forced-state evidence to the target subtree plus following sibling subtrees; omitted candidates are reported in `affected.truncated`. */
+const MAX_AFFECTED_ELEMENTS = 100;
+/** Default CSS-pixel inset/outset around the forced target's border rect included in its raster diff. */
+const DEFAULT_STATE_DIFF_PADDING_CSS_PX = 8;
+/** Two animation frames let style invalidation reach paint before the forced-state screenshot; this costs roughly 33ms at 60Hz per supported force. */
+const STATE_CAPTURE_SETTLE_FRAMES = 2;
 
 const CONCRETE_STATES = ['hover', 'focus', 'active', 'checked', 'open', 'disabled', 'invalid'] as const;
 type ConcreteState = (typeof CONCRETE_STATES)[number];
@@ -207,6 +218,26 @@ interface HittestDelta {
   readonly changed: boolean;
 }
 
+interface StateAffectedRecord {
+  readonly relation: 'target' | 'descendant' | 'peer-sibling';
+  readonly selector?: string;
+  readonly backendNodeId: number | null;
+  readonly identityUnresolved?: true;
+  readonly geometry: GeometryDelta;
+  readonly style: StyleDelta;
+  readonly hittest: HittestDelta;
+}
+
+interface StateRasterArtifact {
+  readonly screenshot: string;
+  readonly diff?: string;
+  readonly viewportScale: { readonly available: boolean; readonly innerWidth: number; readonly innerHeight: number; readonly scaleX: number; readonly scaleY: number; readonly unavailableReason?: 'viewport-read-unavailable' };
+  readonly diffCrop: { readonly paddingCssPx: number; readonly borderRect: Rect };
+  readonly diffPixelCount?: number;
+  readonly changedPixelBboxCss?: Rect;
+  readonly diffUnavailableReason?: 'baseline-unavailable' | 'dimension-mismatch';
+}
+
 interface StateElementRecord {
   readonly id: string;
   readonly state: string;
@@ -229,6 +260,10 @@ interface StateElementRecord {
   readonly geometry?: GeometryDelta;
   readonly style?: StyleDelta;
   readonly hittest?: HittestDelta;
+  /** Target, light-DOM descendants, and following sibling subtrees measured under this force. `truncated` names candidates omitted by the explicit cap. */
+  readonly affected?: { readonly elements: readonly StateAffectedRecord[]; readonly total: number; readonly kept: number; readonly truncated: boolean };
+  /** Rendered evidence captured while this exact force remained active. */
+  readonly raster?: StateRasterArtifact;
   /** `true` when the pre- or post-force `evalFacts` read itself failed (evaluate threw, or resolved with no `value`) — distinguishes "could not read" from a genuine `{exists:false}`/"not found" measured outcome (I-5). Present only on that failure path. */
   readonly factsUnavailable?: true;
   readonly factsUnavailableReason?: FactsUnavailableReason;
@@ -684,8 +719,178 @@ function zeroDelta(before: Rect): GeometryDelta {
   return { before, after: before, delta: { dx: 0, dy: 0, dwidth: 0, dheight: 0 }, changed: false };
 }
 
+interface DomNode {
+  readonly nodeId?: number;
+  readonly nodeType?: number;
+  readonly nodeName?: string;
+  readonly backendNodeId?: number;
+  readonly attributes?: readonly string[];
+  readonly children?: readonly DomNode[];
+}
+
+interface AffectedSubject {
+  readonly nodeId: number;
+  readonly relation: StateAffectedRecord['relation'];
+  readonly selector?: string;
+  readonly backendNodeId: number | null;
+  readonly identityUnresolved?: true;
+}
+
+function elementNodes(node: DomNode, out: DomNode[]): void {
+  if (node.nodeType === 1 && typeof node.nodeId === 'number') out.push(node);
+  for (const child of node.children ?? []) elementNodes(child, out);
+}
+
+function findNodeAndParent(node: DomNode, nodeId: number, parent?: DomNode): { node: DomNode; parent?: DomNode } | undefined {
+  if (node.nodeId === nodeId) return { node, parent };
+  for (const child of node.children ?? []) {
+    const found = findNodeAndParent(child, nodeId, node);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** Resolves a bounded subject population without re-requesting the document, because a new DOM root invalidates the frontend node id that CSS.forcePseudoState must restore. */
+async function affectedSubjects(client: CDPClient, targetNodeId: number, target: AffectedSubject): Promise<{ subjects: AffectedSubject[]; total: number }> {
+  let targetObjectId: string | undefined;
+  let siblingsObjectId: string | undefined;
+  try {
+    const nodes: Array<{ node: DomNode; relation: StateAffectedRecord['relation'] }> = [];
+    const targetDescription = (await client.send('DOM.describeNode', { nodeId: targetNodeId, depth: -1, pierce: false })) as { node?: DomNode };
+    if (!targetDescription.node) return { subjects: [target], total: 1 };
+    const targetSubtree: DomNode[] = [];
+    elementNodes(targetDescription.node, targetSubtree);
+    for (const node of targetSubtree) nodes.push({ node, relation: node.nodeId === targetNodeId ? 'target' : 'descendant' });
+    const resolved = (await client.send('DOM.resolveNode', { nodeId: targetNodeId })) as { object?: { objectId?: string } };
+    targetObjectId = resolved.object?.objectId;
+    if (targetObjectId) {
+      const siblings = (await client.send('Runtime.callFunctionOn', { objectId: targetObjectId, functionDeclaration: 'function __captureStateFollowingPeers(){ const all = Array.from(this.parentElement ? this.parentElement.children : []); return all.slice(all.indexOf(this) + 1); }' })) as { result?: { objectId?: string } };
+      siblingsObjectId = siblings.result?.objectId;
+      if (siblingsObjectId) {
+        const properties = (await client.send('Runtime.getProperties', { objectId: siblingsObjectId, ownProperties: true })) as { result?: Array<{ name?: string; value?: { objectId?: string } }> };
+        for (const property of properties.result ?? []) {
+          if (!/^\d+$/.test(property.name ?? '') || !property.value?.objectId) continue;
+          const requested = (await client.send('DOM.requestNode', { objectId: property.value.objectId })) as { nodeId?: number };
+          if (!requested.nodeId) continue;
+          const siblingDescription = (await client.send('DOM.describeNode', { nodeId: requested.nodeId, depth: -1, pierce: false })) as { node?: DomNode };
+          if (!siblingDescription.node) continue;
+          const subtree: DomNode[] = [];
+          elementNodes(siblingDescription.node, subtree);
+          for (const node of subtree) nodes.push({ node, relation: 'peer-sibling' });
+        }
+      }
+    }
+    const subjects = nodes.slice(0, MAX_AFFECTED_ELEMENTS).map(({ node, relation }) => ({
+      nodeId: node.nodeId!, relation, selector: buildSelector(node.nodeName, node.attributes), backendNodeId: node.backendNodeId ?? null,
+      ...(node.backendNodeId === undefined ? { identityUnresolved: true as const } : {}),
+    }));
+    return { subjects: subjects.length ? subjects : [target], total: nodes.length || 1 };
+  } catch {
+    return { subjects: [target], total: 1 };
+  } finally {
+    for (const objectId of [siblingsObjectId, targetObjectId]) if (objectId) {
+      try { await client.send('Runtime.releaseObject', { objectId }); } catch { /* best-effort object release */ }
+    }
+  }
+}
+
+function nodeFactsFunction(): string {
+  return `function __captureStateNodeFacts() {
+    const el = this;
+    const rect = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    const style = {};
+    for (const p of ${JSON.stringify(STYLE_PROPS)}) style[p] = cs.getPropertyValue(p);
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const inViewport = rect.width > 0 && rect.height > 0 && cx >= 0 && cy >= 0 && cx <= window.innerWidth && cy <= window.innerHeight;
+    const stack = inViewport ? document.elementsFromPoint(cx, cy) : [];
+    const top = stack[0] || null;
+    return { exists: true, tag: el.tagName, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, style, hit: { isTarget: top === el, topTag: top ? top.tagName : null }, text: (el.textContent || '').trim(), axName: el.getAttribute('aria-label') };
+  }`;
+}
+
+async function evalFactsForNode(client: CDPClient, nodeId: number, backendNodeId: number | null): Promise<ElementFacts> {
+  let objectId: string | undefined;
+  try {
+    // Child node ids in a depth-recursive DOM.describeNode response are not guaranteed to be frontend-bound; backend ids are the cross-call identity Chrome promises.
+    const resolved = (await client.send('DOM.resolveNode', backendNodeId === null ? { nodeId } : { backendNodeId })) as { object?: { objectId?: string } };
+    objectId = resolved.object?.objectId;
+    if (!objectId) return { exists: false, factsUnavailable: true, factsUnavailableReason: 'facts-evaluate-returned-no-value' };
+    const response = (await client.send('Runtime.callFunctionOn', { objectId, functionDeclaration: nodeFactsFunction(), returnByValue: true })) as { result?: { value?: ElementFacts } };
+    return response.result?.value ?? { exists: false, factsUnavailable: true, factsUnavailableReason: 'facts-evaluate-returned-no-value' };
+  } catch {
+    return { exists: false, factsUnavailable: true, factsUnavailableReason: 'facts-evaluate-threw' };
+  } finally {
+    if (objectId) {
+      try { await client.send('Runtime.releaseObject', { objectId }); } catch { /* object lifetime is browser-owned if release fails */ }
+    }
+  }
+}
+
+function deltaForFacts(before: ElementFacts, after: ElementFacts): { geometry: GeometryDelta; style: StyleDelta; hittest: HittestDelta } | undefined {
+  if (!before.exists || !after.exists || before.factsUnavailable || after.factsUnavailable || !before.rect || !after.rect || !before.style || !after.style || !before.hit || !after.hit) return undefined;
+  const geometryChanged = before.rect.x !== after.rect.x || before.rect.y !== after.rect.y || before.rect.width !== after.rect.width || before.rect.height !== after.rect.height;
+  return {
+    geometry: { before: before.rect, after: after.rect, delta: { dx: after.rect.x - before.rect.x, dy: after.rect.y - before.rect.y, dwidth: after.rect.width - before.rect.width, dheight: after.rect.height - before.rect.height }, changed: geometryChanged },
+    style: { changed: STYLE_PROPS.filter((property) => before.style![property] !== after.style![property]), before: sanitizeStyleValues(before.style), after: sanitizeStyleValues(after.style) },
+    hittest: { before: before.hit, after: after.hit, changed: before.hit.isTarget !== after.hit.isTarget || before.hit.topTag !== after.hit.topTag },
+  };
+}
+
+async function settleForcedState(client: CDPClient): Promise<void> {
+  await client.send('Runtime.evaluate', { expression: `(async function __captureStatePaintSettle(){ for (let i = 0; i < ${STATE_CAPTURE_SETTLE_FRAMES}; i += 1) await new Promise(requestAnimationFrame); return true; })()`, awaitPromise: true, returnByValue: true });
+}
+
+function round3(value: number): number { return Math.round(value * 1000) / 1000; }
+
+/** Captures the active forced state and a target-border-plus-padding pixel diff against screenshot.png. */
+async function captureStateRaster(ctx: import('../types.js').SnapshotContext, client: CDPClient, state: string, id: string, borderRect: Rect): Promise<StateRasterArtifact | undefined> {
+  const baselinePath = path.join(ctx.dir, 'screenshot.png');
+  if (!fs.existsSync(baselinePath)) return undefined;
+  const response = (await client.send('Page.captureScreenshot', { format: 'png' })) as { data: string };
+  const statePng = Buffer.from(response.data, 'base64');
+  const imageName = `states/${sanitizeToken(state) || 'state'}-${id}.png`;
+  ctx.write.binary(imageName, statePng);
+  const stateImage = PNG.sync.read(statePng);
+  const viewport = await client.send('Runtime.evaluate', { expression: '({w: window.innerWidth, h: window.innerHeight})', returnByValue: true }) as { result?: { value?: { w?: number; h?: number } } };
+  const w = viewport.result?.value?.w;
+  const h = viewport.result?.value?.h;
+  const available = typeof w === 'number' && w > 0 && typeof h === 'number' && h > 0;
+  const scaleX = available ? stateImage.width / w! : 1;
+  const scaleY = available ? stateImage.height / h! : 1;
+  const paddingCssPx = (ctx as import('../types.js').SnapshotContext & { stateDiffPaddingCssPx?: number }).stateDiffPaddingCssPx ?? DEFAULT_STATE_DIFF_PADDING_CSS_PX;
+  const raster: StateRasterArtifact = { screenshot: imageName, viewportScale: { available, innerWidth: available ? w! : 0, innerHeight: available ? h! : 0, scaleX: round3(scaleX), scaleY: round3(scaleY), ...(available ? {} : { unavailableReason: 'viewport-read-unavailable' as const }) }, diffCrop: { paddingCssPx, borderRect } };
+  const baseline = PNG.sync.read(fs.readFileSync(baselinePath));
+  if (baseline.width !== stateImage.width || baseline.height !== stateImage.height) return { ...raster, diffUnavailableReason: 'dimension-mismatch' };
+  const x0 = Math.max(0, Math.floor((borderRect.x - paddingCssPx) * scaleX));
+  const y0 = Math.max(0, Math.floor((borderRect.y - paddingCssPx) * scaleY));
+  const x1 = Math.min(stateImage.width, Math.ceil((borderRect.x + borderRect.width + paddingCssPx) * scaleX));
+  const y1 = Math.min(stateImage.height, Math.ceil((borderRect.y + borderRect.height + paddingCssPx) * scaleY));
+  const width = Math.max(1, x1 - x0);
+  const height = Math.max(1, y1 - y0);
+  const before = new PNG({ width, height });
+  const after = new PNG({ width, height });
+  PNG.bitblt(baseline, before, x0, y0, width, height, 0, 0);
+  PNG.bitblt(stateImage, after, x0, y0, width, height, 0, 0);
+  const diff = new PNG({ width, height });
+  const diffPixelCount = pixelmatch(before.data, after.data, diff.data, width, height, { threshold: 0.1, diffMask: true });
+  const diffName = `states/${sanitizeToken(state) || 'state'}-${id}-diff.png`;
+  ctx.write.binary(diffName, PNG.sync.write(diff));
+  let minX = width, minY = height, maxX = -1, maxY = -1;
+  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
+    const offset = (y * width + x) * 4;
+    if (diff.data[offset] || diff.data[offset + 1] || diff.data[offset + 2] || diff.data[offset + 3]) { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }
+  }
+  const changedPixelBboxCss = maxX >= 0
+    ? { x: round3((x0 + minX) / scaleX), y: round3((y0 + minY) / scaleY), width: round3((maxX - minX + 1) / scaleX), height: round3((maxY - minY + 1) / scaleY) }
+    : undefined;
+  return { ...raster, diff: diffName, diffPixelCount, ...(changedPixelBboxCss ? { changedPixelBboxCss } : {}) };
+}
+
 /** Captures one requested state on one already-resolved node: baseline facts, force (when not `normal`), post-force facts, delta, and — always, even on error — restoration. */
 async function captureOneElement(
+  ctx: import('../types.js').SnapshotContext,
   client: CDPClient,
   selector: string,
   index: number,
@@ -722,6 +927,8 @@ async function captureOneElement(
 
   const axName = before.axName ? sanitizeString(before.axName, { max: MAX_STRING_LEN }) : undefined;
   const text = before.text ? sanitizeString(before.text, { max: MAX_STRING_LEN }) : undefined;
+  const population = await affectedSubjects(client, nodeId, { nodeId, relation: 'target', selector: resolvedSelector, backendNodeId, ...(identityUnresolved ? { identityUnresolved } : {}) });
+  const affectedBefore = await Promise.all(population.subjects.map((subject) => subject.nodeId === nodeId ? Promise.resolve(before) : evalFactsForNode(client, subject.nodeId, subject.backendNodeId)));
 
   if (state === 'normal') {
     const rect = before.rect!;
@@ -739,6 +946,16 @@ async function captureOneElement(
       geometry: zeroDelta(rect),
       style: { changed: [], before: style, after: style },
       hittest: { before: hit, after: hit, changed: false },
+      affected: {
+        elements: population.subjects.flatMap((subject, subjectIndex) => {
+          const facts = affectedBefore[subjectIndex]!;
+          const delta = deltaForFacts(facts, facts);
+          return delta ? [{ relation: subject.relation, selector: subject.selector, backendNodeId: subject.backendNodeId, ...(subject.identityUnresolved ? { identityUnresolved: true as const } : {}), ...delta }] : [];
+        }),
+        total: population.total,
+        kept: population.subjects.length,
+        truncated: population.total > population.subjects.length,
+      },
     };
   }
 
@@ -752,6 +969,8 @@ async function captureOneElement(
   let restored = true;
   let afterFactsUnavailableReason: FactsUnavailableReason | undefined;
   let forceReadUnavailableReason: ForceReadUnavailableReason | undefined;
+  let affectedAfter: ElementFacts[] = [];
+  let raster: StateRasterArtifact | undefined;
 
   try {
     if (isPseudo) {
@@ -805,6 +1024,8 @@ async function captureOneElement(
     }
 
     if (supported) {
+      await settleForcedState(client);
+      raster = await captureStateRaster(ctx, client, state, id, before.rect!);
       after = await evalFacts(client, selector, index);
       if (after.factsUnavailable) {
         supported = false;
@@ -813,9 +1034,8 @@ async function captureOneElement(
       } else if (!after.exists) {
         supported = false;
         reason = 'element no longer present after forcing state';
-      } else if (!(await identityStillMatches(client, selector, index, identity.backendNodeId))) {
-        supported = false;
-        reason = 'post-force facts no longer resolve to the original element (identity check failed)';
+      } else {
+        affectedAfter = await Promise.all(population.subjects.map((subject) => subject.nodeId === nodeId ? Promise.resolve(after!) : evalFactsForNode(client, subject.nodeId, subject.backendNodeId)));
       }
     }
   } catch (err) {
@@ -829,6 +1049,12 @@ async function captureOneElement(
         restored = false;
       }
     }
+  }
+
+  // Re-resolving selector[index] can invalidate CSS's frontend node id, so it happens only after the `finally` restored the forced state.
+  if (supported && !(await identityStillMatches(client, selector, index, identity.backendNodeId))) {
+    supported = false;
+    reason = 'post-force facts no longer resolve to the original element (identity check failed)';
   }
 
   if (!supported) {
@@ -866,6 +1092,16 @@ async function captureOneElement(
   const changedStyleProps = STYLE_PROPS.filter((p) => rawBeforeStyle[p] !== rawAfterStyle[p]);
   const hitChanged = beforeHit.isTarget !== afterHit.isTarget || beforeHit.topTag !== afterHit.topTag;
 
+  const affected = {
+    elements: population.subjects.flatMap((subject, subjectIndex) => {
+      const delta = deltaForFacts(affectedBefore[subjectIndex]!, affectedAfter[subjectIndex]!);
+      return delta ? [{ relation: subject.relation, selector: subject.selector, backendNodeId: subject.backendNodeId, ...(subject.identityUnresolved ? { identityUnresolved: true as const } : {}), ...delta }] : [];
+    }),
+    total: population.total,
+    kept: population.subjects.length,
+    truncated: population.total > population.subjects.length,
+  };
+
   return {
     id,
     state,
@@ -889,6 +1125,8 @@ async function captureOneElement(
     },
     style: { changed: changedStyleProps, before: beforeStyle, after: afterStyle },
     hittest: { before: beforeHit, after: afterHit, changed: hitChanged },
+    affected,
+    ...(raster ? { raster } : {}),
   };
 }
 
@@ -965,6 +1203,7 @@ export const collectStates: Collector = async (ctx) => {
       const nodeId = nodeIds[i];
       const identity = await describeNode(client, nodeId);
       const record = await captureOneElement(
+        ctx,
         client,
         selector,
         i,
@@ -980,7 +1219,7 @@ export const collectStates: Collector = async (ctx) => {
 
   ctx.write.json('states.json', {
     requested: ctx.state.map((s) => sanitizeString(s)),
-    scope: { root: 'top-document', shadowDom: 'light-only' },
+    scope: { root: 'top-document', shadowDom: 'light-only', affected: { descendants: true, peerSiblings: 'following-sibling-subtrees', maxElements: MAX_AFFECTED_ELEMENTS } },
     elements,
     truncatedRequests,
   });

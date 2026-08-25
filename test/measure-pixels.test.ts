@@ -284,6 +284,7 @@ function makeCtx(dir: string, client: CDPClient): SnapshotContext {
 }
 
 interface PixelsJson {
+  cropsByBackend?: Record<string, string>;
   scope: {
     enumeration: string;
     pierce: boolean;
@@ -932,6 +933,7 @@ test('collectPixels honors the viewport->screenshot scale on a 2x DPR page', asy
     const el = pixelsJson.elements[0];
     // rect stays in CSS space; the CROP is in screenshot pixels -> doubled.
     assert.deepEqual(el.rect, ELEMENT_RECT);
+    assert.equal(pixelsJson.cropsByBackend?.['99'], el.crop, 'backend id directly addresses its crop without filename search');
     const cropAbsPath = path.join(dir, el.crop.slice('snap-test/'.length));
     const decoded = PNG.sync.read(fs.readFileSync(cropAbsPath));
     assert.equal(decoded.width, ELEMENT_RECT.width * 2, 'crop width scaled by DPR');

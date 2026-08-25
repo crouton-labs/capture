@@ -253,6 +253,8 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
   const state = options.state ?? [];
   const viewport = options.viewport ?? null;
   const colorScheme = options.colorScheme;
+  // This narrow extension is parsed by `measure snap`; the shared SnapshotContext remains backwards-compatible for every other collector.
+  const stateDiffPaddingCssPx = (options as CaptureSnapshotOptions & { stateDiffPaddingCssPx?: number }).stateDiffPaddingCssPx ?? 8;
   // Apply the shared artifact-string cap once at the source. URL contents
   // otherwise survive unchanged in meta.json, the result, and collector context.
   const url = options.url ? sanitizeString(options.url) : null;
@@ -377,6 +379,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
         pixels,
         state,
         unstableRegions,
+        ...({ stateDiffPaddingCssPx } as {}),
         write: makeWriter(dir, artifacts),
       };
 

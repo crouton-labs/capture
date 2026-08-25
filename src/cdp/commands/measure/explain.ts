@@ -3,15 +3,16 @@ import { explainSnapshot, type ExplainMissingSelector } from '../../measure/expl
 import { ArtifactResolutionError, resolveSnapRef } from '../../../output/artifact.js';
 import { data, emitResult, fact, line, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
 
-const USAGE = `capture measure explain <snap> --selector <sel> — per-element cascade/stacking/clipping explanation over one snapshot
+const USAGE = `capture measure explain <snap> --selector <sel> — per-element cascade, ink-box, stacking, and clipping measurements over one snapshot
 
 input:
   <snap>             snapshot id in the active session or absolute artifact path (required)
-  --selector <sel>   element selector (required): CSS, backend:<id>, axid:<id>, ax:<name>, or text:<text>
+  --selector <sel>   element selector (required): CSS tag/#id/.class/[attr]/[attr="value"] compounds with descendant or child relations (or a verbatim recorded path), backend:<id>, axid:<id>, ax:<name>, or text:<text>
+  --state <name>     one recorded forced state; derives border/ink and clipping comparisons from its post-force target values
   --size             include size/layout provenance (box/flex/grid/constraints)
   --text             include text line/baseline/font/wrap metrics
   --form             include form value/geometry/caret/selection/autofill facts
-output: <explain selector=… matches=…> — the compact element explanation, plus one section per requested detail flag; --json mirrors
+output: <explain selector=… matches=…> — border/ink boxes with named paint contributors and rectangular overflow padding-box comparisons, each naming its base or forced-state provenance; unavailable forced-state or captured box evidence is stated explicitly; --json mirrors
 effects: read-only — reads existing snapshot artifacts, never drives the browser`;
 
 function attestation(ref: { id: string; dir: string }, meta: { settled?: boolean; settleMs?: number }) {
@@ -44,13 +45,16 @@ function caveatSuffix(caveats: readonly { regionId: string; selector?: string; r
 }
 
 function recoverySections(missing: ExplainMissingSelector): FactLine[] {
-  const { candidates, recordCount, kind } = missing.available;
+  const { candidates, recordCount, kind, interpretedValue } = missing.available;
   const label = kind === 'css' ? 'CSS selectors' : `${kind}: selector inputs`;
   const rows = candidates.length
     ? candidates.map((candidate, index) => fact`${index + 1}. ${candidate}`)
     : [fact`No recorded ${label} were available from geometry records.`];
+  const ranking = interpretedValue
+    ? fact`Recovery candidates: ${candidates.length} shown from ${recordCount} geometry record(s); AX-name/text inputs for attribute or quoted value ${interpretedValue} rank before generated CSS paths, then identifier similarity and string distance rank each group.`
+    : fact`Nearest recorded ${label}: ${candidates.length} shown from ${recordCount} geometry record(s), ranked by identifier similarity then string distance from the requested selector.`;
   return [
-    fact`Nearest recorded ${label}: ${candidates.length} shown from ${recordCount} geometry record(s), ranked by identifier similarity then string distance from the requested selector.`,
+    ranking,
     lineList(rows),
     text`All recorded selector and identity facts remain in this snapshot's geometry.json, ax.json, and text.json artifacts.`,
   ];
@@ -80,10 +84,20 @@ export async function cmdMeasureExplain(parsed: ParsedArgs, _args: string[]): Pr
     process.exitCode = 1;
     return;
   }
+  if ((parsed.state?.length ?? 0) > 1) {
+    emitResult(invalidInput(fact`Expected at most one --state value; received ${parsed.state!.length}.`), { json: parsed.json });
+    process.exitCode = 1;
+    return;
+  }
+  if (parsed.state?.[0] === '') {
+    emitResult(invalidInput(text`The --state value must be a nonempty recorded state name.`), { json: parsed.json });
+    process.exitCode = 1;
+    return;
+  }
 
   try {
     const ref = await resolveSnapRef(parsed.positional[0]!);
-    const report = explainSnapshot(ref, parsed.selector, { size: parsed.size, text: parsed.text, form: parsed.form });
+    const report = explainSnapshot(ref, parsed.selector, { size: parsed.size, text: parsed.text, form: parsed.form, state: parsed.state?.[0] });
     if (report.kind === 'missing-selector') {
       emitResult({
         tag: 'error',
@@ -112,8 +126,9 @@ export async function cmdMeasureExplain(parsed: ParsedArgs, _args: string[]): Pr
         size: Boolean(parsed.size),
         text: Boolean(parsed.text),
         form: Boolean(parsed.form),
+        state: parsed.state?.[0] ?? 'base',
       },
-      summary: fact`Recorded cascade, stacking, clipping, focus, scroll, query, and state context for ${targetSelector}.`,
+      summary: fact`Recorded cascade, border/ink geometry, stacking, clipping, focus, scroll, query, and state context for ${targetSelector}${parsed.state?.[0] ? ` under requested state ${parsed.state[0]}` : ' from base-state artifacts'}.`,
       sections,
       followUp: parsed.size || parsed.text || parsed.form
         ? text`Re-run against a new snapshot to compare the same recorded measurements after a page change.`

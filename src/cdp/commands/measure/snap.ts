@@ -35,7 +35,9 @@ input:
   --capture-unsettled         write the full substrate despite non-settlement, marking unstable regions
   --skip-collector <name>     leave one collector out entirely (repeatable): ax, styles, queries, animation, layers, media, geometry, hittest, text, forms, focus, scroll, states, pixels. A collector that fails is recorded and skipped; every other collector's substrate is still written
   --pixels                    also write per-element raster crops
-  --state <state[:selector]>  force a pseudo-state or real control state (repeatable)
+  --list-crops                print every crop artifact path (default prints crop count and crops/ directory only)
+  --state <state[:selector]>  force a pseudo-state or real control state (repeatable); each supported forced element records target/descendant/following-peer style rows and state image/diff artifacts
+  --state-padding <px>        CSS-pixel padding around the target border box in each forced-state diff crop (default 8)
   --viewport <WxH>            temporarily capture at a CSS-pixel viewport (repeatable); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace
   --color-scheme <dark|light> temporarily capture under this prefers-color-scheme value; cleared afterward
 output: <snapshot id=… path=…> — the settled artifact directory (geometry, styles, hit-test, text, forms, animation, ax, queries, focus, scroll, layers; per-element crops with --pixels) every other measure/motion query leaf reads instead of re-driving the browser; --json mirrors
@@ -50,6 +52,7 @@ export interface MeasureSnapCapture {
   readonly dir: string;
   readonly base?: SnapRef;
   readonly artifacts: readonly string[];
+  readonly listCrops?: boolean;
 }
 
 interface ViewportSpec extends Viewport {
@@ -69,16 +72,36 @@ function readArrayCount(filePath: string, field: string): number | undefined {
   }
 }
 
-function artifactEntries(dir: string, artifacts: readonly string[]): ArtifactEntry[] {
+function artifactEntries(dir: string, artifacts: readonly string[], listCrops: boolean): ArtifactEntry[] {
   const entries: ArtifactEntry[] = [];
   const geometryCount = readArrayCount(path.join(dir, 'geometry.json'), 'elements');
+  const crops = artifacts.filter((name) => name.startsWith('crops/'));
   for (const name of artifacts) {
+    if (!listCrops && name.startsWith('crops/')) continue;
     entries.push({
       name,
       ...(name === 'geometry.json' && geometryCount !== undefined ? { note: `${geometryCount} elements` } : {}),
     });
   }
+  if (!listCrops && crops.length) entries.push({ name: 'crops/', note: `${crops.length} crops; pass --list-crops for paths` });
   return entries;
+}
+
+interface StateSummaryAffected { readonly relation?: string; readonly selector?: string; readonly style?: { readonly changed?: readonly string[] }; }
+interface StateSummaryElement { readonly state?: string; readonly supported?: boolean; readonly style?: { readonly changed?: readonly string[] }; readonly affected?: { readonly elements?: readonly StateSummaryAffected[] }; }
+
+function stateSummary(dir: string): ReturnType<typeof fact> | undefined {
+  try {
+    const value = JSON.parse(fs.readFileSync(path.join(dir, 'states.json'), 'utf8')) as { readonly elements?: readonly StateSummaryElement[] };
+    const lines = (value.elements ?? []).filter((element) => element.supported).map((element) => {
+      const target = element.style?.changed ?? [];
+      const descendants = (element.affected?.elements ?? []).filter((affected) => affected.relation !== 'target' && (affected.style?.changed?.length ?? 0) > 0).map((affected) => `${affected.relation} ${affected.selector ?? '<identity unavailable>'}: ${(affected.style?.changed ?? []).join(', ')}`);
+      return `${element.state ?? 'state'} target style changes=${target.length ? target.join(', ') : 'none'}${descendants.length ? `; descendant/peer changes=${descendants.join('; ')}` : ''}`;
+    });
+    return lines.length ? fact`Forced state measurements: ${lines.join(' | ')}.` : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 type ViewportClient = { send: (method: string, params?: Record<string, unknown>) => Promise<unknown> };
@@ -277,6 +300,7 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
           viewport: viewport?.label ?? null,
           colorScheme,
           skipCollectors: parsed.skipCollector ?? [],
+          ...({ stateDiffPaddingCssPx: parsed.statePadding ?? 8 } as {}),
         });
         artifacts = result.artifacts;
       }));
@@ -304,8 +328,9 @@ function buildSnapshotResult(captured: MeasureSnapCapture): RenderableResult {
   }>({ kind: 'snap', id: captured.id, dir: captured.dir });
   const incomplete = (meta.collectors ?? []).filter((c) => c.status !== 'ok');
   const elements = readArrayCount(path.join(captured.dir, 'geometry.json'), 'elements');
-  const artifacts = artifactEntries(captured.dir, captured.artifacts);
+  const artifacts = artifactEntries(captured.dir, captured.artifacts, Boolean(captured.listCrops));
   const capturedFullSubstrate = fs.existsSync(path.join(captured.dir, 'geometry.json'));
+  const stateMeasurement = stateSummary(captured.dir);
 
   return {
     tag: 'snapshot',
@@ -332,7 +357,7 @@ function buildSnapshotResult(captured: MeasureSnapCapture): RenderableResult {
     // not only in meta.json — its artifact is absent (timeout/error/skipped)
     // or partly built from timed-out reads (degraded), and a caller who reads
     // the remaining substrate as a whole page would be reading a hole.
-    ...(incomplete.length ? { sections: [collectorNote(incomplete)] } : {}),
+    ...((incomplete.length || stateMeasurement) ? { sections: [...(incomplete.length ? [collectorNote(incomplete)] : []), ...(stateMeasurement ? [stateMeasurement] : [])] } : {}),
     artifacts: formatArtifactList(artifacts),
     followUp: meta.settled || capturedFullSubstrate
       ? fact`Query snapshot ${captured.id} with \`capture measure check ${captured.id}\`, \`capture measure census --snap ${captured.id} --axis color\`, or \`capture measure map focus ${captured.id}\`.`
@@ -417,7 +442,7 @@ export async function cmdMeasureSnap(parsed: ParsedArgs, _args: string[]): Promi
     const colorScheme = parseColorScheme(parsed.colorScheme);
     const results = [] as RenderableResult[];
     for (const viewport of viewports) {
-      const capture = await captureMeasureSnap(parsed, parsed.positional[0], viewport?.label, colorScheme);
+      const capture = { ...(await captureMeasureSnap(parsed, parsed.positional[0], viewport?.label, colorScheme)), ...(parsed.listCrops ? { listCrops: true } : {}) };
       captures.push(capture);
       results.push(buildSnapshotResult(capture));
     }

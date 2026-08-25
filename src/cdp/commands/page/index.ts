@@ -22,7 +22,7 @@ import { cmdPageElements } from './elements.js';
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="page">
 verbs against the live session tab — act (click, type, scroll, navigate, exec) and look (shot, elements)
-use when driving or inspecting the page a session opened; all verbs auto-target the active session tab, --target/--url override
+use when driving or inspecting the tab a session opened or adopted; all verbs auto-target the active session tab, --target/--url override
   click · type · scroll · navigate · exec · shot · elements — \`capture page -h\`
 </command>`;
 
@@ -39,7 +39,7 @@ During a live composed recording every verb routes through the recorder.
 <subcommand name="scroll" args="<target> --to <top|bottom|px> [--no-screenshot]" whenToUse="scroll one resolved container to a position"/>
 <subcommand name="navigate" args="<url> [--settle <ms>]" whenToUse="navigate the tab and wait for load + settle"/>
 <subcommand name="exec" args="<code> | --file <path>" whenToUse="run arbitrary JS in the tab (expressions, return, await)"/>
-<subcommand name="shot" args="[--viewport <WxH>] [--full-page] [--color-scheme <dark|light>] [--out <path>]" whenToUse="look at the page right now without acting"/>
+<subcommand name="shot" args="[--viewport <WxH>] [--full-page] [--color-scheme <dark|light>] [--crop <x,y,w,h> | --crop-selector <sel> [--pad <px>]] [--zoom <factor>] [--out <path>]" whenToUse="look at the page right now without acting"/>
 <subcommand name="elements" args="[--all] [--limit <n>]" whenToUse="list what can be acted on — role, name, backend:<id> per element"/>
 
 capture page <leaf> -h    Per-leaf usage`;

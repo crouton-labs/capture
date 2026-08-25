@@ -49,6 +49,7 @@ interface WorldCalls {
   deleteHar: string[];
   detect: number;
   openTab: string[];
+  findTabById: Array<{ port: number; targetId: string }>;
   closeTarget: Array<{ port: number; targetId: string }>;
   awaitTabReady: string[];
   startBridge: string[];
@@ -60,7 +61,7 @@ interface WorldCalls {
  * override the ONE method that should throw at the boundary under test. */
 function baseWorld(): { calls: WorldCalls; world: SessionStartWorld } {
   const calls: WorldCalls = {
-    createHar: [], deleteHar: [], detect: 0, openTab: [], closeTarget: [],
+    createHar: [], deleteHar: [], detect: 0, openTab: [], findTabById: [], closeTarget: [],
     awaitTabReady: [], startBridge: [], stopBridge: [], publish: [],
   };
   const fakeTarget = (): CDPTarget => ({ id: 'TAB1', title: '', url: 'about:blank', type: 'page', webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/TAB1' });
@@ -69,6 +70,7 @@ function baseWorld(): { calls: WorldCalls; world: SessionStartWorld } {
     async deleteHar(id) { calls.deleteHar.push(id); },
     async detectCdpPort() { calls.detect += 1; return 9222; },
     async openTab(_port, _url) { calls.openTab.push(_url); return fakeTarget(); },
+    async findTabById(port, targetId) { calls.findTabById.push({ port, targetId }); return fakeTarget(); },
     async closeTarget(port, targetId) { calls.closeTarget.push({ port, targetId }); },
     async awaitTabReady(target) { calls.awaitTabReady.push(target.id); return false; },
     async startBridge(dir) { calls.startBridge.push(dir); return { socketPath: path.join(dir, 'bridge.sock'), pid: 999999 }; },

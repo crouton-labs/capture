@@ -60,8 +60,9 @@ A CDP-enabled browser must be running; \`capture tab list\` is the probe, and
 \`capture tab launch\` starts one capture owns and reaps when nothing is (never
 hand-roll a detached browser — nothing reaps that). Capture never signals a
 browser it did not start, so attaching to your own with --port is unchanged.
-CDP_PORT / CDP_TARGET pin the browser + tab for orchestrators — precedence:
-explicit flag > active session > env.`;
+CDP_PORT / CDP_TARGET pin the browser + tab for target-selecting commands —
+precedence: explicit flag > active session > env. \`session start\` adopts only an
+explicit --target.`;
 }
 
 function printVersion(): void {

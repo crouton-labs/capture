@@ -16,11 +16,30 @@ export interface CapturedRegion {
   readonly height: number;
 }
 
+/** A CSS-pixel crop request. The capture is intersected with the live visual viewport before it reaches CDP. */
+export interface ScreenshotCrop {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+type ScreenshotOptions = { fullPage?: boolean; crop?: ScreenshotCrop; zoom?: number };
+
 /** A region is reportable only if every number is finite and its size is positive; anything else would produce a fabricated scale. */
 function validRegion(region: CapturedRegion): CapturedRegion | undefined {
   const finite = [region.x, region.y, region.width, region.height].every((n) => typeof n === 'number' && Number.isFinite(n));
   if (!finite || region.width <= 0 || region.height <= 0) return undefined;
   return region;
+}
+
+/** Intersects page-coordinate CSS regions without rounding their geometry. */
+function intersectRegions(a: CapturedRegion, b: CapturedRegion): CapturedRegion | undefined {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  return validRegion({ x, y, width: right - x, height: bottom - y });
 }
 
 /**
@@ -82,7 +101,7 @@ function downscalePngToFit(png: Buffer, maxDim: number): Buffer {
 export async function captureScreenshot(
   client: CDPClient,
   viewport?: { width: number; height: number },
-  options?: { fullPage?: boolean },
+  options?: ScreenshotOptions,
 ): Promise<Buffer> {
   const result = await withScopeSerialization(client, 'viewport', 'screenshot capture', () =>
     viewportScopedCapture(client, viewport, options),
@@ -100,7 +119,7 @@ export async function captureScreenshot(
 export async function captureScreenshotWithCssViewport(
   client: CDPClient,
   viewport?: { width: number; height: number },
-  options?: { fullPage?: boolean },
+  options?: ScreenshotOptions,
 ): Promise<{ png: Buffer; cssViewport?: CapturedRegion }> {
   return withScopeSerialization(client, 'viewport', 'screenshot capture', () =>
     viewportScopedCapture(client, viewport, options, true),
@@ -117,7 +136,7 @@ export async function captureScreenshotWithCssViewport(
 async function viewportScopedCapture(
   client: CDPClient,
   viewport?: { width: number; height: number },
-  options?: { fullPage?: boolean },
+  options?: ScreenshotOptions,
   includeCssViewport = false,
 ): Promise<{ png: Buffer; cssViewport?: CapturedRegion }> {
   const MAX_DIM = 1600; // headroom below Anthropic's 2000px many-image limit
@@ -185,16 +204,29 @@ async function viewportScopedCapture(
       }, 5000)) as { result: { value: number } };
       const dpr = dprResult.result.value ?? 1;
 
-      const actualMaxSide = Math.max(vw, vh) * dpr;
-      const scale = actualMaxSide > MAX_DIM ? MAX_DIM / actualMaxSide : 1 / dpr;
+      const visualViewport = validRegion({ x: sx, y: sy, width: vw, height: vh });
+      const requestedCrop = options?.crop;
+      const crop = requestedCrop && visualViewport
+        ? intersectRegions(requestedCrop, visualViewport)
+        : visualViewport;
+      if (!crop) {
+        throw new Error('The requested CSS crop does not intersect the live visual viewport.');
+      }
+      const zoom = options?.zoom ?? 1;
+      const actualMaxSide = Math.max(crop.width, crop.height) * dpr * zoom;
+      const scale = actualMaxSide > MAX_DIM ? MAX_DIM / (Math.max(crop.width, crop.height) * dpr) : zoom / dpr;
       screenshotOpts = {
         ...screenshotOpts,
-        clip: { x: sx, y: sy, width: vw, height: vh, scale },
+        clip: { x: crop.x, y: crop.y, width: crop.width, height: crop.height, scale },
       };
-      // The clip is what the image is cut from, rounding included — not the
-      // fractional viewport it was derived from.
-      capturedRegion = validRegion({ x: sx, y: sy, width: vw, height: vh });
-    } catch {
+      // The clip is what the image is cut from, including a CSS crop's
+      // viewport intersection — not the fractional viewport it was derived from.
+      capturedRegion = crop;
+    } catch (error) {
+      // A crop without CSS viewport metrics cannot be located honestly; unlike
+      // an ordinary full-viewport shot, it must not silently become an
+      // unrelated uncropped image.
+      if (options?.crop) throw error;
       // Capture without downscaling when the optional metrics probe is unavailable.
     }
 
@@ -221,7 +253,7 @@ async function viewportScopedCapture(
 
     // If the browser rejects clipped capture entirely, an unclipped viewport
     // capture is still better than a false successful 0-byte artifact.
-    if (png.length === 0 && screenshotOpts.clip && !options?.fullPage) {
+    if (png.length === 0 && screenshotOpts.clip && !options?.fullPage && !options?.crop) {
       const retry = (await client.send('Page.captureScreenshot', {
         format: 'png',
         captureBeyondViewport: false,

@@ -492,6 +492,36 @@ test('selector helpers resolve CSS/backend/axid/ax/text forms', async () => {
   assert.deepEqual(resolveSelectorInput(elements, '.does-not-exist'), []);
 });
 
+test('selector helpers resolve CSS compounds against captured attributes and DOM ancestry', async () => {
+  const { resolveSelectorInput } = await import('../src/output/selector.js');
+  const frame = { frameId: 'frame-0' };
+  const elements = [
+    { id: 'html', tag: 'html', selector: 'html', domPath: 'html[0]', frame, attributes: {} },
+    { id: 'body', tag: 'body', selector: 'body', domPath: 'html[0]/body[0]', frame, attributes: {} },
+    { id: 'glass', tag: 'div', selector: 'div.rail > div.glass', domPath: 'html[0]/body[0]/div[0]/div[0]', frame, attributes: { class: 'glass' } },
+    { id: 'list', tag: 'ul', selector: 'div.rail > div.glass > ul.tiles', domPath: 'html[0]/body[0]/div[0]/div[0]/ul[0]', frame, attributes: { class: 'tiles' } },
+    { id: 'tile', tag: 'button', selector: 'div.glass > ul.tiles > li:nth-of-type(1) > button.tile', domPath: 'html[0]/body[0]/div[0]/div[0]/ul[0]/li[0]/button[0]', frame, attributes: { class: 'tile', 'aria-label': 'Casual greeting · Waiting', type: 'button' } },
+    { id: 'badge', tag: 'span', selector: 'div.glass > ul.tiles > li:nth-of-type(1) > button.tile > span.badge', domPath: 'html[0]/body[0]/div[0]/div[0]/ul[0]/li[0]/button[0]/span[0]', frame, attributes: { class: 'badge' } },
+    { id: 'host', tag: 'x-host', selector: 'x-host', domPath: 'html[0]/body[0]/x-host[0]', frame, attributes: {} },
+    { id: 'private', tag: 'span', selector: 'x-host > span.private', domPath: 'html[0]/body[0]/x-host[0]/span[0]', frame, shadow: { inShadowDom: true, hostSelector: 'x-host', chainDepth: 1 }, attributes: { class: 'private' } },
+    { id: 'inner-frame', tag: 'button', selector: 'button.inside-frame', domPath: 'html[0]/body[0]/button[0]', frame: { frameId: 'frame-1' }, attributes: { class: 'inside-frame' } },
+  ];
+
+  assert.deepEqual(resolveSelectorInput(elements, 'span.badge').map((element) => element.id), ['badge']);
+  assert.deepEqual(resolveSelectorInput(elements, 'body .tile').map((element) => element.id), ['tile']);
+  assert.deepEqual(resolveSelectorInput(elements, 'html .tile').map((element) => element.id), ['tile']);
+  assert.deepEqual(resolveSelectorInput(elements, ' .tile ').map((element) => element.id), ['tile']);
+  assert.deepEqual(resolveSelectorInput(elements, 'x-host span.private'), []);
+  assert.deepEqual(resolveSelectorInput(elements, 'body .inside-frame'), []);
+  assert.deepEqual(resolveSelectorInput(elements, 'button.tile').map((element) => element.id), ['tile']);
+  assert.deepEqual(resolveSelectorInput(elements, '.tile').map((element) => element.id), ['tile']);
+  assert.deepEqual(resolveSelectorInput(elements, 'button[aria-label="Casual greeting · Waiting"]').map((element) => element.id), ['tile']);
+  assert.deepEqual(resolveSelectorInput(elements, 'div.glass span.badge').map((element) => element.id), ['badge']);
+  assert.deepEqual(resolveSelectorInput(elements, 'div.glass > ul.tiles > li:nth-of-type(1) > button.tile > span.badge').map((element) => element.id), ['badge']);
+  assert.deepEqual(resolveSelectorInput(elements, 'div.glass > span.badge'), []);
+  assert.deepEqual(resolveSelectorInput(elements, 'div.glass > ul.tiles > li:nth-of-type(1) > button.tile > span.badge').map((element) => element.id), ['badge']);
+});
+
 test('selectorHints truncates unique example values for a recovery error', async () => {
   const { selectorHints } = await import('../src/output/selector.js');
   const elements = Array.from({ length: 20 }, (_, i) => ({

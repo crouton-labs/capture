@@ -255,6 +255,71 @@ test('under page zoom the scale is measured against the captured clip, not the l
   }
 });
 
+test('CSS coordinate crops preserve fractional origins, clamp to the visual viewport, and report the actual scale', async () => {
+  const outPath = path.join(os.tmpdir(), `u07-crop-${process.pid}.png`);
+  const client = stubClient(captureHandlers(makePng(60, 80)));
+  const state = installDeps(client);
+  try {
+    const { stdout, exitCode } = await runCmd(() => cmdPageShot(parsedFor({ crop: '-5,20,20,20', zoom: '4', out: outPath }), []));
+    assert.equal(exitCode, undefined);
+    const clip = client.calls.find((call) => call.method === 'Page.captureScreenshot')?.params.clip as Record<string, number>;
+    assert.deepEqual(clip, { x: 0, y: 20, width: 15, height: 20, scale: 4 });
+    assert.match(stdout, /css-width="15" css-height="20" css-x="0" css-y="20" css-to-image-x="4\.000000" css-to-image-y="4\.000000"/);
+    assert.match(stdout, /CSS crop: coordinates requested x=-5 y=20 w=20 h=20 at zoom 4; the captured CSS region above is its intersection with the source visual viewport/);
+  } finally {
+    cleanup(state);
+    fs.rmSync(outPath, { force: true });
+  }
+});
+
+test('a CSS crop fails rather than silently falling back to an uncropped viewport image', async () => {
+  const outPath = path.join(os.tmpdir(), `u07-crop-no-fallback-${process.pid}.png`);
+  let captures = 0;
+  const client = stubClient({
+    ...captureHandlers(makePng(100, 100)),
+    'Page.captureScreenshot': () => ({ data: captures++ < 2 ? '' : makePng(100, 100).toString('base64') }),
+  });
+  const state = installDeps(client);
+  try {
+    await assert.rejects(
+      cmdPageShot(parsedFor({ crop: '10,10,20,20', out: outPath }), []),
+      /returned no image data/,
+    );
+    assert.equal(captures, 2, 'a crop retries only its clip; it never requests an unrelated viewport image');
+    assert.equal(fs.existsSync(outPath), false);
+  } finally {
+    cleanup(state);
+    fs.rmSync(outPath, { force: true });
+  }
+});
+
+test('--crop-selector resolves exactly one target, pads its border box, and captures at the requested zoom', async () => {
+  const outPath = path.join(os.tmpdir(), `u07-selector-crop-${process.pid}.png`);
+  const client = stubClient({
+    ...captureHandlers(makePng(176, 176)),
+    'DOM.enable': () => ({}),
+    'DOM.getDocument': () => ({ root: { nodeId: 1 } }),
+    'DOM.querySelectorAll': () => ({ nodeIds: [2] }),
+    'DOM.describeNode': () => ({ node: { backendNodeId: 14 } }),
+    'Accessibility.getPartialAXTree': () => ({ nodes: [{ backendDOMNodeId: 14, role: { value: 'button' }, name: { value: 'Tile' } }] }),
+    'DOM.scrollIntoViewIfNeeded': () => ({}),
+    'DOM.getBoxModel': () => ({ model: { border: [26.5, 142, 54.5, 142, 54.5, 170, 26.5, 170] } }),
+  });
+  const state = installDeps(client);
+  try {
+    const { stdout, exitCode } = await runCmd(() => cmdPageShot(parsedFor({ cropSelector: '.tile', pad: 8, zoom: '4', out: outPath }), []));
+    assert.equal(exitCode, undefined);
+    const clip = client.calls.find((call) => call.method === 'Page.captureScreenshot')?.params.clip as Record<string, number>;
+    assert.deepEqual(clip, { x: 18.5, y: 134, width: 44, height: 44, scale: 4 });
+    assert.match(stdout, /crop-source="selector" crop-selector="\.tile" crop-backend-node-id="14" requested-zoom="4"/);
+    assert.match(stdout, /captured CSS region 44×44 at page origin 18\.5,134/);
+    assert.match(stdout, /border box plus 8px padding requested x=18\.5 y=134 w=44 h=44 at zoom 4/);
+  } finally {
+    cleanup(state);
+    fs.rmSync(outPath, { force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // --viewport WxH: transient override, cleared after the capture
 // ---------------------------------------------------------------------------

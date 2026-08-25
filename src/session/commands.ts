@@ -330,40 +330,39 @@ export async function waitForPageLoad(
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="session">
-the artifact container — a session records HAR and bundles every artifact; it may open a tab or adopt one later; while active, every command auto-targets its tab
-use when starting scoped work against a page: start first, then every other capture command needs no --target/--port threading
+the artifact container — a session records HAR and bundles every artifact; it may open or adopt a tab; once it has one, every command auto-targets it
+use when starting scoped work against a page: start with --url or --target, then every other capture command needs no --target/--port threading
   start · stop · list · view · har · log — \`capture session -h\`
 </command>`;
 
-const START_USAGE = `capture session start [--url <url>] [--hold] — open or prepare a tab, record HAR, and set the active capture context.
+const START_USAGE = `capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>] — open or adopt a tab, record HAR, and set the active capture context.
 
 input:
-  --url <url>    Absolute URL to open in a fresh tab through CDP's
-                 Target.createTarget. Some endpoints, including Electron,
-                 expose existing tabs but reject Target.createTarget; on those
-                 endpoints --url cannot be used.
-  --hold         Hold one CDP browser connection open for the session's
-                 lifetime, so browser-level state (permission grants,
-                 ServiceWorker enablement) survives across separate commands.
-                 With no --url, start a held session and adopt an existing tab
-                 with this supported workflow:
-                   capture session start --hold --port <port>
-                   capture tab list --port <port>
-                   capture page navigate <url> --target <target-id> --port <port>
-                 The navigate command adopts that target for the session; later
-                 page commands then auto-target it.
-  --port <n>     CDP port to attach to; default is auto-detected across localhost.
+  --url <url>       Absolute URL to open in a fresh tab through CDP's
+                    Target.createTarget. Some endpoints, including Electron,
+                    expose existing tabs but reject Target.createTarget; on
+                    those endpoints --url cannot be used. Conflicts with
+                    --target.
+  --target <tab-id>  Existing page tab to adopt. Resolves a full target id or
+                    an unambiguous prefix of at least four characters at the
+                    selected CDP endpoint; start fails if it does not resolve.
+                    CDP_TARGET does not select a tab for session start. Conflicts
+                    with --url.
+  --hold             Hold one CDP browser connection open for the session's
+                    lifetime, so browser-level state (permission grants,
+                    ServiceWorker enablement) survives across separate commands.
+  --port <n>         CDP port to attach to; default is auto-detected across localhost.
 
 Output:
-  One <session id=… path=… [url=…]> block: the session id, bundle dir, opened
-  tab when --url succeeds, HAR recording id, and held-bridge pid when
+  One <session id=… path=… [url=…] [target=… port=…]> block: the session id,
+  bundle dir, opened or adopted tab, HAR recording id, and held-bridge pid when
   applicable. --json mirrors the same fields.
 
 effects:
   Creates a private session dir with shots/, starts a HAR recording, opens a
-  fresh tab only when --url is supplied, optionally holds a CDP bridge, and
-  registers the session as the active capture context so subsequent commands
-  auto-target it.`;
+  fresh tab only when --url is supplied or adopts the resolved --target tab,
+  optionally holds a CDP bridge, and registers the session as the active capture
+  context so subsequent commands auto-target its tab.`;
 
 const STOP_USAGE = `capture session stop <session-id> — finalize a session and write its bundle manifest.
 
@@ -475,13 +474,13 @@ effects:
   the identity-bearing tailer record is registered in the session metadata.`;
 
 function printSessionHelp(): void {
-  console.log(`capture session — the artifact container: records HAR and bundles artifacts; it may open a tab or adopt one later.
+  console.log(`capture session — the artifact container: records HAR and bundles artifacts; it may open or adopt a tab.
 
-An active session auto-targets its tab and auto-appends recorded traffic — no
+An active session with a tab auto-targets it and auto-appends recorded traffic — no
 --target/--har threading. \`stop\` finalizes the session and writes its bundle
 manifest; \`view\` reads that manifest back.
 
-  <subcommand name="start" args="[--url <url>] [--hold]" whenToUse="open or prepare a tab, start HAR, and set the active capture context"/>
+  <subcommand name="start" args="[--url <url> | --target <tab-id>] [--hold] [--port <n>]" whenToUse="open or adopt a tab, start HAR, and set the active capture context"/>
   <subcommand name="stop" args="<session-id>" whenToUse="finalize the session and write its bundle manifest"/>
   <subcommand name="list" args="" whenToUse="show active and stopped sessions"/>
   <subcommand name="view" args="<session-id> [--filter shots|har|logs|measure|motion|other]" whenToUse="read back a stopped session's bundle manifest"/>
@@ -506,6 +505,7 @@ export interface SessionStartWorld {
   deleteHar(harId: string): Promise<void>;
   detectCdpPort(): Promise<number>;
   openTab(port: number, url: string): Promise<CDPTarget>;
+  findTabById(port: number, targetId: string): Promise<CDPTarget | null>;
   closeTarget(port: number, targetId: string): Promise<void>;
   /** Attach to the freshly-opened tab and wait for load; returns page-load-timed-out. */
   awaitTabReady(target: CDPTarget, url: string): Promise<boolean>;
@@ -526,6 +526,10 @@ const productionStartWorld: SessionStartWorld = {
   async openTab(port, url) {
     const { openTab } = await import('../cdp.js');
     return openTab(port, url);
+  },
+  async findTabById(port, targetId) {
+    const { findTabById } = await import('../cdp/targets.js');
+    return findTabById(port, targetId);
   },
   async closeTarget(port, targetId) {
     const { closeTarget } = await import('../cdp/targets.js');
@@ -600,7 +604,7 @@ async function start(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
-  if (rejectSurplusPositionals(parsed, 'start', 0, 'capture session start [--url <url>] [--hold]')) return;
+  if (rejectSurplusPositionals(parsed, 'start', 0, 'capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>]')) return;
 
   return withSessionScopeLifecycle(async () => {
     const active = getActiveSession();
@@ -616,6 +620,7 @@ async function start(parsed: ParsedArgs): Promise<void> {
     }
 
     const url = parsed.url ?? null;
+    const requestedTarget = parsed.target ?? null;
     const hold = parsed.hold === true;
     const id = generateId();
     const dir = sessionDir(id);
@@ -639,8 +644,18 @@ async function start(parsed: ParsedArgs): Promise<void> {
       const acquiredHarId = harId;
       acquired.push({ label: 'HAR recording', release: () => startWorld.deleteHar(acquiredHarId) });
 
-      if (url || hold) {
+      if (url || requestedTarget || hold) {
         cdpPort = parsed.port ?? await startWorld.detectCdpPort();
+      }
+
+      if (requestedTarget) {
+        target = await startWorld.findTabById(cdpPort!, requestedTarget);
+        if (!target) {
+          throw worldFailure(`No tab found for target "${requestedTarget}" on port ${cdpPort}. Run \`capture tab list --port ${cdpPort}\` to see available tabs.`);
+        }
+        if (target.type !== 'page') {
+          throw worldFailure(`Target "${requestedTarget}" on port ${cdpPort} is ${target.type}, not a page tab. Run \`capture tab list --port ${cdpPort}\` to see available tabs.`);
+        }
       }
 
       if (url) {
@@ -650,7 +665,7 @@ async function start(parsed: ParsedArgs): Promise<void> {
           const message = error instanceof Error ? error.message : String(error);
           if (message.toLowerCase().includes('not supported')) {
             throw worldFailure(
-              `Target.createTarget is unsupported on port ${cdpPort}. Use existing tab: \`capture page navigate <url> --target <target-id> --port ${cdpPort}\` after \`capture session start --hold --port ${cdpPort}\` and \`capture tab list\`.`,
+              `Target.createTarget is unsupported on port ${cdpPort}. Use an existing tab: \`capture tab list --port ${cdpPort}\`, then \`capture session start --target <target-id> --port ${cdpPort}\`.`,
               error,
             );
           }
@@ -680,7 +695,7 @@ async function start(parsed: ParsedArgs): Promise<void> {
         startedAt: new Date().toISOString(),
         stoppedAt: null,
         stopping: false,
-        url,
+        url: target?.url ?? url,
         targetId: target?.id ?? null,
         port: cdpPort,
         stepCount: 0,
@@ -699,14 +714,14 @@ async function start(parsed: ParsedArgs): Promise<void> {
     }
 
     const rows: FactLine[] = [fact`bundle dir: ${dir}`];
-    if (target) rows.push(fact`tab ${target.id} opened at ${url ?? ''}`);
+    if (target) rows.push(url ? fact`tab ${target.id} opened at ${url}` : fact`tab ${target.id} adopted at ${target.url}`);
     if (pageLoadTimedOut) rows.push(fact`page load timed out after 10000ms; the session stays attached to target ${target?.id ?? ''}`);
     if (harId) rows.push(fact`HAR recording ${harId} — traffic auto-appends while the session is active`);
     if (hold) rows.push(fact`held CDP bridge: pid ${bridgePid ?? 0}`);
 
     emitResult({
       tag: 'session',
-      attrs: { id, path: dir, ...(url ? { url } : {}) },
+      attrs: { id, path: dir, ...(target?.url ? { url: target.url } : {}), ...(target ? { target: target.id } : {}), ...(cdpPort !== null ? { port: cdpPort } : {}) },
       summary: fact`Session ${id} started; it is now the active capture context.`,
       sections: [lineList(rows)],
       followUp: fact`capture session stop ${id}`,

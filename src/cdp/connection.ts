@@ -320,7 +320,7 @@ async function finishLocalHar(parsed: ParsedArgs, collectors: Collectors): Promi
   if (batch.entries.length > 0 || batch.incompleteLifecycles.length > 0) {
     await seams.appendHar(parsed.har, batch);
     console.error(
-      `  [har:${parsed.har}] +${batch.entries.length} entries +${batch.incompleteLifecycles.length} incomplete`,
+      `  [har:${parsed.har}] +${batch.entries.length} entries +${batch.incompleteLifecycles.length} incomplete — incomplete lifecycles are retained as their own records (request plus whatever response was observed), separate from log.entries; read them with capture session har`,
     );
   }
 }

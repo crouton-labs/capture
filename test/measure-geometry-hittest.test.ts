@@ -200,6 +200,17 @@ test('geometry.json: elements array is non-empty and every record carries id + t
   }
 });
 
+test('geometry.json: each reachable document records html and body roots for CSS ancestry matching', () => {
+  const topHtml = geometry.elements.find((element) => element.tag === 'html' && element.frame.frameId === 'frame-0');
+  const topBody = geometry.elements.find((element) => element.tag === 'body' && element.frame.frameId === 'frame-0');
+  const frameHtml = geometry.elements.find((element) => element.tag === 'html' && element.frame.frameId === 'frame-1');
+  const frameBody = geometry.elements.find((element) => element.tag === 'body' && element.frame.frameId === 'frame-1');
+  assert.ok(topHtml, 'expected a top-document html geometry record');
+  assert.ok(topBody, 'expected a top-document body geometry record');
+  assert.ok(frameHtml, 'expected a same-origin iframe html geometry record');
+  assert.ok(frameBody, 'expected a same-origin iframe body geometry record');
+});
+
 test('hittest.json: elements + samples arrays are non-empty, and the whole-viewport lattice is capped', () => {
   assert.ok(Array.isArray(hittest.elements));
   assert.ok(hittest.elements.length > 0);

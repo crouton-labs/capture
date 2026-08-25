@@ -19,12 +19,13 @@ import { cmdMeasureMapFocus } from './map-focus.js';
 import { cmdMeasureMapScroll } from './map-scroll.js';
 import { cmdMeasureMapLayers } from './map-layers.js';
 import { cmdMeasureMapAx } from './map-ax.js';
+import { cmdMeasureMapPaint } from './map-paint.js';
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="measure">
 static facts over a settled snapshot — \`snap\` writes the substrate, every other leaf is a read-only query over it
-use when measuring layout/content/targetability facts, diffing snapshots, or reading one facet (focus, scroll, layers, ax) of the substrate
-  snap · check · diff · census · explain · sweep · map — \`capture measure -h\`
+use when measuring layout/content/targetability facts, diffing snapshots, or reading one facet (focus, scroll, layers, ax, paint) of the substrate
+  snap · check · diff · census · explain · sweep · map (focus|scroll|layers|ax|paint) — \`capture measure -h\`
 </command>`;
 
 export const MEASURE_USAGE = `capture measure — enriched snapshot substrate + read-only queries over it.
@@ -42,18 +43,19 @@ Findings exit 0 — a report, not a failure.
 <subcommand name="census" args="[--snap <id>]... [--url <url>]... [--set-file <path>] --axis <axis>" whenToUse="value distributions across one or more snapshots"/>
 <subcommand name="explain" args="<snap> --selector <sel> [--size] [--text] [--form]" whenToUse="per-element cascade/stacking/clipping/size/text/form explanation"/>
 <subcommand name="sweep" args="[url] --axis <axis> [--from <val>] [--to <val>] [--viewport-height <val>]" whenToUse="responsive/environment sampling across an axis"/>
-<subcommand name="map" args="focus|scroll|layers|ax [url|snap]" whenToUse="read one facet of a snapshot's substrate — capture measure map -h"/>
+<subcommand name="map" args="focus|scroll|layers|ax [url|snap] | paint <snap> --selector <target> [--state <name>]" whenToUse="read one facet of a snapshot's substrate — capture measure map -h"/>
 
 capture measure <leaf> -h    Per-leaf usage`;
 
 export const MEASURE_MAP_USAGE = `capture measure map — read one facet of a snapshot's substrate (no browser re-drive).
 
-A URL target first creates a snap; a snap target reads its existing artifact.
+Focus, scroll, layers, and ax accept a URL target and create a snap first; paint requires an existing snapshot and reads it without browser driving.
 
 <subcommand name="focus" args="[url|snap]" whenToUse="keyboard traversal order (focus.json)"/>
 <subcommand name="scroll" args="[url|snap]" whenToUse="scroll-container topology (scroll.json)"/>
 <subcommand name="layers" args="[url|snap]" whenToUse="paint/compositor layer map (layers.json)"/>
 <subcommand name="ax" args="[url|snap]" whenToUse="AX-tree ↔ layout map (ax.json + geometry.json)"/>
+<subcommand name="paint" args="<snap> --selector <target> [--state <name>]" whenToUse="elements painted above one target and their recorded AABB coverage (geometry.json + layers.json)"/>
 
 capture measure map <leaf> -h    Per-leaf usage`;
 
@@ -97,6 +99,8 @@ async function measureMapMain(parsed: ParsedArgs, args: string[]): Promise<void>
       return cmdMeasureMapLayers(rest, args);
     case 'ax':
       return cmdMeasureMapAx(rest, args);
+    case 'paint':
+      return cmdMeasureMapPaint(rest, args);
     case undefined:
       console.log(MEASURE_MAP_USAGE);
       return;
