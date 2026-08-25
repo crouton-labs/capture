@@ -50,7 +50,7 @@ input:
   <code>           JS source as one argument (exactly one of <code> / --file)
   --file <path>    read the JS source from a file instead of inline
   --settle <ms>    network-settle window after execution so an active session's HAR captures the requests the code triggers (default: ${DEFAULT_SETTLE_MS}; 0 disables); the block reports the measured requested/waited settle
-  --target <id>    target a tab explicitly (default: the active session tab; with no active session, --target or --url is required)
+  --target <id>    target a tab explicitly (default: the active session tab, else exactly one available page tab; multiple page tabs require --target or --url)
   --url <pattern>  target the first tab whose URL matches <pattern>
 output:
   <exec-result result-chars=…> — the JSON-serialized return value inline, escaped and capped at ${GENEROUS_RESULT_CAP} chars; a larger result is also written whole to a private artifact file (the active session's page/ dir, else a one-shot artifact dir) whose absolute path appears in the block. --json mirrors the same block with the value at full fidelity.

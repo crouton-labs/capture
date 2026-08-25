@@ -642,5 +642,6 @@ test('page exec: -h is the leaf shape — lowercase schema headers, settle defau
   assert.match(stdout, /^effects:$/m);
   assert.ok(stdout.includes('default: 3000'), 'help states the settle default inline');
   assert.ok(stdout.includes('--file <path>'));
+  assert.match(stdout, /exactly one available page tab; multiple page tabs require --target or --url/);
   assert.ok(!/example/i.test(stdout), 'leaf help carries no examples');
 });

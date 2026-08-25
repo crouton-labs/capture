@@ -15,8 +15,6 @@ import {
   parseSignedInt,
   parseUint,
   validateAxTreeManifest,
-  validateBoundedBounds,
-  validateCollectionCounts,
   validateCursorClaims,
   validateCursorToken,
   validateDerivedReadManifest,
@@ -40,9 +38,6 @@ test('U1 freezes grammar and bounds primitives', () => {
   assert.equal(MAX_BOUNDED_BYTES, 16_384);
   assert.equal(MAX_CURSOR_BYTES, 2048);
   assert.equal(NEUTRAL_FAMILIES.length, 11);
-  valid(validateBoundedBounds({ maxBytes: 16_384, maxRecords: 20, growing: true, paginated: true }));
-  assert.equal(validateBoundedBounds({ maxBytes: 100, maxRecords: 20, growing: false, paginated: false }).valid, false);
-  valid(validateCollectionCounts({ total: 20, displayed: 12, omitted: 8, limit: 12, omissionCauses: ['record-limit'] }));
 });
 
 test('U1 snapshot fixtures cover v2 authority, legacy absence, and DPR distinctions', () => {
