@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseCliArgs, resolveCliContext } from '../src/cdp/args.js';
-import { findTabByIdInPorts, requireTargetId, scoreTabUrlMatch } from '../src/cdp/targets.js';
+import { AmbiguousPageTargetError, findTabByIdInPorts, findUnambiguousPageTabInPorts, requireTargetId, scoreTabUrlMatch } from '../src/cdp/targets.js';
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
 
 // U14 — target provenance is recorded at the assignment point as
@@ -92,6 +92,33 @@ test('explicit ports stay explicit when target resolution falls back to a port l
   assert.deepEqual(calls, [1111, 2222]);
   assert.equal(resolved?.port, 2222);
   assert.equal(resolved?.tab.id, 'tab-2');
+});
+
+test('an omitted target resolves the one page tab across selected endpoints', async () => {
+  const resolved = await findUnambiguousPageTabInPorts([9222], async () => [
+    { id: 'only-page', title: 'Fixture', url: 'http://fixture.test/', type: 'page', webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/only-page' },
+    { id: 'worker', title: '', url: '', type: 'service_worker', webSocketDebuggerUrl: undefined },
+  ]);
+  assert.deepEqual(resolved, {
+    port: 9222,
+    tab: { id: 'only-page', title: 'Fixture', url: 'http://fixture.test/', type: 'page', webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/only-page' },
+  });
+});
+
+test('an omitted target rejects two page tabs with their candidate list', async () => {
+  await assert.rejects(
+    () => findUnambiguousPageTabInPorts([9222], async () => [
+      { id: 'first-page', title: 'First', url: 'http://first.test/', type: 'page', webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/first-page' },
+      { id: 'second-page', title: 'Second', url: 'http://second.test/', type: 'page', webSocketDebuggerUrl: 'ws://localhost:9222/devtools/page/second-page' },
+    ]),
+    (error: unknown) => {
+      assert.ok(error instanceof AmbiguousPageTargetError);
+      assert.match(error.message, /first-pa/);
+      assert.match(error.message, /second-p/);
+      assert.match(error.message, /Use --target/);
+      return true;
+    },
+  );
 });
 
 test('openTab fails loudly when Target.createTarget returns no targetId', () => {

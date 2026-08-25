@@ -122,6 +122,30 @@ export async function findTabByIdInPorts(
   return null;
 }
 
+export class AmbiguousPageTargetError extends Error {
+  constructor(candidates: readonly { readonly port: number; readonly tab: CDPTarget }[]) {
+    super(`More than one page tab is available:\n${candidates.map(({ port, tab }) => `  ${tab.id.slice(0, 8)}  port ${port}  ${tab.url}`).join('\n')}\nUse --target <tabId> or --url <pattern> to target a tab.`);
+    this.name = 'AmbiguousPageTargetError';
+  }
+}
+
+/** Resolves an omitted target only when all selected endpoints expose one page tab. */
+export async function findUnambiguousPageTabInPorts(
+  ports: readonly number[],
+  lister: (port: number) => Promise<CDPTarget[]> = listTargets,
+): Promise<{ port: number; tab: CDPTarget } | null> {
+  const candidates: Array<{ port: number; tab: CDPTarget }> = [];
+  for (const port of ports) {
+    try {
+      for (const tab of await lister(port)) if (tab.type === 'page') candidates.push({ port, tab });
+    } catch {
+      // An unavailable endpoint cannot supply a target.
+    }
+  }
+  if (candidates.length > 1) throw new AmbiguousPageTargetError(candidates);
+  return candidates[0] ?? null;
+}
+
 function normalizeUrlForMatch(value: string): { full: string; host: string; path: string } | null {
   try {
     const url = new URL(value);

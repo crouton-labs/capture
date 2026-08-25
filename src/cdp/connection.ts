@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import { performance } from 'node:perf_hooks';
 import { CDPClient } from './client.js';
-import { findTabByIdAcrossEndpoints, findTabByUrlAcrossEndpoints } from './targets.js';
+import { detectCdpPortsAsync } from './detect.js';
+import { AmbiguousPageTargetError, findTabByIdAcrossEndpoints, findTabByUrlAcrossEndpoints, findUnambiguousPageTabInPorts } from './targets.js';
 import { type CDPTarget, type ParsedArgs } from './types.js';
 import { ConsoleRecorder, printConsoleSummary } from './console-recorder.js';
 import { HARRecorder } from './har-recorder.js';
@@ -13,7 +14,7 @@ import { getActiveSession, updateActiveSession, type ActiveSessionState } from '
 import { withSessionScopeLifecycle } from '../session/coordinator.js';
 import { RecorderHeldClient, isRecorderHeldClient } from './recorder-client.js';
 import { recDirFor, readRecorderJson } from './motion/recorder.js';
-import { captureError, invalidInput } from '../errors.js';
+import { captureError } from '../errors.js';
 
 function getPortFromWebSocketDebuggerUrl(url?: string): number | null {
   if (!url) return null;
@@ -51,10 +52,10 @@ export interface ConnectionSeams {
   sleep: (ms: number) => Promise<void>;
 }
 
-function defaultResolveTab(parsed: ParsedArgs): Promise<{ port: number; tab: CDPTarget } | null> {
-  return parsed.target
-    ? findTabByIdAcrossEndpoints(parsed.target, parsed.port)
-    : findTabByUrlAcrossEndpoints(parsed.url!, parsed.port);
+async function defaultResolveTab(parsed: ParsedArgs): Promise<{ port: number; tab: CDPTarget } | null> {
+  if (parsed.target) return findTabByIdAcrossEndpoints(parsed.target, parsed.port);
+  if (parsed.url) return findTabByUrlAcrossEndpoints(parsed.url, parsed.port);
+  return findUnambiguousPageTabInPorts(parsed.port === undefined ? (await detectCdpPortsAsync()).map((endpoint) => endpoint.port) : [parsed.port]);
 }
 
 let seams: ConnectionSeams = {
@@ -210,11 +211,15 @@ export async function connectForCommand(
     return routed;
   }
 
-  if (!parsed.target && !parsed.url) {
-    throw invalidInput('Use --target <tabId> or --url <pattern> to target a tab. Run "capture tab list" to see available tabs.', 'missing_target');
+  let resolved: { port: number; tab: CDPTarget } | null;
+  try {
+    resolved = await seams.resolveTab(parsed);
+  } catch (error) {
+    if (error instanceof AmbiguousPageTargetError) {
+      throw captureError('precondition', 'target_unavailable', error.message, error);
+    }
+    throw error;
   }
-
-  const resolved = await seams.resolveTab(parsed);
   const tab = resolved?.tab ?? null;
 
   if (!tab) {
@@ -222,7 +227,9 @@ export async function connectForCommand(
     throw captureError(
       'precondition',
       'target_unavailable',
-      `No tab found for ${parsed.target ? 'target' : 'URL pattern'} "${query}". Run "capture tab list" to see available tabs.`,
+      query === undefined
+        ? 'No page tab found. Run "capture tab list" to see available tabs.'
+        : `No tab found for ${parsed.target ? 'target' : 'URL pattern'} "${query}". Run "capture tab list" to see available tabs.`,
     );
   }
 

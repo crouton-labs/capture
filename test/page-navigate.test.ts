@@ -274,7 +274,7 @@ test('an invalid destination URL is a typed error BEFORE any connect/send (zero 
   }
 });
 
-test('no active session and no source selector is a targeting error with zero tab creation', async () => {
+test('no active session and no source selector probes the unambiguous source without creating a tab', async () => {
   const client = makeStubClient();
   const h = installSeams(client, null);
   const { cmdPageNavigate } = await import('../src/cdp/commands/page/navigate.js');
@@ -292,7 +292,7 @@ test('no active session and no source selector is a targeting error with zero ta
       },
       'an unresolvable source is a targeting error — navigate never creates a tab',
     );
-    assert.equal(h.resolveTabCalls.length, 0, 'connectForCommand rejects before resolveTab when no target/url is given');
+    assert.equal(h.resolveTabCalls.length, 1, 'connectForCommand probes the unambiguous page-tab resolver when no target/url is given');
     assert.equal(client.sends.length, 0, 'no tab is created or driven');
   } finally {
     h.restoreSeams();

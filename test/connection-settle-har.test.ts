@@ -362,19 +362,22 @@ test('connectForCommand: a claimed-but-unusable recorder is recorder_unavailable
   fs.rmSync(sessionDir, { recursive: true, force: true });
 });
 
-test('connectForCommand: direct CDP is allowed when there is no active recording, or an explicit distinct target diverts', async () => {
-  // (a) No active recording, no target/url → the direct lane's own invocation
-  // error, NOT recorder_unavailable.
+test('connectForCommand: direct CDP is allowed when no session has exactly one tab, or an explicit distinct target diverts', async () => {
+  // (a) No active recording and exactly one page tab → direct lane adopts the
+  // unambiguous resolver result rather than rejecting a target omission.
   {
-    const h = installSeams({ getActiveSession: () => null });
+    const resolveSpy: string[] = [];
+    const h = installSeams({
+      getActiveSession: () => null,
+      resolveTab: async () => {
+        resolveSpy.push('resolved');
+        return { port: 9223, tab: FAKE_TAB };
+      },
+    });
     try {
-      await assert.rejects(connectForCommand(parsedFor({ target: undefined })), (err: unknown) => {
-        assert.ok(err instanceof CaptureError, 'no-recording direct lane is a typed invocation error');
-        assert.equal(err.descriptor.kind, 'invocation');
-        assert.equal(err.descriptor.code, 'missing_target');
-        assert.match(err.message, /Use --target/);
-        return true;
-      });
+      const { client } = await connectForCommand(parsedFor({ target: undefined }));
+      assert.ok(!isRecorderHeldClient(client));
+      assert.deepEqual(resolveSpy, ['resolved']);
     } finally {
       h.restore();
     }

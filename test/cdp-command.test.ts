@@ -137,11 +137,11 @@ test('cdp with neither <Domain.method> nor --wait-event throws a typed missing_m
   assert.equal(stdout, '', 'the leaf must not render the error itself');
 });
 
-test('cdp wait-only invocation passes the both-absent gate (its failure is missing_target, never missing_method_and_event)', async () => {
+test('cdp wait-only invocation passes the both-absent gate (its failure is target_unavailable, never missing_method_and_event)', async () => {
   // No injectable connect at the cmdCdp level: with no --target/--url and no
-  // active session, `connectForCommand` (src/cdp/connection.ts) now throws a
-  // typed `missing_target` CaptureError itself before any network connection
-  // is attempted — no plain Error to fall back on and get bucketed into a
+  // active session, `connectForCommand` (src/cdp/connection.ts) resolves an
+  // omitted target only when exactly one page tab exists. With none, it throws
+  // a typed `target_unavailable` CaptureError — no plain Error to fall back on and get bucketed into a
   // generic `cdp_failed` (cmdCdp's catch rethrows an already-typed
   // CaptureError verbatim; it only wraps into `cdp_failed` for a non-typed
   // throw). Whichever typed error surfaces, this proves the gate let the
@@ -151,7 +151,7 @@ test('cdp wait-only invocation passes the both-absent gate (its failure is missi
     () => withCapturedOutput(() => cmdCdp(parsedArgs({ waitEvent: 'ServiceWorker.workerRegistrationUpdated', timeoutMs: 200 }), [])),
     (error: unknown) => {
       assert.ok(error instanceof CaptureError);
-      assert.equal(error.descriptor.code, 'missing_target');
+      assert.equal(error.descriptor.code, 'target_unavailable');
       assert.doesNotMatch(error.descriptor.message, /missing_method_and_event/);
       return true;
     },
