@@ -50,6 +50,8 @@ interface SnapshotMetaForBase {
 export interface MeasureSnapCapture {
   readonly id: string;
   readonly dir: string;
+  /** A bare ID only resolves while its owning session remains active. */
+  readonly queryRef: string;
   readonly base?: SnapRef;
   readonly artifacts: readonly string[];
   readonly listCrops?: boolean;
@@ -307,7 +309,7 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
     }, { settle: 0 });
 
     if (!snapDir) throw new Error('measure snap did not allocate an artifact directory');
-    return { id: snapId, dir: snapDir, artifacts, ...(base ? { base } : {}) };
+    return { id: snapId, dir: snapDir, queryRef: active ? snapId : snapDir, artifacts, ...(base ? { base } : {}) };
   } catch (err) {
     if (allocatedRoot && !(err instanceof SnapshotCaptureTimeout)) removeArtifactTree(allocatedRoot);
     throw err;
@@ -360,7 +362,7 @@ function buildSnapshotResult(captured: MeasureSnapCapture): RenderableResult {
     ...((incomplete.length || stateMeasurement) ? { sections: [...(incomplete.length ? [collectorNote(incomplete)] : []), ...(stateMeasurement ? [stateMeasurement] : [])] } : {}),
     artifacts: formatArtifactList(artifacts),
     followUp: meta.settled || capturedFullSubstrate
-      ? fact`Query snapshot ${captured.id} with \`capture measure check ${captured.id}\`, \`capture measure census --snap ${captured.id} --axis color\`, or \`capture measure map focus ${captured.id}\`.`
+      ? fact`Query snapshot ${captured.id} with \`capture measure check ${captured.queryRef}\`, \`capture measure census --snap ${captured.queryRef} --axis color\`, or \`capture measure map focus ${captured.queryRef}\`.`
       : fact`Re-run with \`--freeze-animations\`, a longer \`--settle-timeout\`, or \`--capture-unsettled\` to choose a queryable capture.`,
   };
 }

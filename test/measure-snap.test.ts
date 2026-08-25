@@ -139,6 +139,7 @@ test('measure snap writes one-shot and active-session substrates, including a ho
   assert.match(oneShot.stdout, /Artifacts: .*media\.json/);
   assert.match(oneShot.stdout, /Artifacts: .*meta\.json/);
   assert.match(oneShotPath, new RegExp(`^${CAPTURE_ROOT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/oneshot-[^/]+/measure/snaps/snap-`));
+  assert.match(oneShot.stdout, new RegExp(`capture measure check ${oneShotPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'one-shot follow-ups use the resolvable absolute snapshot path');
   assert.ok(fs.existsSync(path.join(oneShotPath, 'states.json')));
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(oneShotPath, 'states.json'), 'utf8')).requested, ['hover:button']);
 
