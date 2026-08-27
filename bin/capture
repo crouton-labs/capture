@@ -2232,7 +2232,7 @@ var require_websocket = __commonJS({
     "use strict";
     var EventEmitter = require("events");
     var https = require("https");
-    var http = require("http");
+    var http2 = require("http");
     var net5 = require("net");
     var tls = require("tls");
     var { randomBytes: randomBytes10, createHash: createHash5 } = require("crypto");
@@ -2766,7 +2766,7 @@ var require_websocket = __commonJS({
       }
       const defaultPort = isSecure ? 443 : 80;
       const key = randomBytes10(16).toString("base64");
-      const request = isSecure ? https.request : http.request;
+      const request = isSecure ? https.request : http2.request;
       const protocolSet = /* @__PURE__ */ new Set();
       let perMessageDeflate;
       opts.createConnection = opts.createConnection || (isSecure ? tlsConnect : netConnect);
@@ -3260,7 +3260,7 @@ var require_websocket_server = __commonJS({
   "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/websocket-server.js"(exports2, module2) {
     "use strict";
     var EventEmitter = require("events");
-    var http = require("http");
+    var http2 = require("http");
     var { Duplex } = require("stream");
     var { createHash: createHash5 } = require("crypto");
     var extension2 = require_extension();
@@ -3335,8 +3335,8 @@ var require_websocket_server = __commonJS({
           );
         }
         if (options.port != null) {
-          this._server = http.createServer((req, res) => {
-            const body = http.STATUS_CODES[426];
+          this._server = http2.createServer((req, res) => {
+            const body = http2.STATUS_CODES[426];
             res.writeHead(426, {
               "Content-Length": body.length,
               "Content-Type": "text/plain"
@@ -3623,7 +3623,7 @@ var require_websocket_server = __commonJS({
       this.destroy();
     }
     function abortHandshake(socket, code, message, headers2) {
-      message = message || http.STATUS_CODES[code];
+      message = message || http2.STATUS_CODES[code];
       headers2 = {
         Connection: "close",
         "Content-Type": "text/html",
@@ -3632,7 +3632,7 @@ var require_websocket_server = __commonJS({
       };
       socket.once("finish", socket.destroy);
       socket.end(
-        `HTTP/1.1 ${code} ${http.STATUS_CODES[code]}\r
+        `HTTP/1.1 ${code} ${http2.STATUS_CODES[code]}\r
 ` + Object.keys(headers2).map((h) => `${h}: ${headers2[h]}`).join("\r\n") + "\r\n\r\n" + message
       );
     }
@@ -3779,6 +3779,39 @@ __export(detect_exports, {
   identifyBrowserBundleId: () => identifyBrowserBundleId,
   pickPreferredEndpoint: () => pickPreferredEndpoint
 });
+function httpGetJson(port, path33, timeoutMs) {
+  return new Promise((resolve12) => {
+    const req = http.get(
+      { host: "localhost", port, path: path33, timeout: timeoutMs },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        if (status < 200 || status >= 300) {
+          res.resume();
+          resolve12(null);
+          return;
+        }
+        let body = "";
+        res.setEncoding("utf-8");
+        res.on("data", (chunk) => {
+          body += chunk;
+        });
+        res.on("end", () => {
+          try {
+            resolve12(JSON.parse(body));
+          } catch {
+            resolve12(null);
+          }
+        });
+        res.on("error", () => resolve12(null));
+      }
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      resolve12(null);
+    });
+    req.on("error", () => resolve12(null));
+  });
+}
 function getDefaultBrowserId() {
   try {
     const output = (0, import_child_process.execSync)(
@@ -3795,14 +3828,8 @@ function getDefaultBrowserId() {
 }
 async function probeCdpPort(port) {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 500);
-    const resp = await fetch(`http://localhost:${port}/json/version`, {
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
-    if (resp.ok) {
-      const version = await resp.json();
+    const version = await httpGetJson(port, "/json/version", 500);
+    if (version) {
       const browser = version.Browser;
       const userAgent = version["User-Agent"] ?? "";
       if (!browser) return null;
@@ -3824,14 +3851,7 @@ async function probeCdpPort(port) {
 }
 async function probeHasPageTarget(port) {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 500);
-    const resp = await fetch(`http://localhost:${port}/json/list`, {
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
-    if (!resp.ok) return false;
-    const list2 = await resp.json();
+    const list2 = await httpGetJson(port, "/json/list", 500);
     return Array.isArray(list2) && list2.some((t) => t.type === "page");
   } catch {
     return false;
@@ -3926,10 +3946,11 @@ async function detectCdpPort() {
   }
   return pickPreferredEndpoint(endpoints, getDefaultBrowserId()).port;
 }
-var import_child_process, BROWSER_PATTERNS;
+var import_child_process, http, BROWSER_PATTERNS;
 var init_detect = __esm({
   "src/cdp/detect.ts"() {
     import_child_process = require("child_process");
+    http = __toESM(require("http"));
     BROWSER_PATTERNS = {
       "company.thebrowser.browser": ["arc"],
       "com.google.chrome": ["chrome", "google chrome"],
@@ -64688,8 +64709,8 @@ ${lanes.join("\n")}
         }
         function createPerModuleNameCache() {
           const directoryPathMap = /* @__PURE__ */ new Map();
-          return { get, set };
-          function get(directory) {
+          return { get: get2, set };
+          function get2(directory) {
             return directoryPathMap.get(toPath(directory, currentDirectory, getCanonicalFileName));
           }
           function set(directory, result) {
@@ -168021,12 +168042,12 @@ ${lanes.join("\n")}
           ...info,
           parseable: !!content,
           fileName,
-          get,
+          get: get2,
           has(dependencyName, inGroups) {
-            return !!get(dependencyName, inGroups);
+            return !!get2(dependencyName, inGroups);
           }
         };
-        function get(dependencyName, inGroups = 15) {
+        function get2(dependencyName, inGroups = 15) {
           for (const [group2, deps7] of dependencyGroups) {
             if (deps7 && inGroups & group2) {
               const dep = deps7.get(dependencyName);

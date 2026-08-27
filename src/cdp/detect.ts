@@ -1,4 +1,56 @@
 import { execSync } from 'child_process';
+import * as http from 'http';
+
+/**
+ * A CDP-endpoint JSON probe that CANNOT leak a socket handle. Node's built-in
+ * `fetch` (undici) leaves a dangling socket + request handle when a
+ * connect-phase abort fires against a port that accepts TCP but never sends an
+ * HTTP response (e.g. a docker-proxied or half-open listener). That handle
+ * keeps this short-lived CLI process alive for undici's ~7s internal socket
+ * timeout AFTER all real work is done, so a single dead port on the machine
+ * adds ~7s to every command that runs port detection. A raw `http.get` whose
+ * request we explicitly `destroy()` on timeout releases the handle immediately.
+ *
+ * Resolves to the parsed JSON body on a 2xx response, or `null` on any
+ * timeout, connection error, non-2xx status, or unparseable body.
+ */
+function httpGetJson(
+  port: number,
+  path: string,
+  timeoutMs: number,
+): Promise<unknown | null> {
+  return new Promise((resolve) => {
+    const req = http.get(
+      { host: 'localhost', port, path, timeout: timeoutMs },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        if (status < 200 || status >= 300) {
+          res.resume();
+          resolve(null);
+          return;
+        }
+        let body = '';
+        res.setEncoding('utf-8');
+        res.on('data', (chunk) => {
+          body += chunk;
+        });
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(body));
+          } catch {
+            resolve(null);
+          }
+        });
+        res.on('error', () => resolve(null));
+      },
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+    req.on('error', () => resolve(null));
+  });
+}
 
 export const BROWSER_PATTERNS: Record<string, string[]> = {
   'company.thebrowser.browser': ['arc'],
@@ -40,18 +92,12 @@ interface CdpProbeResult {
 // being confused for the intended browser.
 async function probeCdpPort(port: number): Promise<CdpProbeResult | null> {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 500);
-    const resp = await fetch(`http://localhost:${port}/json/version`, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (resp.ok) {
-      const version = (await resp.json()) as {
-        Browser?: string;
-        'User-Agent'?: string;
-        webSocketDebuggerUrl?: string;
-      };
+    const version = (await httpGetJson(port, '/json/version', 500)) as {
+      Browser?: string;
+      'User-Agent'?: string;
+      webSocketDebuggerUrl?: string;
+    } | null;
+    if (version) {
       const browser = version.Browser;
       const userAgent = version['User-Agent'] ?? '';
       if (!browser) return null;
@@ -83,14 +129,9 @@ async function probeCdpPort(port: number): Promise<CdpProbeResult | null> {
 
 async function probeHasPageTarget(port: number): Promise<boolean> {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 500);
-    const resp = await fetch(`http://localhost:${port}/json/list`, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (!resp.ok) return false;
-    const list = (await resp.json()) as Array<{ type?: string }>;
+    const list = (await httpGetJson(port, '/json/list', 500)) as Array<{
+      type?: string;
+    }> | null;
     return Array.isArray(list) && list.some((t) => t.type === 'page');
   } catch {
     return false;
