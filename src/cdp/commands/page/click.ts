@@ -112,7 +112,7 @@ export function emitResolutionError(parsed: ParsedArgs, command: string, failure
       {
         tag: 'error',
         attrs: { command, code: 'unsupported_prefix' },
-        summary: fact`received: target \`${failure.input}\` — the \`text:\` prefix is not accepted by live driving verbs; expected one of: bare CSS selector, ax:<name>, axid:<id>, backend:<id>.`,
+        summary: fact`received: target \`${failure.input}\` — the \`text:\` prefix is not accepted by live driving verbs; expected one of: bare CSS selector (or exact accessible name when CSS finds none), ax:<name>, axid:<id>, backend:<id>.`,
         followUp: fact`Retry \`${command}\` with \`ax:<name>\` (accessible-name substring) or a CSS selector; \`text:\` matching exists only on the query leaves.`,
       },
       { json: parsed.json },
@@ -170,7 +170,7 @@ export function emitResolutionError(parsed: ParsedArgs, command: string, failure
 const USAGE = `capture page click <target> — dispatch one real click on exactly one resolved element
 
 input:
-  <target>          resolved against the LIVE page: bare CSS selector, ax:<name> (case-insensitive substring over accessible names), axid:<id>, backend:<id>. text: is not accepted. Exactly one match required — zero or many matches is a structured error listing candidates with backend:<id> retry keys.
+  <target>          resolved against the LIVE page: bare CSS selector (takes precedence) or exact accessible name when CSS finds none, ax:<name> (case-insensitive substring over accessible names), axid:<id>, backend:<id>. text: is not accepted. Exactly one match required — zero or many matches is a structured error listing candidates with backend:<id> retry keys.
   --settle <ms>     network-settle window applied after the click (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
@@ -188,7 +188,7 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
     return emitInvalidInput(
       parsed,
       'page click',
-      fact`received: ${parsed.positional.length} positional arguments; expected exactly one target (CSS selector, ax:<name>, axid:<id>, or backend:<id>).`,
+      fact`received: ${parsed.positional.length} positional arguments; expected exactly one target (CSS selector or exact accessible name, ax:<name>, axid:<id>, or backend:<id>).`,
     );
   }
 

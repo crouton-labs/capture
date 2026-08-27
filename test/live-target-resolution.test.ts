@@ -226,12 +226,45 @@ test('css: a single live match resolves with backend id, role, and name', async 
 });
 
 test('css: zero matches fails with no-match and an empty candidate list', async () => {
-  const client = stubClient(cssHandlers([]));
+  const client = stubClient({ ...cssHandlers([]), ...axHandlers() });
   const result = await resolveLiveTarget(client, '.nope');
   assert.ok(!result.ok);
   assert.equal(result.code, 'no-match');
   assert.equal(result.matchCount, 0);
   assert.deepEqual(result.candidates, []);
+});
+
+test('a bare exact accessible link name resolves after CSS finds no live element', async () => {
+  const client = stubClient({
+    ...cssHandlers([]),
+    'Accessibility.enable': () => ({}),
+    'Accessibility.disable': () => ({}),
+    'Accessibility.getFullAXTree': () => ({
+      nodes: [{ nodeId: '5', backendDOMNodeId: 204, role: { value: 'link' }, name: { value: 'Add Security Key' } }],
+    }),
+  });
+  const result = await resolveLiveTarget(client, 'Add Security Key');
+  assert.ok(result.ok);
+  assert.deepEqual(result, { ok: true, kind: 'ax', backendNodeId: 204, role: 'link', name: 'Add Security Key' });
+  assert.deepEqual(
+    client.calls.map((call) => call.method),
+    ['DOM.enable', 'DOM.getDocument', 'DOM.querySelectorAll', 'Accessibility.enable', 'Accessibility.getFullAXTree', 'Accessibility.disable'],
+  );
+});
+
+test('a bare target prefers a CSS match over an exact accessible-name match', async () => {
+  const client = stubClient({
+    ...cssHandlers([13]),
+    'Accessibility.enable': () => ({}),
+    'Accessibility.disable': () => ({}),
+    'Accessibility.getFullAXTree': () => ({
+      nodes: [{ nodeId: '5', backendDOMNodeId: 204, role: { value: 'link' }, name: { value: 'Docs' } }],
+    }),
+  });
+  const result = await resolveLiveTarget(client, 'Docs');
+  assert.ok(result.ok);
+  assert.deepEqual(result, { ok: true, kind: 'css', backendNodeId: 113, role: 'link', name: 'Docs' });
+  assert.ok(!client.calls.some((call) => call.method === 'Accessibility.getFullAXTree'));
 });
 
 test('ax: substring matching two names ("Send", "Send later") fails with both candidates', async () => {

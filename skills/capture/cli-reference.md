@@ -32,7 +32,7 @@ capture
 - Rendered prose on stdout is the contract; `--json` mirrors the same result, while stderr carries in-flight diagnostics.
 - Exit 0 means the command completed, including empty lists and reported findings. Exit 1 is a structured invocation, precondition, or world error. Exit 2 is confined to `capture measure check --gate` and `capture measure diff --gate` when measured findings or changes exist.
 - Explicit targeting takes precedence over the active session, which takes precedence over `CDP_PORT` and `CDP_TARGET` environment pinning.
-- Live `page` target forms are bare CSS, `ax:<name>`, `axid:<id>`, and `backend:<id>` where leaf help declares a target. Driving leaves require exactly one match and return candidates when resolution is ambiguous.
+- Live `page` target forms are bare CSS (which takes precedence), an exact accessible name when CSS finds none, `ax:<name>`, `axid:<id>`, and `backend:<id>` where leaf help declares a target. Driving leaves require exactly one match and return candidates when resolution is ambiguous.
 - `page click`, `page type`, and `page scroll` write a session shot after input unless `--no-screenshot` is set. Session traffic is read with `session har`.
 - Capture reports measurements and factual provenance. The caller owns interpretation against its criterion.
 

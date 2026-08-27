@@ -42,7 +42,7 @@ input:
   --full-page       transient override to the full scrollable content height for this capture
   --color-scheme <dark|light>  transient prefers-color-scheme override for this capture; cleared afterward
   --crop <x,y,w,h>  capture this page-coordinate CSS-pixel rect, intersected with the live visual viewport; x/y may be fractional, w/h must be positive
-  --crop-selector <sel>  resolve exactly one live target (bare CSS, ax:<name>, axid:<id>, or backend:<id>), scroll it into view, then crop its border box and surroundings
+  --crop-selector <sel>  resolve exactly one live target (bare CSS takes precedence; exact accessible name applies when CSS finds none; ax:<name>, axid:<id>, or backend:<id>), scroll it into view, then crop its border box and surroundings
   --pad <px>        nonnegative integer CSS pixels added on every side of --crop-selector (default: 0; not accepted with --crop)
   --zoom <factor>   positive decimal CSS-to-image scale requested for a CSS crop; the 1600px image cap may produce a smaller reported scale
   --out <path>      destination file; default: the active session's shots/ sequence, or a fresh oneshot-*/page/ dir under the capture root when no session is active
@@ -266,7 +266,7 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
     return;
   }
   if (parsed.cropSelector !== undefined && !parsed.cropSelector.trim()) {
-    emitResult({ tag: 'error', attrs: { command: 'page shot', code: 'invalid_crop_selector' }, summary: text`received an empty --crop-selector; expected a bare CSS selector, ax:<name>, axid:<id>, or backend:<id>.` }, { json: parsed.json });
+    emitResult({ tag: 'error', attrs: { command: 'page shot', code: 'invalid_crop_selector' }, summary: text`received an empty --crop-selector; expected a bare CSS selector or exact accessible name, ax:<name>, axid:<id>, or backend:<id>.` }, { json: parsed.json });
     process.exitCode = 1;
     return;
   }

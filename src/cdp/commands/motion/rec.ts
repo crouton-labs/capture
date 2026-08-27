@@ -72,7 +72,7 @@ const USAGE = `capture motion rec — record the page over time: composed (whate
 input:
   [url] --do <action>       one-shot: open <url> (or record the active session tab when <url> is omitted), record one action, finalize
     action                  click:<target> | scroll:<target>,to=<top|bottom|px>
-    target                  css selector (bare string) | ax:<name> (case-insensitive substring) | axid:<id> | backend:<id>
+    target                  css selector (takes precedence) or exact accessible name when CSS finds none (bare string) | ax:<name> (case-insensitive substring) | axid:<id> | backend:<id>
                             must resolve to exactly one live element; text: is not accepted by driving actions
     --duration <seconds>    keep recording after the action (default: 0)
     --viewport <WxH>        emulate a viewport for the recording window (restored after); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace
@@ -212,7 +212,7 @@ function recorderLiveClient(recorder: Pick<RecorderSession, 'handleCdp'>): LiveC
 function resolutionError(failure: ResolutionFailure): DoActionError {
   if (failure.code === 'unsupported-prefix') {
     return new DoActionError(
-      `Unsupported --do target prefix in "${failure.input}": text: is query-leaf-only. Accepted prefixes: bare css selector, ax:<name>, axid:<id>, backend:<id>.`,
+      `Unsupported --do target prefix in "${failure.input}": text: is query-leaf-only. Accepted prefixes: bare css selector (or exact accessible name when CSS finds none), ax:<name>, axid:<id>, backend:<id>.`,
       'unsupported_target_prefix',
     );
   }

@@ -461,6 +461,7 @@ test('one-shot click with a no-match target rejects without dispatching input', 
   const recorder = stubRecorder({
     'DOM.getDocument': () => ({ root: { nodeId: 1 } }),
     'DOM.querySelectorAll': () => ({ nodeIds: [] }),
+    'Accessibility.getFullAXTree': () => ({ nodes: [] }),
   });
   await assert.rejects(
     () => driveOneShotAction(recorder as never, 'click:.missing'),

@@ -28,7 +28,7 @@ const USAGE = `capture page type <text> [--into <target>] — type text into the
 
 input:
   <text>            the text to insert (agent-supplied; echoed back in the result block)
-  --into <target>   focus this field first — resolved against the LIVE page: bare CSS selector, ax:<name> (case-insensitive substring), axid:<id>, backend:<id>; text: is not accepted; exactly one match required
+  --into <target>   focus this field first — resolved against the LIVE page: bare CSS selector (takes precedence) or exact accessible name when CSS finds none, ax:<name> (case-insensitive substring), axid:<id>, backend:<id>; text: is not accepted; exactly one match required
   --settle <ms>     network-settle window applied after typing (default: 500; 1500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:

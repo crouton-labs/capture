@@ -84,7 +84,7 @@ export type DoAction =
 export function parseDoAction(action: string): DoAction {
   if (action.startsWith('click:')) {
     const target = action.slice('click:'.length);
-    if (!target) throw invalidInput('Invalid --do action: click requires a target — a css selector, ax:<name>, axid:<id>, or backend:<id>.');
+    if (!target) throw invalidInput('Invalid --do action: click requires a target — a css selector (or exact accessible name when CSS finds none), ax:<name>, axid:<id>, or backend:<id>.');
     return { verb: 'click', target };
   }
   if (action.startsWith('scroll:')) {
@@ -95,5 +95,5 @@ export function parseDoAction(action: string): DoAction {
     if (!isScrollDestination(to)) throw invalidInput('Invalid --do action: scroll requires `scroll:<target>,to=<top|bottom|px>`.');
     return { verb: 'scroll', target: spec.slice(0, comma), to };
   }
-  throw invalidInput('Unsupported --do action. Supported actions: click:<target>; scroll:<target>,to=<top|bottom|px> — target is a css selector, ax:<name>, axid:<id>, or backend:<id>.');
+  throw invalidInput('Unsupported --do action. Supported actions: click:<target>; scroll:<target>,to=<top|bottom|px> — target is a css selector (or exact accessible name when CSS finds none), ax:<name>, axid:<id>, or backend:<id>.');
 }

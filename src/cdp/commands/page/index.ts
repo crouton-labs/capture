@@ -30,7 +30,7 @@ export const PAGE_USAGE = `capture page — verbs against the live session tab: 
 
 All verbs auto-target the active session tab; --target/--url override. The
 driving verbs (click, type, scroll) resolve exactly one element via the
-unified target grammar — bare CSS selector, ax:<name>, axid:<id>,
+unified target grammar — bare CSS selector (which takes precedence) or exact accessible name when CSS finds none, ax:<name>, axid:<id>,
 backend:<id> — and reject an ambiguous target with the candidate list.
 During a live composed recording every verb routes through the recorder.
 

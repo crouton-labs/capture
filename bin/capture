@@ -9080,7 +9080,7 @@ function assertScrollDestination(value) {
 function parseDoAction(action) {
   if (action.startsWith("click:")) {
     const target = action.slice("click:".length);
-    if (!target) throw invalidInput("Invalid --do action: click requires a target \u2014 a css selector, ax:<name>, axid:<id>, or backend:<id>.");
+    if (!target) throw invalidInput("Invalid --do action: click requires a target \u2014 a css selector (or exact accessible name when CSS finds none), ax:<name>, axid:<id>, or backend:<id>.");
     return { verb: "click", target };
   }
   if (action.startsWith("scroll:")) {
@@ -9091,7 +9091,7 @@ function parseDoAction(action) {
     if (!isScrollDestination(to)) throw invalidInput("Invalid --do action: scroll requires `scroll:<target>,to=<top|bottom|px>`.");
     return { verb: "scroll", target: spec.slice(0, comma), to };
   }
-  throw invalidInput("Unsupported --do action. Supported actions: click:<target>; scroll:<target>,to=<top|bottom|px> \u2014 target is a css selector, ax:<name>, axid:<id>, or backend:<id>.");
+  throw invalidInput("Unsupported --do action. Supported actions: click:<target>; scroll:<target>,to=<top|bottom|px> \u2014 target is a css selector (or exact accessible name when CSS finds none), ax:<name>, axid:<id>, or backend:<id>.");
 }
 var SWEEP_NUMERIC_AXES, SWEEP_ENUM_VALUES;
 var init_leaf_grammar = __esm({
@@ -16048,7 +16048,7 @@ async function resolveLiveTarget(client, input) {
       return settleAxMatches("axid", input, matches);
     }
     case "css":
-      return resolveLiveCss(client, input, parsed.value);
+      return resolveBareTarget(client, input, parsed.value);
   }
 }
 function preferActionable(matches) {
@@ -16080,6 +16080,17 @@ function settleAxMatches(kind, input, rawMatches) {
       name: m.name?.value ?? null
     }))
   };
+}
+async function resolveBareTarget(client, input, selector) {
+  const css = await resolveLiveCss(client, input, selector);
+  if (css.ok || css.code === "ambiguous") return css;
+  const normalized2 = normalizeAccessibleName(input);
+  if (!normalized2) return css;
+  const matches = (await readFullAXTree(client)).filter(
+    (node) => node.backendDOMNodeId !== void 0 && node.name?.value !== void 0 && normalizeAccessibleName(node.name.value) === normalized2
+  );
+  const ax = settleAxMatches("ax", input, matches);
+  return ax.ok || ax.code === "ambiguous" ? ax : css;
 }
 async function resolveLiveCss(client, input, selector) {
   await client.send("DOM.enable");
@@ -16308,7 +16319,7 @@ function emitResolutionError(parsed, command, failure) {
       {
         tag: "error",
         attrs: { command, code: "unsupported_prefix" },
-        summary: fact`received: target \`${failure.input}\` — the \`text:\` prefix is not accepted by live driving verbs; expected one of: bare CSS selector, ax:<name>, axid:<id>, backend:<id>.`,
+        summary: fact`received: target \`${failure.input}\` — the \`text:\` prefix is not accepted by live driving verbs; expected one of: bare CSS selector (or exact accessible name when CSS finds none), ax:<name>, axid:<id>, backend:<id>.`,
         followUp: fact`Retry \`${command}\` with \`ax:<name>\` (accessible-name substring) or a CSS selector; \`text:\` matching exists only on the query leaves.`
       },
       { json: parsed.json }
@@ -16360,7 +16371,7 @@ async function cmdPageClick(parsed, _args) {
     return emitInvalidInput(
       parsed,
       "page click",
-      fact`received: ${parsed.positional.length} positional arguments; expected exactly one target (CSS selector, ax:<name>, axid:<id>, or backend:<id>).`
+      fact`received: ${parsed.positional.length} positional arguments; expected exactly one target (CSS selector or exact accessible name, ax:<name>, axid:<id>, or backend:<id>).`
     );
   }
   const settle = effectiveSettle(parsed, { standalone: 1e3, session: 2500 });
@@ -16411,7 +16422,7 @@ var init_click = __esm({
     USAGE = `capture page click <target> \u2014 dispatch one real click on exactly one resolved element
 
 input:
-  <target>          resolved against the LIVE page: bare CSS selector, ax:<name> (case-insensitive substring over accessible names), axid:<id>, backend:<id>. text: is not accepted. Exactly one match required \u2014 zero or many matches is a structured error listing candidates with backend:<id> retry keys.
+  <target>          resolved against the LIVE page: bare CSS selector (takes precedence) or exact accessible name when CSS finds none, ax:<name> (case-insensitive substring over accessible names), axid:<id>, backend:<id>. text: is not accepted. Exactly one match required \u2014 zero or many matches is a structured error listing candidates with backend:<id> retry keys.
   --settle <ms>     network-settle window applied after the click (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
@@ -16487,7 +16498,7 @@ var init_type = __esm({
 
 input:
   <text>            the text to insert (agent-supplied; echoed back in the result block)
-  --into <target>   focus this field first \u2014 resolved against the LIVE page: bare CSS selector, ax:<name> (case-insensitive substring), axid:<id>, backend:<id>; text: is not accepted; exactly one match required
+  --into <target>   focus this field first \u2014 resolved against the LIVE page: bare CSS selector (takes precedence) or exact accessible name when CSS finds none, ax:<name> (case-insensitive substring), axid:<id>, backend:<id>; text: is not accepted; exactly one match required
   --settle <ms>     network-settle window applied after typing (default: 500; 1500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
@@ -16508,7 +16519,7 @@ async function cmdPageScroll(parsed, _args) {
     return emitInvalidInput(
       parsed,
       "page scroll",
-      fact`received: ${parsed.positional.length} positional arguments; expected exactly one target (CSS selector, ax:<name>, axid:<id>, or backend:<id>) plus --to <top|bottom|px>.`
+      fact`received: ${parsed.positional.length} positional arguments; expected exactly one target (CSS selector or exact accessible name, ax:<name>, axid:<id>, or backend:<id>) plus --to <top|bottom|px>.`
     );
   }
   if (parsed.to === void 0) {
@@ -16575,7 +16586,7 @@ var init_scroll = __esm({
     USAGE3 = `capture page scroll <target> --to <top|bottom|px> \u2014 scroll one resolved container to a position
 
 input:
-  <target>          resolved against the LIVE page: bare CSS selector, ax:<name> (case-insensitive substring), axid:<id>, backend:<id>; text: is not accepted; exactly one match required \u2014 zero or many matches is a structured error listing candidates
+  <target>          resolved against the LIVE page: bare CSS selector (takes precedence) or exact accessible name when CSS finds none, ax:<name> (case-insensitive substring), axid:<id>, backend:<id>; text: is not accepted; exactly one match required \u2014 zero or many matches is a structured error listing candidates
   --to <dest>       required destination: top, bottom, or a pixel offset (scrollTop value)
   --settle <ms>     network-settle window applied after the scroll (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
@@ -228112,7 +228123,7 @@ async function cmdPageShot(parsed, _args) {
     return;
   }
   if (parsed.cropSelector !== void 0 && !parsed.cropSelector.trim()) {
-    emitResult({ tag: "error", attrs: { command: "page shot", code: "invalid_crop_selector" }, summary: text`received an empty --crop-selector; expected a bare CSS selector, ax:<name>, axid:<id>, or backend:<id>.` }, { json: parsed.json });
+    emitResult({ tag: "error", attrs: { command: "page shot", code: "invalid_crop_selector" }, summary: text`received an empty --crop-selector; expected a bare CSS selector or exact accessible name, ax:<name>, axid:<id>, or backend:<id>.` }, { json: parsed.json });
     process.exitCode = 1;
     return;
   }
@@ -228223,7 +228234,7 @@ input:
   --full-page       transient override to the full scrollable content height for this capture
   --color-scheme <dark|light>  transient prefers-color-scheme override for this capture; cleared afterward
   --crop <x,y,w,h>  capture this page-coordinate CSS-pixel rect, intersected with the live visual viewport; x/y may be fractional, w/h must be positive
-  --crop-selector <sel>  resolve exactly one live target (bare CSS, ax:<name>, axid:<id>, or backend:<id>), scroll it into view, then crop its border box and surroundings
+  --crop-selector <sel>  resolve exactly one live target (bare CSS takes precedence; exact accessible name applies when CSS finds none; ax:<name>, axid:<id>, or backend:<id>), scroll it into view, then crop its border box and surroundings
   --pad <px>        nonnegative integer CSS pixels added on every side of --crop-selector (default: 0; not accepted with --crop)
   --zoom <factor>   positive decimal CSS-to-image scale requested for a CSS crop; the 1600px image cap may produce a smaller reported scale
   --out <path>      destination file; default: the active session's shots/ sequence, or a fresh oneshot-*/page/ dir under the capture root when no session is active
@@ -228364,7 +228375,7 @@ use when driving or inspecting the tab a session opened or adopted; all verbs au
 
 All verbs auto-target the active session tab; --target/--url override. The
 driving verbs (click, type, scroll) resolve exactly one element via the
-unified target grammar \u2014 bare CSS selector, ax:<name>, axid:<id>,
+unified target grammar \u2014 bare CSS selector (which takes precedence) or exact accessible name when CSS finds none, ax:<name>, axid:<id>,
 backend:<id> \u2014 and reject an ambiguous target with the candidate list.
 During a live composed recording every verb routes through the recorder.
 
@@ -241508,7 +241519,7 @@ function recorderLiveClient(recorder) {
 function resolutionError(failure) {
   if (failure.code === "unsupported-prefix") {
     return new DoActionError(
-      `Unsupported --do target prefix in "${failure.input}": text: is query-leaf-only. Accepted prefixes: bare css selector, ax:<name>, axid:<id>, backend:<id>.`,
+      `Unsupported --do target prefix in "${failure.input}": text: is query-leaf-only. Accepted prefixes: bare css selector (or exact accessible name when CSS finds none), ax:<name>, axid:<id>, backend:<id>.`,
       "unsupported_target_prefix"
     );
   }
@@ -241814,7 +241825,7 @@ var init_rec = __esm({
 input:
   [url] --do <action>       one-shot: open <url> (or record the active session tab when <url> is omitted), record one action, finalize
     action                  click:<target> | scroll:<target>,to=<top|bottom|px>
-    target                  css selector (bare string) | ax:<name> (case-insensitive substring) | axid:<id> | backend:<id>
+    target                  css selector (takes precedence) or exact accessible name when CSS finds none (bare string) | ax:<name> (case-insensitive substring) | axid:<id> | backend:<id>
                             must resolve to exactly one live element; text: is not accepted by driving actions
     --duration <seconds>    keep recording after the action (default: 0)
     --viewport <WxH>        emulate a viewport for the recording window (restored after); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace

@@ -6,7 +6,7 @@
  * (`src/output/selector.ts`'s `parseSelectorInput`) and resolves it against
  * the LIVE page (not collector-stored records), per prefix:
  *
- *   bare string    live CSS query — `DOM.getDocument` + `DOM.querySelectorAll`
+ *   bare string    live CSS query, or an exact accessible-name match when CSS finds none
  *   backend:<id>   identity — the canonical retry key in every resolution failure
  *   ax:<name>      case-insensitive SUBSTRING over live `Accessibility.getFullAXTree` names
  *   axid:<id>      AX node id from the same live fetch
@@ -172,7 +172,7 @@ export async function resolveLiveTarget(
       return settleAxMatches('axid', input, matches);
     }
     case 'css':
-      return resolveLiveCss(client, input, parsed.value);
+      return resolveBareTarget(client, input, parsed.value);
   }
 }
 
@@ -218,6 +218,32 @@ function settleAxMatches(
       name: m.name?.value ?? null,
     })),
   };
+}
+
+/**
+ * Bare targets preserve CSS behavior when they select one or many elements;
+ * when CSS selects none (or rejects the string), an exact accessible-name
+ * lookup lets an element name emitted by `page elements` drive directly.
+ * `ax:` remains the explicit case-insensitive substring query.
+ */
+async function resolveBareTarget(
+  client: LiveClient,
+  input: string,
+  selector: string,
+): Promise<ResolvedTarget | ResolutionFailure> {
+  const css = await resolveLiveCss(client, input, selector);
+  if (css.ok || css.code === 'ambiguous') return css;
+
+  const normalized = normalizeAccessibleName(input);
+  if (!normalized) return css;
+  const matches = (await readFullAXTree(client)).filter(
+    (node) =>
+      node.backendDOMNodeId !== undefined &&
+      node.name?.value !== undefined &&
+      normalizeAccessibleName(node.name.value) === normalized,
+  );
+  const ax = settleAxMatches('ax', input, matches);
+  return ax.ok || ax.code === 'ambiguous' ? ax : css;
 }
 
 async function resolveLiveCss(

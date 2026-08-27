@@ -280,7 +280,7 @@ test('page click: a text: target is rejected naming the accepted prefixes, witho
     const { stdout, exitCode } = await runCmd(() => cmdPageClick(parsedFor(['text:x']), []));
     assert.equal(exitCode, 1);
     assert.match(stdout, /<error command="page click" code="unsupported_prefix">/);
-    assert.match(stdout, /CSS selector, ax:<name>, axid:<id>, backend:<id>/);
+    assert.match(stdout, /CSS selector \(or exact accessible name when CSS finds none\), ax:<name>, axid:<id>, backend:<id>/);
     assert.equal(client.calls.length, 0);
   } finally {
     deps.restore();
@@ -303,7 +303,7 @@ test('page click: no-match exits 1 and names page elements as the recovery', asy
 test('page click: a bare accessible name that is invalid CSS gives its exact ax: retry', async () => {
   const accessibleName = 'you have selected Thu, Jul 30 is your start date and Fri, Jul 31 is your end date, please choose new dates as desire or tab to continue';
   const client = stubClient({
-    'DOM.enable': () => ({}),
+    ...axHandlers(),
     'DOM.getDocument': () => ({ root: { nodeId: 1 } }),
     'DOM.querySelectorAll': () => { throw new Error('DOM Error while querying'); },
   });

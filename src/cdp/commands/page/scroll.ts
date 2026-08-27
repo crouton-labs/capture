@@ -22,7 +22,7 @@ import {
 const USAGE = `capture page scroll <target> --to <top|bottom|px> — scroll one resolved container to a position
 
 input:
-  <target>          resolved against the LIVE page: bare CSS selector, ax:<name> (case-insensitive substring), axid:<id>, backend:<id>; text: is not accepted; exactly one match required — zero or many matches is a structured error listing candidates
+  <target>          resolved against the LIVE page: bare CSS selector (takes precedence) or exact accessible name when CSS finds none, ax:<name> (case-insensitive substring), axid:<id>, backend:<id>; text: is not accepted; exactly one match required — zero or many matches is a structured error listing candidates
   --to <dest>       required destination: top, bottom, or a pixel offset (scrollTop value)
   --settle <ms>     network-settle window applied after the scroll (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
@@ -41,7 +41,7 @@ export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promis
     return emitInvalidInput(
       parsed,
       'page scroll',
-      fact`received: ${parsed.positional.length} positional arguments; expected exactly one target (CSS selector, ax:<name>, axid:<id>, or backend:<id>) plus --to <top|bottom|px>.`,
+      fact`received: ${parsed.positional.length} positional arguments; expected exactly one target (CSS selector or exact accessible name, ax:<name>, axid:<id>, or backend:<id>) plus --to <top|bottom|px>.`,
     );
   }
   if (parsed.to === undefined) {
