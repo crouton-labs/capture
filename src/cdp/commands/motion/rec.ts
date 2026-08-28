@@ -140,6 +140,7 @@ async function handleOneShot(parsed: ParsedArgs, viewport: Viewport | undefined)
   ensurePrivateDir(path.join(recDir, 'frames'));
 
   let client: CDPClient | undefined;
+  let originalViewport: ActualViewport | undefined;
   let viewportMayHaveApplied = false;
   let failure: string | null = null;
   let failureStatus = 'oneshot_failed';
@@ -157,8 +158,12 @@ async function handleOneShot(parsed: ParsedArgs, viewport: Viewport | undefined)
     client = deps.createClient(tab.webSocketDebuggerUrl);
     await client.waitReady();
     await client.send('Page.enable');
-    viewportMayHaveApplied = viewport !== undefined;
-    await applyViewportOverride(client, viewport);
+    if (viewport) {
+      // Clear is unreliable on adopted headed tabs; restoration must set and verify this measured state.
+      originalViewport = await readActualViewport(client);
+      viewportMayHaveApplied = true;
+      await applyViewportOverride(client, viewport);
+    }
     await waitForPageReady(client);
 
     const recorder = deps.createRecorderSession({ client, recDir });
@@ -168,7 +173,7 @@ async function handleOneShot(parsed: ParsedArgs, viewport: Viewport | undefined)
     const stopped = await recorder.stop();
     let viewportRestored: boolean | null = null;
     if (viewportMayHaveApplied) {
-      viewportRestored = await restoreSessionViewportForClient(client);
+      viewportRestored = await restoreSessionViewportForClient(client, originalViewport!);
       viewportMayHaveApplied = false;
     }
     const finalized = finalizeOneShotRecording(recDir, recId, parsedUrl?.toString() ?? tab.url, parsed.do, stopped, deps.encodeVideo, viewportRestored);
@@ -178,7 +183,7 @@ async function handleOneShot(parsed: ParsedArgs, viewport: Viewport | undefined)
     if (err instanceof DoActionError) failureStatus = err.status;
   } finally {
     let restored: boolean | null = null;
-    if (client && viewportMayHaveApplied) restored = await restoreSessionViewportForClient(client);
+    if (client && viewportMayHaveApplied) restored = await restoreSessionViewportForClient(client, originalViewport!);
     client?.close();
     if (failure !== null) {
       // A failed action is not a completed measurement. Keep the private partial
@@ -326,10 +331,36 @@ async function applyViewportOverride(client: Pick<CDPClient, 'send'>, viewport: 
   return true;
 }
 
-async function restoreSessionViewportForClient(client: Pick<CDPClient, 'send'>): Promise<boolean> {
+interface ActualViewport {
+  width: number;
+  height: number;
+  deviceScaleFactor: number;
+}
+
+async function readActualViewport(client: Pick<CDPClient, 'send'>): Promise<ActualViewport> {
+  const response = await client.send('Runtime.evaluate', {
+    expression: '(() => ({ width: window.innerWidth, height: window.innerHeight, deviceScaleFactor: window.devicePixelRatio }))()',
+    returnByValue: true,
+  }) as { result?: { value?: Partial<ActualViewport> } };
+  const viewport = response.result?.value;
+  if (!viewport || ![viewport.width, viewport.height, viewport.deviceScaleFactor].every((value) => typeof value === 'number' && Number.isFinite(value) && value > 0)) {
+    throw new Error('Could not read the target’s actual viewport before recording; refusing to apply an override that cannot be verified on restore.');
+  }
+  return viewport as ActualViewport;
+}
+
+async function restoreSessionViewportForClient(client: Pick<CDPClient, 'send'>, original: ActualViewport): Promise<boolean> {
   try {
-    await client.send('Emulation.clearDeviceMetricsOverride');
-    return true;
+    await client.send('Emulation.setDeviceMetricsOverride', {
+      width: original.width,
+      height: original.height,
+      deviceScaleFactor: original.deviceScaleFactor,
+      mobile: false,
+    });
+    const restored = await readActualViewport(client);
+    return restored.width === original.width
+      && restored.height === original.height
+      && restored.deviceScaleFactor === original.deviceScaleFactor;
   } catch {
     return false;
   }

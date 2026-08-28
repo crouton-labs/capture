@@ -56,14 +56,24 @@ type Sent = { method: string; params?: Record<string, unknown> };
 
 class FakeClient {
   sent: Sent[] = [];
+  viewport = { width: 1280, height: 720, deviceScaleFactor: 1 };
   async waitReady(): Promise<void> {}
   async send(method: string, params?: Record<string, unknown>): Promise<unknown> {
     this.sent.push({ method, params });
+    if (method === 'Emulation.setDeviceMetricsOverride') {
+      this.viewport = {
+        width: Number(params?.width),
+        height: Number(params?.height),
+        deviceScaleFactor: Number(params?.deviceScaleFactor),
+      };
+      return {};
+    }
     if (method === 'Runtime.evaluate') {
       const expression = String(params?.expression ?? '');
       if (expression.includes('document.readyState')) {
         return { result: { value: { readyState: 'complete', href: 'https://fixture.test/' } } };
       }
+      if (expression.includes('window.innerWidth')) return { result: { value: this.viewport } };
     }
     if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
     if (method === 'DOM.querySelectorAll') return { nodeIds: [101] };
@@ -147,14 +157,12 @@ test('cmdMotionRec one-shot waits for readiness, applies/restores viewport, reco
     assert.ok(recorder, 'one-shot constructs a RecorderSession');
     assert.deepEqual(
       client.sent.filter((s) => s.method.startsWith('Emulation.')).map((s) => s.method),
-      ['Emulation.setDeviceMetricsOverride', 'Emulation.clearDeviceMetricsOverride'],
+      ['Emulation.setDeviceMetricsOverride', 'Emulation.setDeviceMetricsOverride'],
     );
-    assert.deepEqual(client.sent.find((s) => s.method === 'Emulation.setDeviceMetricsOverride')?.params, {
-      width: 390,
-      height: 844,
-      deviceScaleFactor: 1,
-      mobile: false,
-    });
+    assert.deepEqual(client.sent.filter((s) => s.method === 'Emulation.setDeviceMetricsOverride').map((s) => s.params), [
+      { width: 390, height: 844, deviceScaleFactor: 1, mobile: false },
+      { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false },
+    ]);
     const runtimeIndex = client.sent.findIndex((s) => s.method === 'Runtime.evaluate' && String(s.params?.expression ?? '').includes('document.readyState'));
     const mouseIndex = client.sent.findIndex((s) => s.method === 'Input.dispatchMouseEvent');
     assert.ok(runtimeIndex >= 0 && mouseIndex > runtimeIndex, 'readiness is checked before the input dispatch');
@@ -181,6 +189,7 @@ test('cmdMotionRec one-shot waits for readiness, applies/restores viewport, reco
     const meta = JSON.parse(fs.readFileSync(path.join(recDir, 'meta.json'), 'utf8'));
     assert.equal(meta.action, 'click:button.send');
     assert.equal(meta.eventCount, 1);
+    assert.equal(meta.viewportRestored, true, 'the recording reports restoration only after the original viewport reads back');
   } finally {
     restore();
     fs.rmSync(root, { recursive: true, force: true });
@@ -261,7 +270,7 @@ test('one-shot restores a viewport when set may have reached Chrome but its resp
     assert.equal(output.exitCode, 1);
     assert.deepEqual(client.sent.filter((entry) => entry.method.startsWith('Emulation.')).map((entry) => entry.method), [
       'Emulation.setDeviceMetricsOverride',
-      'Emulation.clearDeviceMetricsOverride',
+      'Emulation.setDeviceMetricsOverride',
     ]);
   } finally {
     restore();
