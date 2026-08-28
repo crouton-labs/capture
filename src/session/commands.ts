@@ -51,7 +51,7 @@ import {
 } from './artifacts.js';
 import { beginSessionStop, admitSessionOperation, withSessionLifecycle, withSessionScopeLifecycle } from './coordinator.js';
 import { parseStatusFilter, type StatusPredicate } from './har-filter.js';
-import { redactUrlCredentials } from './har-redact.js';
+import { redactHeaderCredential, redactUrlCredentials } from './har-redact.js';
 
 type Session = ActiveSessionState;
 
@@ -444,8 +444,9 @@ output:
   file's absolute path — the full-fidelity pointer, which holds every record
   including the ones this list bounds away. --json mirrors the same fields.
   Credential-like query parameter values (key, token, secret, signature, auth,
-  password, oauth code, …) render as REDACTED; the HAR file keeps the real
-  value. WebSockets opened while a command was recording appear as entries with
+  password, oauth code, …) render as REDACTED; credential-valued headers render
+  as redacted · <N> chars. The HAR file keeps the real values. WebSockets opened
+  while a command was recording appear as entries with
   _resourceType "websocket" and their frames in _webSocketMessages (capped at
   200 frames/socket, 4KB/frame); sockets opened before recording started are
   not visible.
@@ -1052,18 +1053,22 @@ function harIncompleteRow(record: IncompleteLifecycle): FactLine {
   );
 }
 
+function harHeader(prefix: 'req' | 'res', header: Header): FactLine {
+  return fact`   ${prefix} ${header.name}: ${redactHeaderCredential(header.name, header.value)}`;
+}
+
 /** `--full` inline detail for one entry: headers, post data, and response
  * body — every value escaped and capped through data()/fact. */
 function harEntryDetail(e: HAREntry, index: number): FactLine {
   const rows: FactLine[] = [line(fact`${index + 1}. `, harEntryRow(e))];
   for (const h of e.request.headers ?? []) {
-    rows.push(fact`   req ${h.name}: ${h.value}`);
+    rows.push(harHeader('req', h));
   }
   if (e.request.postData?.text !== undefined) {
     rows.push(fact`   post data: ${capped(e.request.postData.text, 2000)}`);
   }
   for (const h of e.response.headers ?? []) {
-    rows.push(fact`   res ${h.name}: ${h.value}`);
+    rows.push(harHeader('res', h));
   }
   const bodyText = e.response.content?.text;
   rows.push(
@@ -1081,14 +1086,14 @@ function harIncompleteDetail(record: IncompleteLifecycle, index: number): FactLi
   const rows: FactLine[] = [line(fact`${index + 1}. `, harIncompleteRow(record))];
   rows.push(fact`   request ${record.requestId} (generation ${record.generation})`);
   for (const h of record.request.headers ?? []) {
-    rows.push(fact`   req ${h.name}: ${h.value}`);
+    rows.push(harHeader('req', h));
   }
   if (record.request.postData?.text !== undefined) {
     rows.push(fact`   post data: ${capped(record.request.postData.text, 2000)}`);
   }
   const response = incompleteResponse(record);
   for (const h of response?.headers ?? []) {
-    rows.push(fact`   res ${h.name}: ${h.value}`);
+    rows.push(harHeader('res', h));
   }
   if (record.kind === 'invalid_clock_order') {
     rows.push(fact`   terminal: ${record.terminal.kind}`);

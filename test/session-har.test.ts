@@ -13,7 +13,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { sessionMain } from '../src/session/commands.js';
 import { __setLogTailWorld } from '../src/session/log-tailer.js';
-import { appendToHarRecording, type HAREntry, type IncompleteLifecycle } from '../src/har-manager.js';
+import { appendToHarRecording, readHarRecording, type HarFile, type HAREntry, type IncompleteLifecycle } from '../src/har-manager.js';
 import { getActiveSession, clearActiveSession } from '../src/session-context.js';
 import { workerExecArgv } from './fixtures/worker-exec-argv.js';
 import type { ParsedArgs } from '../src/cdp/types.js';
@@ -69,6 +69,7 @@ function entry(over: {
   body?: string;
   postData?: string;
   reqHeaders?: Array<{ name: string; value: string }>;
+  resHeaders?: Array<{ name: string; value: string }>;
 }): HAREntry {
   const i = FIXTURE_SEED;
   FIXTURE_SEED += 1;
@@ -94,7 +95,7 @@ function entry(over: {
     },
     response: {
       status: over.status ?? 200,
-      headers: [{ name: 'content-type', value: 'application/json' }],
+      headers: over.resHeaders ?? [{ name: 'content-type', value: 'application/json' }],
       content,
     },
     _capture: {
@@ -141,6 +142,8 @@ function stoppedBeforeTerminal(over: {
   method?: string;
   wallTime: number;
   status?: number;
+  reqHeaders?: Array<{ name: string; value: string }>;
+  resHeaders?: Array<{ name: string; value: string }>;
 }): IncompleteLifecycle {
   return {
     kind: 'stopped_before_terminal',
@@ -150,7 +153,7 @@ function stoppedBeforeTerminal(over: {
     request: {
       method: over.method ?? 'GET',
       url: over.url,
-      headers: [{ name: 'accept', value: 'text/event-stream' }],
+      headers: over.reqHeaders ?? [{ name: 'accept', value: 'text/event-stream' }],
     },
     _capture: {
       schemaVersion: 1,
@@ -158,7 +161,7 @@ function stoppedBeforeTerminal(over: {
       requestMonotonic: 5,
       response: over.status === undefined
         ? null
-        : { status: over.status, headers: [{ name: 'content-type', value: 'text/event-stream' }], responseMonotonic: 7 },
+        : { status: over.status, headers: over.resHeaders ?? [{ name: 'content-type', value: 'text/event-stream' }], responseMonotonic: 7 },
     },
   };
 }
@@ -361,17 +364,46 @@ test('session har lists incomplete lifecycle records beside completed entries, i
   }
 });
 
-test('session har redacts credential query values in rendered URLs while the HAR artifact keeps them', async () => {
+test('session har redacts credential query values and header values while the HAR artifact keeps them', async () => {
   const SECRET = 'cf-live-key-abc123XYZ';
+  const HEADER_SECRET = 'reddit-header-credential-abc123XYZ';
   const credentialUrl = `https://dash.cloudflare.com/api/tail?account=acct-42&key=${SECRET}&page=2`;
   const oauthUrl = `https://auth.example.com/callback?code=${SECRET}&state=keep-me#access_token=${SECRET}`;
+  const assertHeaderArtifact = (har: HarFile): void => {
+    const complete = har.log.entries.find((record) => record.request.url === credentialUrl);
+    assert.ok(complete, 'complete request must remain in the HAR artifact');
+    assert.equal(complete.request.headers.find((header) => header.name === 'x-reddit-loid')?.value, HEADER_SECRET);
+    assert.equal(complete.response.headers.find((header) => header.name === 'x-session-token')?.value, HEADER_SECRET);
+    const incomplete = har.incompleteLifecycles.find((record) => record.request.url === oauthUrl);
+    assert.ok(incomplete, 'incomplete request must remain in the HAR artifact');
+    assert.equal(incomplete.request.headers.find((header) => header.name === 'x-auth-token')?.value, HEADER_SECRET);
+    assert.ok(incomplete._capture.response, 'incomplete response must remain in the HAR artifact');
+    assert.equal(incomplete._capture.response.headers.find((header) => header.name === 'x-session-secret')?.value, HEADER_SECRET);
+  };
   await runSession(['start']);
   const active = getActiveSession();
   assert.ok(active?.harId);
   const { sessionId: id, dir } = active!;
   await appendToHarRecording(active!.harId!, {
-    entries: [entry({ url: credentialUrl, status: 200 })],
-    incompleteLifecycles: [stoppedBeforeTerminal({ url: oauthUrl, wallTime: 1783814500 })],
+    entries: [entry({
+      url: credentialUrl,
+      status: 200,
+      reqHeaders: [
+        { name: 'x-reddit-loid', value: HEADER_SECRET },
+        { name: 'accept', value: 'application/json' },
+      ],
+      resHeaders: [
+        { name: 'x-session-token', value: HEADER_SECRET },
+        { name: 'content-type', value: 'application/json' },
+      ],
+    })],
+    incompleteLifecycles: [stoppedBeforeTerminal({
+      url: oauthUrl,
+      wallTime: 1783814500,
+      status: 200,
+      reqHeaders: [{ name: 'x-auth-token', value: HEADER_SECRET }],
+      resHeaders: [{ name: 'x-session-secret', value: HEADER_SECRET }],
+    })],
   });
 
   try {
@@ -388,7 +420,22 @@ test('session har redacts credential query values in rendered URLs while the HAR
     // --full opts into bodies and headers, never back into credential values.
     const full = await runSession(['har'], { full: true });
     assert.ok(!full.includes(SECRET), full);
+    assert.ok(!full.includes(HEADER_SECRET), full);
     assert.ok(full.includes('key=REDACTED'), full);
+    for (const name of ['x-reddit-loid', 'x-session-token', 'x-auth-token', 'x-session-secret']) {
+      assert.ok(full.includes(`${name}: redacted · ${HEADER_SECRET.length} chars`), full);
+    }
+    assert.ok(full.includes('accept: application/json'), full);
+    assert.ok(full.includes('content-type: application/json'), full);
+
+    const json = await runSession(['har'], { full: true, json: true });
+    assert.ok(!json.includes(SECRET), json);
+    assert.ok(!json.includes(HEADER_SECRET), json);
+    for (const name of ['x-reddit-loid', 'x-session-token', 'x-auth-token', 'x-session-secret']) {
+      assert.ok(json.includes(`${name}: redacted · ${HEADER_SECRET.length} chars`), json);
+    }
+    assert.ok(json.includes('accept: application/json'), json);
+    assert.ok(json.includes('content-type: application/json'), json);
 
     // Filters match the URL AS CAPTURED, so the real value still selects.
     const filtered = await runSession(['har'], { filterUrl: SECRET });
@@ -396,10 +443,12 @@ test('session har redacts credential query values in rendered URLs while the HAR
 
     // The full-fidelity artifact is untouched — both live and bundled.
     const live = fs.readFileSync(path.join(dir, '.har', fs.readdirSync(path.join(dir, '.har'))[0]), 'utf-8');
-    assert.ok(live.includes(SECRET), 'live HAR store must keep the captured value');
+    assert.ok(live.includes(SECRET), 'live HAR store must keep the captured query value');
+    assertHeaderArtifact(await readHarRecording(active!.harId!));
     await runSession(['stop', id], { json: true });
     const bundled = fs.readFileSync(path.join(dir, 'har.json'), 'utf-8');
-    assert.ok(bundled.includes(SECRET), 'bundled har.json must keep the captured value');
+    assert.ok(bundled.includes(SECRET), 'bundled har.json must keep the captured query value');
+    assertHeaderArtifact(JSON.parse(bundled) as HarFile);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     clearActiveSession();

@@ -14344,7 +14344,7 @@ var init_har_filter = __esm({
 });
 
 // src/session/har-redact.ts
-function normalizeParamName(raw) {
+function normalizeCredentialName(raw) {
   let decoded = raw;
   try {
     decoded = decodeURIComponent(raw.replace(/\+/g, " "));
@@ -14353,18 +14353,21 @@ function normalizeParamName(raw) {
   }
   return decoded.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
-function isCredentialParamName(raw) {
-  const name = normalizeParamName(raw);
+function isCredentialName(raw) {
+  const name = normalizeCredentialName(raw);
   if (name === "") return false;
-  if (CREDENTIAL_PARAM_NAMES.has(name)) return true;
-  return CREDENTIAL_PARAM_FRAGMENTS.some((fragment) => name.includes(fragment));
+  if (CREDENTIAL_NAMES.has(name)) return true;
+  return CREDENTIAL_NAME_FRAGMENTS.some((fragment) => name.includes(fragment));
+}
+function redactHeaderCredential(name, value) {
+  return isCredentialName(name) ? `redacted \xB7 ${value.length} chars` : value;
 }
 function redactParamSection(section) {
   return section.split("&").map((pair) => {
     const eq = pair.indexOf("=");
     if (eq < 0) return pair;
     const name = pair.slice(0, eq);
-    return isCredentialParamName(name) ? `${name}=${REDACTED_VALUE}` : pair;
+    return isCredentialName(name) ? `${name}=${REDACTED_VALUE}` : pair;
   }).join("&");
 }
 function redactUrlCredentials(url) {
@@ -14378,11 +14381,11 @@ function redactUrlCredentials(url) {
   const renderedFragment = fragment === null ? "" : `#${fragment.includes("=") ? redactParamSection(fragment) : fragment}`;
   return `${head}${renderedQuery}${renderedFragment}`;
 }
-var REDACTED_VALUE, CREDENTIAL_PARAM_NAMES, CREDENTIAL_PARAM_FRAGMENTS;
+var REDACTED_VALUE, CREDENTIAL_NAMES, CREDENTIAL_NAME_FRAGMENTS;
 var init_har_redact = __esm({
   "src/session/har-redact.ts"() {
     REDACTED_VALUE = "REDACTED";
-    CREDENTIAL_PARAM_NAMES = /* @__PURE__ */ new Set([
+    CREDENTIAL_NAMES = /* @__PURE__ */ new Set([
       "key",
       "apikey",
       "accesskey",
@@ -14405,7 +14408,7 @@ var init_har_redact = __esm({
       "sessionid",
       "sessionkey"
     ]);
-    CREDENTIAL_PARAM_FRAGMENTS = [
+    CREDENTIAL_NAME_FRAGMENTS = [
       "token",
       "secret",
       "password",
@@ -14416,7 +14419,8 @@ var init_har_redact = __esm({
       "privatekey",
       "signature",
       "authorization",
-      "sessionid"
+      "sessionid",
+      "loid"
     ];
   }
 });
@@ -14905,16 +14909,19 @@ function harIncompleteRow(record2) {
     fact` — started ${record2.startedDateTime}`
   );
 }
+function harHeader(prefix, header) {
+  return fact`   ${prefix} ${header.name}: ${redactHeaderCredential(header.name, header.value)}`;
+}
 function harEntryDetail(e, index) {
   const rows = [line(fact`${index + 1}. `, harEntryRow(e))];
   for (const h of e.request.headers ?? []) {
-    rows.push(fact`   req ${h.name}: ${h.value}`);
+    rows.push(harHeader("req", h));
   }
   if (e.request.postData?.text !== void 0) {
     rows.push(fact`   post data: ${capped(e.request.postData.text, 2e3)}`);
   }
   for (const h of e.response.headers ?? []) {
-    rows.push(fact`   res ${h.name}: ${h.value}`);
+    rows.push(harHeader("res", h));
   }
   const bodyText = e.response.content?.text;
   rows.push(
@@ -14926,14 +14933,14 @@ function harIncompleteDetail(record2, index) {
   const rows = [line(fact`${index + 1}. `, harIncompleteRow(record2))];
   rows.push(fact`   request ${record2.requestId} (generation ${record2.generation})`);
   for (const h of record2.request.headers ?? []) {
-    rows.push(fact`   req ${h.name}: ${h.value}`);
+    rows.push(harHeader("req", h));
   }
   if (record2.request.postData?.text !== void 0) {
     rows.push(fact`   post data: ${capped(record2.request.postData.text, 2e3)}`);
   }
   const response = incompleteResponse(record2);
   for (const h of response?.headers ?? []) {
-    rows.push(fact`   res ${h.name}: ${h.value}`);
+    rows.push(harHeader("res", h));
   }
   if (record2.kind === "invalid_clock_order") {
     rows.push(fact`   terminal: ${record2.terminal.kind}`);
@@ -15525,8 +15532,9 @@ output:
   file's absolute path \u2014 the full-fidelity pointer, which holds every record
   including the ones this list bounds away. --json mirrors the same fields.
   Credential-like query parameter values (key, token, secret, signature, auth,
-  password, oauth code, \u2026) render as REDACTED; the HAR file keeps the real
-  value. WebSockets opened while a command was recording appear as entries with
+  password, oauth code, \u2026) render as REDACTED; credential-valued headers render
+  as redacted \xB7 <N> chars. The HAR file keeps the real values. WebSockets opened
+  while a command was recording appear as entries with
   _resourceType "websocket" and their frames in _webSocketMessages (capped at
   200 frames/socket, 4KB/frame); sockets opened before recording started are
   not visible.
