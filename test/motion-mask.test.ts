@@ -82,9 +82,9 @@ test('motion mask writes a private time-colored PNG and reports region area, dis
     writeBinaryPrivate(path.join(framesDir, 'frame-000001.png'), png(10, 10, { x: 2, y: 2, width: 2, height: 2 }));
     writeBinaryPrivate(path.join(framesDir, 'frame-000002.png'), png(10, 10, { x: 4, y: 2, width: 2, height: 2 }));
     writeNdjsonPrivate(path.join(recDir, 'rects.jsonl'), [
-      { frame: 0, file: 'frame-000000.png', screencastTimestamp: 10, cssToDevice: { scaleX: 1, scaleY: 1, devicePixelRatio: 1 }, elements: [{ tag: 'button', id: 'send', classes: 'primary', backendNodeId: 7, x: 2, y: 2, width: 2, height: 2 }] },
-      { frame: 1, file: 'frame-000001.png', screencastTimestamp: 10.1, cssToDevice: { scaleX: 1, scaleY: 1, devicePixelRatio: 1 }, elements: [{ tag: 'button', id: 'send', classes: 'primary', backendNodeId: 7, x: 2, y: 2, width: 2, height: 2 }] },
-      { frame: 2, file: 'frame-000002.png', screencastTimestamp: 10.2, cssToDevice: { scaleX: 1, scaleY: 1, devicePixelRatio: 1 }, elements: [{ tag: 'button', id: 'send', classes: 'primary', backendNodeId: 7, x: 4, y: 2, width: 2, height: 2 }] },
+      { frame: 0, file: 'frame-000000.png', screencastTimestamp: 10, cssToDevice: { scaleX: 1, scaleY: 1, devicePixelRatio: 1 }, elements: [{ tag: 'html', backendNodeId: 1, x: 0, y: 0, width: 10, height: 10 }, { tag: 'button', id: 'send', classes: 'primary', backendNodeId: 7, x: 2, y: 2, width: 2, height: 2 }] },
+      { frame: 1, file: 'frame-000001.png', screencastTimestamp: 10.1, cssToDevice: { scaleX: 1, scaleY: 1, devicePixelRatio: 1 }, elements: [{ tag: 'html', backendNodeId: 1, x: 0, y: 0, width: 10, height: 10 }, { tag: 'button', id: 'send', classes: 'primary', backendNodeId: 7, x: 2, y: 2, width: 2, height: 2 }] },
+      { frame: 2, file: 'frame-000002.png', screencastTimestamp: 10.2, cssToDevice: { scaleX: 1, scaleY: 1, devicePixelRatio: 1 }, elements: [{ tag: 'html', backendNodeId: 1, x: 0, y: 0, width: 10, height: 10 }, { tag: 'button', id: 'send', classes: 'primary', backendNodeId: 7, x: 4, y: 2, width: 2, height: 2 }] },
     ]);
     writeNdjsonPrivate(path.join(recDir, 'events.jsonl'), []);
 

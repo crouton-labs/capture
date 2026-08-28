@@ -66,8 +66,8 @@ interface Component {
 
 /** Per-component facts computed in single shared passes over the label map. */
 interface ComponentStats {
-  /** Best element attribution by summed pixel overlap across rect records. */
-  attribution: { element: MotionElement; overlap: number } | null;
+  /** Best element attribution by changed-pixel coverage relative to its recorded area. */
+  attribution: { element: MotionElement; overlap: number; area: number } | null;
   /** Pair-ordered centroids of this component's changed pixels, one per active sample. */
   activeCentroids: Array<{ pair: number; cx: number; cy: number }>;
 }
@@ -288,7 +288,7 @@ function computeComponentStats(
     }
   }
 
-  const candidates: Array<Map<string, { element: MotionElement; overlap: number }>> = components.map(() => new Map());
+  const candidates: Array<Map<string, { element: MotionElement; overlap: number; area: number }>> = components.map(() => new Map());
   for (const record of recordsByFile.values()) {
     for (const element of record.elements ?? []) {
       if (![element.x, element.y, element.width, element.height].every((value) => typeof value === 'number' && Number.isFinite(value))) continue;
@@ -299,22 +299,31 @@ function computeComponentStats(
       const x1 = Math.min(width, Math.ceil(transformed.x + transformed.width));
       const y0 = Math.max(0, Math.floor(transformed.y));
       const y1 = Math.min(height, Math.ceil(transformed.y + transformed.height));
+      const area = (x1 - x0) * (y1 - y0);
+      if (area <= 0) continue;
+      const overlaps = new Map<number, number>();
       for (let py = y0; py < y1; py++) {
         const rowBase = py * width;
         for (let px = x0; px < x1; px++) {
           const label = labels[rowBase + px];
-          if (label < 0) continue;
-          const map = candidates[label];
-          const existing = map.get(key);
-          if (existing) existing.overlap++;
-          else map.set(key, { element, overlap: 1 });
+          if (label >= 0) overlaps.set(label, (overlaps.get(label) ?? 0) + 1);
+        }
+      }
+      for (const [label, overlap] of overlaps) {
+        const map = candidates[label];
+        const existing = map.get(key);
+        if (existing) {
+          existing.overlap += overlap;
+          existing.area += area;
+        } else {
+          map.set(key, { element, overlap, area });
         }
       }
     }
   }
 
   return components.map((_, index) => ({
-    attribution: [...candidates[index].values()].sort((a, b) => b.overlap - a.overlap)[0] ?? null,
+    attribution: [...candidates[index].values()].sort((a, b) => b.overlap / b.area - a.overlap / a.area || b.overlap - a.overlap)[0] ?? null,
     activeCentroids: activeCentroids[index],
   }));
 }
