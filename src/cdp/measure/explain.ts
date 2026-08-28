@@ -333,7 +333,7 @@ function stackingClippingSection(target: GeometryElement, geometry: readonly Geo
       : `paint extents could not be resolved: ${ink.unresolved.join(', ')}`;
     facts.push(factFor(target, fact`Ink box (${source.provenance}) was not calculated because ${reason}.`));
   } else {
-    facts.push(factFor(target, text`Ink box was not calculated because ${source.unavailable}.`));
+    facts.push(factFor(target, fact`Ink box was not calculated because ${source.unavailable}.`));
   }
 
   const overflowAncestors = ancestors.filter((element) => {
