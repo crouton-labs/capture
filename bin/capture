@@ -8403,6 +8403,15 @@ var init_recorder_client = __esm({
         const resp = await sendRecorderRequest(this.socketPath, { type: "har-flush", nonce: this.nonce });
         if (!resp.ok) throw new Error(`recorder har-flush failed: ${resp.error}`);
       }
+      /** Collects CSS stylesheet headers on the recorder-owned event connection. */
+      async collectStyleSheetHeaders() {
+        const result = await this.send("Capture.collectStyleSheetHeaders");
+        if (!Array.isArray(result?.headers)) throw new Error("recorder stylesheet-header collection returned an invalid response");
+        return result.headers.flatMap((header) => {
+          const value = header;
+          return typeof value.styleSheetId === "string" && typeof value.sourceURL === "string" && value.sourceURL.length > 0 ? [{ styleSheetId: value.styleSheetId, sourceURL: value.sourceURL }] : [];
+        });
+      }
       /** Documented no-op — see this file's header comment. */
       on(_event, _handler) {
       }
@@ -13177,6 +13186,9 @@ var init_recorder_bridge = __esm({
         }
         const hasMethod = typeof req.method === "string" && req.method.length > 0;
         const hasWaitEvent = typeof req.waitEvent === "string" && req.waitEvent.length > 0;
+        if (req.method === "Capture.collectStyleSheetHeaders") {
+          return { result: await this.collectStyleSheetHeaders() };
+        }
         if (!hasMethod && !hasWaitEvent) {
           throw new Error(
             'Invalid cdp request: requires a nonempty string "method" (to dispatch) or "waitEvent" (to wait only) \u2014 got neither.'
@@ -13216,6 +13228,22 @@ var init_recorder_bridge = __esm({
         } catch (err) {
           eventWait?.cancel();
           throw err;
+        }
+      }
+      /** Runs CSS header redelivery on the one connection that can receive its events while recording. */
+      async collectStyleSheetHeaders() {
+        const headers2 = /* @__PURE__ */ new Map();
+        const handler = (params) => {
+          const header = params?.header;
+          if (typeof header?.styleSheetId === "string" && typeof header.sourceURL === "string" && header.sourceURL.length > 0) headers2.set(header.styleSheetId, header.sourceURL);
+        };
+        this.client.on("CSS.styleSheetAdded", handler);
+        try {
+          await this.client.send("CSS.disable");
+          await this.client.send("CSS.enable");
+          return { headers: [...headers2].map(([styleSheetId, sourceURL]) => ({ styleSheetId, sourceURL })) };
+        } finally {
+          this.client.off("CSS.styleSheetAdded", handler);
         }
       }
       async stop() {
@@ -13884,14 +13912,14 @@ async function applyViewportOverride(recDir, targetId, viewport2) {
   const client = viewportDeps.createClient(tab.tab.webSocketDebuggerUrl);
   try {
     await client.waitReady();
-    writeJsonPrivate(path12.join(recDir, VIEWPORT_STATE_FILE), { phase: "attempting", targetId });
+    writeJsonPrivate(path12.join(recDir, VIEWPORT_STATE_FILE), { phase: "attempting", targetId, retainOnStop: true });
     await client.send("Emulation.setDeviceMetricsOverride", {
       width: viewport2.width,
       height: viewport2.height,
       deviceScaleFactor: 1,
       mobile: false
     });
-    writeJsonPrivate(path12.join(recDir, VIEWPORT_STATE_FILE), { phase: "applied", targetId });
+    writeJsonPrivate(path12.join(recDir, VIEWPORT_STATE_FILE), { phase: "applied", targetId, retainOnStop: true });
     return true;
   } finally {
     client.close();
@@ -13929,9 +13957,10 @@ async function restoreViewportOverride(recDir, targetId) {
     return false;
   }
 }
-async function writeFinalizedArtifacts(sessionDir2, recDir, recId, url, frames, durationMs2, state, markers, eventCount, targetId) {
+async function writeFinalizedArtifacts(sessionDir2, recDir, recId, url, frames, durationMs2, state, markers, eventCount, targetId, preserveViewport = false) {
   const fps = durationMs2 > 0 ? round1(frames / (durationMs2 / 1e3)) : 0;
-  const viewportRestored = await restoreViewportOverride(recDir, targetId);
+  const viewportRetained = preserveViewport && readViewportOverrideState(path12.join(recDir, VIEWPORT_STATE_FILE))?.retainOnStop === true;
+  const viewportRestored = viewportRetained ? null : await restoreViewportOverride(recDir, targetId);
   writeJsonPrivate(markersPath(recDir), markers);
   const meta = {
     id: recId,
@@ -13942,12 +13971,13 @@ async function writeFinalizedArtifacts(sessionDir2, recDir, recId, url, frames, 
     url,
     fps,
     eventCount,
-    viewportRestored
+    viewportRestored,
+    viewportRetained
   };
   writeJsonPrivate(metaPath(recDir), meta);
   removeArtifactTree(recorderJsonPath(recDir));
   await clearActiveRecIdIfOwned(sessionDir2, recId);
-  return { recId, recDir, frames, durationMs: durationMs2, fps, state, eventCount, viewportRestored };
+  return { recId, recDir, frames, durationMs: durationMs2, fps, state, eventCount, viewportRestored, viewportRetained };
 }
 function killIfIdentityMatches(record2, provider) {
   if (recorderProcessAlive(record2, provider)) stopBridge(record2.pid, record2.socketPath);
@@ -14103,7 +14133,7 @@ async function stopComposedRecorder(opts, deps7 = {}) {
     try {
       const stopResp = await requestRecStop(record2.socketPath, record2.nonce);
       await waitForRecorderExit(record2, provider, deps7);
-      return await writeFinalizedArtifacts(opts.sessionDir, handle.recDir, recId, record2.url, stopResp.frameCount, stopResp.durationMs, "finalized", stopResp.markers, stopResp.eventCount, record2.targetId);
+      return await writeFinalizedArtifacts(opts.sessionDir, handle.recDir, recId, record2.url, stopResp.frameCount, stopResp.durationMs, "finalized", stopResp.markers, stopResp.eventCount, record2.targetId, true);
     } catch (err) {
       if (err instanceof RecStopBridgeFailure) {
         await propagateTerminalRecStopFailure(record2, provider, deps7, err);
@@ -231366,6 +231396,16 @@ async function buildWinningDeclarations(client, matched, computed2, sourceCache,
 }
 async function captureStyleSheetHeaders(client) {
   const urls = /* @__PURE__ */ new Map();
+  if (isRecorderHeldClient(client)) {
+    try {
+      for (const header of await client.collectStyleSheetHeaders()) urls.set(header.styleSheetId, header.sourceURL);
+      return { urls, stop: () => {
+      }, available: true };
+    } catch {
+      return { urls, stop: () => {
+      }, available: false, reason: "stylesheet-header-redelivery-failed" };
+    }
+  }
   if (typeof client.on !== "function") {
     return { urls, stop: () => {
     }, available: false, reason: "client-lacks-event-support" };
@@ -231394,6 +231434,7 @@ var init_style_provenance = __esm({
   "src/cdp/measure/collectors/style-provenance.ts"() {
     init_source_map();
     init_redaction();
+    init_recorder_client();
   }
 });
 
@@ -239657,14 +239698,23 @@ function sourceFor(declaration) {
   if (!declaration.selector && !declaration.specificity && !source) return void 0;
   return { selector: declaration.selector ?? void 0, specificity: declaration.specificity ?? void 0, source };
 }
+function snapshotElementKey(element) {
+  if (typeof element.backendNodeId === "number") return `backend:${element.backendNodeId}`;
+  if (element.selector) return `selector:${element.selector}`;
+  return element.id && !/^s-\d+$/.test(element.id) ? `id:${element.id}` : null;
+}
 function changesBetweenSnapshots(beforeDir, afterDir) {
   const before = readJson2(path27.join(beforeDir, "styles.json"));
   const after = readJson2(path27.join(afterDir, "styles.json"));
   if (!before?.elements || !after?.elements) return [];
-  const prior = new Map(before.elements.map((element) => [element.id ?? element.selector ?? "", element]));
+  const prior = new Map(before.elements.flatMap((element) => {
+    const key = snapshotElementKey(element);
+    return key === null ? [] : [[key, element]];
+  }));
   const changes = [];
   for (const next of after.elements) {
-    const key = next.id ?? next.selector ?? "";
+    const key = snapshotElementKey(next);
+    if (key === null) continue;
     const old = prior.get(key);
     if (!old) continue;
     const properties = /* @__PURE__ */ new Set([...Object.keys(old.computed ?? {}), ...Object.keys(next.computed ?? {})]);
@@ -239678,7 +239728,7 @@ function changesBetweenSnapshots(beforeDir, afterDir) {
   }
   return changes;
 }
-function analyzeSweepSamples(axis, _from, _to, samples) {
+function analyzeSweepSamples(axis, _from, _to, samples, uncertainties = []) {
   const transitions = [];
   const ranges = [];
   for (let i = 1; i < samples.length; i += 1) {
@@ -239688,7 +239738,8 @@ function analyzeSweepSamples(axis, _from, _to, samples) {
       ranges.push({ from: previous.value, to: current.value, snapId: previous.snapId, snapDir: previous.snapDir, fingerprint: previous.fingerprint });
       continue;
     }
-    transitions.push({ bracket: { from: previous.value, to: current.value }, before: previous.snapId, after: current.snapId, changes: changesBetweenSnapshots(previous.snapDir, current.snapDir) });
+    const samplingLimited = typeof previous.value === "number" && typeof current.value === "number" && uncertainties.some((interval) => interval.reason === "sampling_limit" && interval.from === previous.value && interval.to === current.value);
+    transitions.push({ bracket: { from: previous.value, to: current.value }, before: previous.snapId, after: current.snapId, changes: changesBetweenSnapshots(previous.snapDir, current.snapDir), ...samplingLimited ? { uncertainty: "sampling_limit" } : {} });
   }
   return { transitions, ranges };
 }
@@ -239714,7 +239765,11 @@ async function refineNumericSweep(samples, tolerance, capture, sampleLimit = 96)
       continue;
     }
     if (!byValue.has(middle)) byValue.set(middle, await capture(middle));
-    pending.push({ from, to: middle }, { from: middle, to });
+    const midpoint = byValue.get(middle);
+    const left = byValue.get(from);
+    const right = byValue.get(to);
+    if (left.fingerprint !== midpoint.fingerprint) pending.push({ from, to: middle });
+    if (midpoint.fingerprint !== right.fingerprint) pending.push({ from: middle, to });
   }
   return { samples: [...byValue.values()].sort((a, b) => Number(a.value) - Number(b.value)), uncertainties };
 }
@@ -239827,7 +239882,7 @@ function valuesForAxis(axis, parsed) {
 function transitionSections(artifact) {
   const ranges = artifact.ranges.map((range) => fact`  observed matching fingerprint ${range.from}–${range.to} → ${range.snapId} (${range.snapDir})`);
   const transitions = artifact.transitions.flatMap((transition, index) => {
-    const header = fact`${index + 1}. bracketed between ${transition.bracket.from} and ${transition.bracket.to} — ${transition.before} → ${transition.after}`;
+    const header = transition.uncertainty === "sampling_limit" ? fact`${index + 1}. observed difference unresolved between ${transition.bracket.from} and ${transition.bracket.to}: the ${artifact.sampleLimit} sample limit stopped refinement — ${transition.before} → ${transition.after}` : fact`${index + 1}. bracketed between ${transition.bracket.from} and ${transition.bracket.to} — ${transition.before} → ${transition.after}`;
     const changes = transition.changes.slice(0, 12).map((change) => {
       const provenance = change.provenance?.source ? fact` (${change.provenance.selector ?? "winning declaration"}${change.provenance.specificity ? `, specificity ${change.provenance.specificity}` : ""}, ${change.provenance.source})` : change.provenance?.selector ? fact` (${change.provenance.selector}${change.provenance.specificity ? `, specificity ${change.provenance.specificity}` : ""})` : text``;
       return line(fact`   ${change.selector} ${change.property}: ${change.before ?? "unset"} → ${change.after ?? "unset"}`, provenance);
@@ -239946,7 +240001,7 @@ async function runMeasureSweep(parsed, _args, overrides = {}) {
     const samples = axis === "width" || axis === "dpr" || axis === "zoom" ? [...samplesByValue.values()].sort((a, b) => Number(a.value) - Number(b.value)) : values.map((value) => samplesByValue.get(String(value))).filter(Boolean);
     const from = values[0];
     const to = values[values.length - 1];
-    const analyzed = analyzeSweepSamples(axis, from, to, samples);
+    const analyzed = analyzeSweepSamples(axis, from, to, samples, uncertainties);
     const artifact = { axis, from, to, capturedAt: (/* @__PURE__ */ new Date()).toISOString(), samples, ...analyzed, uncertainties, sampleLimit: SAMPLE_LIMIT, environmentRestoration: environmentFacts };
     const artifactPath2 = writeSweepArtifact(artifactDir, artifact);
     const result = {
@@ -239957,13 +240012,14 @@ async function runMeasureSweep(parsed, _args, overrides = {}) {
       followUp: samples.length > 1 ? fact`Compare two sampled substrates with \`capture measure diff --before ${samples[0].snapDir} --after ${samples[1].snapDir}\`.` : void 0
     };
     dependencies.emitResult(result, { json: parsed.json });
-  } catch {
+  } catch (error) {
     const evidenceOnly = recoverySamples.some((sample) => sample.status === "evidence_only");
+    const failure = normalizeFailure(error).descriptor;
     const recoveryPath = writeSweepRecoveryArtifact(artifactDir, { axis, capturedAt: (/* @__PURE__ */ new Date()).toISOString(), reason: evidenceOnly ? "evidence_only" : "capture_failed", environmentRestoration, samples: recoverySamples });
     dependencies.emitResult({
       tag: "error",
-      attrs: { command: "measure sweep", status: evidenceOnly ? "evidence_only" : "sweep_failed", path: recoveryPath },
-      summary: fact`Sweep did not produce a queryable sample set. Recovery artifact: ${recoveryPath}.`,
+      attrs: { command: "measure sweep", status: evidenceOnly ? "evidence_only" : failure.code, path: recoveryPath },
+      summary: fact`Sweep did not produce a queryable sample set: ${capped(failure.message, 600)} Recovery artifact: ${recoveryPath}.`,
       sections: recoverySamples.length ? [text`Partial snapshot/recovery provenance:`, ...recoverySamples.map((sample) => fact`${sample.value}: ${sample.snapDir} status=${sample.status} captured=${String(sample.captured)} settled=${String(sample.settled)} artifacts=${sample.artifacts.join(", ") || "none"} unstable=${sample.unstableRegions.map((region) => `${region.id}${region.reason ? `:${region.reason}` : ""}`).join(", ") || "none"}`), fact`environment restoration: ${environmentRestoration}`] : void 0
     }, { json: parsed.json });
     process.exitCode = 1;
@@ -239980,12 +240036,13 @@ var init_sweep2 = __esm({
     init_commands();
     init_session_context();
     init_render();
+    init_errors();
     init_leaf_grammar();
     init_sweep();
     USAGE20 = `capture measure sweep [url] --axis <axis> \u2014 responsive/environment sampling with recursive bracketing of observed state changes
 
 input:
-  [url]                     page to sweep; outside a session, snapshots and sweep.json are written under one private one-shot measure directory
+  [url]                     match an existing page tab by URL; this does not open a URL \u2014 run inside \`capture session start --url \u2026\` when no matching tab exists
   --axis <axis>             width|dpr|zoom|color-scheme|reduced-motion (required)
   --from <val>              numeric range start, or a color-scheme/reduced-motion value
   --to <val>                numeric range end, or a color-scheme/reduced-motion value
@@ -241606,10 +241663,11 @@ function finalizeOneShotRecording(recDir, recId, url, action, stopped, encodeVid
     fps,
     eventCount: stopped.eventCount,
     video,
-    viewportRestored
+    viewportRestored,
+    viewportRetained: false
   };
   writeJsonPrivate(path29.join(recDir, "meta.json"), meta);
-  return { recId, recDir, frames: stopped.frameCount, durationMs: stopped.durationMs, fps, state, eventCount: stopped.eventCount, viewportRestored, action, video };
+  return { recId, recDir, frames: stopped.frameCount, durationMs: stopped.durationMs, fps, state, eventCount: stopped.eventCount, viewportRestored, viewportRetained: false, action, video };
 }
 function ensureFinalizedInventory(recDir) {
   ensurePrivateDir(path29.join(recDir, "frames"));
@@ -241825,6 +241883,7 @@ function emitFinalizedResult(parsed, stopped) {
       "baseline-availability": baselineAvailability(stopped.recDir),
       ...stopped.action ? { action: stopped.action } : {},
       ...stopped.viewportRestored !== null ? { "viewport-restored": stopped.viewportRestored } : {},
+      ...stopped.viewportRetained ? { "viewport-retained": true } : {},
       ..."video" in stopped ? { video: stopped.video?.status ?? "unavailable" } : {},
       "timestamp-uncertainty": "\xB11 frame for frame-derived timestamps"
     },
@@ -242253,7 +242312,7 @@ async function cmdMotionMask(parsed, _args) {
     };
     emitResult(result, { json: parsed.json });
   } catch (err) {
-    emitCommandError2(parsed, "artifact_unavailable", err instanceof Error ? err.message : String(err));
+    emitCommandError2(parsed, "mask_failed", err instanceof Error ? capped(err.message, 600) : capped(String(err), 600));
   }
 }
 function formatRegion(region) {
