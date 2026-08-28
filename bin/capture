@@ -32,9 +32,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/constants.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/constants.js
 var require_constants = __commonJS({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/constants.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/constants.js"(exports2, module2) {
     "use strict";
     var BINARY_TYPES = ["nodebuffer", "arraybuffer", "fragments"];
     var hasBlob = typeof Blob !== "undefined";
@@ -55,9 +55,9 @@ var require_constants = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/buffer-util.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/buffer-util.js
 var require_buffer_util = __commonJS({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/buffer-util.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/buffer-util.js"(exports2, module2) {
     "use strict";
     var { EMPTY_BUFFER } = require_constants();
     var FastBuffer = Buffer[Symbol.species];
@@ -130,9 +130,9 @@ var require_buffer_util = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/limiter.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/limiter.js
 var require_limiter = __commonJS({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/limiter.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/limiter.js"(exports2, module2) {
     "use strict";
     var kDone = Symbol("kDone");
     var kRun = Symbol("kRun");
@@ -180,9 +180,9 @@ var require_limiter = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/permessage-deflate.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/permessage-deflate.js
 var require_permessage_deflate = __commonJS({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/permessage-deflate.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/permessage-deflate.js"(exports2, module2) {
     "use strict";
     var zlib = require("zlib");
     var bufferUtil = require_buffer_util();
@@ -563,9 +563,9 @@ var require_permessage_deflate = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/validation.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/validation.js
 var require_validation = __commonJS({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/validation.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/validation.js"(exports2, module2) {
     "use strict";
     var { isUtf8 } = require("buffer");
     var { hasBlob } = require_constants();
@@ -764,9 +764,9 @@ var require_validation = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/receiver.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/receiver.js
 var require_receiver = __commonJS({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/receiver.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/receiver.js"(exports2, module2) {
     "use strict";
     var { Writable } = require("stream");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -1356,9 +1356,9 @@ var require_receiver = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/sender.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/sender.js
 var require_sender = __commonJS({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/sender.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/sender.js"(exports2, module2) {
     "use strict";
     var { Duplex } = require("stream");
     var { randomFillSync } = require("crypto");
@@ -1844,9 +1844,9 @@ var require_sender = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/event-target.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/event-target.js
 var require_event_target = __commonJS({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/event-target.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/event-target.js"(exports2, module2) {
     "use strict";
     var { kForOnEventAttribute, kListener } = require_constants();
     var kCode = Symbol("kCode");
@@ -2073,9 +2073,9 @@ var require_event_target = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/extension.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/extension.js
 var require_extension = __commonJS({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/extension.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/extension.js"(exports2, module2) {
     "use strict";
     var { tokenChars } = require_validation();
     function push(dest, name, elem) {
@@ -2226,9 +2226,9 @@ var require_extension = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/websocket.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/websocket.js
 var require_websocket = __commonJS({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/websocket.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/websocket.js"(exports2, module2) {
     "use strict";
     var EventEmitter = require("events");
     var https = require("https");
@@ -3112,9 +3112,9 @@ var require_websocket = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/stream.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/stream.js
 var require_stream = __commonJS({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/stream.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/stream.js"(exports2, module2) {
     "use strict";
     var WebSocket2 = require_websocket();
     var { Duplex } = require("stream");
@@ -3210,9 +3210,9 @@ var require_stream = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/subprotocol.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/subprotocol.js
 var require_subprotocol = __commonJS({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/subprotocol.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/subprotocol.js"(exports2, module2) {
     "use strict";
     var { tokenChars } = require_validation();
     function parse2(header) {
@@ -3255,9 +3255,9 @@ var require_subprotocol = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/websocket-server.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/websocket-server.js
 var require_websocket_server = __commonJS({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/websocket-server.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/lib/websocket-server.js"(exports2, module2) {
     "use strict";
     var EventEmitter = require("events");
     var http2 = require("http");
@@ -3648,10 +3648,10 @@ var require_websocket_server = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs
+// ../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs
 var import_stream, import_extension, import_permessage_deflate, import_receiver, import_sender, import_subprotocol, import_websocket, import_websocket_server, wrapper_default;
 var init_wrapper = __esm({
-  "node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs"() {
+  "../../../../Code/cli/capture/node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs"() {
     import_stream = __toESM(require_stream(), 1);
     import_extension = __toESM(require_extension(), 1);
     import_permessage_deflate = __toESM(require_permessage_deflate(), 1);
@@ -5934,9 +5934,9 @@ Use --target <tabId> or --url <pattern> to target a tab.`);
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/chunkstream.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/chunkstream.js
 var require_chunkstream = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/chunkstream.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/chunkstream.js"(exports2, module2) {
     "use strict";
     var util = require("util");
     var Stream = require("stream");
@@ -6072,9 +6072,9 @@ var require_chunkstream = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/interlace.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/interlace.js
 var require_interlace = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/interlace.js"(exports2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/interlace.js"(exports2) {
     "use strict";
     var imagePasses = [
       {
@@ -6155,9 +6155,9 @@ var require_interlace = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/paeth-predictor.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/paeth-predictor.js
 var require_paeth_predictor = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/paeth-predictor.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/paeth-predictor.js"(exports2, module2) {
     "use strict";
     module2.exports = function paethPredictor(left, above, upLeft) {
       let paeth = left + above - upLeft;
@@ -6175,9 +6175,9 @@ var require_paeth_predictor = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-parse.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-parse.js
 var require_filter_parse = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-parse.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-parse.js"(exports2, module2) {
     "use strict";
     var interlaceUtils = require_interlace();
     var paethPredictor = require_paeth_predictor();
@@ -6316,9 +6316,9 @@ var require_filter_parse = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-parse-async.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-parse-async.js
 var require_filter_parse_async = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-parse-async.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-parse-async.js"(exports2, module2) {
     "use strict";
     var util = require("util");
     var ChunkStream = require_chunkstream();
@@ -6342,9 +6342,9 @@ var require_filter_parse_async = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/constants.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/constants.js
 var require_constants2 = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/constants.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/constants.js"(exports2, module2) {
     "use strict";
     module2.exports = {
       PNG_SIGNATURE: [137, 80, 78, 71, 13, 10, 26, 10],
@@ -6377,9 +6377,9 @@ var require_constants2 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/crc.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/crc.js
 var require_crc = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/crc.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/crc.js"(exports2, module2) {
     "use strict";
     var crcTable = [];
     (function() {
@@ -6417,9 +6417,9 @@ var require_crc = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/parser.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/parser.js
 var require_parser = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/parser.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/parser.js"(exports2, module2) {
     "use strict";
     var constants3 = require_constants2();
     var CrcCalculator = require_crc();
@@ -6638,9 +6638,9 @@ var require_parser = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/bitmapper.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/bitmapper.js
 var require_bitmapper = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/bitmapper.js"(exports2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/bitmapper.js"(exports2) {
     "use strict";
     var interlaceUtils = require_interlace();
     var pixelBppMapper = [
@@ -6886,9 +6886,9 @@ var require_bitmapper = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/format-normaliser.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/format-normaliser.js
 var require_format_normaliser = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/format-normaliser.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/format-normaliser.js"(exports2, module2) {
     "use strict";
     function dePalette(indata, outdata, width, height, palette) {
       let pxPos = 0;
@@ -6967,9 +6967,9 @@ var require_format_normaliser = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/parser-async.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/parser-async.js
 var require_parser_async = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/parser-async.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/parser-async.js"(exports2, module2) {
     "use strict";
     var util = require("util");
     var zlib = require("zlib");
@@ -7097,9 +7097,9 @@ var require_parser_async = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/bitpacker.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/bitpacker.js
 var require_bitpacker = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/bitpacker.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/bitpacker.js"(exports2, module2) {
     "use strict";
     var constants3 = require_constants2();
     module2.exports = function(dataIn, width, height, options) {
@@ -7247,9 +7247,9 @@ var require_bitpacker = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-pack.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-pack.js
 var require_filter_pack = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-pack.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-pack.js"(exports2, module2) {
     "use strict";
     var paethPredictor = require_paeth_predictor();
     function filterNone(pxData, pxPos, byteWidth, rawData, rawPos) {
@@ -7389,9 +7389,9 @@ var require_filter_pack = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/packer.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/packer.js
 var require_packer = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/packer.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/packer.js"(exports2, module2) {
     "use strict";
     var constants3 = require_constants2();
     var CrcStream = require_crc();
@@ -7489,9 +7489,9 @@ var require_packer = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/packer-async.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/packer-async.js
 var require_packer_async = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/packer-async.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/packer-async.js"(exports2, module2) {
     "use strict";
     var util = require("util");
     var Stream = require("stream");
@@ -7531,9 +7531,9 @@ var require_packer_async = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/sync-inflate.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/sync-inflate.js
 var require_sync_inflate = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/sync-inflate.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/sync-inflate.js"(exports2, module2) {
     "use strict";
     var assert = require("assert").ok;
     var zlib = require("zlib");
@@ -7668,9 +7668,9 @@ var require_sync_inflate = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/sync-reader.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/sync-reader.js
 var require_sync_reader = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/sync-reader.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/sync-reader.js"(exports2, module2) {
     "use strict";
     var SyncReader = module2.exports = function(buffer) {
       this._buffer = buffer;
@@ -7706,9 +7706,9 @@ var require_sync_reader = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-parse-sync.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-parse-sync.js
 var require_filter_parse_sync = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-parse-sync.js"(exports2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/filter-parse-sync.js"(exports2) {
     "use strict";
     var SyncReader = require_sync_reader();
     var Filter = require_filter_parse();
@@ -7730,9 +7730,9 @@ var require_filter_parse_sync = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/parser-sync.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/parser-sync.js
 var require_parser_sync = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/parser-sync.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/parser-sync.js"(exports2, module2) {
     "use strict";
     var hasSyncZlib = true;
     var zlib = require("zlib");
@@ -7825,9 +7825,9 @@ var require_parser_sync = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/packer-sync.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/packer-sync.js
 var require_packer_sync = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/packer-sync.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/packer-sync.js"(exports2, module2) {
     "use strict";
     var hasSyncZlib = true;
     var zlib = require("zlib");
@@ -7870,9 +7870,9 @@ var require_packer_sync = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/png-sync.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/png-sync.js
 var require_png_sync = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/png-sync.js"(exports2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/png-sync.js"(exports2) {
     "use strict";
     var parse2 = require_parser_sync();
     var pack = require_packer_sync();
@@ -7885,9 +7885,9 @@ var require_png_sync = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/png.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/png.js
 var require_png = __commonJS({
-  "node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/png.js"(exports2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pngjs@7.0.0/node_modules/pngjs/lib/png.js"(exports2) {
     "use strict";
     var util = require("util");
     var Stream = require("stream");
@@ -16811,9 +16811,9 @@ Effects:
   }
 });
 
-// node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js
 var require_typescript = __commonJS({
-  "node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js"(exports2, module2) {
+  "../../../../Code/cli/capture/node_modules/.pnpm/typescript@5.9.3/node_modules/typescript/lib/typescript.js"(exports2, module2) {
     var ts2 = {};
     ((module3) => {
       "use strict";
@@ -235491,7 +235491,7 @@ var init_pixels = __esm({
   }
 });
 
-// node_modules/.pnpm/pixelmatch@7.2.0/node_modules/pixelmatch/index.js
+// ../../../../Code/cli/capture/node_modules/.pnpm/pixelmatch@7.2.0/node_modules/pixelmatch/index.js
 function pixelmatch(img1, img2, output, width, height, options = {}) {
   const {
     threshold = 0.1,
@@ -235674,7 +235674,7 @@ function drawGrayPixel(img, i, alpha, output) {
   drawPixel(output, i, val, val, val);
 }
 var init_pixelmatch = __esm({
-  "node_modules/.pnpm/pixelmatch@7.2.0/node_modules/pixelmatch/index.js"() {
+  "../../../../Code/cli/capture/node_modules/.pnpm/pixelmatch@7.2.0/node_modules/pixelmatch/index.js"() {
   }
 });
 
@@ -239666,7 +239666,7 @@ function analyzeSweepSamples(axis, _from, _to, samples) {
     const previous = samples[i - 1];
     const current = samples[i];
     if (previous.fingerprint === current.fingerprint) {
-      ranges.push({ from: previous.value, to: current.value, snapId: previous.snapId, fingerprint: previous.fingerprint });
+      ranges.push({ from: previous.value, to: current.value, snapId: previous.snapId, snapDir: previous.snapDir, fingerprint: previous.fingerprint });
       continue;
     }
     transitions.push({ bracket: { from: previous.value, to: current.value }, before: previous.snapId, after: current.snapId, changes: changesBetweenSnapshots(previous.snapDir, current.snapDir) });
@@ -239806,9 +239806,9 @@ function valuesForAxis(axis, parsed) {
   return [parsed.from ?? "no-preference", parsed.to ?? "reduce"];
 }
 function transitionSections(artifact) {
-  const ranges = artifact.ranges.map((range) => line(fact`  observed matching fingerprint ${range.from}–${range.to} → ${range.snapId} (${range.snapDir})`));
+  const ranges = artifact.ranges.map((range) => fact`  observed matching fingerprint ${range.from}–${range.to} → ${range.snapId} (${range.snapDir})`);
   const transitions = artifact.transitions.flatMap((transition, index) => {
-    const header = line(fact`${index + 1}. bracketed between ${transition.bracket.from} and ${transition.bracket.to} — ${transition.before} → ${transition.after}`);
+    const header = fact`${index + 1}. bracketed between ${transition.bracket.from} and ${transition.bracket.to} — ${transition.before} → ${transition.after}`;
     const changes = transition.changes.slice(0, 12).map((change) => {
       const provenance = change.provenance?.source ? fact` (${change.provenance.selector ?? "winning declaration"}${change.provenance.specificity ? `, specificity ${change.provenance.specificity}` : ""}, ${change.provenance.source})` : change.provenance?.selector ? fact` (${change.provenance.selector}${change.provenance.specificity ? `, specificity ${change.provenance.specificity}` : ""})` : text``;
       return line(fact`   ${change.selector} ${change.property}: ${change.before ?? "unset"} → ${change.after ?? "unset"}`, provenance);
@@ -239945,7 +239945,7 @@ async function runMeasureSweep(parsed, _args, overrides = {}) {
       tag: "error",
       attrs: { command: "measure sweep", status: evidenceOnly ? "evidence_only" : "sweep_failed", path: recoveryPath },
       summary: fact`Sweep did not produce a queryable sample set. Recovery artifact: ${recoveryPath}.`,
-      sections: recoverySamples.length ? [text`Partial snapshot/recovery provenance:`, ...recoverySamples.map((sample) => fact`${sample.value}: ${sample.snapDir} status=${sample.status} captured=${sample.captured} settled=${sample.settled} artifacts=${sample.artifacts.join(", ") || "none"} unstable=${sample.unstableRegions.map((region) => `${region.id}${region.reason ? `:${region.reason}` : ""}`).join(", ") || "none"}`), fact`environment restoration: ${environmentRestoration}`] : void 0
+      sections: recoverySamples.length ? [text`Partial snapshot/recovery provenance:`, ...recoverySamples.map((sample) => fact`${sample.value}: ${sample.snapDir} status=${sample.status} captured=${String(sample.captured)} settled=${String(sample.settled)} artifacts=${sample.artifacts.join(", ") || "none"} unstable=${sample.unstableRegions.map((region) => `${region.id}${region.reason ? `:${region.reason}` : ""}`).join(", ") || "none"}`), fact`environment restoration: ${environmentRestoration}`] : void 0
     }, { json: parsed.json });
     process.exitCode = 1;
   }

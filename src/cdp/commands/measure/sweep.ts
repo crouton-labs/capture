@@ -80,9 +80,9 @@ function valuesForAxis(axis: SweepAxis, parsed: ParsedArgs): Array<number | stri
 }
 
 export function transitionSections(artifact: SweepArtifact): FactLine[] {
-  const ranges = artifact.ranges.map((range) => line(fact`  observed matching fingerprint ${range.from}–${range.to} → ${range.snapId} (${range.snapDir})`));
+  const ranges = artifact.ranges.map((range) => fact`  observed matching fingerprint ${range.from}–${range.to} → ${range.snapId} (${range.snapDir})`);
   const transitions = artifact.transitions.flatMap((transition, index) => {
-    const header = line(fact`${index + 1}. bracketed between ${transition.bracket.from} and ${transition.bracket.to} — ${transition.before} → ${transition.after}`);
+    const header = fact`${index + 1}. bracketed between ${transition.bracket.from} and ${transition.bracket.to} — ${transition.before} → ${transition.after}`;
     const changes = transition.changes.slice(0, 12).map((change) => {
       const provenance = change.provenance?.source ? fact` (${change.provenance.selector ?? 'winning declaration'}${change.provenance.specificity ? `, specificity ${change.provenance.specificity}` : ''}, ${change.provenance.source})` : change.provenance?.selector ? fact` (${change.provenance.selector}${change.provenance.specificity ? `, specificity ${change.provenance.specificity}` : ''})` : text``;
       return line(fact`   ${change.selector} ${change.property}: ${change.before ?? 'unset'} → ${change.after ?? 'unset'}`, provenance);
@@ -220,7 +220,7 @@ export async function runMeasureSweep(parsed: ParsedArgs, _args: string[], overr
     dependencies.emitResult({
       tag: 'error', attrs: { command: 'measure sweep', status: evidenceOnly ? 'evidence_only' : 'sweep_failed', path: recoveryPath },
       summary: fact`Sweep did not produce a queryable sample set. Recovery artifact: ${recoveryPath}.`,
-      sections: recoverySamples.length ? [text`Partial snapshot/recovery provenance:`, ...recoverySamples.map((sample) => fact`${sample.value}: ${sample.snapDir} status=${sample.status} captured=${sample.captured} settled=${sample.settled} artifacts=${sample.artifacts.join(', ') || 'none'} unstable=${sample.unstableRegions.map((region) => `${region.id}${region.reason ? `:${region.reason}` : ''}`).join(', ') || 'none'}`), fact`environment restoration: ${environmentRestoration}`] : undefined,
+      sections: recoverySamples.length ? [text`Partial snapshot/recovery provenance:`, ...recoverySamples.map((sample) => fact`${sample.value}: ${sample.snapDir} status=${sample.status} captured=${String(sample.captured)} settled=${String(sample.settled)} artifacts=${sample.artifacts.join(', ') || 'none'} unstable=${sample.unstableRegions.map((region) => `${region.id}${region.reason ? `:${region.reason}` : ''}`).join(', ') || 'none'}`), fact`environment restoration: ${environmentRestoration}`] : undefined,
     }, { json: parsed.json });
     process.exitCode = 1;
   }

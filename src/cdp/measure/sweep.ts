@@ -42,6 +42,7 @@ export interface SweepRange {
   readonly from: number | string;
   readonly to: number | string;
   readonly snapId: string;
+  readonly snapDir: string;
   readonly fingerprint: string;
 }
 
@@ -225,7 +226,7 @@ export function analyzeSweepSamples(axis: SweepAxis, _from: number | string, _to
     const previous = samples[i - 1];
     const current = samples[i];
     if (previous.fingerprint === current.fingerprint) {
-      ranges.push({ from: previous.value, to: current.value, snapId: previous.snapId, fingerprint: previous.fingerprint });
+      ranges.push({ from: previous.value, to: current.value, snapId: previous.snapId, snapDir: previous.snapDir, fingerprint: previous.fingerprint });
       continue;
     }
     transitions.push({ bracket: { from: previous.value, to: current.value }, before: previous.snapId, after: current.snapId, changes: changesBetweenSnapshots(previous.snapDir, current.snapDir) });
