@@ -1,7 +1,7 @@
 import { type ParsedArgs } from '../../types.js';
 import { createMotionMask } from '../../motion/mask.js';
 import { readMeta, resolveRecRef } from '../../../output/artifact.js';
-import { emitResult, fact, formatArtifactList, line, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
+import { capped, emitResult, fact, formatArtifactList, line, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
 
 const DEFAULT_REGION_LIMIT = 20;
 
@@ -74,7 +74,9 @@ export async function cmdMotionMask(parsed: ParsedArgs, _args: string[]): Promis
     };
     emitResult(result, { json: parsed.json });
   } catch (err) {
-    emitCommandError(parsed, 'artifact_unavailable', err instanceof Error ? err.message : String(err));
+    // The recording resolved and was read; createMotionMask's rejection names
+    // why its contents cannot form a mask, which is not an unavailable artifact.
+    emitCommandError(parsed, 'mask_failed', err instanceof Error ? capped(err.message, 600) : capped(String(err), 600));
   }
 }
 
@@ -88,7 +90,7 @@ function formatRegion(region: ReturnType<typeof createMotionMask>['regions'][num
   );
 }
 
-function emitCommandError(parsed: ParsedArgs, status: string, message: string): void {
+function emitCommandError(parsed: ParsedArgs, status: string, message: string | ReturnType<typeof capped>): void {
   emitResult({
     tag: 'error',
     attrs: { command: 'motion mask', status },

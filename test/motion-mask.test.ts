@@ -290,6 +290,7 @@ test('cmdMotionMask reads a one-shot partial no_frames recording through to crea
   const sessionDir = path.join(CAPTURE_ROOT, `motion-mask-no-frames-${process.pid}-${Date.now()}`);
   const recDir = path.join(sessionDir, 'motion', 'recs', 'rec-no-frames');
   const framesDir = path.join(recDir, 'frames');
+  const previousExitCode = process.exitCode;
   try {
     ensurePrivateDir(framesDir);
     writeJsonPrivate(path.join(recDir, 'meta.json'), { id: 'rec-no-frames', action: 'scroll:.stage,to=bottom', frames: 0, durationMs: 2000, state: 'partial', reason: 'no_frames' });
@@ -298,8 +299,11 @@ test('cmdMotionMask reads a one-shot partial no_frames recording through to crea
 
     const output = await captureOutput(() => cmdMotionMask({ command: 'motion', positional: [recDir] }, []));
     assert.doesNotMatch(output, /not finalized|finalize it with `capture motion rec --stop`/);
+    assert.doesNotMatch(output, /status="artifact_unavailable"/);
+    assert.match(output, /status="mask_failed"/);
     assert.match(output, /needs at least two frames/);
   } finally {
+    process.exitCode = previousExitCode;
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
