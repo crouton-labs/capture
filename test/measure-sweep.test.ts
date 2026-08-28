@@ -5,6 +5,8 @@ import * as path from 'node:path';
 
 import { CAPTURE_ROOT, ensurePrivateDir, removeArtifactTree, writeJsonPrivate } from '../src/session/artifacts.js';
 import { renderSweepArtifact, runMeasureSweep } from '../src/cdp/commands/measure/sweep.js';
+import { captureError } from '../src/errors.js';
+import { renderResult } from '../src/output/render.js';
 import {
   analyzeSweepSamples,
   applySweepEmulation,
@@ -135,6 +137,25 @@ test('sweep renderer reports absolute paths and bracket uncertainty without an u
   assert.match(output, /bracketed between 400 and 500/);
   assert.doesNotMatch(output, /stable geometry|exact transition/);
   assert.match(output, /CDP does not expose prior override configuration/);
+});
+
+test('sweep exposes a pre-sampling target failure instead of replacing it with an empty recovery artifact', async () => {
+  const previousExitCode = process.exitCode;
+  const emitted: string[] = [];
+  try {
+    await runMeasureSweep({ command: 'measure', positional: ['http://fixture.test/'], axis: 'width', from: 320, to: 640 }, [], {
+      getActiveSession: () => null,
+      createOneshotSession: () => ({ dir: path.join(root, 'pre-sampling-failure'), artifactsDir: path.join(root, 'pre-sampling-failure', 'measure') }),
+      withConnection: async () => { throw captureError('precondition', 'target_unavailable', 'No tab found for URL pattern "http://fixture.test/". Run "capture tab list" to see available tabs.'); },
+      emitResult: (result) => { emitted.push(renderResult(result)); },
+    } as never);
+    assert.equal(emitted.length, 1);
+    assert.match(emitted[0]!, /status="target_unavailable"/);
+    assert.match(emitted[0]!, /No tab found for URL pattern/);
+    assert.match(emitted[0]!, /Recovery artifact:/);
+  } finally {
+    process.exitCode = previousExitCode;
+  }
 });
 
 test('command orchestration records an absolute failed snapshot recovery entry after a partial artifact write', async () => {

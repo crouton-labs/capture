@@ -7,7 +7,8 @@ import { withConnection } from '../../connection.js';
 import { captureSnapshotSubstrate } from '../../measure/snapshot.js';
 import { createOneshotSession } from '../../../session/commands.js';
 import { getActiveSession } from '../../../session-context.js';
-import { emitResult, fact, line, lineList, renderResult, text, type FactLine, type RenderableResult } from '../../../output/render.js';
+import { capped, emitResult, fact, line, lineList, renderResult, text, type FactLine, type RenderableResult } from '../../../output/render.js';
+import { normalizeFailure } from '../../../errors.js';
 import { assertSweepBounds, parsePositiveNumber } from '../../leaf-grammar.js';
 import {
   SWEEP_AXES,
@@ -30,7 +31,7 @@ import {
 const USAGE = `capture measure sweep [url] --axis <axis> — responsive/environment sampling with recursive bracketing of observed state changes
 
 input:
-  [url]                     page to sweep; outside a session, snapshots and sweep.json are written under one private one-shot measure directory
+  [url]                     match an existing page tab by URL; this does not open a URL — run inside \`capture session start --url …\` when no matching tab exists
   --axis <axis>             width|dpr|zoom|color-scheme|reduced-motion (required)
   --from <val>              numeric range start, or a color-scheme/reduced-motion value
   --to <val>                numeric range end, or a color-scheme/reduced-motion value
@@ -214,12 +215,13 @@ export async function runMeasureSweep(parsed: ParsedArgs, _args: string[], overr
       followUp: samples.length > 1 ? fact`Compare two sampled substrates with \`capture measure diff --before ${samples[0].snapDir} --after ${samples[1].snapDir}\`.` : undefined,
     };
     dependencies.emitResult(result, { json: parsed.json });
-  } catch {
+  } catch (error) {
     const evidenceOnly = recoverySamples.some((sample) => sample.status === 'evidence_only');
+    const failure = normalizeFailure(error).descriptor;
     const recoveryPath = writeSweepRecoveryArtifact(artifactDir, { axis, capturedAt: new Date().toISOString(), reason: evidenceOnly ? 'evidence_only' : 'capture_failed', environmentRestoration, samples: recoverySamples });
     dependencies.emitResult({
-      tag: 'error', attrs: { command: 'measure sweep', status: evidenceOnly ? 'evidence_only' : 'sweep_failed', path: recoveryPath },
-      summary: fact`Sweep did not produce a queryable sample set. Recovery artifact: ${recoveryPath}.`,
+      tag: 'error', attrs: { command: 'measure sweep', status: evidenceOnly ? 'evidence_only' : failure.code, path: recoveryPath },
+      summary: fact`Sweep did not produce a queryable sample set: ${capped(failure.message, 600)} Recovery artifact: ${recoveryPath}.`,
       sections: recoverySamples.length ? [text`Partial snapshot/recovery provenance:`, ...recoverySamples.map((sample) => fact`${sample.value}: ${sample.snapDir} status=${sample.status} captured=${String(sample.captured)} settled=${String(sample.settled)} artifacts=${sample.artifacts.join(', ') || 'none'} unstable=${sample.unstableRegions.map((region) => `${region.id}${region.reason ? `:${region.reason}` : ''}`).join(', ') || 'none'}`), fact`environment restoration: ${environmentRestoration}`] : undefined,
     }, { json: parsed.json });
     process.exitCode = 1;
