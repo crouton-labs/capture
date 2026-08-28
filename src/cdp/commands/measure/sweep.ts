@@ -83,7 +83,9 @@ function valuesForAxis(axis: SweepAxis, parsed: ParsedArgs): Array<number | stri
 export function transitionSections(artifact: SweepArtifact): FactLine[] {
   const ranges = artifact.ranges.map((range) => fact`  observed matching fingerprint ${range.from}–${range.to} → ${range.snapId} (${range.snapDir})`);
   const transitions = artifact.transitions.flatMap((transition, index) => {
-    const header = fact`${index + 1}. bracketed between ${transition.bracket.from} and ${transition.bracket.to} — ${transition.before} → ${transition.after}`;
+    const header = transition.uncertainty === 'sampling_limit'
+      ? fact`${index + 1}. observed difference unresolved between ${transition.bracket.from} and ${transition.bracket.to}: the ${artifact.sampleLimit} sample limit stopped refinement — ${transition.before} → ${transition.after}`
+      : fact`${index + 1}. bracketed between ${transition.bracket.from} and ${transition.bracket.to} — ${transition.before} → ${transition.after}`;
     const changes = transition.changes.slice(0, 12).map((change) => {
       const provenance = change.provenance?.source ? fact` (${change.provenance.selector ?? 'winning declaration'}${change.provenance.specificity ? `, specificity ${change.provenance.specificity}` : ''}, ${change.provenance.source})` : change.provenance?.selector ? fact` (${change.provenance.selector}${change.provenance.specificity ? `, specificity ${change.provenance.specificity}` : ''})` : text``;
       return line(fact`   ${change.selector} ${change.property}: ${change.before ?? 'unset'} → ${change.after ?? 'unset'}`, provenance);
@@ -205,7 +207,7 @@ export async function runMeasureSweep(parsed: ParsedArgs, _args: string[], overr
     const samples = (axis === 'width' || axis === 'dpr' || axis === 'zoom') ? [...samplesByValue.values()].sort((a, b) => Number(a.value) - Number(b.value)) : values.map((value) => samplesByValue.get(String(value))!).filter(Boolean);
     const from = values[0];
     const to = values[values.length - 1];
-    const analyzed = analyzeSweepSamples(axis, from, to, samples);
+    const analyzed = analyzeSweepSamples(axis, from, to, samples, uncertainties);
     const artifact: SweepArtifact = { axis, from, to, capturedAt: new Date().toISOString(), samples, ...analyzed, uncertainties, sampleLimit: SAMPLE_LIMIT, environmentRestoration: environmentFacts };
     const artifactPath = writeSweepArtifact(artifactDir, artifact);
     const result: RenderableResult = {

@@ -95,6 +95,18 @@ test('captured unsettled samples retain capture-result settledness and per-regio
   assert.deepEqual(recovered.unstableRegions, [{ id: 'hero', selector: '.hero', reason: 'resize' }]);
 });
 
+test('refinement stops after one matching midpoint instead of bisecting an unchanged interval to its tolerance', async () => {
+  const captures = new Map<number, SweepSample>();
+  const capture = async (value: number): Promise<SweepSample> => {
+    const sample = fixtureSnap(`snap-unchanged-${value}`, value, '1fr', 'src/styles/grid.css');
+    captures.set(value, sample);
+    return sample;
+  };
+  const refined = await refineNumericSweep([await capture(0), await capture(100)], 1, capture, 96);
+  assert.deepEqual(refined.samples.map((sample) => sample.value), [0, 50, 100]);
+  assert.deepEqual(refined.uncertainties, []);
+});
+
 test('recursive refinement observes A→B→A and records unresolved sampling limits', async () => {
   const captures = new Map<number, SweepSample>();
   const capture = async (value: number): Promise<SweepSample> => {
@@ -105,7 +117,7 @@ test('recursive refinement observes A→B→A and records unresolved sampling li
     captures.set(value, sample);
     return sample;
   };
-  const refined = await refineNumericSweep([await capture(0), await capture(100)], 1, capture, 15);
+  const refined = await refineNumericSweep([await capture(0), await capture(100)], 1, capture, 5);
   const analysis = analyzeSweepSamples('width', 0, 100, refined.samples);
   assert.ok(refined.samples.some((sample) => Number(sample.value) === 50), 'recursive midpoint capture observes the interior state');
   assert.ok(analysis.transitions.length >= 2, 'both observed state changes are bracketed');
@@ -141,6 +153,17 @@ test('emulation preserves observable speech media and does not invent an unknown
   await restoreSweepEnvironment(unknownClient as never, unknownBaseline);
   assert.deepEqual(unknownCalls[1]?.params, { features: [{ name: 'prefers-color-scheme', value: 'light' }, { name: 'prefers-reduced-motion', value: 'reduce' }] });
   assert.deepEqual(unknownCalls[4]?.params, { features: [{ name: 'prefers-color-scheme', value: 'light' }, { name: 'prefers-reduced-motion', value: 'no-preference' }] });
+});
+
+test('sweep renderer marks a changed pair left unresolved by the sample limit', () => {
+  const before = fixtureSnap('snap-limited-before', 400, '1fr', 'src/styles/grid.css');
+  const after = fixtureSnap('snap-limited-after', 500, 'repeat(2, 1fr)', 'src/styles/grid.css');
+  const uncertainties = [{ from: 400, to: 500, reason: 'sampling_limit' as const }];
+  const analysis = analyzeSweepSamples('width', 400, 500, [before, after], uncertainties);
+  assert.equal(analysis.transitions[0]?.uncertainty, 'sampling_limit');
+  const output = renderSweepArtifact({ axis: 'width', from: 400, to: 500, capturedAt: '2026-01-01T00:00:00.000Z', samples: [before, after], ...analysis, sampleLimit: 96, uncertainties });
+  assert.match(output, /observed difference unresolved between 400 and 500/);
+  assert.doesNotMatch(output, /bracketed between 400 and 500/);
 });
 
 test('sweep renderer reports absolute paths and bracket uncertainty without an unobserved stability claim', () => {

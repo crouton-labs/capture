@@ -23,6 +23,8 @@ export interface SweepTransition {
   readonly before: string;
   readonly after: string;
   readonly changes: readonly SweepChange[];
+  /** The observed endpoint difference could not be narrowed before the sample budget ran out. */
+  readonly uncertainty?: 'sampling_limit';
 }
 
 export interface SweepChange {
@@ -231,7 +233,7 @@ export function changesBetweenSnapshots(beforeDir: string, afterDir: string): Sw
 }
 
 /** Builds adjacent observed changes and matching-fingerprint spans; neither denotes unobserved values as stable. */
-export function analyzeSweepSamples(axis: SweepAxis, _from: number | string, _to: number | string, samples: readonly SweepSample[]): Pick<SweepArtifact, 'transitions' | 'ranges'> {
+export function analyzeSweepSamples(axis: SweepAxis, _from: number | string, _to: number | string, samples: readonly SweepSample[], uncertainties: readonly SweepUncertainty[] = []): Pick<SweepArtifact, 'transitions' | 'ranges'> {
   const transitions: SweepTransition[] = [];
   const ranges: SweepRange[] = [];
   for (let i = 1; i < samples.length; i += 1) {
@@ -241,7 +243,9 @@ export function analyzeSweepSamples(axis: SweepAxis, _from: number | string, _to
       ranges.push({ from: previous.value, to: current.value, snapId: previous.snapId, snapDir: previous.snapDir, fingerprint: previous.fingerprint });
       continue;
     }
-    transitions.push({ bracket: { from: previous.value, to: current.value }, before: previous.snapId, after: current.snapId, changes: changesBetweenSnapshots(previous.snapDir, current.snapDir) });
+    const samplingLimited = typeof previous.value === 'number' && typeof current.value === 'number'
+      && uncertainties.some((interval) => interval.reason === 'sampling_limit' && interval.from === previous.value && interval.to === current.value);
+    transitions.push({ bracket: { from: previous.value, to: current.value }, before: previous.snapId, after: current.snapId, changes: changesBetweenSnapshots(previous.snapDir, current.snapDir), ...(samplingLimited ? { uncertainty: 'sampling_limit' as const } : {}) });
   }
   return { transitions, ranges };
 }
@@ -269,7 +273,13 @@ export async function refineNumericSweep(samples: readonly SweepSample[], tolera
       continue;
     }
     if (!byValue.has(middle)) byValue.set(middle, await capture(middle));
-    pending.push({ from, to: middle }, { from: middle, to });
+    const midpoint = byValue.get(middle)!;
+    const left = byValue.get(from)!;
+    const right = byValue.get(to)!;
+    // One midpoint observes an otherwise-unsampled interval; only a changed
+    // fingerprint can justify spending more samples narrowing that half.
+    if (left.fingerprint !== midpoint.fingerprint) pending.push({ from, to: middle });
+    if (midpoint.fingerprint !== right.fingerprint) pending.push({ from: middle, to });
   }
   return { samples: [...byValue.values()].sort((a, b) => Number(a.value) - Number(b.value)), uncertainties };
 }
