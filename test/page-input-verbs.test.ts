@@ -68,9 +68,14 @@ function axHandlers(): Handlers {
 }
 
 function clickDispatchHandlers(): Handlers {
+  let backendNodeId: number | undefined;
   return {
-    'DOM.scrollIntoViewIfNeeded': () => ({}),
+    'DOM.scrollIntoViewIfNeeded': (params) => {
+      backendNodeId = params.backendNodeId as number;
+      return {};
+    },
     'DOM.getBoxModel': () => ({ model: { content: [10, 10, 30, 10, 30, 20, 10, 20] } }),
+    'DOM.getNodeForLocation': () => ({ backendNodeId }),
     'Input.dispatchMouseEvent': () => ({}),
     'Input.insertText': () => ({}),
   };

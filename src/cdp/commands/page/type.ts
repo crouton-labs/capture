@@ -32,7 +32,7 @@ input:
   --settle <ms>     network-settle window applied after typing (default: 500; 1500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <typed> — the typed text, the resolved field identity (backend-node-id, role, name) and focus-click coordinates when --into was given, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
+  <typed> — the typed text, the resolved field identity (backend-node-id, role, name) and focus-click coordinates when --into was given, a hit-test receiver fact when another node covers that focus-click point, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
   dispatches a real focus click (when --into) followed by real text insertion; writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
 
@@ -65,7 +65,7 @@ export async function cmdPageType(parsed: ParsedArgs, _args: string[]): Promise<
       if (parsed.into) {
         const resolved = await resolveLiveTarget(live, parsed.into);
         if (!resolved.ok) return { failure: resolved } as const;
-        dispatch = await focusAndType(live, resolved, textArg);
+        dispatch = await focusAndType(live, resolved, textArg, { inspectHitTest: true });
       } else {
         await typeText(live, textArg);
       }
@@ -84,6 +84,9 @@ export async function cmdPageType(parsed: ParsedArgs, _args: string[]): Promise<
     dispatch
       ? fact`typed "${textArg}" into ${dispatch.role ?? 'unknown'} "${dispatch.name ?? ''}" (backend:${dispatch.backendNodeId}), focus click at x=${dispatch.x} y=${dispatch.y}`
       : fact`typed "${textArg}" into the focused element`,
+    ...(dispatch?.hitTestReceiverBackendNodeId === undefined
+      ? []
+      : [fact`focus-click hit test at x=${dispatch.x} y=${dispatch.y} resolved to backend:${dispatch.hitTestReceiverBackendNodeId}, not target backend:${dispatch.backendNodeId}`]),
     fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`,
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
@@ -97,6 +100,7 @@ export async function cmdPageType(parsed: ParsedArgs, _args: string[]): Promise<
             'backend-node-id': dispatch.backendNodeId,
             role: dispatch.role ?? undefined,
             name: dispatch.name ?? undefined,
+            'hit-test-receiver-backend-node-id': dispatch.hitTestReceiverBackendNodeId,
           }
         : {},
       summary: lineList(rows),

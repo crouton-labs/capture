@@ -111,6 +111,8 @@ export interface ClickDispatch {
   readonly name: string | null;
   readonly x: number;
   readonly y: number;
+  /** Present only when the browser's hit test at the dispatch point resolved to another node. */
+  readonly hitTestReceiverBackendNodeId?: number;
 }
 
 /** Facts of a dispatched scroll: resolved identity + where the container landed. */
@@ -357,7 +359,7 @@ async function axIdentityFor(
 export async function clickResolved(
   client: LiveClient,
   resolved: ResolvedTarget,
-  opts: { mark?: string } = {},
+  opts: { mark?: string; inspectHitTest?: boolean } = {},
 ): Promise<ClickDispatch> {
   const { backendNodeId } = resolved;
 
@@ -381,20 +383,37 @@ export async function clickResolved(
   const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
   const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
 
-  const pressParams = { type: 'mousePressed', x, y, button: 'left', clickCount: 1 };
+  const dispatchX = Math.round(x);
+  const dispatchY = Math.round(y);
+  let hitTestReceiverBackendNodeId: number | undefined;
+  if (opts.inspectHitTest) {
+    const hitTest = (await client.send('DOM.getNodeForLocation', { x: dispatchX, y: dispatchY })) as { backendNodeId?: unknown };
+    if (typeof hitTest.backendNodeId !== 'number' || !Number.isSafeInteger(hitTest.backendNodeId) || hitTest.backendNodeId <= 0) {
+      throw captureError(
+        'world',
+        'malformed_protocol',
+        `DOM.getNodeForLocation returned no valid backend node id for the dispatch point of backend:${backendNodeId}.`,
+        { method: 'DOM.getNodeForLocation', response: hitTest },
+      );
+    }
+    if (hitTest.backendNodeId !== backendNodeId) hitTestReceiverBackendNodeId = hitTest.backendNodeId;
+  }
+
+  const pressParams = { type: 'mousePressed', x: dispatchX, y: dispatchY, button: 'left', clickCount: 1 };
   if (opts.mark !== undefined && client.sendMarked) {
     await client.sendMarked('Input.dispatchMouseEvent', pressParams, opts.mark);
   } else {
     await client.send('Input.dispatchMouseEvent', pressParams);
   }
-  await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+  await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: dispatchX, y: dispatchY, button: 'left', clickCount: 1 });
 
   return {
     backendNodeId,
     role: resolved.role,
     name: resolved.name,
-    x: Math.round(x),
-    y: Math.round(y),
+    x: dispatchX,
+    y: dispatchY,
+    ...(hitTestReceiverBackendNodeId === undefined ? {} : { hitTestReceiverBackendNodeId }),
   };
 }
 
@@ -413,9 +432,10 @@ export async function focusAndType(
   client: LiveClient,
   resolved: ResolvedTarget,
   text: string,
+  opts: { inspectHitTest?: boolean } = {},
 ): Promise<ClickDispatch> {
   client.suppressNextFocusClickMark?.();
-  const dispatch = await clickResolved(client, resolved);
+  const dispatch = await clickResolved(client, resolved, opts);
   // Small delay for focus to settle
   await new Promise((r) => setTimeout(r, 100));
   await typeText(client, text);

@@ -174,7 +174,7 @@ input:
   --settle <ms>     network-settle window applied after the click (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <clicked backend-node-id=… role=… name=…> — resolved identity, dispatched coordinates, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
+  <clicked backend-node-id=… role=… name=…> — resolved identity, dispatched coordinates, a hit-test receiver fact when another node covers that dispatch point, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
   scrolls the target into view, then dispatches a real mouse press/release at its center; writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
 
@@ -203,7 +203,7 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
       const live = client as unknown as LiveClient;
       const resolved = await resolveLiveTarget(live, target);
       if (!resolved.ok) return { failure: resolved } as const;
-      const dispatch = await clickResolved(live, resolved);
+      const dispatch = await clickResolved(live, resolved, { inspectHitTest: true });
       const screenshotResult = await capturePageInputScreenshot(client, 'click', target, parsed.noScreenshot);
       return { dispatch, ...screenshotResult } as const;
     },
@@ -216,6 +216,9 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
   const { dispatch, screenshot, screenshotWarning } = outcome;
   const rows: FactLine[] = [
     fact`clicked ${dispatch.role ?? 'unknown'} "${dispatch.name ?? ''}" (backend:${dispatch.backendNodeId}) at x=${dispatch.x} y=${dispatch.y}`,
+    ...(dispatch.hitTestReceiverBackendNodeId === undefined
+      ? []
+      : [fact`dispatch hit test at x=${dispatch.x} y=${dispatch.y} resolved to backend:${dispatch.hitTestReceiverBackendNodeId}, not target backend:${dispatch.backendNodeId}`]),
     fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`,
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
@@ -228,6 +231,7 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
         'backend-node-id': dispatch.backendNodeId,
         role: dispatch.role ?? undefined,
         name: dispatch.name ?? undefined,
+        'hit-test-receiver-backend-node-id': dispatch.hitTestReceiverBackendNodeId,
       },
       summary: lineList(rows),
     },

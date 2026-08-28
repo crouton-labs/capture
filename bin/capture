@@ -16178,27 +16178,43 @@ async function clickResolved(client, resolved, opts = {}) {
   }
   const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
   const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
-  const pressParams = { type: "mousePressed", x, y, button: "left", clickCount: 1 };
+  const dispatchX = Math.round(x);
+  const dispatchY = Math.round(y);
+  let hitTestReceiverBackendNodeId;
+  if (opts.inspectHitTest) {
+    const hitTest = await client.send("DOM.getNodeForLocation", { x: dispatchX, y: dispatchY });
+    if (typeof hitTest.backendNodeId !== "number" || !Number.isSafeInteger(hitTest.backendNodeId) || hitTest.backendNodeId <= 0) {
+      throw captureError(
+        "world",
+        "malformed_protocol",
+        `DOM.getNodeForLocation returned no valid backend node id for the dispatch point of backend:${backendNodeId2}.`,
+        { method: "DOM.getNodeForLocation", response: hitTest }
+      );
+    }
+    if (hitTest.backendNodeId !== backendNodeId2) hitTestReceiverBackendNodeId = hitTest.backendNodeId;
+  }
+  const pressParams = { type: "mousePressed", x: dispatchX, y: dispatchY, button: "left", clickCount: 1 };
   if (opts.mark !== void 0 && client.sendMarked) {
     await client.sendMarked("Input.dispatchMouseEvent", pressParams, opts.mark);
   } else {
     await client.send("Input.dispatchMouseEvent", pressParams);
   }
-  await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+  await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: dispatchX, y: dispatchY, button: "left", clickCount: 1 });
   return {
     backendNodeId: backendNodeId2,
     role: resolved.role,
     name: resolved.name,
-    x: Math.round(x),
-    y: Math.round(y)
+    x: dispatchX,
+    y: dispatchY,
+    ...hitTestReceiverBackendNodeId === void 0 ? {} : { hitTestReceiverBackendNodeId }
   };
 }
 async function typeText(client, text2) {
   await client.send("Input.insertText", { text: text2 });
 }
-async function focusAndType(client, resolved, text2) {
+async function focusAndType(client, resolved, text2, opts = {}) {
   client.suppressNextFocusClickMark?.();
-  const dispatch = await clickResolved(client, resolved);
+  const dispatch = await clickResolved(client, resolved, opts);
   await new Promise((r) => setTimeout(r, 100));
   await typeText(client, text2);
   return dispatch;
@@ -16382,7 +16398,7 @@ async function cmdPageClick(parsed, _args) {
       const live = client;
       const resolved = await resolveLiveTarget(live, target);
       if (!resolved.ok) return { failure: resolved };
-      const dispatch2 = await clickResolved(live, resolved);
+      const dispatch2 = await clickResolved(live, resolved, { inspectHitTest: true });
       const screenshotResult = await capturePageInputScreenshot(client, "click", target, parsed.noScreenshot);
       return { dispatch: dispatch2, ...screenshotResult };
     }
@@ -16393,6 +16409,7 @@ async function cmdPageClick(parsed, _args) {
   const { dispatch, screenshot, screenshotWarning } = outcome;
   const rows = [
     fact`clicked ${dispatch.role ?? "unknown"} "${dispatch.name ?? ""}" (backend:${dispatch.backendNodeId}) at x=${dispatch.x} y=${dispatch.y}`,
+    ...dispatch.hitTestReceiverBackendNodeId === void 0 ? [] : [fact`dispatch hit test at x=${dispatch.x} y=${dispatch.y} resolved to backend:${dispatch.hitTestReceiverBackendNodeId}, not target backend:${dispatch.backendNodeId}`],
     fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
@@ -16403,7 +16420,8 @@ async function cmdPageClick(parsed, _args) {
       attrs: {
         "backend-node-id": dispatch.backendNodeId,
         role: dispatch.role ?? void 0,
-        name: dispatch.name ?? void 0
+        name: dispatch.name ?? void 0,
+        "hit-test-receiver-backend-node-id": dispatch.hitTestReceiverBackendNodeId
       },
       summary: lineList(rows)
     },
@@ -16426,7 +16444,7 @@ input:
   --settle <ms>     network-settle window applied after the click (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <clicked backend-node-id=\u2026 role=\u2026 name=\u2026> \u2014 resolved identity, dispatched coordinates, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
+  <clicked backend-node-id=\u2026 role=\u2026 name=\u2026> \u2014 resolved identity, dispatched coordinates, a hit-test receiver fact when another node covers that dispatch point, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
   scrolls the target into view, then dispatches a real mouse press/release at its center; writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
   }
@@ -16457,7 +16475,7 @@ async function cmdPageType(parsed, _args) {
       if (parsed.into) {
         const resolved = await resolveLiveTarget(live, parsed.into);
         if (!resolved.ok) return { failure: resolved };
-        dispatch2 = await focusAndType(live, resolved, textArg);
+        dispatch2 = await focusAndType(live, resolved, textArg, { inspectHitTest: true });
       } else {
         await typeText(live, textArg);
       }
@@ -16471,6 +16489,7 @@ async function cmdPageType(parsed, _args) {
   const { dispatch, screenshot, screenshotWarning } = outcome;
   const rows = [
     dispatch ? fact`typed "${textArg}" into ${dispatch.role ?? "unknown"} "${dispatch.name ?? ""}" (backend:${dispatch.backendNodeId}), focus click at x=${dispatch.x} y=${dispatch.y}` : fact`typed "${textArg}" into the focused element`,
+    ...dispatch?.hitTestReceiverBackendNodeId === void 0 ? [] : [fact`focus-click hit test at x=${dispatch.x} y=${dispatch.y} resolved to backend:${dispatch.hitTestReceiverBackendNodeId}, not target backend:${dispatch.backendNodeId}`],
     fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
@@ -16481,7 +16500,8 @@ async function cmdPageType(parsed, _args) {
       attrs: dispatch ? {
         "backend-node-id": dispatch.backendNodeId,
         role: dispatch.role ?? void 0,
-        name: dispatch.name ?? void 0
+        name: dispatch.name ?? void 0,
+        "hit-test-receiver-backend-node-id": dispatch.hitTestReceiverBackendNodeId
       } : {},
       summary: lineList(rows)
     },
@@ -16502,7 +16522,7 @@ input:
   --settle <ms>     network-settle window applied after typing (default: 500; 1500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <typed> \u2014 the typed text, the resolved field identity (backend-node-id, role, name) and focus-click coordinates when --into was given, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
+  <typed> \u2014 the typed text, the resolved field identity (backend-node-id, role, name) and focus-click coordinates when --into was given, a hit-test receiver fact when another node covers that focus-click point, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
   dispatches a real focus click (when --into) followed by real text insertion; writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
   }

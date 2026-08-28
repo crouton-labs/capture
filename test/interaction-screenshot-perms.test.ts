@@ -45,6 +45,8 @@ function fakeClient() {
           };
         case 'DOM.getBoxModel':
           return { model: { content: [10, 10, 30, 10, 30, 20, 10, 20] } };
+        case 'DOM.getNodeForLocation':
+          return { backendNodeId: 201 };
         case 'Page.getLayoutMetrics':
           return { cssVisualViewport: { clientWidth: 800, clientHeight: 600, pageX: 0, pageY: 0 } };
         case 'Runtime.evaluate':
