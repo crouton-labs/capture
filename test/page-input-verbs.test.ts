@@ -499,7 +499,9 @@ test('page scroll: --to bottom moves the container and auto-screenshots', async 
     assert.match(stdout, /scrolled feed "Feed" \(backend:111\) to bottom — scrollTop now 640/);
     assert.match(stdout, /screenshot: \/tmp\/sess\/shots\/04-scroll\.png/);
     const scrollCall = client.calls.find((c) => c.method === 'Runtime.callFunctionOn');
-    assert.ok(scrollCall, 'the scroll must drive scrollTop in-page');
+    assert.ok(scrollCall, 'the scroll must drive the container in-page');
+    assert.match(String(scrollCall.params.functionDeclaration), /scrollTo\(\{ top, behavior: "smooth" \}\)/, 'scrolling uses the native smooth animation so a recorder receives repaint frames');
+    assert.equal(scrollCall.params.awaitPromise, true, 'the command reports the final offset only after the smooth scroll ends');
     assert.deepEqual(scrollCall.params.arguments, [{ value: 'bottom' }]);
     assert.deepEqual(deps.shots, [{ action: 'scroll', label: '.feed', noScreenshot: undefined }]);
     // The connection is opened as the VERB so a routed scroll's

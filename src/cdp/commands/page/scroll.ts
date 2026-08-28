@@ -29,7 +29,7 @@ input:
 output:
   <scrolled backend-node-id=… role=… name=…> — resolved identity, destination, the container's resulting scrollTop, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
-  assigns the container's scrollTop in-page (may trigger lazy-load network); writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
+  drives the container's native smooth scroll in-page (may trigger lazy-load network); writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
 
 export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {

@@ -443,12 +443,14 @@ export async function focusAndType(
 }
 
 /**
- * Scrolls a resolved container to `top`, `bottom`, or a pixel offset by
- * assigning its `scrollTop` — `DOM.resolveNode` + `Runtime.callFunctionOn`
- * with the destination passed as data, never concatenated as code. When the
- * caller supplies `opts.mark` and the transport records landmarks
- * ({@link LiveClient.sendMarked}), the one mutating call carries the label —
- * the recorder landmark behavior `motion rec --do scroll:` shares.
+ * Scrolls a resolved container to `top`, `bottom`, or a pixel offset through
+ * its native smooth-scroll animation — `DOM.resolveNode` +
+ * `Runtime.callFunctionOn` with the destination passed as data, never
+ * concatenated as code. The call resolves only at `scrollend`, returning the
+ * actual final offset. When the caller supplies `opts.mark` and the transport
+ * records landmarks ({@link LiveClient.sendMarked}), the one mutating call
+ * carries the label — the recorder landmark behavior `motion rec --do scroll:`
+ * shares.
  */
 export async function scrollResolved(
   client: LiveClient,
@@ -487,8 +489,9 @@ export async function scrollResolved(
     const params: Record<string, unknown> = {
       objectId,
       functionDeclaration:
-        'function(to) { const n = to === "top" ? 0 : to === "bottom" ? this.scrollHeight : Number(to); this.scrollTop = n; return this.scrollTop; }',
+        'function(to) { const n = to === "top" ? 0 : to === "bottom" ? this.scrollHeight : Number(to); const top = Math.max(0, Math.min(n, this.scrollHeight - this.clientHeight)); if (this.scrollTop === top) return top; return new Promise((resolve) => { this.addEventListener("scrollend", () => resolve(this.scrollTop), { once: true }); this.scrollTo({ top, behavior: "smooth" }); }); }',
       arguments: [{ value: to }],
+      awaitPromise: true,
       returnByValue: true,
     };
     const result = (
