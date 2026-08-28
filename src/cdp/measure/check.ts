@@ -218,6 +218,11 @@ function finding(kind: CheckName, element: GeometryElement | undefined, detail: 
   return { kind, elementId: element?.id, backendNodeId: element?.backendNodeId ?? undefined, selector: element?.selector, rect: element ? rectOf(element.rect) : undefined, detail, provenance };
 }
 
+function isSelfOrDescendant(target: GeometryElement, receiver: GeometryElement): boolean {
+  if (target.backendNodeId != null && target.backendNodeId === receiver.backendNodeId) return true;
+  return target.domPath !== undefined && receiver.domPath !== undefined && receiver.domPath.startsWith(`${target.domPath}/`);
+}
+
 function rgb(value: string | null | undefined): [number, number, number] | undefined {
   const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(value ?? '');
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
@@ -284,11 +289,17 @@ export function checkSnapshot(ref: SnapRef, requested: readonly CheckName[]): { 
     }
   }
   if (selected.has('hit-test')) {
-    const hit = readHittest<{ elements?: Array<{ selector?: string; backendNodeId?: number | null; selfHitCount?: number; selfHitTotal?: number; points?: Array<{ result?: { topReceiver?: { selector?: string } | null; x?: number; y?: number; stack?: Array<{ selector?: string; pointerEvents?: string; opacity?: number }> } }> }> }>(ref);
-    for (const sample of hit.elements ?? []) if ((sample.selfHitCount ?? 0) < (sample.selfHitTotal ?? 0)) {
+    const hit = readHittest<{ elements?: Array<{ selector?: string; backendNodeId?: number | null; points?: Array<{ result?: { topReceiver?: { selector?: string; backendNodeId?: number | null } | null; x?: number; y?: number; stack?: Array<{ selector?: string; pointerEvents?: string; opacity?: number }> } }> }> }>(ref);
+    for (const sample of hit.elements ?? []) {
       const e = elements.find((x) => (sample.backendNodeId != null && x.backendNodeId === sample.backendNodeId) || (sample.selector && x.selector === sample.selector));
-      const point = sample.points?.find((p) => p.result?.topReceiver?.selector !== sample.selector)?.result;
-      findings.push(finding('hit-test', e, `${label(e ?? sample)} resolves ${sample.selfHitCount ?? 0} of ${sample.selfHitTotal ?? 0} sampled points to itself${point ? `; sampled point (${point.x},${point.y}) receiver ${point.topReceiver?.selector ?? 'none'}` : ''}`, point?.stack?.map((x) => `${x.selector ?? x.pointerEvents ?? 'element'}${x.opacity === 0 ? ' opacity 0' : ''}`).join(', ')));
+      if (!e) continue;
+      const point = sample.points?.find((p) => {
+        const receiver = p.result?.topReceiver;
+        const receiverElement = receiver && elements.find((x) => receiver.backendNodeId != null && x.backendNodeId === receiver.backendNodeId);
+        return receiverElement !== undefined && !isSelfOrDescendant(e, receiverElement);
+      })?.result;
+      if (!point?.topReceiver) continue;
+      findings.push(finding('hit-test', e, `${label(e)} sampled point (${point.x},${point.y}) resolves to non-descendant receiver ${point.topReceiver.selector ?? 'unidentified element'}`, point.stack?.map((x) => `${x.selector ?? x.pointerEvents ?? 'element'}${x.opacity === 0 ? ' opacity 0' : ''}`).join(', ')));
     }
   }
   if (selected.has('truncation')) for (const t of readText<{ elements?: Array<{ selector?: string; backendNodeId?: number | null; truncated?: boolean; scrollWidth?: number; clientWidth?: number }> }>(ref).elements ?? []) if (t.truncated) {

@@ -45,7 +45,12 @@ json('styles.json', { elements: [
 // Authoritative back-to-front paint order (Chrome's DOMSnapshot order): .b
 // (backend 2) is painted after .a (backend 1), so .b paints on top.
 json('layers.json', { paintOrder: { available: true, backendNodeIds: [1, 2, 3, 4] } });
-json('hittest.json', { elements: Array.from({ length: 25 }, (_, index) => ({ selector: `.hit-${index}`, selfHitCount: 0, selfHitTotal: 5, points: [{ result: { x: 90, y: 20, topReceiver: { selector: '.b' }, stack: [{ selector: '.b', pointerEvents: 'auto' }] } }] })) });
+json('hittest.json', { elements: [
+  // A descendant receives .parent's point, which is targetable rather than an occlusion.
+  { selector: '.parent', backendNodeId: 3, selfHitCount: 0, selfHitTotal: 1, points: [{ result: { x: 10, y: 50, topReceiver: { selector: '.child', backendNodeId: 4 }, stack: [{ selector: '.child', pointerEvents: 'auto' }] } }] },
+  // Direct sibling .b receives .a's point, which is a non-descendant receiver.
+  { selector: '.a', backendNodeId: 1, selfHitCount: 0, selfHitTotal: 1, points: [{ result: { x: 90, y: 20, topReceiver: { selector: '.b', backendNodeId: 2 }, stack: [{ selector: '.b', pointerEvents: 'auto' }] } }] },
+] });
 json('text.json', { elements: [{ selector: '.a', truncated: true, scrollWidth: 130, clientWidth: 100 }] });
 json('forms.json', { controls: [] });
 json('animation.json', { animations: [{ id: 'anim-1', selector: '.a', infinite: true, durationMs: 200, iterationCount: 'infinite', playState: 'running' }] });
@@ -70,6 +75,9 @@ test('check reads measurements, filters categories, attaches unstable caveats, a
   assert.ok(fs.existsSync(path.join(dir, 'findings', '1-overlap.png')));
   const content = checkSnapshot(ref, parseChecks('content'));
   assert.deepEqual(new Set(content.findings.map((f) => f.kind)), new Set(['truncation', 'media']));
+  const hitTest = checkSnapshot(ref, ['hit-test']).findings;
+  assert.equal(hitTest.length, 1);
+  assert.match(hitTest[0]!.detail, /\.a sampled point \(90,20\) resolves to non-descendant receiver \.b/);
 });
 
 // Build an isolated snapshot fixture (meta + geometry + styles + layers) for a
@@ -217,17 +225,17 @@ test('check accepts individual checks and rejects unknown names', () => {
 test('command renders a bounded cross-kind sample with a factual rollup, while JSON retains every finding', () => {
   const gated = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--gate'], { encoding: 'utf8' });
   assert.equal(gated.status, 2);
-  assert.match(gated.stdout, /<checks [^>]*findings="32"[^>]*displayed="20"/);
-  assert.match(gated.stdout, /Finding counts: overlap=1, offscreen=1, overflow=1, tap-targets=1, hit-test=25, truncation=1, media=1, animation=1/);
-  assert.equal((gated.stdout.match(/^\d+\. /gm) ?? []).length, 20);
+  assert.match(gated.stdout, /<checks [^>]*findings="8"[^>]*displayed="8"/);
+  assert.match(gated.stdout, /Finding counts: overlap=1, offscreen=1, overflow=1, tap-targets=1, hit-test=1, truncation=1, media=1, animation=1/);
+  assert.equal((gated.stdout.match(/^\d+\. /gm) ?? []).length, 8);
   assert.match(gated.stdout, /snap-check\/findings\/1-overlap\.png/);
 
   const jsonResult = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--json'], { encoding: 'utf8' });
   assert.equal(jsonResult.status, 0);
   const rendered = JSON.parse(jsonResult.stdout) as { attrs: { findings: number; displayed: number }; sections: string[] };
-  assert.equal(rendered.attrs.findings, 32);
-  assert.equal(rendered.attrs.displayed, 32);
-  assert.equal(rendered.sections.length, 33);
+  assert.equal(rendered.attrs.findings, 8);
+  assert.equal(rendered.attrs.displayed, 8);
+  assert.equal(rendered.sections.length, 9);
 
   for (const limit of ['0', '1.9', 'nope', 'Infinity']) {
     const invalid = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--limit', limit], { encoding: 'utf8' });

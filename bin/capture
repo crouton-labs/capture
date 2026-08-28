@@ -230647,16 +230647,22 @@ function buildHittestScript(maxElements, latticeStep, latticeMaxPoints, maxBridg
     function pointLabelsFor(rect) {
       var cx = rect.x + rect.width / 2;
       var cy = rect.y + rect.height / 2;
+      // Exact border coordinates belong to the adjacent element or outside
+      // the viewport under CSS hit testing. Sample the box interior instead.
+      var insetX = Math.min(1, rect.width / 4);
+      var insetY = Math.min(1, rect.height / 4);
+      var left = rect.x + insetX, right = rect.x + rect.width - insetX;
+      var top = rect.y + insetY, bottom = rect.y + rect.height - insetY;
       return [
         { label: 'center', x: cx, y: cy },
-        { label: 'top-left', x: rect.x, y: rect.y },
-        { label: 'top-right', x: rect.x + rect.width, y: rect.y },
-        { label: 'bottom-left', x: rect.x, y: rect.y + rect.height },
-        { label: 'bottom-right', x: rect.x + rect.width, y: rect.y + rect.height },
-        { label: 'top-mid', x: cx, y: rect.y },
-        { label: 'bottom-mid', x: cx, y: rect.y + rect.height },
-        { label: 'left-mid', x: rect.x, y: cy },
-        { label: 'right-mid', x: rect.x + rect.width, y: cy },
+        { label: 'top-left', x: left, y: top },
+        { label: 'top-right', x: right, y: top },
+        { label: 'bottom-left', x: left, y: bottom },
+        { label: 'bottom-right', x: right, y: bottom },
+        { label: 'top-mid', x: cx, y: top },
+        { label: 'bottom-mid', x: cx, y: bottom },
+        { label: 'left-mid', x: left, y: cy },
+        { label: 'right-mid', x: right, y: cy },
       ];
     }
 
@@ -237895,6 +237901,10 @@ function readRequired(ref, filename) {
 function finding(kind, element, detail, provenance) {
   return { kind, elementId: element?.id, backendNodeId: element?.backendNodeId ?? void 0, selector: element?.selector, rect: element ? rectOf(element.rect) : void 0, detail, provenance };
 }
+function isSelfOrDescendant(target, receiver) {
+  if (target.backendNodeId != null && target.backendNodeId === receiver.backendNodeId) return true;
+  return target.domPath !== void 0 && receiver.domPath !== void 0 && receiver.domPath.startsWith(`${target.domPath}/`);
+}
 function rgb(value) {
   const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(value ?? "");
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : void 0;
@@ -237968,10 +237978,16 @@ function checkSnapshot(ref, requested) {
   }
   if (selected.has("hit-test")) {
     const hit = readHittest(ref);
-    for (const sample of hit.elements ?? []) if ((sample.selfHitCount ?? 0) < (sample.selfHitTotal ?? 0)) {
+    for (const sample of hit.elements ?? []) {
       const e = elements.find((x) => sample.backendNodeId != null && x.backendNodeId === sample.backendNodeId || sample.selector && x.selector === sample.selector);
-      const point = sample.points?.find((p) => p.result?.topReceiver?.selector !== sample.selector)?.result;
-      findings.push(finding("hit-test", e, `${label(e ?? sample)} resolves ${sample.selfHitCount ?? 0} of ${sample.selfHitTotal ?? 0} sampled points to itself${point ? `; sampled point (${point.x},${point.y}) receiver ${point.topReceiver?.selector ?? "none"}` : ""}`, point?.stack?.map((x) => `${x.selector ?? x.pointerEvents ?? "element"}${x.opacity === 0 ? " opacity 0" : ""}`).join(", ")));
+      if (!e) continue;
+      const point = sample.points?.find((p) => {
+        const receiver = p.result?.topReceiver;
+        const receiverElement = receiver && elements.find((x) => receiver.backendNodeId != null && x.backendNodeId === receiver.backendNodeId);
+        return receiverElement !== void 0 && !isSelfOrDescendant(e, receiverElement);
+      })?.result;
+      if (!point?.topReceiver) continue;
+      findings.push(finding("hit-test", e, `${label(e)} sampled point (${point.x},${point.y}) resolves to non-descendant receiver ${point.topReceiver.selector ?? "unidentified element"}`, point.stack?.map((x) => `${x.selector ?? x.pointerEvents ?? "element"}${x.opacity === 0 ? " opacity 0" : ""}`).join(", ")));
     }
   }
   if (selected.has("truncation")) {

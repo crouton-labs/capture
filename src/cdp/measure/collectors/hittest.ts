@@ -1,7 +1,7 @@
 /**
  * `hittest.json` collector — point-sampled hit-test results (what element
- * actually receives a click at a given coordinate): a 9-point lattice
- * (center + 4 corners + 4 edge-midpoints) per walked element, plus a
+ * actually receives a click at a given coordinate): a 9-point interior lattice
+ * (center + 4 inset corners + 4 inset edge-midpoints) per walked element, plus a
  * coarse whole-viewport grid independent of any element.
  *
  * The ENTIRE walk + sampling happens inside ONE `Runtime.evaluate` script
@@ -330,16 +330,22 @@ function buildHittestScript(maxElements: number, latticeStep: number, latticeMax
     function pointLabelsFor(rect) {
       var cx = rect.x + rect.width / 2;
       var cy = rect.y + rect.height / 2;
+      // Exact border coordinates belong to the adjacent element or outside
+      // the viewport under CSS hit testing. Sample the box interior instead.
+      var insetX = Math.min(1, rect.width / 4);
+      var insetY = Math.min(1, rect.height / 4);
+      var left = rect.x + insetX, right = rect.x + rect.width - insetX;
+      var top = rect.y + insetY, bottom = rect.y + rect.height - insetY;
       return [
         { label: 'center', x: cx, y: cy },
-        { label: 'top-left', x: rect.x, y: rect.y },
-        { label: 'top-right', x: rect.x + rect.width, y: rect.y },
-        { label: 'bottom-left', x: rect.x, y: rect.y + rect.height },
-        { label: 'bottom-right', x: rect.x + rect.width, y: rect.y + rect.height },
-        { label: 'top-mid', x: cx, y: rect.y },
-        { label: 'bottom-mid', x: cx, y: rect.y + rect.height },
-        { label: 'left-mid', x: rect.x, y: cy },
-        { label: 'right-mid', x: rect.x + rect.width, y: cy },
+        { label: 'top-left', x: left, y: top },
+        { label: 'top-right', x: right, y: top },
+        { label: 'bottom-left', x: left, y: bottom },
+        { label: 'bottom-right', x: right, y: bottom },
+        { label: 'top-mid', x: cx, y: top },
+        { label: 'bottom-mid', x: cx, y: bottom },
+        { label: 'left-mid', x: left, y: cy },
+        { label: 'right-mid', x: right, y: cy },
       ];
     }
 
