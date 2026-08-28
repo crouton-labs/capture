@@ -601,6 +601,9 @@ export class RecorderSession {
     }
     const hasMethod = typeof req.method === 'string' && req.method.length > 0;
     const hasWaitEvent = typeof req.waitEvent === 'string' && req.waitEvent.length > 0;
+    if (req.method === 'Capture.collectStyleSheetHeaders') {
+      return { result: await this.collectStyleSheetHeaders() };
+    }
     if (!hasMethod && !hasWaitEvent) {
       throw new Error(
         'Invalid cdp request: requires a nonempty string "method" (to dispatch) or "waitEvent" (to wait only) — got neither.',
@@ -662,6 +665,23 @@ export class RecorderSession {
     } catch (err) {
       eventWait?.cancel();
       throw err;
+    }
+  }
+
+  /** Runs CSS header redelivery on the one connection that can receive its events while recording. */
+  private async collectStyleSheetHeaders(): Promise<{ headers: Array<{ styleSheetId: string; sourceURL: string }> }> {
+    const headers = new Map<string, string>();
+    const handler = (params: unknown): void => {
+      const header = (params as { header?: { styleSheetId?: unknown; sourceURL?: unknown } } | undefined)?.header;
+      if (typeof header?.styleSheetId === 'string' && typeof header.sourceURL === 'string' && header.sourceURL.length > 0) headers.set(header.styleSheetId, header.sourceURL);
+    };
+    this.client.on('CSS.styleSheetAdded', handler);
+    try {
+      await this.client.send('CSS.disable');
+      await this.client.send('CSS.enable');
+      return { headers: [...headers].map(([styleSheetId, sourceURL]) => ({ styleSheetId, sourceURL })) };
+    } finally {
+      this.client.off('CSS.styleSheetAdded', handler);
     }
   }
 

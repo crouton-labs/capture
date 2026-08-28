@@ -304,6 +304,18 @@ export class RecorderHeldClient {
     if (!resp.ok) throw new Error(`recorder har-flush failed: ${resp.error}`);
   }
 
+  /** Collects CSS stylesheet headers on the recorder-owned event connection. */
+  async collectStyleSheetHeaders(): Promise<Array<{ styleSheetId: string; sourceURL: string }>> {
+    const result = await this.send('Capture.collectStyleSheetHeaders') as { headers?: unknown };
+    if (!Array.isArray(result?.headers)) throw new Error('recorder stylesheet-header collection returned an invalid response');
+    return result.headers.flatMap((header) => {
+      const value = header as { styleSheetId?: unknown; sourceURL?: unknown };
+      return typeof value.styleSheetId === 'string' && typeof value.sourceURL === 'string' && value.sourceURL.length > 0
+        ? [{ styleSheetId: value.styleSheetId, sourceURL: value.sourceURL }]
+        : [];
+    });
+  }
+
   /** Documented no-op — see this file's header comment. */
   on(_event: string, _handler: (params: unknown) => void): void {
     // Intentionally does nothing: nothing pushes unsolicited events back

@@ -38,6 +38,7 @@
 import { resolveAuthoredSourceLocation, type ResolvedSourceLocation } from '../../source-map.js';
 import { sanitizeString } from '../redaction.js';
 import type { CDPClient } from '../../client.js';
+import { isRecorderHeldClient } from '../../recorder-client.js';
 
 // ============================================================================
 // Output shape
@@ -597,6 +598,16 @@ export async function captureStyleSheetHeaders(
   client: CDPClient,
 ): Promise<{ urls: Map<string, string>; stop: () => void; available: boolean; reason?: string }> {
   const urls = new Map<string, string>();
+  // A recorder-routed command cannot subscribe through its one-request socket;
+  // ask the recorder's owning CDP connection to collect the same redelivery.
+  if (isRecorderHeldClient(client)) {
+    try {
+      for (const header of await client.collectStyleSheetHeaders()) urls.set(header.styleSheetId, header.sourceURL);
+      return { urls, stop: () => {}, available: true };
+    } catch {
+      return { urls, stop: () => {}, available: false, reason: 'stylesheet-header-redelivery-failed' };
+    }
+  }
   if (typeof client.on !== 'function') {
     return { urls, stop: () => {}, available: false, reason: 'client-lacks-event-support' };
   }
