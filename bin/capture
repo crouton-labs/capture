@@ -237893,7 +237893,7 @@ function readRequired(ref, filename) {
   return JSON.parse(fs22.readFileSync(artifactPath(ref, filename), "utf8"));
 }
 function finding(kind, element, detail, provenance) {
-  return { kind, elementId: element?.id, selector: element?.selector, rect: element ? rectOf(element.rect) : void 0, detail, provenance };
+  return { kind, elementId: element?.id, backendNodeId: element?.backendNodeId ?? void 0, selector: element?.selector, rect: element ? rectOf(element.rect) : void 0, detail, provenance };
 }
 function rgb(value) {
   const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(value ?? "");
@@ -238074,6 +238074,7 @@ async function cmdMeasureCheck(parsed, _args) {
       kind: finding2.kind,
       headline: fact`${finding2.detail}`,
       detail: [
+        ...finding2.backendNodeId !== void 0 ? [fact`Selector input: backend:${finding2.backendNodeId}`] : [],
         ...finding2.provenance ? [fact`Provenance: ${finding2.provenance}`] : [],
         ...caveatLine(finding2.caveats) ? [caveatLine(finding2.caveats)] : []
       ],

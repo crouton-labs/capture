@@ -12,6 +12,7 @@ export type CheckName = (typeof CHECK_NAMES)[number];
 export interface CheckFinding {
   readonly kind: CheckName;
   readonly elementId?: string;
+  readonly backendNodeId?: number;
   readonly selector?: string;
   readonly rect?: Rect;
   readonly detail: string;
@@ -214,7 +215,7 @@ function readRequired<T>(ref: SnapRef, filename: string): T {
 }
 
 function finding(kind: CheckName, element: GeometryElement | undefined, detail: string, provenance?: string): Omit<CheckFinding, 'caveats'> {
-  return { kind, elementId: element?.id, selector: element?.selector, rect: element ? rectOf(element.rect) : undefined, detail, provenance };
+  return { kind, elementId: element?.id, backendNodeId: element?.backendNodeId ?? undefined, selector: element?.selector, rect: element ? rectOf(element.rect) : undefined, detail, provenance };
 }
 
 function rgb(value: string | null | undefined): [number, number, number] | undefined {

@@ -70,6 +70,7 @@ export async function cmdMeasureCheck(parsed: ParsedArgs, _args: string[]): Prom
       kind: finding.kind,
       headline: fact`${finding.detail}`,
       detail: [
+        ...(finding.backendNodeId !== undefined ? [fact`Selector input: backend:${finding.backendNodeId}`] : []),
         ...(finding.provenance ? [fact`Provenance: ${finding.provenance}`] : []),
         ...(caveatLine(finding.caveats) ? [caveatLine(finding.caveats)!] : []),
       ],
