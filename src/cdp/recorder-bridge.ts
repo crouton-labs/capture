@@ -731,13 +731,14 @@ export class RecorderSession {
     this.flushTraceDropSummary();
 
     this.state = 'stopped';
+    const stoppedAtWallClockMs = Date.now();
     return {
       frameCount: this.frameCount,
       eventCount: this.eventCount,
-      durationMs: Date.now() - this.startedAtWallClockMs,
+      durationMs: stoppedAtWallClockMs - this.startedAtWallClockMs,
       // this.baselines is always set by the time stop() is reachable — start() sets it before
       // flipping state to 'recording', and stop() only runs from state 'recording'.
-      markers: { ...this.baselines! },
+      markers: { ...this.baselines!, stoppedAtWallClockMs },
     };
   }
 

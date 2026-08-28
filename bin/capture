@@ -13256,13 +13256,14 @@ var init_recorder_bridge = __esm({
         this.flushRectDropSummary();
         this.flushTraceDropSummary();
         this.state = "stopped";
+        const stoppedAtWallClockMs = Date.now();
         return {
           frameCount: this.frameCount,
           eventCount: this.eventCount,
-          durationMs: Date.now() - this.startedAtWallClockMs,
+          durationMs: stoppedAtWallClockMs - this.startedAtWallClockMs,
           // this.baselines is always set by the time stop() is reachable — start() sets it before
           // flipping state to 'recording', and stop() only runs from state 'recording'.
-          markers: { ...this.baselines }
+          markers: { ...this.baselines, stoppedAtWallClockMs }
         };
       }
       /**
@@ -241572,10 +241573,10 @@ async function driveOneShotAction(recorder, action) {
 }
 function finalizeOneShotRecording(recDir, recId, url, action, stopped, encodeVideo = encodeVideoIfAvailable, viewportRestored = null) {
   ensureFinalizedInventory(recDir);
+  writeJsonPrivate(path29.join(recDir, "markers.json"), stopped.markers);
   const video = encodeVideo(recDir, stopped.durationMs);
   const fps = stopped.durationMs > 0 ? Math.round(stopped.frameCount / (stopped.durationMs / 1e3) * 10) / 10 : 0;
   const state = stopped.frameCount > 0 ? "finalized" : "partial";
-  writeJsonPrivate(path29.join(recDir, "markers.json"), stopped.markers);
   const meta = {
     id: recId,
     action,
@@ -241664,32 +241665,68 @@ function classifyEncodeFailure(result) {
   if (result.signal === "SIGTERM") return "ffmpeg_terminated";
   return "ffmpeg_encoding_failed";
 }
-function encodeVideoIfAvailable(recDir, durationMs2) {
+function timestampedFrameManifest(recDir, frames, manifestPath) {
+  let rects;
+  let markers;
+  try {
+    rects = readPrivateFile(path29.join(recDir, "rects.jsonl")).toString("utf8").trim().split("\n").filter(Boolean).map((line4) => JSON.parse(line4));
+    markers = JSON.parse(readPrivateFile(path29.join(recDir, "markers.json")).toString("utf8"));
+  } catch {
+    return { status: "unavailable", reason: "frame_timestamps_unavailable" };
+  }
+  const timestamps = /* @__PURE__ */ new Map();
+  for (const rect3 of rects) {
+    if (!rect3 || typeof rect3 !== "object") continue;
+    const { file, screencastTimestamp } = rect3;
+    if (typeof file !== "string" || typeof screencastTimestamp !== "number" || !Number.isFinite(screencastTimestamp) || timestamps.has(file)) return { status: "unavailable", reason: "frame_timestamps_unavailable" };
+    timestamps.set(file, screencastTimestamp * 1e3);
+  }
+  const frameTimes = frames.map((frame) => timestamps.get(frame));
+  if (frameTimes.some((timestamp) => timestamp === void 0)) return { status: "unavailable", reason: "frame_timestamps_unavailable" };
+  if (frameTimes.some((timestamp, index) => index > 0 && timestamp <= frameTimes[index - 1])) return { status: "unavailable", reason: "frame_timestamps_unordered" };
+  const stoppedAtWallClockMs = markers.stoppedAtWallClockMs;
+  if (typeof stoppedAtWallClockMs !== "number" || !Number.isFinite(stoppedAtWallClockMs)) return { status: "unavailable", reason: "frame_timestamps_unavailable" };
+  const finalDurationMs = stoppedAtWallClockMs - frameTimes[frameTimes.length - 1];
+  if (!(finalDurationMs > 0)) return { status: "unavailable", reason: "frame_timestamps_unavailable" };
+  const durationsMs = frameTimes.slice(1).map((timestamp, index) => timestamp - frameTimes[index]);
+  durationsMs.push(finalDurationMs);
+  const quote = (filename) => filename.replace(/'/g, "'\\''");
+  const lines = ["ffconcat version 1.0"];
+  for (let index = 0; index < frames.length; index++) {
+    lines.push(`file '${quote(path29.join(recDir, "frames", frames[index]))}'`, "option framerate 1000", `duration ${(durationsMs[index] / 1e3).toFixed(9)}`);
+  }
+  lines.push(`file '${quote(path29.join(recDir, "frames", frames[frames.length - 1]))}'`, "option framerate 1000");
+  writePrivateFile(manifestPath, lines.join("\n") + "\n");
+  return void 0;
+}
+function encodeVideoIfAvailable(recDir, _durationMs) {
   const framesDir = path29.join(recDir, "frames");
   const frames = fs28.existsSync(framesDir) ? fs28.readdirSync(framesDir).filter((name) => name.endsWith(".png")).sort() : [];
   if (frames.length === 0) return { status: "unavailable", reason: "no_frames" };
-  if (durationMs2 <= 0) return { status: "unavailable", reason: "recording_duration_unavailable" };
   const probe = (0, import_child_process3.spawnSync)("ffmpeg", ["-hide_banner", "-encoders"], { encoding: "utf8", timeout: 5e3 });
   if (probe.error || probe.status !== 0 || !String(probe.stdout ?? "").includes("libvpx-vp9")) return { status: "unavailable", reason: "ffmpeg_or_vp9_encoder_unavailable" };
   const tempDir = path29.join(recDir, `.video-encode-${crypto10.randomBytes(8).toString("hex")}`);
   ensurePrivateDir(tempDir);
   const tempOutput = path29.join(tempDir, "video.webm");
-  const cadence = String(frames.length / (durationMs2 / 1e3));
-  const result = (0, import_child_process3.spawnSync)("ffmpeg", [
-    "-y",
-    "-framerate",
-    cadence,
-    "-pattern_type",
-    "glob",
-    "-i",
-    path29.join(framesDir, "*.png"),
-    "-c:v",
-    "libvpx-vp9",
-    "-pix_fmt",
-    "yuv420p",
-    tempOutput
-  ], { stdio: "ignore", timeout: encodeTimeoutMs(frames.length) });
   try {
+    const manifestOutcome = timestampedFrameManifest(recDir, frames, path29.join(tempDir, "frames.ffconcat"));
+    if (manifestOutcome) return manifestOutcome;
+    const result = (0, import_child_process3.spawnSync)("ffmpeg", [
+      "-y",
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      path29.join(tempDir, "frames.ffconcat"),
+      "-fps_mode",
+      "vfr",
+      "-c:v",
+      "libvpx-vp9",
+      "-pix_fmt",
+      "yuv420p",
+      tempOutput
+    ], { stdio: "ignore", timeout: encodeTimeoutMs(frames.length) });
     if (result.error || result.status !== 0 || !fs28.existsSync(tempOutput)) {
       return { status: "failed", reason: classifyEncodeFailure(result) };
     }
@@ -242413,7 +242450,7 @@ async function cmdMotionTimeline(parsed, _args) {
         { name: "meta.json", note: `recording state ${meta.state}` }
       ]),
       sections: rows.length ? [lineList(rows)] : [text`The selected element had no complete bounding-box samples.`],
-      followUp: text`Use \`capture motion jank <rec>\` for dropped-frame and observer-event facts, or \`capture motion response <rec>\` for input-to-settle timing facts.`
+      followUp: text`Use \`capture motion jank <rec>\` for observer-event facts, or \`capture motion response <rec>\` for input-to-settle timing facts.`
     };
     emitResult(result, { json: parsed.json });
   } catch (err) {
@@ -242568,11 +242605,6 @@ function inferredRectFacts(shiftAtMs, frames) {
   }
   return { rects, beforeFrameMs: before.tMs, afterFrameMs: after.tMs };
 }
-function stableLowCadence(intervals) {
-  if (intervals.length < 2) return null;
-  const sorted = [...intervals].sort((a, b) => a - b);
-  return sorted[Math.floor((sorted.length - 1) * 0.25)] ?? null;
-}
 function missingFrameSamples(frames) {
   let missing = 0;
   for (let i = 1; i < frames.length; i++) {
@@ -242615,7 +242647,7 @@ function artifactLoss(events) {
         break;
       case "error": {
         const lower = (message ?? "").toLowerCase();
-        const affectedCounts = lower.includes("rect sample") ? ["dropped-frames"] : lower.includes("observer") ? ["long-task-records", "layout-shift-records"] : lower.includes("trace") ? ["long-task-records"] : ["dropped-frames", "long-task-records", "layout-shift-records"];
+        const affectedCounts = lower.includes("rect sample") ? [] : lower.includes("observer") ? ["long-task-records", "layout-shift-records"] : lower.includes("trace") ? ["long-task-records"] : ["long-task-records", "layout-shift-records"];
         facts.push({ kind: event.kind, count: count3, reason, message, affectedCounts });
         break;
       }
@@ -242626,17 +242658,7 @@ function artifactLoss(events) {
 function analyzeMotionJank(input) {
   const frameRecords = input.rects.map(record).filter((item) => item !== null).map((item) => ({ item, tMs: frameTime(item, input.markers) })).filter((item) => item.tMs !== null).sort((a, b) => a.tMs - b.tMs);
   const frames = frameRecords.map(({ item, tMs }, index) => ({ frame: finite2(item.frame) ?? index, tMs }));
-  const intervals = frames.slice(1).map((frame, index) => frame.tMs - frames[index].tMs).filter((interval) => interval > 0);
-  const cadenceMs = stableLowCadence(intervals);
   const missingFrameSampleCount = missingFrameSamples(frames);
-  const droppedFrames = [];
-  if (cadenceMs !== null && cadenceMs > 0) {
-    for (let i = 1; i < frames.length; i++) {
-      const intervalMs = frames[i].tMs - frames[i - 1].tMs;
-      const estimatedDroppedFrames = Math.max(0, Math.round(intervalMs / cadenceMs) - 1);
-      if (estimatedDroppedFrames > 0) droppedFrames.push({ afterFrame: frames[i].frame, beforeFrame: frames[i - 1].frame, startMs: frames[i - 1].tMs, endMs: frames[i].tMs, intervalMs, estimatedDroppedFrames });
-    }
-  }
   const traceEvents2 = flattenTraceEvents(input.events);
   const observedTraceBaselineUs = traceEvents2.map((event) => finite2(event.ts)).filter((ts2) => ts2 !== void 0).sort((a, b) => a - b)[0];
   const observerEntries = observerRecords(input.events);
@@ -242651,10 +242673,10 @@ function analyzeMotionJank(input) {
     if (startMs === null || startMs < 0) {
       if (startMs === null) observerNavGapUnavailable = true;
       else observerPreArmUnavailable = true;
-      longTasks.push({ source: "observer", timingDomain: "unavailable", startMs: null, durationMs: durationMs2, endMs: null, overlapsDroppedFrames: null });
+      longTasks.push({ source: "observer", timingDomain: "unavailable", startMs: null, durationMs: durationMs2, endMs: null });
       continue;
     }
-    longTasks.push(longTask("observer", "recorder-performance", startMs, durationMs2, droppedFrames));
+    longTasks.push(longTask("observer", "recorder-performance", startMs, durationMs2));
   }
   for (const trace of traceEvents2) {
     const name = typeof trace.name === "string" ? trace.name : "";
@@ -242662,7 +242684,7 @@ function analyzeMotionJank(input) {
     const timestampUs = finite2(trace.ts);
     if (!/(longtask|run(task|microtasks)|task)/i.test(name) || durationMs2 === void 0 || durationMs2 < 5e4 || timestampUs === void 0) continue;
     const timing2 = traceTime(timestampUs, input.markers, observedTraceBaselineUs);
-    if (timing2 !== null) longTasks.push(longTask("trace", timing2.domain, timing2.tMs, durationMs2 / 1e3, droppedFrames));
+    if (timing2 !== null) longTasks.push(longTask("trace", timing2.domain, timing2.tMs, durationMs2 / 1e3));
   }
   const frameElementRecords = frameRecords.map(({ item, tMs }) => ({ tMs, elements: (Array.isArray(item.elements) ? item.elements : []).map(record).filter((v) => v !== null) }));
   const layoutShifts = [];
@@ -242700,26 +242722,21 @@ function analyzeMotionJank(input) {
     losses.push({
       kind: "orphaned-finalized",
       message: "recorder was finalized best-effort from artifacts already flushed to disk",
-      affectedCounts: ["dropped-frames", "long-task-records", "layout-shift-records"]
+      affectedCounts: ["long-task-records", "layout-shift-records"]
     });
   }
   const incomplete = new Set(losses.flatMap((loss) => loss.affectedCounts));
-  if (missingFrameSampleCount > 0 || cadenceMs === null) incomplete.add("dropped-frames");
   const traceAligned = longTasks.some((task) => task.source === "trace" && task.timingDomain === "recorder-performance");
   const traceRelative = longTasks.some((task) => task.source === "trace" && task.timingDomain === "trace-relative-first-event");
   const frameTimestampUncertainty = frames.length ? "\xB1frame" : "unavailable";
   const observerUnavailableCauses = [];
   if (observerNavGapUnavailable) observerUnavailableCauses.push("some occurred after a navigation gap with no synchronized recorder-relative baseline");
   if (observerPreArmUnavailable) observerUnavailableCauses.push("some were buffered from before the recorder arm baseline, with a document timestamp that predates it");
-  const observerTiming = observerUnavailableCauses.length ? `Observer entries with unavailable timing (${observerUnavailableCauses.join("; ")}) have no recorder-relative baseline; their timing, dropped-frame overlap, and frame-diff attribution are unavailable.` : "Observer and screencast timestamps are recorder-relative performance.now() milliseconds.";
+  const observerTiming = observerUnavailableCauses.length ? `Observer entries with unavailable timing (${observerUnavailableCauses.join("; ")}) have no recorder-relative baseline; their timing and frame-diff attribution are unavailable.` : "Observer and screencast timestamps are recorder-relative performance.now() milliseconds.";
   const timingNote = traceRelative ? `${observerTiming} Frame-derived intervals have \xB1frame uncertainty. Trace timestamps are relative to the first trace event because no explicit trace/performance baseline marker was retained.` : traceAligned ? `${observerTiming} Explicitly-baselined trace and screencast timestamps are recorder-relative performance.now() milliseconds; frame-derived intervals have \xB1frame uncertainty.` : frames.length ? `${observerTiming} Frame-derived intervals have \xB1frame uncertainty.` : `${observerTiming} No frame timestamps were available; screencast-derived timing is unavailable.`;
   return {
     frameCount: frames.length,
-    cadenceMs,
     missingFrameSampleCount,
-    droppedFrames,
-    droppedFrameCount: droppedFrames.reduce((count3, item) => count3 + item.estimatedDroppedFrames, 0),
-    droppedFramesIncomplete: incomplete.has("dropped-frames"),
     longTasks,
     longTasksIncomplete: incomplete.has("long-task-records"),
     layoutShifts,
@@ -242729,16 +242746,8 @@ function analyzeMotionJank(input) {
     timingNote
   };
 }
-function longTask(source, timingDomain, startMs, durationMs2, droppedFrames) {
-  const endMs = startMs + durationMs2;
-  return {
-    source,
-    timingDomain,
-    startMs,
-    durationMs: durationMs2,
-    endMs,
-    overlapsDroppedFrames: timingDomain === "recorder-performance" ? droppedFrames.filter((drop) => startMs < drop.endMs && endMs > drop.startMs).map((drop) => drop.afterFrame) : null
-  };
+function longTask(source, timingDomain, startMs, durationMs2) {
+  return { source, timingDomain, startMs, durationMs: durationMs2, endMs: startMs + durationMs2 };
 }
 function readMotionJank(ref) {
   const meta = readMeta(ref);
@@ -242769,15 +242778,8 @@ async function cmdMotionJank(parsed, _args) {
     const { analysis, meta } = readMotionJank(ref);
     const state = typeof meta.state === "string" ? meta.state : "unknown";
     const sections = [fact`${analysis.timingNote}`];
-    if (analysis.droppedFrames.length) {
-      sections.push(lineList(analysis.droppedFrames.map(
-        (drop, index) => fact`${index + 1}. frames ${drop.beforeFrame}→${drop.afterFrame}: interval ${drop.intervalMs.toFixed(2)}ms, cadence ${analysis.cadenceMs?.toFixed(2) ?? "unavailable"}ms, estimated dropped frames ${drop.estimatedDroppedFrames}, t=${drop.startMs.toFixed(2)}→${drop.endMs.toFixed(2)}ms (±frame)`
-      )));
-    } else {
-      sections.push(fact`Dropped-frame intervals: 0; ${analysis.frameCount} timestamped rect sample(s), cadence ${analysis.cadenceMs?.toFixed(2) ?? "unavailable"}ms.`);
-    }
-    if (analysis.missingFrameSampleCount > 0) sections.push(fact`${analysis.missingFrameSampleCount} screencast frame(s) have no rect timestamp sample; dropped-frame count is incomplete.`);
-    if (analysis.cadenceMs === null) sections.push(text`Fewer than two positive frame intervals were retained; nominal cadence is unavailable and the dropped-frame count is incomplete.`);
+    sections.push(fact`Page.screencastFrame is change-driven; its ${analysis.frameCount} timestamped rect sample(s) do not measure page dropped frames.`);
+    if (analysis.missingFrameSampleCount > 0) sections.push(fact`${analysis.missingFrameSampleCount} screencast frame(s) have no rect timestamp sample.`);
     if (analysis.longTasks.length) {
       sections.push(lineList(analysis.longTasks.map((task, index) => formatLongTask(task, index))));
     } else {
@@ -242802,15 +242804,13 @@ async function cmdMotionJank(parsed, _args) {
       attrs: {
         state,
         frames: analysis.frameCount,
-        "dropped-frames": analysis.droppedFrameCount,
-        "dropped-frames-incomplete": analysis.droppedFramesIncomplete,
         "long-task-records": analysis.longTasks.length,
         "long-task-records-incomplete": analysis.longTasksIncomplete,
         "layout-shift-records": analysis.layoutShifts.length,
         "layout-shift-records-incomplete": analysis.layoutShiftsIncomplete,
         "timestamp-uncertainty": analysis.frameTimestampUncertainty
       },
-      summary: fact`${analysis.droppedFrameCount} estimated dropped frame(s)${analysis.droppedFramesIncomplete ? " (incomplete)" : ""}, ${analysis.longTasks.length} long-task record(s)${analysis.longTasksIncomplete ? " (incomplete)" : ""}, ${analysis.layoutShifts.length} layout-shift record(s)${analysis.layoutShiftsIncomplete ? " (incomplete)" : ""}.`,
+      summary: fact`${analysis.longTasks.length} long-task record(s)${analysis.longTasksIncomplete ? " (incomplete)" : ""}, ${analysis.layoutShifts.length} layout-shift record(s)${analysis.layoutShiftsIncomplete ? " (incomplete)" : ""}.`,
       sections
     };
     emitResult(result, { json: parsed.json });
@@ -242821,8 +242821,7 @@ async function cmdMotionJank(parsed, _args) {
 }
 function formatLongTask(task, index) {
   const timingText = task.timingDomain === "recorder-performance" ? `t=${task.startMs.toFixed(2)}\u2192${task.endMs.toFixed(2)}ms` : task.timingDomain === "trace-relative-first-event" ? `t=${task.startMs.toFixed(2)}\u2192${task.endMs.toFixed(2)}ms relative to first trace event` : "timing unavailable after navigation gap";
-  const overlapText = task.overlapsDroppedFrames === null ? task.timingDomain === "unavailable" ? "; dropped-frame overlap unavailable after navigation gap" : "; dropped-frame overlap unavailable across trace-relative and recorder-relative timing domains" : task.overlapsDroppedFrames.length ? `, overlaps dropped-frame interval(s) ending at frame ${task.overlapsDroppedFrames.join(", ")}` : "";
-  return fact`long-task record ${index + 1} (${task.source}): ${timingText}, duration ${task.durationMs.toFixed(2)}ms${overlapText}.`;
+  return fact`long-task record ${index + 1} (${task.source}): ${timingText}, duration ${task.durationMs.toFixed(2)}ms.`;
 }
 function formatLayoutShift(shift, index) {
   const attribution = shift.attribution === "observer-sources" ? "PerformanceObserver sources" : shift.attribution === "frame-diff-inferred" ? `inferred from rect samples bracketing t=${shift.beforeFrameMs?.toFixed(2)}\u2192${shift.afterFrameMs?.toFixed(2)}ms (\xB1frame)` : "unavailable";
@@ -242857,11 +242856,11 @@ var init_jank2 = __esm({
     init_artifact();
     init_render();
     init_jank();
-    USAGE29 = `capture motion jank <rec> \u2014 dropped-frame, long-task-record, and layout-shift facts over a finalized recording
+    USAGE29 = `capture motion jank <rec> \u2014 long-task-record and layout-shift facts over a finalized recording
 
 input:
   <rec>   recording id in the active session or an absolute recording path (required; the recording must be finalized)
-output: <jank \u2026> \u2014 dropped-frame, long-task-record, and layout-shift facts; observer and screencast timing is recorder-relative performance.now(), trace timing recorder-relative only when an explicit trace/performance baseline was retained; --json mirrors
+output: <jank \u2026> \u2014 long-task-record and layout-shift facts; Page.screencastFrame is change-driven, so retained frame intervals are not page dropped-frame measurements; observer and screencast timing is recorder-relative performance.now(), trace timing recorder-relative only when an explicit trace/performance baseline was retained; --json mirrors
 effects: read-only \u2014 reads the finalized recording artifact, never drives the browser`;
   }
 });
@@ -243217,7 +243216,7 @@ input/precondition errors exit 1. No leaf accepts --gate.
 <subcommand name="rec" args="[url] --do <action> [--duration <seconds>] | --start | --stop" whenToUse="record an interaction \u2014 one-shot action, or composed across commands with --start/--stop (needs an active session)"/>
 <subcommand name="mask" args="<rec> [--limit <N>]" whenToUse="motion-diff composite image + per-region facts"/>
 <subcommand name="timeline" args="<rec> --element <sel> [--prop <prop>]" whenToUse="per-frame geometry/scroll/property timeline for one element"/>
-<subcommand name="jank" args="<rec>" whenToUse="dropped-frame/long-task/layout-shift facts"/>
+<subcommand name="jank" args="<rec>" whenToUse="long-task/layout-shift facts with change-driven screencast provenance"/>
 <subcommand name="response" args="<rec> [--action <action>] [--occurrence <n>]" whenToUse="input-to-settled response timeline"/>
 
 capture motion <leaf> -h    Per-leaf usage`;

@@ -3,11 +3,11 @@ import { resolveRecRef } from '../../../output/artifact.js';
 import { emitResult, fact, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
 import { readMotionJank, type ArtifactLossFact, type LayoutShiftFact, type LayoutShiftRectFact, type LongTaskFact } from '../../motion/jank.js';
 
-const USAGE = `capture motion jank <rec> — dropped-frame, long-task-record, and layout-shift facts over a finalized recording
+const USAGE = `capture motion jank <rec> — long-task-record and layout-shift facts over a finalized recording
 
 input:
   <rec>   recording id in the active session or an absolute recording path (required; the recording must be finalized)
-output: <jank …> — dropped-frame, long-task-record, and layout-shift facts; observer and screencast timing is recorder-relative performance.now(), trace timing recorder-relative only when an explicit trace/performance baseline was retained; --json mirrors
+output: <jank …> — long-task-record and layout-shift facts; Page.screencastFrame is change-driven, so retained frame intervals are not page dropped-frame measurements; observer and screencast timing is recorder-relative performance.now(), trace timing recorder-relative only when an explicit trace/performance baseline was retained; --json mirrors
 effects: read-only — reads the finalized recording artifact, never drives the browser`;
 
 export async function cmdMotionJank(parsed: ParsedArgs, _args: string[]): Promise<void> {
@@ -25,15 +25,8 @@ export async function cmdMotionJank(parsed: ParsedArgs, _args: string[]): Promis
     const state = typeof meta.state === 'string' ? meta.state : 'unknown';
     const sections: FactLine[] = [fact`${analysis.timingNote}`];
 
-    if (analysis.droppedFrames.length) {
-      sections.push(lineList(analysis.droppedFrames.map((drop, index) =>
-        fact`${index + 1}. frames ${drop.beforeFrame}→${drop.afterFrame}: interval ${drop.intervalMs.toFixed(2)}ms, cadence ${analysis.cadenceMs?.toFixed(2) ?? 'unavailable'}ms, estimated dropped frames ${drop.estimatedDroppedFrames}, t=${drop.startMs.toFixed(2)}→${drop.endMs.toFixed(2)}ms (±frame)`,
-      )));
-    } else {
-      sections.push(fact`Dropped-frame intervals: 0; ${analysis.frameCount} timestamped rect sample(s), cadence ${analysis.cadenceMs?.toFixed(2) ?? 'unavailable'}ms.`);
-    }
-    if (analysis.missingFrameSampleCount > 0) sections.push(fact`${analysis.missingFrameSampleCount} screencast frame(s) have no rect timestamp sample; dropped-frame count is incomplete.`);
-    if (analysis.cadenceMs === null) sections.push(text`Fewer than two positive frame intervals were retained; nominal cadence is unavailable and the dropped-frame count is incomplete.`);
+    sections.push(fact`Page.screencastFrame is change-driven; its ${analysis.frameCount} timestamped rect sample(s) do not measure page dropped frames.`);
+    if (analysis.missingFrameSampleCount > 0) sections.push(fact`${analysis.missingFrameSampleCount} screencast frame(s) have no rect timestamp sample.`);
 
     if (analysis.longTasks.length) {
       sections.push(lineList(analysis.longTasks.map((task, index) => formatLongTask(task, index))));
@@ -62,15 +55,13 @@ export async function cmdMotionJank(parsed: ParsedArgs, _args: string[]): Promis
       attrs: {
         state,
         frames: analysis.frameCount,
-        'dropped-frames': analysis.droppedFrameCount,
-        'dropped-frames-incomplete': analysis.droppedFramesIncomplete,
         'long-task-records': analysis.longTasks.length,
         'long-task-records-incomplete': analysis.longTasksIncomplete,
         'layout-shift-records': analysis.layoutShifts.length,
         'layout-shift-records-incomplete': analysis.layoutShiftsIncomplete,
         'timestamp-uncertainty': analysis.frameTimestampUncertainty,
       },
-      summary: fact`${analysis.droppedFrameCount} estimated dropped frame(s)${analysis.droppedFramesIncomplete ? ' (incomplete)' : ''}, ${analysis.longTasks.length} long-task record(s)${analysis.longTasksIncomplete ? ' (incomplete)' : ''}, ${analysis.layoutShifts.length} layout-shift record(s)${analysis.layoutShiftsIncomplete ? ' (incomplete)' : ''}.`,
+      summary: fact`${analysis.longTasks.length} long-task record(s)${analysis.longTasksIncomplete ? ' (incomplete)' : ''}, ${analysis.layoutShifts.length} layout-shift record(s)${analysis.layoutShiftsIncomplete ? ' (incomplete)' : ''}.`,
       sections,
     };
     emitResult(result, { json: parsed.json });
@@ -86,14 +77,7 @@ function formatLongTask(task: LongTaskFact, index: number): FactLine {
     : task.timingDomain === 'trace-relative-first-event'
       ? `t=${task.startMs!.toFixed(2)}→${task.endMs!.toFixed(2)}ms relative to first trace event`
       : 'timing unavailable after navigation gap';
-  const overlapText = task.overlapsDroppedFrames === null
-    ? task.timingDomain === 'unavailable'
-      ? '; dropped-frame overlap unavailable after navigation gap'
-      : '; dropped-frame overlap unavailable across trace-relative and recorder-relative timing domains'
-    : task.overlapsDroppedFrames.length
-      ? `, overlaps dropped-frame interval(s) ending at frame ${task.overlapsDroppedFrames.join(', ')}`
-      : '';
-  return fact`long-task record ${index + 1} (${task.source}): ${timingText}, duration ${task.durationMs.toFixed(2)}ms${overlapText}.`;
+  return fact`long-task record ${index + 1} (${task.source}): ${timingText}, duration ${task.durationMs.toFixed(2)}ms.`;
 }
 
 function formatLayoutShift(shift: LayoutShiftFact, index: number): FactLine {

@@ -32,7 +32,7 @@ input/precondition errors exit 1. No leaf accepts --gate.
 <subcommand name="rec" args="[url] --do <action> [--duration <seconds>] | --start | --stop" whenToUse="record an interaction — one-shot action, or composed across commands with --start/--stop (needs an active session)"/>
 <subcommand name="mask" args="<rec> [--limit <N>]" whenToUse="motion-diff composite image + per-region facts"/>
 <subcommand name="timeline" args="<rec> --element <sel> [--prop <prop>]" whenToUse="per-frame geometry/scroll/property timeline for one element"/>
-<subcommand name="jank" args="<rec>" whenToUse="dropped-frame/long-task/layout-shift facts"/>
+<subcommand name="jank" args="<rec>" whenToUse="long-task/layout-shift facts with change-driven screencast provenance"/>
 <subcommand name="response" args="<rec> [--action <action>] [--occurrence <n>]" whenToUse="input-to-settled response timeline"/>
 
 capture motion <leaf> -h    Per-leaf usage`;

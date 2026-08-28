@@ -87,7 +87,7 @@ export async function cmdMotionTimeline(parsed: ParsedArgs, _args: string[]): Pr
         { name: 'meta.json', note: `recording state ${meta.state}` },
       ]),
       sections: rows.length ? [lineList(rows)] : [text`The selected element had no complete bounding-box samples.`],
-      followUp: text`Use \`capture motion jank <rec>\` for dropped-frame and observer-event facts, or \`capture motion response <rec>\` for input-to-settle timing facts.`,
+      followUp: text`Use \`capture motion jank <rec>\` for observer-event facts, or \`capture motion response <rec>\` for input-to-settle timing facts.`,
     };
     emitResult(result, { json: parsed.json });
   } catch (err) {

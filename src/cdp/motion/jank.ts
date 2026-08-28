@@ -13,15 +13,6 @@ export interface JankFrame {
   readonly tMs: number;
 }
 
-export interface DroppedFrameFact {
-  readonly afterFrame: number;
-  readonly beforeFrame: number;
-  readonly startMs: number;
-  readonly endMs: number;
-  readonly intervalMs: number;
-  readonly estimatedDroppedFrames: number;
-}
-
 export type LongTaskTimingDomain = 'recorder-performance' | 'trace-relative-first-event' | 'unavailable';
 
 export interface LongTaskFact {
@@ -32,8 +23,6 @@ export interface LongTaskFact {
   readonly durationMs: number;
   /** Null when no synchronized recorder-relative observer baseline was retained. */
   readonly endMs: number | null;
-  /** Null when task/frame timing is incomparable or unavailable. */
-  readonly overlapsDroppedFrames: readonly number[] | null;
 }
 
 export interface LayoutShiftRectFact {
@@ -57,7 +46,7 @@ export interface LayoutShiftFact {
   readonly rects: readonly LayoutShiftRectFact[];
 }
 
-export type JankCount = 'dropped-frames' | 'long-task-records' | 'layout-shift-records';
+export type JankCount = 'long-task-records' | 'layout-shift-records';
 
 export interface ArtifactLossFact {
   readonly kind: string;
@@ -69,11 +58,7 @@ export interface ArtifactLossFact {
 
 export interface MotionJankAnalysis {
   readonly frameCount: number;
-  readonly cadenceMs: number | null;
   readonly missingFrameSampleCount: number;
-  readonly droppedFrames: readonly DroppedFrameFact[];
-  readonly droppedFrameCount: number;
-  readonly droppedFramesIncomplete: boolean;
   readonly longTasks: readonly LongTaskFact[];
   readonly longTasksIncomplete: boolean;
   readonly layoutShifts: readonly LayoutShiftFact[];
@@ -202,13 +187,6 @@ function inferredRectFacts(shiftAtMs: number, frames: readonly { tMs: number; el
   return { rects, beforeFrameMs: before.tMs, afterFrameMs: after.tMs };
 }
 
-/** The lower quartile keeps a frequent long interval from redefining the nominal frame cadence. */
-function stableLowCadence(intervals: readonly number[]): number | null {
-  if (intervals.length < 2) return null;
-  const sorted = [...intervals].sort((a, b) => a - b);
-  return sorted[Math.floor((sorted.length - 1) * 0.25)] ?? null;
-}
-
 function missingFrameSamples(frames: readonly JankFrame[]): number {
   let missing = 0;
   for (let i = 1; i < frames.length; i++) {
@@ -257,12 +235,12 @@ function artifactLoss(events: readonly unknown[]): ArtifactLossFact[] {
       case 'error': {
         const lower = (message ?? '').toLowerCase();
         const affectedCounts: JankCount[] = lower.includes('rect sample')
-          ? ['dropped-frames']
+          ? []
           : lower.includes('observer')
             ? ['long-task-records', 'layout-shift-records']
             : lower.includes('trace')
               ? ['long-task-records']
-              : ['dropped-frames', 'long-task-records', 'layout-shift-records'];
+              : ['long-task-records', 'layout-shift-records'];
         facts.push({ kind: event.kind, count, reason, message, affectedCounts });
         break;
       }
@@ -280,17 +258,7 @@ export function analyzeMotionJank(input: { rects: readonly unknown[]; events: re
     .filter((item): item is { item: UnknownRecord; tMs: number } => item.tMs !== null)
     .sort((a, b) => a.tMs - b.tMs);
   const frames: JankFrame[] = frameRecords.map(({ item, tMs }, index) => ({ frame: finite(item.frame) ?? index, tMs }));
-  const intervals = frames.slice(1).map((frame, index) => frame.tMs - frames[index].tMs).filter((interval) => interval > 0);
-  const cadenceMs = stableLowCadence(intervals);
   const missingFrameSampleCount = missingFrameSamples(frames);
-  const droppedFrames: DroppedFrameFact[] = [];
-  if (cadenceMs !== null && cadenceMs > 0) {
-    for (let i = 1; i < frames.length; i++) {
-      const intervalMs = frames[i].tMs - frames[i - 1].tMs;
-      const estimatedDroppedFrames = Math.max(0, Math.round(intervalMs / cadenceMs) - 1);
-      if (estimatedDroppedFrames > 0) droppedFrames.push({ afterFrame: frames[i].frame, beforeFrame: frames[i - 1].frame, startMs: frames[i - 1].tMs, endMs: frames[i].tMs, intervalMs, estimatedDroppedFrames });
-    }
-  }
 
   const traceEvents = flattenTraceEvents(input.events);
   const observedTraceBaselineUs = traceEvents.map((event) => finite(event.ts)).filter((ts): ts is number => ts !== undefined).sort((a, b) => a - b)[0];
@@ -312,10 +280,10 @@ export function analyzeMotionJank(input: { rects: readonly unknown[]; events: re
     if (startMs === null || startMs < 0) {
       if (startMs === null) observerNavGapUnavailable = true;
       else observerPreArmUnavailable = true;
-      longTasks.push({ source: 'observer', timingDomain: 'unavailable', startMs: null, durationMs, endMs: null, overlapsDroppedFrames: null });
+      longTasks.push({ source: 'observer', timingDomain: 'unavailable', startMs: null, durationMs, endMs: null });
       continue;
     }
-    longTasks.push(longTask('observer', 'recorder-performance', startMs, durationMs, droppedFrames));
+    longTasks.push(longTask('observer', 'recorder-performance', startMs, durationMs));
   }
   for (const trace of traceEvents) {
     const name = typeof trace.name === 'string' ? trace.name : '';
@@ -323,7 +291,7 @@ export function analyzeMotionJank(input: { rects: readonly unknown[]; events: re
     const timestampUs = finite(trace.ts);
     if (!/(longtask|run(task|microtasks)|task)/i.test(name) || durationMs === undefined || durationMs < 50_000 || timestampUs === undefined) continue;
     const timing = traceTime(timestampUs, input.markers, observedTraceBaselineUs);
-    if (timing !== null) longTasks.push(longTask('trace', timing.domain, timing.tMs, durationMs / 1000, droppedFrames));
+    if (timing !== null) longTasks.push(longTask('trace', timing.domain, timing.tMs, durationMs / 1000));
   }
 
   const frameElementRecords = frameRecords.map(({ item, tMs }) => ({ tMs, elements: (Array.isArray(item.elements) ? item.elements : []).map(record).filter((v): v is UnknownRecord => v !== null) }));
@@ -367,11 +335,10 @@ export function analyzeMotionJank(input: { rects: readonly unknown[]; events: re
     losses.push({
       kind: 'orphaned-finalized',
       message: 'recorder was finalized best-effort from artifacts already flushed to disk',
-      affectedCounts: ['dropped-frames', 'long-task-records', 'layout-shift-records'],
+      affectedCounts: ['long-task-records', 'layout-shift-records'],
     });
   }
   const incomplete = new Set<JankCount>(losses.flatMap((loss) => loss.affectedCounts));
-  if (missingFrameSampleCount > 0 || cadenceMs === null) incomplete.add('dropped-frames');
   const traceAligned = longTasks.some((task) => task.source === 'trace' && task.timingDomain === 'recorder-performance');
   const traceRelative = longTasks.some((task) => task.source === 'trace' && task.timingDomain === 'trace-relative-first-event');
   const frameTimestampUncertainty: '±frame' | 'unavailable' = frames.length ? '±frame' : 'unavailable';
@@ -382,7 +349,7 @@ export function analyzeMotionJank(input: { rects: readonly unknown[]; events: re
   if (observerNavGapUnavailable) observerUnavailableCauses.push('some occurred after a navigation gap with no synchronized recorder-relative baseline');
   if (observerPreArmUnavailable) observerUnavailableCauses.push('some were buffered from before the recorder arm baseline, with a document timestamp that predates it');
   const observerTiming = observerUnavailableCauses.length
-    ? `Observer entries with unavailable timing (${observerUnavailableCauses.join('; ')}) have no recorder-relative baseline; their timing, dropped-frame overlap, and frame-diff attribution are unavailable.`
+    ? `Observer entries with unavailable timing (${observerUnavailableCauses.join('; ')}) have no recorder-relative baseline; their timing and frame-diff attribution are unavailable.`
     : 'Observer and screencast timestamps are recorder-relative performance.now() milliseconds.';
   const timingNote = traceRelative
     ? `${observerTiming} Frame-derived intervals have ±frame uncertainty. Trace timestamps are relative to the first trace event because no explicit trace/performance baseline marker was retained.`
@@ -394,11 +361,7 @@ export function analyzeMotionJank(input: { rects: readonly unknown[]; events: re
 
   return {
     frameCount: frames.length,
-    cadenceMs,
     missingFrameSampleCount,
-    droppedFrames,
-    droppedFrameCount: droppedFrames.reduce((count, item) => count + item.estimatedDroppedFrames, 0),
-    droppedFramesIncomplete: incomplete.has('dropped-frames'),
     longTasks,
     longTasksIncomplete: incomplete.has('long-task-records'),
     layoutShifts,
@@ -409,18 +372,8 @@ export function analyzeMotionJank(input: { rects: readonly unknown[]; events: re
   };
 }
 
-function longTask(source: 'observer' | 'trace', timingDomain: LongTaskTimingDomain, startMs: number, durationMs: number, droppedFrames: readonly DroppedFrameFact[]): LongTaskFact {
-  const endMs = startMs + durationMs;
-  return {
-    source,
-    timingDomain,
-    startMs,
-    durationMs,
-    endMs,
-    overlapsDroppedFrames: timingDomain === 'recorder-performance'
-      ? droppedFrames.filter((drop) => startMs < drop.endMs && endMs > drop.startMs).map((drop) => drop.afterFrame)
-      : null,
-  };
+function longTask(source: 'observer' | 'trace', timingDomain: LongTaskTimingDomain, startMs: number, durationMs: number): LongTaskFact {
+  return { source, timingDomain, startMs, durationMs, endMs: startMs + durationMs };
 }
 
 export function readMotionJank(ref: RecRef): { analysis: MotionJankAnalysis; meta: Record<string, unknown> } {
@@ -430,7 +383,7 @@ export function readMotionJank(ref: RecRef): { analysis: MotionJankAnalysis; met
   // completed recording, not one awaiting `--stop` (which only applies to an
   // active composed lifecycle recording) — its retained event/trace records
   // remain readable, so long-task and layout-shift facts stay available;
-  // only frame-derived counts fall back to "incomplete" via cadenceMs===null.
+  // while frame-derived timing remains unavailable without rect timestamps.
   // Mirrors the same exception already made in response.ts's loadResponseTimeline.
   const readablePartial = state === 'partial' && meta.reason === 'no_frames';
   if (state !== 'finalized' && state !== 'orphaned-finalized' && !readablePartial) {

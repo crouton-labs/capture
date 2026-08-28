@@ -18,7 +18,7 @@ import {
 import { getActiveSession } from '../../../session-context.js';
 import { createOneshotSession } from '../../../session/commands.js';
 import { parseDoAction } from '../../leaf-grammar.js';
-import { ensurePrivateDir, writeBinaryPrivate, writeJsonPrivate, writeNdjsonPrivate, type RecMeta } from '../../../session/artifacts.js';
+import { ensurePrivateDir, readPrivateFile, writeBinaryPrivate, writeJsonPrivate, writeNdjsonPrivate, writePrivateFile, type RecMeta } from '../../../session/artifacts.js';
 import {
   startComposedRecorder,
   stopComposedRecorder,
@@ -268,10 +268,10 @@ export function finalizeOneShotRecording(
   viewportRestored: boolean | null = null,
 ): FinalizedRecording & { action: string; video: VideoEncoding } {
   ensureFinalizedInventory(recDir);
+  writeJsonPrivate(path.join(recDir, 'markers.json'), stopped.markers);
   const video = encodeVideo(recDir, stopped.durationMs);
   const fps = stopped.durationMs > 0 ? Math.round((stopped.frameCount / (stopped.durationMs / 1000)) * 10) / 10 : 0;
   const state = stopped.frameCount > 0 ? 'finalized' : 'partial';
-  writeJsonPrivate(path.join(recDir, 'markers.json'), stopped.markers);
   const meta: RecMeta & { url: string; fps: number; eventCount: number; video: VideoEncoding; viewportRestored: boolean | null; reason?: 'no_frames' } = {
     id: recId,
     action,
@@ -381,25 +381,66 @@ export function classifyEncodeFailure(result: { error?: (Error & { code?: string
   return 'ffmpeg_encoding_failed';
 }
 
+/** Builds the concat manifest from the recorder's frame timestamps. A screencast is
+ * change-driven, but each retained frame's presentation timestamp is factual; a
+ * recording without a complete, ordered timestamp sequence cannot produce a
+ * timestamp-faithful video. */
+function timestampedFrameManifest(recDir: string, frames: readonly string[], manifestPath: string): VideoEncoding | undefined {
+  let rects: unknown[];
+  let markers: Record<string, unknown>;
+  try {
+    rects = readPrivateFile(path.join(recDir, 'rects.jsonl')).toString('utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+    markers = JSON.parse(readPrivateFile(path.join(recDir, 'markers.json')).toString('utf8')) as Record<string, unknown>;
+  } catch {
+    return { status: 'unavailable', reason: 'frame_timestamps_unavailable' };
+  }
+  const timestamps = new Map<string, number>();
+  for (const rect of rects) {
+    if (!rect || typeof rect !== 'object') continue;
+    const { file, screencastTimestamp } = rect as { file?: unknown; screencastTimestamp?: unknown };
+    if (typeof file !== 'string' || typeof screencastTimestamp !== 'number' || !Number.isFinite(screencastTimestamp) || timestamps.has(file)) return { status: 'unavailable', reason: 'frame_timestamps_unavailable' };
+    timestamps.set(file, screencastTimestamp * 1000);
+  }
+  const frameTimes = frames.map(frame => timestamps.get(frame));
+  if (frameTimes.some((timestamp): timestamp is undefined => timestamp === undefined)) return { status: 'unavailable', reason: 'frame_timestamps_unavailable' };
+  if (frameTimes.some((timestamp, index) => index > 0 && timestamp <= frameTimes[index - 1]!)) return { status: 'unavailable', reason: 'frame_timestamps_unordered' };
+  const stoppedAtWallClockMs = markers.stoppedAtWallClockMs;
+  if (typeof stoppedAtWallClockMs !== 'number' || !Number.isFinite(stoppedAtWallClockMs)) return { status: 'unavailable', reason: 'frame_timestamps_unavailable' };
+  const finalDurationMs = stoppedAtWallClockMs - frameTimes[frameTimes.length - 1]!;
+  if (!(finalDurationMs > 0)) return { status: 'unavailable', reason: 'frame_timestamps_unavailable' };
+  const durationsMs = frameTimes.slice(1).map((timestamp, index) => timestamp - frameTimes[index]!);
+  durationsMs.push(finalDurationMs);
+  const quote = (filename: string) => filename.replace(/'/g, "'\\''");
+  const lines = ['ffconcat version 1.0'];
+  for (let index = 0; index < frames.length; index++) {
+    lines.push(`file '${quote(path.join(recDir, 'frames', frames[index]!))}'`, 'option framerate 1000', `duration ${(durationsMs[index]! / 1000).toFixed(9)}`);
+  }
+  // ffconcat applies a duration to the following file, so repeat the final
+  // image at the recorder's observed stop boundary to retain its final hold.
+  lines.push(`file '${quote(path.join(recDir, 'frames', frames[frames.length - 1]!))}'`, 'option framerate 1000');
+  writePrivateFile(manifestPath, lines.join('\n') + '\n');
+  return undefined;
+}
+
 /** Encodes inside a new private directory, then installs through the shared
- * atomic no-follow writer. Frame cadence is measured from the recording's
- * duration rather than assumed from a display refresh rate. */
-export function encodeVideoIfAvailable(recDir: string, durationMs: number): VideoEncoding {
+ * atomic no-follow writer. The concat demuxer receives every recorded
+ * screencast presentation timestamp instead of a fabricated constant cadence. */
+export function encodeVideoIfAvailable(recDir: string, _durationMs: number): VideoEncoding {
   const framesDir = path.join(recDir, 'frames');
   const frames = fs.existsSync(framesDir) ? fs.readdirSync(framesDir).filter((name) => name.endsWith('.png')).sort() : [];
   if (frames.length === 0) return { status: 'unavailable', reason: 'no_frames' };
-  if (durationMs <= 0) return { status: 'unavailable', reason: 'recording_duration_unavailable' };
   const probe = spawnSync('ffmpeg', ['-hide_banner', '-encoders'], { encoding: 'utf8', timeout: 5_000 });
   if (probe.error || probe.status !== 0 || !String(probe.stdout ?? '').includes('libvpx-vp9')) return { status: 'unavailable', reason: 'ffmpeg_or_vp9_encoder_unavailable' };
   const tempDir = path.join(recDir, `.video-encode-${crypto.randomBytes(8).toString('hex')}`);
   ensurePrivateDir(tempDir);
   const tempOutput = path.join(tempDir, 'video.webm');
-  const cadence = String(frames.length / (durationMs / 1000));
-  const result = spawnSync('ffmpeg', [
-    '-y', '-framerate', cadence, '-pattern_type', 'glob', '-i', path.join(framesDir, '*.png'),
-    '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', tempOutput,
-  ], { stdio: 'ignore', timeout: encodeTimeoutMs(frames.length) });
   try {
+    const manifestOutcome = timestampedFrameManifest(recDir, frames, path.join(tempDir, 'frames.ffconcat'));
+    if (manifestOutcome) return manifestOutcome;
+    const result = spawnSync('ffmpeg', [
+      '-y', '-f', 'concat', '-safe', '0', '-i', path.join(tempDir, 'frames.ffconcat'), '-fps_mode', 'vfr',
+      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', tempOutput,
+    ], { stdio: 'ignore', timeout: encodeTimeoutMs(frames.length) });
     if (result.error || result.status !== 0 || !fs.existsSync(tempOutput)) {
       return { status: 'failed', reason: classifyEncodeFailure(result) };
     }

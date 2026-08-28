@@ -52,19 +52,13 @@ test('motion jank labels frame-diff layout-shift attribution with its bracketing
   const analysis = analyzeMotionJank({ rects, events, markers });
 
   assert.equal(analysis.frameCount, 4);
-  assert.equal(analysis.cadenceMs, 16);
-  assert.equal(analysis.droppedFrameCount, 2);
-  assert.deepEqual(analysis.droppedFrames.map((item) => item.estimatedDroppedFrames), [2]);
-  assert.equal(analysis.droppedFrames[0].beforeFrame, 1);
-  assert.equal(analysis.droppedFrames[0].afterFrame, 2);
+  assert.ok(!('droppedFrameCount' in analysis), 'change-driven screencast intervals cannot measure page dropped frames');
 
   assert.equal(analysis.longTasks.length, 2);
   const observer = analysis.longTasks.find((task) => task.source === 'observer')!;
   const trace = analysis.longTasks.find((task) => task.source === 'trace')!;
-  assert.deepEqual(observer.overlapsDroppedFrames, [2]);
   assert.equal(trace.timingDomain, 'trace-relative-first-event');
   assert.equal(trace.startMs, 10);
-  assert.equal(trace.overlapsDroppedFrames, null, 'trace-relative time cannot be compared to recorder-relative frame intervals');
   assert.match(analysis.timingNote, /relative to the first trace event/);
 
   assert.equal(analysis.layoutShifts.length, 1);
@@ -81,7 +75,7 @@ test('motion jank labels frame-diff layout-shift attribution with its bracketing
   assert.equal(analysis.frameTimestampUncertainty, '±frame');
 });
 
-test('motion jank derives cadence from stable low intervals rather than normalizing frequent drops into its median', () => {
+test('motion jank retains change-driven frame samples without estimating page dropped frames', () => {
   const analysis = analyzeMotionJank({
     rects: [
       { frame: 0, screencastTimestamp: 10 },
@@ -93,20 +87,8 @@ test('motion jank derives cadence from stable low intervals rather than normaliz
     markers: { wallClockMs: 10_000 },
   });
 
-  assert.equal(analysis.cadenceMs, 16);
-  assert.equal(analysis.droppedFrameCount, 4, 'two 48ms intervals each retain two estimated missing frames');
-});
-
-test('motion jank marks dropped-frame counts incomplete when retained timestamps cannot establish a cadence', () => {
-  const analysis = analyzeMotionJank({
-    rects: [{ frame: 0, screencastTimestamp: 10 }],
-    events: [],
-    markers: { wallClockMs: 10_000 },
-  });
-
-  assert.equal(analysis.droppedFrameCount, 0);
-  assert.equal(analysis.cadenceMs, null);
-  assert.equal(analysis.droppedFramesIncomplete, true);
+  assert.equal(analysis.frameCount, 4);
+  assert.ok(!('droppedFrames' in analysis));
 });
 
 test('motion jank uses explicit PerformanceObserver sources and explicit trace/performance markers when available', () => {
@@ -145,7 +127,6 @@ test('motion jank surfaces recorder artifact loss and marks only affected count 
   });
 
   assert.equal(analysis.missingFrameSampleCount, 1);
-  assert.equal(analysis.droppedFramesIncomplete, true);
   assert.equal(analysis.longTasksIncomplete, true);
   assert.equal(analysis.layoutShiftsIncomplete, true);
   assert.deepEqual(analysis.artifactLoss.map((loss) => loss.kind), ['trace-dropped', 'rect-sample-dropped', 'binding-dropped', 'error']);
@@ -169,7 +150,6 @@ test('motion jank retains post-navigation observer entries without assigning the
   assert.equal(analysis.longTasks[1].timingDomain, 'unavailable');
   assert.equal(analysis.longTasks[1].startMs, null);
   assert.equal(analysis.longTasks[1].endMs, null);
-  assert.equal(analysis.longTasks[1].overlapsDroppedFrames, null);
   assert.equal(analysis.layoutShifts.length, 1);
   assert.equal(analysis.layoutShifts[0].tMs, null);
   assert.equal(analysis.layoutShifts[0].attribution, 'unavailable');
@@ -224,21 +204,18 @@ test('motion jank preserves rect-sample loss without marking retained frame time
   });
 
   assert.equal(analysis.missingFrameSampleCount, 0);
-  assert.equal(analysis.droppedFramesIncomplete, false);
   assert.deepEqual(analysis.artifactLoss, [{ kind: 'rect-sample-dropped', count: 5, reason: 'element-cap', affectedCounts: [] }]);
 });
 
 test('motion jank marks every count family incomplete for orphaned-finalized artifacts', () => {
   const analysis = analyzeMotionJank({ rects: [], events: [], markers, state: 'orphaned-finalized' });
 
-  assert.equal(analysis.droppedFrameCount, 0);
-  assert.equal(analysis.droppedFramesIncomplete, true);
   assert.equal(analysis.longTasksIncomplete, true);
   assert.equal(analysis.layoutShiftsIncomplete, true);
   assert.deepEqual(analysis.artifactLoss, [{
     kind: 'orphaned-finalized',
     message: 'recorder was finalized best-effort from artifacts already flushed to disk',
-    affectedCounts: ['dropped-frames', 'long-task-records', 'layout-shift-records'],
+    affectedCounts: ['long-task-records', 'layout-shift-records'],
   }]);
 });
 
@@ -253,8 +230,7 @@ test('motion jank reads finalized recording artifacts through the resolver and r
   await setActiveSession({ sessionId: 'u27-session', dir: sessionDir, harId: null, targetId: null, stepCount: 0 });
 
   try {
-    const result = readMotionJank(resolveRecRef('rec-fixture'));
-    assert.equal(result.analysis.droppedFrameCount, 2);
+    readMotionJank(resolveRecRef('rec-fixture'));
 
     const output = await captureStdout(() => cmdMotionJank({ command: 'motion', positional: ['rec-fixture'] }, []));
     assert.match(output, /Trace timestamps are relative to the first trace event/);
@@ -265,16 +241,15 @@ test('motion jank reads finalized recording artifacts through the resolver and r
       writeNdjsonPrivate(path.join(recDir, 'rects.jsonl'), rects.slice(0, frameTotal));
       const rendered = JSON.parse(await captureStdout(() => cmdMotionJank({ command: 'motion', positional: ['rec-fixture'], json: true }, [])));
       assert.equal(rendered.attrs.frames, frameTotal);
-      assert.equal(rendered.attrs['dropped-frames'], 0);
-      assert.equal(rendered.attrs['dropped-frames-incomplete'], true, `${frameTotal} timestamped frames cannot establish cadence`);
-      assert.match(rendered.summary, /0 estimated dropped frame\(s\) \(incomplete\)/);
-      assert.match(rendered.sections.join('\n'), /nominal cadence is unavailable and the dropped-frame count is incomplete/);
+      assert.equal(rendered.attrs['dropped-frames'], undefined);
+      assert.equal(rendered.attrs['dropped-frames-incomplete'], undefined);
+      assert.match(rendered.summary, /2 long-task record\(s\)/);
+      assert.match(rendered.sections.join('\n'), /change-driven; its .* do not measure page dropped frames/);
     }
 
     writeNdjsonPrivate(path.join(recDir, 'rects.jsonl'), rects);
     writeJsonPrivate(path.join(recDir, 'meta.json'), { id: 'rec-fixture', state: 'orphaned-finalized', frames: 4, durationMs: 80, action: null });
     const orphaned = readMotionJank(resolveRecRef('rec-fixture'));
-    assert.equal(orphaned.analysis.droppedFramesIncomplete, true);
     assert.equal(orphaned.analysis.longTasksIncomplete, true);
     assert.equal(orphaned.analysis.layoutShiftsIncomplete, true);
     assert.ok(orphaned.analysis.artifactLoss.some((loss) => loss.kind === 'orphaned-finalized'));
@@ -300,10 +275,9 @@ test('motion jank reads a one-shot partial no_frames recording instead of reject
   try {
     const result = readMotionJank(resolveRecRef('rec-no-frames'));
     assert.equal(result.analysis.frameCount, 0);
-    assert.equal(result.analysis.droppedFramesIncomplete, true, 'zero frames cannot establish a cadence');
     // Long-task and layout-shift facts derive from events.jsonl, independent of
     // screencast frames — a zero-frame recording must not lose them.
-    assert.equal(result.analysis.longTasks.length, 1);
+    assert.equal(result.analysis.longTasks.length, 2);
     assert.equal(result.analysis.layoutShifts.length, 1);
 
     const output = await captureStdout(() => cmdMotionJank({ command: 'motion', positional: ['rec-no-frames'] }, []));

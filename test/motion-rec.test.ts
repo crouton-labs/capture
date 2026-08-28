@@ -587,7 +587,7 @@ test('video encoding contract receives measured duration and never writes throug
       receivedDuration = durationMs;
       return { status: 'encoded' };
     });
-    assert.equal(receivedDuration, 1000, 'encoder cadence derives from the recorded duration');
+    assert.equal(receivedDuration, 1000, 'encoder receives the measured recording duration for the final frame boundary');
 
     // This is intentionally capability-gated: a present ffmpeg binary alone
     // does not prove that its VP9 encoder and ffprobe are usable.
@@ -596,12 +596,18 @@ test('video encoding contract receives measured duration and never writes throug
     if (capabilities.status === 0 && capabilities.stdout.includes('libvpx-vp9') && ffprobe.status === 0) {
       const smokeDir = path.join(root, 'motion', 'recs', 'rec-video-smoke');
       ensurePrivateDir(path.join(smokeDir, 'frames'));
-      writeBinaryPrivate(path.join(smokeDir, 'frames', '000001.png'), TINY_PNG);
-      writeBinaryPrivate(path.join(smokeDir, 'frames', '000002.png'), TINY_PNG);
-      assert.deepEqual(encodeVideoIfAvailable(smokeDir, 1000), { status: 'encoded' });
-      const probe = spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', path.join(smokeDir, 'video.webm')], { encoding: 'utf8' });
+      for (const frame of ['000001.png', '000002.png', '000003.png']) writeBinaryPrivate(path.join(smokeDir, 'frames', frame), TINY_PNG);
+      writeNdjsonPrivate(path.join(smokeDir, 'rects.jsonl'), [
+        { file: '000001.png', screencastTimestamp: 1_700_000_000 },
+        { file: '000002.png', screencastTimestamp: 1_700_000_000.013 },
+        { file: '000003.png', screencastTimestamp: 1_700_000_001.863 },
+      ]);
+      writeJsonPrivate(path.join(smokeDir, 'markers.json'), { stoppedAtWallClockMs: 1_700_000_002_000 });
+      assert.deepEqual(encodeVideoIfAvailable(smokeDir, 2000), { status: 'encoded' });
+      const probe = spawnSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'csv=p=0', path.join(smokeDir, 'video.webm')], { encoding: 'utf8' });
       assert.equal(probe.status, 0, probe.stderr);
-      assert.ok(Math.abs(Number(probe.stdout.trim()) - 1) < 0.05, `VP9 duration must follow recording timing, got ${probe.stdout.trim()}s`);
+      const timestamps = probe.stdout.trim().split('\n').map(Number);
+      assert.deepEqual(timestamps, [0, 0.013, 1.863, 2], `VP9 frame PTS must preserve rects.jsonl timing and the recorder stop boundary exactly, got ${probe.stdout.trim()}`);
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

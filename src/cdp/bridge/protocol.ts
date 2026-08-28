@@ -67,6 +67,8 @@ export interface RecorderClockBaselines {
   firstTraceEventTsUs: number | null;
   /** `true` while either timestamp above is still `null`. */
   baselinesPending: boolean;
+  /** Wall-clock milliseconds when the recorder finished flushing, present only on rec-stop. */
+  stoppedAtWallClockMs?: number;
 }
 
 /**
