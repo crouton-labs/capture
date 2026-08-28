@@ -10,6 +10,7 @@ import { renderResult } from '../src/output/render.js';
 import {
   analyzeSweepSamples,
   applySweepEmulation,
+  changesBetweenSnapshots,
   fingerprintSnapshotDir,
   numericSweepValues,
   readSweepEnvironment,
@@ -44,6 +45,21 @@ test('measure sweep fingerprints responsive track-count transitions and records 
   assert.deepEqual(analysis.ranges.map((range) => [range.from, range.to]), [[600, 768]]);
   const artifactPath = writeSweepArtifact(path.join(root, 'measure', 'sweeps', 'sweep-responsive'), { axis: 'width', from: 320, to: 768, capturedAt: '2026-01-01T00:00:00.000Z', samples: [narrow, wide, wider], ...analysis, uncertainties: [] });
   assert.equal(fs.statSync(artifactPath).mode & 0o777, 0o600);
+});
+
+test('sweep changes pair by backend node identity when a hidden element joins the captured set', () => {
+  const beforeDir = ensurePrivateDir(path.join(root, 'pair-before'));
+  const afterDir = ensurePrivateDir(path.join(root, 'pair-after'));
+  writeJsonPrivate(path.join(beforeDir, 'styles.json'), { elements: [
+    { id: 's-0', selector: 'main', backendNodeId: 10, computed: { display: 'grid', 'font-size': '16px' } },
+    { id: 's-1', selector: 'main > a', backendNodeId: 11, computed: { display: 'block', 'font-size': '16px' } },
+  ] });
+  writeJsonPrivate(path.join(afterDir, 'styles.json'), { elements: [
+    { id: 's-0', selector: 'nav', backendNodeId: 9, computed: { display: 'flex', 'font-size': '34px' } },
+    { id: 's-1', selector: 'main', backendNodeId: 10, computed: { display: 'flex', 'font-size': '16px' } },
+    { id: 's-2', selector: 'main > a', backendNodeId: 11, computed: { display: 'block', 'font-size': '16px' } },
+  ] });
+  assert.deepEqual(changesBetweenSnapshots(beforeDir, afterDir), [{ selector: 'main', property: 'display', before: 'grid', after: 'flex' }]);
 });
 
 test('fluid auto-width and centered geometry retain one discrete state without CSS provenance identity', () => {

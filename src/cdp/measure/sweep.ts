@@ -92,6 +92,7 @@ export interface SweepRecovery {
 interface StylesElement {
   readonly id?: string;
   readonly selector?: string;
+  readonly backendNodeId?: number | null;
   readonly computed?: Record<string, string | null>;
   readonly winningDeclarations?: readonly {
     readonly property?: string;
@@ -195,15 +196,26 @@ function sourceFor(declaration: SweepDeclaration): SweepChange['provenance'] | u
   return { selector: declaration.selector ?? undefined, specificity: declaration.specificity ?? undefined, source };
 }
 
+/** A cross-snapshot element key must survive an inserted/removed sibling; collector-local s-<index> ids do not. */
+function snapshotElementKey(element: StylesElement): string | null {
+  if (typeof element.backendNodeId === 'number') return `backend:${element.backendNodeId}`;
+  if (element.selector) return `selector:${element.selector}`;
+  return element.id && !/^s-\d+$/.test(element.id) ? `id:${element.id}` : null;
+}
+
 /** Extracts changed computed values and the winning declaration for the new value, when captured. */
 export function changesBetweenSnapshots(beforeDir: string, afterDir: string): SweepChange[] {
   const before = readJson<StylesReport>(path.join(beforeDir, 'styles.json'));
   const after = readJson<StylesReport>(path.join(afterDir, 'styles.json'));
   if (!before?.elements || !after?.elements) return [];
-  const prior = new Map(before.elements.map((element) => [element.id ?? element.selector ?? '', element]));
+  const prior = new Map(before.elements.flatMap((element) => {
+    const key = snapshotElementKey(element);
+    return key === null ? [] : [[key, element] as const];
+  }));
   const changes: SweepChange[] = [];
   for (const next of after.elements) {
-    const key = next.id ?? next.selector ?? '';
+    const key = snapshotElementKey(next);
+    if (key === null) continue;
     const old = prior.get(key);
     if (!old) continue;
     const properties = new Set([...Object.keys(old.computed ?? {}), ...Object.keys(next.computed ?? {})]);
