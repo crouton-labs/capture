@@ -917,6 +917,8 @@ test('a main-frame navigation mid-recording re-injects the observer script (with
     await session.start();
     const addBindingCallsBefore = client.callsFor('Runtime.addBinding').length;
     const evaluateCallsBefore = client.callsFor('Runtime.evaluate').length;
+    const stopScreencastCallsBefore = client.callsFor('Page.stopScreencast').length;
+    const startScreencastCallsBefore = client.callsFor('Page.startScreencast').length;
 
     client.fire('Page.frameNavigated', { frame: { id: 'main', url: 'https://example.com/next' } });
     await tick();
@@ -927,6 +929,12 @@ test('a main-frame navigation mid-recording re-injects the observer script (with
       'the rearm must not re-issue Runtime.addBinding — the binding survives navigation, only the JS world does not',
     );
     assert.ok(client.callsFor('Runtime.evaluate').length > evaluateCallsBefore);
+    assert.equal(client.callsFor('Page.stopScreencast').length, stopScreencastCallsBefore + 1);
+    assert.equal(client.callsFor('Page.startScreencast').length, startScreencastCallsBefore + 1);
+    const observerRearm = client.calls.map((call) => call.method).lastIndexOf('Page.createIsolatedWorld');
+    const screencastStop = client.calls.map((call) => call.method).lastIndexOf('Page.stopScreencast');
+    const screencastStart = client.calls.map((call) => call.method).lastIndexOf('Page.startScreencast');
+    assert.ok(observerRearm < screencastStop && screencastStop < screencastStart, 'the destination world is live before its fresh screencast begins');
 
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
     const gap = events.find((e) => e.kind === 'navigation-gap');
@@ -989,11 +997,15 @@ test('a sub-frame navigation does not re-arm the binding/observer or record a ga
   try {
     await session.start();
     const addBindingCallsBefore = client.callsFor('Runtime.addBinding').length;
+    const stopScreencastCallsBefore = client.callsFor('Page.stopScreencast').length;
+    const startScreencastCallsBefore = client.callsFor('Page.startScreencast').length;
 
     client.fire('Page.frameNavigated', { frame: { id: 'iframe-1', parentId: 'main', url: 'https://example.com/iframe' } });
     await tick();
 
     assert.equal(client.callsFor('Runtime.addBinding').length, addBindingCallsBefore);
+    assert.equal(client.callsFor('Page.stopScreencast').length, stopScreencastCallsBefore);
+    assert.equal(client.callsFor('Page.startScreencast').length, startScreencastCallsBefore);
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
     assert.equal(events.filter((e) => e.kind === 'navigation-gap').length, 0);
   } finally {
@@ -2348,11 +2360,15 @@ test('a main-frame navigation during start() initialization installs the observe
     // world. It must be handled (state is 'starting'), recreating the world in the latest context.
     client.fire('Page.frameNavigated', { frame: { id: 'main', url: 'https://example.com/during-start' } });
     await tick(20); // let the (ungated) rearm run to completion and publish the newest context
+    assert.equal(client.callsFor('Page.startScreencast').length, 0, 'a startup navigation must not start a screencast before start() owns its initial stream');
+    assert.equal(client.callsFor('Page.stopScreencast').length, 0, 'a startup navigation must not stop a stream start() has not yet owned');
 
     releaseFirstInject(); // release the now-stale first install; it must NOT clobber the newest context
     await startPromise;
 
     assert.equal(session.state, 'recording', 'start() completes into recording');
+    assert.equal(client.callsFor('Page.startScreencast').length, 1, 'a navigation before the initial stream generation needs no duplicate refresh');
+    assert.equal(client.callsFor('Page.stopScreencast').length, 0, 'the startup navigation never stops an unowned or already-current stream');
 
     const isolatedWorlds = client.callsFor('Page.createIsolatedWorld');
     assert.equal(isolatedWorlds.length, 2, 'the startup navigation recreated the isolated world');
@@ -2373,6 +2389,169 @@ test('a main-frame navigation during start() initialization installs the observe
 
     const events = readNdjson(session.eventsPath) as Array<Record<string, unknown>>;
     assert.ok(events.some((e) => e.kind === 'navigation-gap'), 'the startup navigation is recorded as a navigation-gap');
+  } finally {
+    fs.rmSync(recDir, { recursive: true, force: true });
+  }
+});
+
+test('a navigation after the initial stream generation refreshes once after startup rearms settle', async () => {
+  const recDir = freshRecDir('navigation-after-initial-stream');
+  const client = new StubCdpClient();
+  const originalSend = client.send.bind(client);
+  let releaseInitialScreencast: () => void = () => {};
+  const initialScreencastGate = new Promise<void>((resolve) => {
+    releaseInitialScreencast = resolve;
+  });
+  let markInitialScreencastStarted: () => void = () => {};
+  const initialScreencastStarted = new Promise<void>((resolve) => {
+    markInitialScreencastStarted = resolve;
+  });
+  let delayInitialScreencast = true;
+  client.send = async (method: string, params: Record<string, unknown> = {}) => {
+    if (method === 'Page.startScreencast' && delayInitialScreencast) {
+      delayInitialScreencast = false;
+      const result = await originalSend(method, params);
+      markInitialScreencastStarted();
+      await initialScreencastGate;
+      return result;
+    }
+    return originalSend(method, params);
+  };
+  const session = new RecorderSession({ client, recDir });
+
+  try {
+    const startPromise = session.start();
+    await initialScreencastStarted;
+    client.fire('Page.frameNavigated', { frame: { id: 'main', url: 'https://example.com/after-initial-stream' } });
+    await tick();
+    assert.equal(client.callsFor('Page.startScreencast').length, 1, 'the starting navigation does not issue a duplicate start before the initial stream is owned');
+    assert.equal(client.callsFor('Page.stopScreencast').length, 0, 'the starting navigation does not stop the initial stream before start() owns it');
+
+    releaseInitialScreencast();
+    await startPromise;
+
+    assert.equal(session.state, 'recording');
+    assert.equal(client.callsFor('Page.startScreencast').length, 2, 'the startup path performs exactly one deferred refresh');
+    assert.equal(client.callsFor('Page.stopScreencast').length, 1, 'the deferred refresh stops the owned initial stream exactly once');
+  } finally {
+    fs.rmSync(recDir, { recursive: true, force: true });
+  }
+});
+
+test('a failed navigation after the initial stream generation aborts without refreshing the stream', async () => {
+  const recDir = freshRecDir('failed-navigation-after-initial-stream');
+  const client = new StubCdpClient();
+  const originalSend = client.send.bind(client);
+  let releaseInitialScreencast: () => void = () => {};
+  const initialScreencastGate = new Promise<void>((resolve) => {
+    releaseInitialScreencast = resolve;
+  });
+  let markInitialScreencastStarted: () => void = () => {};
+  const initialScreencastStarted = new Promise<void>((resolve) => {
+    markInitialScreencastStarted = resolve;
+  });
+  let delayInitialScreencast = true;
+  let failNextInject = false;
+  client.send = async (method: string, params: Record<string, unknown> = {}) => {
+    const expression = String((params as { expression?: unknown }).expression ?? '');
+    if (method === 'Runtime.evaluate' && expression.includes('MutationObserver') && failNextInject) {
+      failNextInject = false;
+      return { exceptionDetails: { text: 'Uncaught', exception: { description: 'observe threw after initial stream' } }, result: {} };
+    }
+    if (method === 'Page.startScreencast' && delayInitialScreencast) {
+      delayInitialScreencast = false;
+      const result = await originalSend(method, params);
+      markInitialScreencastStarted();
+      await initialScreencastGate;
+      return result;
+    }
+    return originalSend(method, params);
+  };
+  const session = new RecorderSession({ client, recDir });
+
+  try {
+    const startPromise = session.start();
+    await initialScreencastStarted;
+    failNextInject = true;
+    client.fire('Page.frameNavigated', { frame: { id: 'main', url: 'https://example.com/failed-after-initial-stream' } });
+    await tick();
+    releaseInitialScreencast();
+
+    await assert.rejects(() => startPromise, /latest main-frame context/i);
+    assert.equal(session.state, 'stopped');
+    assert.equal(client.callsFor('Page.startScreencast').length, 1, 'the failed rearm never starts a replacement stream');
+    assert.equal(client.callsFor('Page.stopScreencast').length, 1, 'startup cleanup stops the initially owned stream exactly once');
+    assert.equal(client.callsFor('Tracing.end').length, 1, 'startup cleanup ends tracing exactly once');
+  } finally {
+    fs.rmSync(recDir, { recursive: true, force: true });
+  }
+});
+
+test('a second startup navigation during a refresh stop prevents its stale start after reinjection fails', async () => {
+  const recDir = freshRecDir('second-navigation-during-startup-refresh');
+  const client = new StubCdpClient();
+  const originalSend = client.send.bind(client);
+  let releaseInitialScreencast: () => void = () => {};
+  const initialScreencastGate = new Promise<void>((resolve) => {
+    releaseInitialScreencast = resolve;
+  });
+  let markInitialScreencastStarted: () => void = () => {};
+  const initialScreencastStarted = new Promise<void>((resolve) => {
+    markInitialScreencastStarted = resolve;
+  });
+  let releaseRefreshStop: () => void = () => {};
+  const refreshStopGate = new Promise<void>((resolve) => {
+    releaseRefreshStop = resolve;
+  });
+  let markRefreshStopReached: () => void = () => {};
+  const refreshStopReached = new Promise<void>((resolve) => {
+    markRefreshStopReached = resolve;
+  });
+  let delayInitialScreencast = true;
+  let delayRefreshStop = true;
+  let failNextInject = false;
+  client.send = async (method: string, params: Record<string, unknown> = {}) => {
+    const expression = String((params as { expression?: unknown }).expression ?? '');
+    if (method === 'Runtime.evaluate' && expression.includes('MutationObserver') && failNextInject) {
+      failNextInject = false;
+      return { exceptionDetails: { text: 'Uncaught', exception: { description: 'observe threw during startup refresh' } }, result: {} };
+    }
+    if (method === 'Page.startScreencast' && delayInitialScreencast) {
+      delayInitialScreencast = false;
+      const result = await originalSend(method, params);
+      markInitialScreencastStarted();
+      await initialScreencastGate;
+      return result;
+    }
+    if (method === 'Page.stopScreencast' && delayRefreshStop) {
+      delayRefreshStop = false;
+      const result = await originalSend(method, params);
+      markRefreshStopReached();
+      await refreshStopGate;
+      return result;
+    }
+    return originalSend(method, params);
+  };
+  const session = new RecorderSession({ client, recDir });
+
+  try {
+    const startPromise = session.start();
+    await initialScreencastStarted;
+    client.fire('Page.frameNavigated', { frame: { id: 'main', url: 'https://example.com/first' } });
+    await tick();
+    releaseInitialScreencast();
+    await refreshStopReached;
+
+    failNextInject = true;
+    client.fire('Page.frameNavigated', { frame: { id: 'main', url: 'https://example.com/second-failed' } });
+    await tick();
+    releaseRefreshStop();
+
+    await assert.rejects(() => startPromise, /latest main-frame context/i);
+    assert.equal(session.state, 'stopped');
+    assert.equal(client.callsFor('Page.startScreencast').length, 1, 'the stale first refresh must not start a stream in the second failed destination');
+    assert.equal(client.callsFor('Page.stopScreencast').length, 2, 'the paused stale refresh and failed-start cleanup each stop once');
+    assert.equal(client.callsFor('Tracing.end').length, 1, 'failed-start cleanup ends tracing after the stale refresh is suppressed');
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }
@@ -2404,12 +2583,16 @@ test('a recording-time failed rearm never targets the destroyed isolated world c
   try {
     await session.start();
     const destroyedContextId = client.lastIsolatedWorldContextId; // the world start() installed
+    const stopScreencastCallsBefore = client.callsFor('Page.stopScreencast').length;
+    const startScreencastCallsBefore = client.callsFor('Page.startScreencast').length;
 
     // A navigation destroys the current isolated world; the rearm creates a fresh world but its
     // observer install throws, so no live context is ever republished.
     failNextInject = true;
     client.fire('Page.frameNavigated', { frame: { id: 'main', url: 'https://example.com/next' } });
     await tick();
+    assert.equal(client.callsFor('Page.stopScreencast').length, stopScreencastCallsBefore, 'a failed destination observer injection must not stop the active stream');
+    assert.equal(client.callsFor('Page.startScreencast').length, startScreencastCallsBefore, 'a failed destination observer injection must not restart the active stream');
 
     // A screencast frame arrives while no isolated world is live. The rect sampler must refuse to
     // evaluate rather than target the destroyed context (or send an undefined contextId, which CDP
@@ -2499,7 +2682,11 @@ test('a startup navigation whose rearm fails aborts start() and never samples wi
       /latest main-frame context/i,
       'start() must abort when the latest generation installed no isolated world',
     );
-    assert.notEqual(session.state, 'recording', 'an aborted start() must never reach recording');
+    assert.equal(session.state, 'stopped', 'an aborted start() closes the recorder rather than leaving an un-stoppable starting session');
+    assert.equal(client.callsFor('Page.startScreencast').length, 1, 'the failed startup never refreshes before the initial stream is owned');
+    assert.equal(client.callsFor('Page.stopScreencast').length, 1, 'the failed startup stops the stream it may have started');
+    assert.equal(client.callsFor('Tracing.start').length, 1, 'the failed startup began tracing before discovering the latest-world failure');
+    assert.equal(client.callsFor('Tracing.end').length, 1, 'the failed startup ends tracing it may have started');
 
     // A screencast frame arriving after the aborted start must not sample: with no live context,
     // the rect sampler refuses rather than sending an undefined contextId.

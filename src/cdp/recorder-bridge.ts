@@ -35,14 +35,15 @@
  *
  * Navigation: a `navigate` mid-recording destroys the page's JS world (and
  * therefore the injected observers) same as any full navigation would.
- * `Page.startScreencast`/`Tracing` continue across it unaffected (they are
- * CDP-session-scoped, not page-scoped), but the recorder listens for
- * `Page.frameNavigated` on the main frame and re-creates the isolated world
- * + re-injects the observer script best-effort afterward (the binding, scoped
- * to the world name, auto-reattaches to the recreated world without being
- * re-issued), recording a `navigation-gap` marker in `events.jsonl` so
- * downstream consumers know the Mutation/Resize/PerformanceObserver stream
- * has a gap around that point.
+ * `Tracing` continues across it (it is CDP-session-scoped), but the recorder
+ * listens for `Page.frameNavigated` on the main frame and re-creates the
+ * isolated world + re-injects the observer script best-effort afterward (the
+ * binding, scoped to the world name, auto-reattaches to the recreated world
+ * without being re-issued). It also restarts the screencast because its
+ * damage-driven stream does not guarantee a destination-document frame,
+ * recording a `navigation-gap` marker in `events.jsonl` so downstream
+ * consumers know the Mutation/Resize/PerformanceObserver stream has a gap
+ * around that point.
  *
  * Binding channel: the page→host `Runtime.addBinding` channel is untrusted
  * input — every payload must carry a per-recording unguessable nonce
@@ -240,6 +241,7 @@ export const OBSERVER_INSTALLED_SENTINEL = '__captureRecorderInstalled__';
 
 const TRACE_CATEGORIES =
   'devtools.timeline,disabled-by-default-devtools.timeline,disabled-by-default-devtools.timeline.frame,loading,blink.user_timing';
+const SCREENCAST_OPTIONS = { format: 'png', everyNthFrame: 1 };
 
 interface ScreencastFrameParams {
   data: string;
@@ -480,6 +482,7 @@ export class RecorderSession {
    * captured throughout the rest of `'stopping'`; only the async resize path is a real
    * post-stop-append race target. */
   private resizeResolutionClosed = false;
+  private screencastRefresh = Promise.resolve();
 
   constructor(opts: RecorderSessionOptions) {
     this.client = opts.client;
@@ -498,67 +501,99 @@ export class RecorderSession {
     // treats a navigation during initialization as live — recreating the isolated world and
     // reinstalling the observer in the newest context rather than ignoring it.
     this.state = 'starting';
+    let screencastMayBeStarted = false;
+    let tracingMayBeStarted = false;
 
-    await enableDomainsForMotionRec(asCDPClient(this.client));
+    try {
+      await enableDomainsForMotionRec(asCDPClient(this.client));
 
-    this.client.on('Page.screencastFrame', (params) => {
-      this.onScreencastFrameEvent(params as ScreencastFrameParams);
-    });
-    this.client.on('Tracing.dataCollected', (params) => {
-      this.handleTraceData(params as { value: unknown[] });
-    });
-    this.client.on('Runtime.bindingCalled', (params) => {
-      this.handleBindingCalled(params as { name: string; payload: string; executionContextId?: number });
-    });
-    this.client.on('Page.frameNavigated', (params) => {
-      const rearm = this.handleFrameNavigated(params as { frame?: { id?: string; parentId?: string; url?: string } });
-      this.pendingRearm.add(rearm);
-      void rearm.finally(() => {
-        this.pendingRearm.delete(rearm);
+      this.client.on('Page.screencastFrame', (params) => {
+        this.onScreencastFrameEvent(params as ScreencastFrameParams);
       });
-    });
+      this.client.on('Tracing.dataCollected', (params) => {
+        this.handleTraceData(params as { value: unknown[] });
+      });
+      this.client.on('Runtime.bindingCalled', (params) => {
+        this.handleBindingCalled(params as { name: string; payload: string; executionContextId?: number });
+      });
+      this.client.on('Page.frameNavigated', (params) => {
+        const rearm = this.handleFrameNavigated(params as { frame?: { id?: string; parentId?: string; url?: string } });
+        this.pendingRearm.add(rearm);
+        void rearm.finally(() => {
+          this.pendingRearm.delete(rearm);
+        });
+      });
 
-    await this.ensureBinding();
-    await this.injectObserverScript(this.navGeneration);
+      await this.ensureBinding();
+      await this.injectObserverScript(this.navGeneration);
 
-    // The first-frame/first-trace latch storage MUST exist before either stream is started:
-    // `Page.screencastFrame`/`Tracing.dataCollected` can only fire after `Page.startScreencast`/
-    // `Tracing.start` are issued, so reading the (performanceNowMs, wallClockMs) anchor and
-    // creating `this.baselines` here — before those two sends — closes the window where a
-    // frame/trace arriving immediately after the stream starts would otherwise hit
-    // `this.baselines === null` in the handler and have its real first timestamp discarded.
-    const clock = await readTraceClockBaseline(asCDPClient(this.client));
-    this.baselines = {
-      performanceNowMs: clock.performanceNowMs,
-      wallClockMs: clock.wallClockMs,
-      firstScreencastTimestampSec: null,
-      firstTraceEventTsUs: null,
-      baselinesPending: true,
-    };
+      // The first-frame/first-trace latch storage MUST exist before either stream is started:
+      // `Page.screencastFrame`/`Tracing.dataCollected` can only fire after `Page.startScreencast`/
+      // `Tracing.start` are issued, so reading the (performanceNowMs, wallClockMs) anchor and
+      // creating `this.baselines` here — before those two sends — closes the window where a
+      // frame/trace arriving immediately after the stream starts would otherwise hit
+      // `this.baselines === null` in the handler and have its real first timestamp discarded.
+      const clock = await readTraceClockBaseline(asCDPClient(this.client));
+      this.baselines = {
+        performanceNowMs: clock.performanceNowMs,
+        wallClockMs: clock.wallClockMs,
+        firstScreencastTimestampSec: null,
+        firstTraceEventTsUs: null,
+        baselinesPending: true,
+      };
 
-    await this.client.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 });
-    await this.client.send('Tracing.start', { transferMode: 'ReportEvents', categories: TRACE_CATEGORIES });
+      // Capture the generation before issuing the initial request: a navigation that starts while
+      // this request is in flight needs one refresh after the initial stream is owned.
+      const initialScreencastGeneration = this.navGeneration;
+      screencastMayBeStarted = true;
+      await this.client.send('Page.startScreencast', SCREENCAST_OPTIONS);
+      tracingMayBeStarted = true;
+      await this.client.send('Tracing.start', { transferMode: 'ReportEvents', categories: TRACE_CATEGORIES });
 
-    // A main-frame navigation anywhere in the initialization window above spawned a rearm that
-    // recreated the isolated world in the newest context; wait for every one to settle so start()
-    // never returns with the bridge bound to a world a startup navigation already destroyed.
-    await this.drainPendingRearms();
+      // A main-frame navigation anywhere in the initialization window above spawned a rearm that
+      // recreated the isolated world in the newest context; wait for every one to settle so start()
+      // never returns with the bridge bound to a world a startup navigation already destroyed.
+      await this.drainPendingRearms();
 
-    // Refuse to enter recording unless the LATEST navigation generation actually installed and
-    // published its isolated world. A startup navigation that overtook the gen-0 install and then
-    // failed its own rearm leaves no live context — entering recording here would let bridge
-    // evaluates run with an undefined contextId (i.e. in the page main world), breaking the
-    // isolated-world boundary. Aborting propagates to `handleRecorderRequest` as an `ok:false`
-    // rec-start response.
-    if (this.isolatedWorldContextId === undefined || this.activeWorldGeneration !== this.navGeneration) {
-      throw new Error(
-        'recorder start aborted: observer script was not installed in the latest main-frame context',
-      );
+      // Coalesce every startup navigation after the initial stream into its latest generation. A
+      // navigation can land while the refresh's stop request is in flight, so drain and retry the
+      // latest generation until one refresh completes without being superseded.
+      while (this.navGeneration > initialScreencastGeneration) {
+        const refreshGeneration = this.navGeneration;
+        this.requireLatestObserverGeneration();
+        await this.refreshScreencast(refreshGeneration);
+        await this.drainPendingRearms();
+        if (this.navGeneration === refreshGeneration) break;
+      }
+      this.requireLatestObserverGeneration();
+
+      this.startedAtWallClockMs = Date.now();
+      this.state = 'recording';
+      return { ...this.baselines };
+    } catch (err) {
+      this.acceptingFrames = false;
+      const cleanupErrors: unknown[] = [];
+      if (screencastMayBeStarted) {
+        try {
+          await this.client.send('Page.stopScreencast');
+        } catch (cleanupErr) {
+          cleanupErrors.push(cleanupErr);
+        }
+      }
+      if (tracingMayBeStarted) {
+        try {
+          await this.client.send('Tracing.end');
+        } catch (cleanupErr) {
+          cleanupErrors.push(cleanupErr);
+        }
+      }
+      this.state = 'stopped';
+      if (cleanupErrors.length > 0) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new AggregateError([err, ...cleanupErrors], `recorder start failed: ${message}; stream cleanup failed`);
+      }
+      throw err;
     }
-
-    this.startedAtWallClockMs = Date.now();
-    this.state = 'recording';
-    return { ...this.baselines };
   }
 
   /**
@@ -870,7 +905,9 @@ export class RecorderSession {
    * the recreated world — see `ensureBinding()`). Every main-frame navigation bumps `navGeneration`,
    * so a rearm publishes its context id only if no newer navigation has overtaken it. Runs both
    * while `'recording'` and while `'starting'` (a navigation during `start()` initialization must
-   * still land the observer in the newest context). Sub-frame navigations (`frame.parentId` set)
+   * still land the observer in the newest context), but only a handler that began while recording
+   * refreshes the screencast; start() owns the one deferred refresh for all startup navigations.
+   * Sub-frame navigations (`frame.parentId` set)
    * don't affect the top document's world and are ignored. Bails once the recorder has left those
    * phases (`'stopping'`/`'stopped'`) so a navigation arriving mid-teardown doesn't start new CDP
    * work concurrent with it — `stop()` awaits every rearm still in flight at that boundary (tracked
@@ -880,6 +917,7 @@ export class RecorderSession {
     if (this.state !== 'recording' && this.state !== 'starting') return;
     const frame = params.frame;
     if (!frame || frame.parentId) return;
+    const refreshScreencast = this.state === 'recording';
     const generation = ++this.navGeneration;
     // The navigation destroyed the current isolated world; drop the now-dead context id
     // immediately so no bridge evaluate targets it while the rearm is in flight — or if the
@@ -888,14 +926,47 @@ export class RecorderSession {
     this.activeWorldGeneration = undefined;
     if (frame.id) this.mainFrameId = frame.id;
     this.appendEvent({ kind: 'navigation-gap', url: preserveObserverString(frame.url) ?? null });
+    let observerRearmed = false;
     try {
       await this.injectObserverScript(generation);
+      observerRearmed = this.activeWorldGeneration === generation;
     } catch (err) {
       this.appendEvent({
         kind: 'error',
         message: `observer re-arm after navigation failed: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
+    if (refreshScreencast && observerRearmed) {
+      try {
+        await this.refreshScreencast(generation);
+      } catch (err) {
+        this.appendEvent({
+          kind: 'error',
+          message: `screencast refresh after navigation failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+  }
+
+  /** Rejects a refresh/start when the latest navigation did not publish a live observer world. */
+  private requireLatestObserverGeneration(): void {
+    if (this.isolatedWorldContextId === undefined || this.activeWorldGeneration !== this.navGeneration) {
+      throw new Error('recorder start aborted: observer script was not installed in the latest main-frame context');
+    }
+  }
+
+  private refreshScreencast(generation?: number): Promise<void> {
+    const refresh = this.screencastRefresh.catch(() => {}).then(async () => {
+      if (generation !== undefined && this.activeWorldGeneration !== generation) return;
+      await this.client.send('Page.stopScreencast');
+      // A second navigation may have destroyed the destination world while the stop was in
+      // flight. Leave the stream stopped rather than starting it against a bridgeless/stale page;
+      // its current generation owns the next serialized refresh after observer injection.
+      if (generation !== undefined && this.activeWorldGeneration !== generation) return;
+      await this.client.send('Page.startScreencast', SCREENCAST_OPTIONS);
+    });
+    this.screencastRefresh = refresh;
+    return refresh;
   }
 
   private appendEvent(record: Omit<RecorderEventRecord, 'recordedAtWallClockMs'>): void {

@@ -12985,7 +12985,7 @@ function buildTakeRectElementsExpression(nonce, frameIndex) {
 function buildTakeResizeTargetsExpression(nonce, seq) {
   return `(function(){var k='__captureRecorder_'+${JSON.stringify(nonce)};var h=window[k];return h&&h.takeResizeTargets?h.takeResizeTargets(${JSON.stringify(seq)}):[];})()`;
 }
-var crypto7, path11, RECORDER_BINDING_NAME, OBSERVER_INSTALLED_SENTINEL, TRACE_CATEGORIES, MAX_BINDING_PAYLOAD_BYTES, BINDING_RATE_LIMIT_PER_SECOND, MAX_RECT_ELEMENTS, MAX_RECT_TAG_LENGTH, MAX_RECT_STRING_LENGTH, MAX_RECTS_SERIALIZED_BYTES, MAX_RECT_IDENTITY_RESOLUTIONS, MAX_TRACE_EVENTS_PER_BATCH, MAX_TRACE_SERIALIZED_BYTES, BINDING_FIELD_SANITIZERS, RecorderSession, RECORDER_NONCE_BOOT_FILE, defaultRecorderBridgeDeps, recorderBridgeDeps;
+var crypto7, path11, RECORDER_BINDING_NAME, OBSERVER_INSTALLED_SENTINEL, TRACE_CATEGORIES, SCREENCAST_OPTIONS, MAX_BINDING_PAYLOAD_BYTES, BINDING_RATE_LIMIT_PER_SECOND, MAX_RECT_ELEMENTS, MAX_RECT_TAG_LENGTH, MAX_RECT_STRING_LENGTH, MAX_RECTS_SERIALIZED_BYTES, MAX_RECT_IDENTITY_RESOLUTIONS, MAX_TRACE_EVENTS_PER_BATCH, MAX_TRACE_SERIALIZED_BYTES, BINDING_FIELD_SANITIZERS, RecorderSession, RECORDER_NONCE_BOOT_FILE, defaultRecorderBridgeDeps, recorderBridgeDeps;
 var init_recorder_bridge = __esm({
   "src/cdp/recorder-bridge.ts"() {
     crypto7 = __toESM(require("crypto"));
@@ -13002,6 +13002,7 @@ var init_recorder_bridge = __esm({
     RECORDER_BINDING_NAME = "captureRecorderEmit";
     OBSERVER_INSTALLED_SENTINEL = "__captureRecorderInstalled__";
     TRACE_CATEGORIES = "devtools.timeline,disabled-by-default-devtools.timeline,disabled-by-default-devtools.timeline.frame,loading,blink.user_timing";
+    SCREENCAST_OPTIONS = { format: "png", everyNthFrame: 1 };
     MAX_BINDING_PAYLOAD_BYTES = 8 * 1024;
     BINDING_RATE_LIMIT_PER_SECOND = 200;
     MAX_RECT_ELEMENTS = 2e3;
@@ -13094,6 +13095,7 @@ var init_recorder_bridge = __esm({
        * captured throughout the rest of `'stopping'`; only the async resize path is a real
        * post-stop-append race target. */
       resizeResolutionClosed = false;
+      screencastRefresh = Promise.resolve();
       constructor(opts) {
         this.client = opts.client;
         this.recDir = ensurePrivateDir(opts.recDir);
@@ -13107,44 +13109,77 @@ var init_recorder_bridge = __esm({
           throw new Error(`recorder cannot start from state "${this.state}"`);
         }
         this.state = "starting";
-        await enableDomainsForMotionRec(asCDPClient(this.client));
-        this.client.on("Page.screencastFrame", (params) => {
-          this.onScreencastFrameEvent(params);
-        });
-        this.client.on("Tracing.dataCollected", (params) => {
-          this.handleTraceData(params);
-        });
-        this.client.on("Runtime.bindingCalled", (params) => {
-          this.handleBindingCalled(params);
-        });
-        this.client.on("Page.frameNavigated", (params) => {
-          const rearm = this.handleFrameNavigated(params);
-          this.pendingRearm.add(rearm);
-          void rearm.finally(() => {
-            this.pendingRearm.delete(rearm);
+        let screencastMayBeStarted = false;
+        let tracingMayBeStarted = false;
+        try {
+          await enableDomainsForMotionRec(asCDPClient(this.client));
+          this.client.on("Page.screencastFrame", (params) => {
+            this.onScreencastFrameEvent(params);
           });
-        });
-        await this.ensureBinding();
-        await this.injectObserverScript(this.navGeneration);
-        const clock = await readTraceClockBaseline(asCDPClient(this.client));
-        this.baselines = {
-          performanceNowMs: clock.performanceNowMs,
-          wallClockMs: clock.wallClockMs,
-          firstScreencastTimestampSec: null,
-          firstTraceEventTsUs: null,
-          baselinesPending: true
-        };
-        await this.client.send("Page.startScreencast", { format: "png", everyNthFrame: 1 });
-        await this.client.send("Tracing.start", { transferMode: "ReportEvents", categories: TRACE_CATEGORIES });
-        await this.drainPendingRearms();
-        if (this.isolatedWorldContextId === void 0 || this.activeWorldGeneration !== this.navGeneration) {
-          throw new Error(
-            "recorder start aborted: observer script was not installed in the latest main-frame context"
-          );
+          this.client.on("Tracing.dataCollected", (params) => {
+            this.handleTraceData(params);
+          });
+          this.client.on("Runtime.bindingCalled", (params) => {
+            this.handleBindingCalled(params);
+          });
+          this.client.on("Page.frameNavigated", (params) => {
+            const rearm = this.handleFrameNavigated(params);
+            this.pendingRearm.add(rearm);
+            void rearm.finally(() => {
+              this.pendingRearm.delete(rearm);
+            });
+          });
+          await this.ensureBinding();
+          await this.injectObserverScript(this.navGeneration);
+          const clock = await readTraceClockBaseline(asCDPClient(this.client));
+          this.baselines = {
+            performanceNowMs: clock.performanceNowMs,
+            wallClockMs: clock.wallClockMs,
+            firstScreencastTimestampSec: null,
+            firstTraceEventTsUs: null,
+            baselinesPending: true
+          };
+          const initialScreencastGeneration = this.navGeneration;
+          screencastMayBeStarted = true;
+          await this.client.send("Page.startScreencast", SCREENCAST_OPTIONS);
+          tracingMayBeStarted = true;
+          await this.client.send("Tracing.start", { transferMode: "ReportEvents", categories: TRACE_CATEGORIES });
+          await this.drainPendingRearms();
+          while (this.navGeneration > initialScreencastGeneration) {
+            const refreshGeneration = this.navGeneration;
+            this.requireLatestObserverGeneration();
+            await this.refreshScreencast(refreshGeneration);
+            await this.drainPendingRearms();
+            if (this.navGeneration === refreshGeneration) break;
+          }
+          this.requireLatestObserverGeneration();
+          this.startedAtWallClockMs = Date.now();
+          this.state = "recording";
+          return { ...this.baselines };
+        } catch (err) {
+          this.acceptingFrames = false;
+          const cleanupErrors = [];
+          if (screencastMayBeStarted) {
+            try {
+              await this.client.send("Page.stopScreencast");
+            } catch (cleanupErr) {
+              cleanupErrors.push(cleanupErr);
+            }
+          }
+          if (tracingMayBeStarted) {
+            try {
+              await this.client.send("Tracing.end");
+            } catch (cleanupErr) {
+              cleanupErrors.push(cleanupErr);
+            }
+          }
+          this.state = "stopped";
+          if (cleanupErrors.length > 0) {
+            const message = err instanceof Error ? err.message : String(err);
+            throw new AggregateError([err, ...cleanupErrors], `recorder start failed: ${message}; stream cleanup failed`);
+          }
+          throw err;
         }
-        this.startedAtWallClockMs = Date.now();
-        this.state = "recording";
-        return { ...this.baselines };
       }
       /**
        * Handles a `type: 'cdp'` request — plain passthrough, or bracketed +
@@ -13394,7 +13429,9 @@ var init_recorder_bridge = __esm({
        * the recreated world — see `ensureBinding()`). Every main-frame navigation bumps `navGeneration`,
        * so a rearm publishes its context id only if no newer navigation has overtaken it. Runs both
        * while `'recording'` and while `'starting'` (a navigation during `start()` initialization must
-       * still land the observer in the newest context). Sub-frame navigations (`frame.parentId` set)
+       * still land the observer in the newest context), but only a handler that began while recording
+       * refreshes the screencast; start() owns the one deferred refresh for all startup navigations.
+       * Sub-frame navigations (`frame.parentId` set)
        * don't affect the top document's world and are ignored. Bails once the recorder has left those
        * phases (`'stopping'`/`'stopped'`) so a navigation arriving mid-teardown doesn't start new CDP
        * work concurrent with it — `stop()` awaits every rearm still in flight at that boundary (tracked
@@ -13404,19 +13441,49 @@ var init_recorder_bridge = __esm({
         if (this.state !== "recording" && this.state !== "starting") return;
         const frame = params.frame;
         if (!frame || frame.parentId) return;
+        const refreshScreencast = this.state === "recording";
         const generation = ++this.navGeneration;
         this.isolatedWorldContextId = void 0;
         this.activeWorldGeneration = void 0;
         if (frame.id) this.mainFrameId = frame.id;
         this.appendEvent({ kind: "navigation-gap", url: preserveObserverString(frame.url) ?? null });
+        let observerRearmed = false;
         try {
           await this.injectObserverScript(generation);
+          observerRearmed = this.activeWorldGeneration === generation;
         } catch (err) {
           this.appendEvent({
             kind: "error",
             message: `observer re-arm after navigation failed: ${err instanceof Error ? err.message : String(err)}`
           });
         }
+        if (refreshScreencast && observerRearmed) {
+          try {
+            await this.refreshScreencast(generation);
+          } catch (err) {
+            this.appendEvent({
+              kind: "error",
+              message: `screencast refresh after navigation failed: ${err instanceof Error ? err.message : String(err)}`
+            });
+          }
+        }
+      }
+      /** Rejects a refresh/start when the latest navigation did not publish a live observer world. */
+      requireLatestObserverGeneration() {
+        if (this.isolatedWorldContextId === void 0 || this.activeWorldGeneration !== this.navGeneration) {
+          throw new Error("recorder start aborted: observer script was not installed in the latest main-frame context");
+        }
+      }
+      refreshScreencast(generation) {
+        const refresh = this.screencastRefresh.catch(() => {
+        }).then(async () => {
+          if (generation !== void 0 && this.activeWorldGeneration !== generation) return;
+          await this.client.send("Page.stopScreencast");
+          if (generation !== void 0 && this.activeWorldGeneration !== generation) return;
+          await this.client.send("Page.startScreencast", SCREENCAST_OPTIONS);
+        });
+        this.screencastRefresh = refresh;
+        return refresh;
       }
       appendEvent(record2) {
         if (this.state === "stopped") return;
@@ -16273,8 +16340,9 @@ async function scrollResolved(client, resolved, to, opts = {}) {
   try {
     const params = {
       objectId,
-      functionDeclaration: 'function(to) { const n = to === "top" ? 0 : to === "bottom" ? this.scrollHeight : Number(to); this.scrollTop = n; return this.scrollTop; }',
+      functionDeclaration: 'function(to) { const n = to === "top" ? 0 : to === "bottom" ? this.scrollHeight : Number(to); const top = Math.max(0, Math.min(n, this.scrollHeight - this.clientHeight)); if (this.scrollTop === top) return top; return new Promise((resolve) => { this.addEventListener("scrollend", () => resolve(this.scrollTop), { once: true }); this.scrollTo({ top, behavior: "smooth" }); }); }',
       arguments: [{ value: to }],
+      awaitPromise: true,
       returnByValue: true
     };
     const result = opts.mark !== void 0 && client.sendMarked ? await client.sendMarked("Runtime.callFunctionOn", params, opts.mark) : await client.send("Runtime.callFunctionOn", params);
@@ -16644,7 +16712,7 @@ input:
 output:
   <scrolled backend-node-id=\u2026 role=\u2026 name=\u2026> \u2014 resolved identity, destination, the container's resulting scrollTop, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
-  assigns the container's scrollTop in-page (may trigger lazy-load network); writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
+  drives the container's native smooth scroll in-page (may trigger lazy-load network); writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
   }
 });
 
@@ -241564,6 +241632,7 @@ async function handleOneShot(parsed, viewport2) {
   ensurePrivateDir(recDir);
   ensurePrivateDir(path29.join(recDir, "frames"));
   let client;
+  let originalViewport;
   let viewportMayHaveApplied = false;
   let failure = null;
   let failureStatus = "oneshot_failed";
@@ -241575,8 +241644,11 @@ async function handleOneShot(parsed, viewport2) {
     client = deps6.createClient(tab.webSocketDebuggerUrl);
     await client.waitReady();
     await client.send("Page.enable");
-    viewportMayHaveApplied = viewport2 !== void 0;
-    await applyViewportOverride2(client, viewport2);
+    if (viewport2) {
+      originalViewport = await readActualViewport(client);
+      viewportMayHaveApplied = true;
+      await applyViewportOverride2(client, viewport2);
+    }
     await waitForPageReady(client);
     const recorder = deps6.createRecorderSession({ client, recDir });
     await recorder.start();
@@ -241585,7 +241657,7 @@ async function handleOneShot(parsed, viewport2) {
     const stopped = await recorder.stop();
     let viewportRestored = null;
     if (viewportMayHaveApplied) {
-      viewportRestored = await restoreSessionViewportForClient(client);
+      viewportRestored = await restoreSessionViewportForClient(client, originalViewport);
       viewportMayHaveApplied = false;
     }
     const finalized = finalizeOneShotRecording(recDir, recId, parsedUrl?.toString() ?? tab.url, parsed.do, stopped, deps6.encodeVideo, viewportRestored);
@@ -241595,7 +241667,7 @@ async function handleOneShot(parsed, viewport2) {
     if (err instanceof DoActionError) failureStatus = err.status;
   } finally {
     let restored = null;
-    if (client && viewportMayHaveApplied) restored = await restoreSessionViewportForClient(client);
+    if (client && viewportMayHaveApplied) restored = await restoreSessionViewportForClient(client, originalViewport);
     client?.close();
     if (failure !== null) {
       emitCommandError(parsed, failureStatus, failure, restored === null ? void 0 : { "viewport-restored": restored });
@@ -241702,10 +241774,27 @@ async function applyViewportOverride2(client, viewport2) {
   });
   return true;
 }
-async function restoreSessionViewportForClient(client) {
+async function readActualViewport(client) {
+  const response = await client.send("Runtime.evaluate", {
+    expression: "(() => ({ width: window.innerWidth, height: window.innerHeight, deviceScaleFactor: window.devicePixelRatio }))()",
+    returnByValue: true
+  });
+  const viewport2 = response.result?.value;
+  if (!viewport2 || ![viewport2.width, viewport2.height, viewport2.deviceScaleFactor].every((value) => typeof value === "number" && Number.isFinite(value) && value > 0)) {
+    throw new Error("Could not read the target\u2019s actual viewport before recording; refusing to apply an override that cannot be verified on restore.");
+  }
+  return viewport2;
+}
+async function restoreSessionViewportForClient(client, original) {
   try {
-    await client.send("Emulation.clearDeviceMetricsOverride");
-    return true;
+    await client.send("Emulation.setDeviceMetricsOverride", {
+      width: original.width,
+      height: original.height,
+      deviceScaleFactor: original.deviceScaleFactor,
+      mobile: false
+    });
+    const restored = await readActualViewport(client);
+    return restored.width === original.width && restored.height === original.height && restored.deviceScaleFactor === original.deviceScaleFactor;
   } catch {
     return false;
   }
@@ -242156,21 +242245,30 @@ function computeComponentStats(components, labels, width, height, samples, recor
       const x1 = Math.min(width, Math.ceil(transformed.x + transformed.width));
       const y0 = Math.max(0, Math.floor(transformed.y));
       const y1 = Math.min(height, Math.ceil(transformed.y + transformed.height));
+      const area2 = (x1 - x0) * (y1 - y0);
+      if (area2 <= 0) continue;
+      const overlaps2 = /* @__PURE__ */ new Map();
       for (let py = y0; py < y1; py++) {
         const rowBase = py * width;
         for (let px2 = x0; px2 < x1; px2++) {
           const label2 = labels[rowBase + px2];
-          if (label2 < 0) continue;
-          const map = candidates[label2];
-          const existing = map.get(key);
-          if (existing) existing.overlap++;
-          else map.set(key, { element, overlap: 1 });
+          if (label2 >= 0) overlaps2.set(label2, (overlaps2.get(label2) ?? 0) + 1);
+        }
+      }
+      for (const [label2, overlap] of overlaps2) {
+        const map = candidates[label2];
+        const existing = map.get(key);
+        if (existing) {
+          existing.overlap += overlap;
+          existing.area += area2;
+        } else {
+          map.set(key, { element, overlap, area: area2 });
         }
       }
     }
   }
   return components.map((_, index) => ({
-    attribution: [...candidates[index].values()].sort((a, b) => b.overlap - a.overlap)[0] ?? null,
+    attribution: [...candidates[index].values()].sort((a, b) => b.overlap / b.area - a.overlap / a.area || b.overlap - a.overlap)[0] ?? null,
     activeCentroids: activeCentroids[index]
   }));
 }
