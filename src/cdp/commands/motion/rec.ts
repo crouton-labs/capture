@@ -272,7 +272,7 @@ export function finalizeOneShotRecording(
   const video = encodeVideo(recDir, stopped.durationMs);
   const fps = stopped.durationMs > 0 ? Math.round((stopped.frameCount / (stopped.durationMs / 1000)) * 10) / 10 : 0;
   const state = stopped.frameCount > 0 ? 'finalized' : 'partial';
-  const meta: RecMeta & { url: string; fps: number; eventCount: number; video: VideoEncoding; viewportRestored: boolean | null; reason?: 'no_frames' } = {
+  const meta: RecMeta & { url: string; fps: number; eventCount: number; video: VideoEncoding; viewportRestored: boolean | null; viewportRetained: boolean; reason?: 'no_frames' } = {
     id: recId,
     action,
     frames: stopped.frameCount,
@@ -284,9 +284,10 @@ export function finalizeOneShotRecording(
     eventCount: stopped.eventCount,
     video,
     viewportRestored,
+    viewportRetained: false,
   };
   writeJsonPrivate(path.join(recDir, 'meta.json'), meta);
-  return { recId, recDir, frames: stopped.frameCount, durationMs: stopped.durationMs, fps, state, eventCount: stopped.eventCount, viewportRestored, action, video };
+  return { recId, recDir, frames: stopped.frameCount, durationMs: stopped.durationMs, fps, state, eventCount: stopped.eventCount, viewportRestored, viewportRetained: false, action, video };
 }
 
 function ensureFinalizedInventory(recDir: string): void {
@@ -528,6 +529,7 @@ function emitFinalizedResult(parsed: ParsedArgs, stopped: FinalizedRecording & {
       'baseline-availability': baselineAvailability(stopped.recDir),
       ...(stopped.action ? { action: stopped.action } : {}),
       ...(stopped.viewportRestored !== null ? { 'viewport-restored': stopped.viewportRestored } : {}),
+      ...(stopped.viewportRetained ? { 'viewport-retained': true } : {}),
       ...('video' in stopped ? { video: (stopped as { video?: VideoEncoding }).video?.status ?? 'unavailable' } : {}),
       'timestamp-uncertainty': '±1 frame for frame-derived timestamps',
     },

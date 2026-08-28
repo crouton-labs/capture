@@ -164,6 +164,8 @@ export interface FinalizedRecording {
   state: RecorderLiveState;
   /** Whether a viewport override owned by this recording was restored. */
   viewportRestored: boolean | null;
+  /** True when a composed `motion rec --stop` deliberately left its recording viewport active for follow-up measurements. */
+  viewportRetained: boolean;
   /** Total events.jsonl record count observed at graceful `rec-stop` time;
    * `null` when the recorder was orphaned/best-effort finalized (no live socket to ask). */
   eventCount: number | null;
@@ -216,14 +218,14 @@ async function applyViewportOverride(recDir: string, targetId: string, viewport:
     await client.waitReady();
     // From this write onward the set request may reach Chrome even if its
     // response is lost, so teardown owns a compensating clear.
-    writeJsonPrivate(path.join(recDir, VIEWPORT_STATE_FILE), { phase: 'attempting', targetId });
+    writeJsonPrivate(path.join(recDir, VIEWPORT_STATE_FILE), { phase: 'attempting', targetId, retainOnStop: true });
     await client.send('Emulation.setDeviceMetricsOverride', {
       width: viewport.width,
       height: viewport.height,
       deviceScaleFactor: 1,
       mobile: false,
     });
-    writeJsonPrivate(path.join(recDir, VIEWPORT_STATE_FILE), { phase: 'applied', targetId });
+    writeJsonPrivate(path.join(recDir, VIEWPORT_STATE_FILE), { phase: 'applied', targetId, retainOnStop: true });
     return true;
   } finally {
     client.close();
@@ -234,6 +236,7 @@ interface ViewportOverrideState {
   phase?: unknown;
   applied?: unknown;
   targetId?: unknown;
+  retainOnStop?: unknown;
 }
 
 function readViewportOverrideState(statePath: string): ViewportOverrideState | null {
@@ -291,11 +294,13 @@ async function writeFinalizedArtifacts(
   markers: unknown,
   eventCount: number | null,
   targetId: string,
+  preserveViewport = false,
 ): Promise<FinalizedRecording> {
   const fps = durationMs > 0 ? round1(frames / (durationMs / 1000)) : 0;
-  const viewportRestored = await restoreViewportOverride(recDir, targetId);
+  const viewportRetained = preserveViewport && readViewportOverrideState(path.join(recDir, VIEWPORT_STATE_FILE))?.retainOnStop === true;
+  const viewportRestored = viewportRetained ? null : await restoreViewportOverride(recDir, targetId);
   writeJsonPrivate(markersPath(recDir), markers);
-  const meta: RecMeta & { url: string | null; fps: number; eventCount: number | null; viewportRestored: boolean | null } = {
+  const meta: RecMeta & { url: string | null; fps: number; eventCount: number | null; viewportRestored: boolean | null; viewportRetained: boolean } = {
     id: recId,
     action: null,
     frames,
@@ -305,11 +310,12 @@ async function writeFinalizedArtifacts(
     fps,
     eventCount,
     viewportRestored,
+    viewportRetained,
   };
   writeJsonPrivate(metaPath(recDir), meta);
   removeArtifactTree(recorderJsonPath(recDir));
   await clearActiveRecIdIfOwned(sessionDir, recId);
-  return { recId, recDir, frames, durationMs, fps, state, eventCount, viewportRestored };
+  return { recId, recDir, frames, durationMs, fps, state, eventCount, viewportRestored, viewportRetained };
 }
 
 /** Every SIGTERM this module ever sends goes through here: re-reads the
@@ -633,7 +639,7 @@ export async function stopComposedRecorder(opts: {
       // flushed — wait for that verified exit; escalate to an identity-checked
       // SIGTERM only if the same process is still alive after the grace window.
       await waitForRecorderExit(record, provider, deps);
-      return await writeFinalizedArtifacts(opts.sessionDir, handle.recDir, recId, record.url, stopResp.frameCount, stopResp.durationMs, 'finalized', stopResp.markers, stopResp.eventCount, record.targetId);
+      return await writeFinalizedArtifacts(opts.sessionDir, handle.recDir, recId, record.url, stopResp.frameCount, stopResp.durationMs, 'finalized', stopResp.markers, stopResp.eventCount, record.targetId, true);
     } catch (err) {
       if (err instanceof RecStopBridgeFailure) {
         // The bridge authenticated the request and explicitly refused — a

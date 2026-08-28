@@ -476,6 +476,7 @@ test('stopComposedRecorder finalizes: writes markers.json/meta.json from the rec
     nonce: TEST_NONCE,
   };
   writeJsonPrivate(path.join(recDir, 'recorder.json'), recorderJson);
+  writeJsonPrivate(path.join(recDir, 'viewport-override.json'), { phase: 'applied', targetId: 'target-abc', retainOnStop: true });
   await setActiveSession({ sessionId: 's-stop', dir: sessionDir, harId: null, targetId: 'target-abc', stepCount: 0 });
   await setActiveRecId(recId);
 
@@ -511,6 +512,9 @@ test('stopComposedRecorder finalizes: writes markers.json/meta.json from the rec
     assert.equal(meta.durationMs, 3400);
     assert.equal(meta.state, 'finalized');
     assert.equal(meta.url, 'https://example.com');
+    assert.equal(meta.viewportRetained, true);
+    assert.equal(meta.viewportRestored, null);
+    assert.equal(fs.existsSync(path.join(recDir, 'viewport-override.json')), true);
 
     assert.equal(getActiveRecId(), null);
   } finally {
