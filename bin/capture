@@ -238074,6 +238074,7 @@ async function cmdMeasureCheck(parsed, _args) {
       kind: finding2.kind,
       headline: fact`${finding2.detail}`,
       detail: [
+        ...finding2.rect ? [line(text`Rect: `, formatCoordinate(finding2.rect))] : [],
         ...finding2.backendNodeId !== void 0 ? [fact`Selector input: backend:${finding2.backendNodeId}`] : [],
         ...finding2.provenance ? [fact`Provenance: ${finding2.provenance}`] : [],
         ...caveatLine(finding2.caveats) ? [caveatLine(finding2.caveats)] : []

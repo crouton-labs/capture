@@ -1,6 +1,6 @@
 import { type ParsedArgs } from '../../types.js';
 import { resolveSnapRef, readMeta, type ArtifactResolutionError } from '../../../output/artifact.js';
-import { emitResult, fact, line, text, formatFindings, type FindingInput, type RenderableResult } from '../../../output/render.js';
+import { emitResult, fact, line, text, formatCoordinate, formatFindings, type FindingInput, type RenderableResult } from '../../../output/render.js';
 import { captureMeasureSnap } from './snap.js';
 import { checkSnapshot, parseChecks, writeFindingCrop } from '../../measure/check.js';
 
@@ -70,6 +70,7 @@ export async function cmdMeasureCheck(parsed: ParsedArgs, _args: string[]): Prom
       kind: finding.kind,
       headline: fact`${finding.detail}`,
       detail: [
+        ...(finding.rect ? [line(text`Rect: `, formatCoordinate(finding.rect))] : []),
         ...(finding.backendNodeId !== undefined ? [fact`Selector input: backend:${finding.backendNodeId}`] : []),
         ...(finding.provenance ? [fact`Provenance: ${finding.provenance}`] : []),
         ...(caveatLine(finding.caveats) ? [caveatLine(finding.caveats)!] : []),
