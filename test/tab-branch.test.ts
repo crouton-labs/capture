@@ -22,6 +22,7 @@ import { renderResult } from '../src/output/render.js';
 import { buildTabsResult } from '../src/cdp/commands/tab/list.js';
 import { buildTabOpenedResult } from '../src/cdp/commands/tab/open.js';
 import { buildTabClosedResult } from '../src/cdp/commands/tab/close.js';
+import { buildBrowserLaunchedResult } from '../src/cdp/commands/tab/launch.js';
 import { buildTabResetResult } from '../src/cdp/commands/tab/reset.js';
 import { buildNetworkResult } from '../src/cdp/commands/tab/network.js';
 import { closeTarget, listTargets } from '../src/cdp/targets.js';
@@ -119,6 +120,11 @@ test('tab close: emits a <tab-closed> block with the exact target identity and e
   assert.ok(out.includes('target="C10SE0123456789A"'), out);
   assert.ok(out.includes('&lt;img'), out);
   assert.ok(!out.includes('<img'), out);
+});
+
+test('tab launch: follows up with the exact session-start command for its browser endpoint', () => {
+  const out = renderResult(buildBrowserLaunchedResult({ port: 9444, pid: 123, executablePath: '/Applications/Chrome', source: 'system', headless: true }, 0));
+  assert.ok(out.includes('follow_up: capture session start --port 9444'), out);
 });
 
 test('tab reset: emits a <tab-reset> block and states the session-target outcome as a fact both ways', () => {
@@ -267,6 +273,20 @@ test('live bin: `tab close` refuses while session ownership is unresolved, then 
 
     const stopped = await runAsync(['session', 'stop', sessionId], tempRoot, 3_000);
     assert.equal(stopped.status, 0, stopped.stderr || stopped.stdout);
+
+    const adopted = await runAsync(['session', 'start', '--target', targetId, '--port', String(fixture.port)], tempRoot, 3_000);
+    assert.equal(adopted.status, 0, adopted.stderr || adopted.stdout);
+    const adoptedSessionId = /<session\b[^>]*\bid="([^"]+)"/.exec(adopted.stdout)?.[1];
+    assert.ok(adoptedSessionId, adopted.stdout);
+
+    const activeTargetRefused = await runAsync(['tab', 'close', targetId.slice(0, 8), '--port', String(fixture.port)], tempRoot, 3_000);
+    assert.equal(activeTargetRefused.status, 1, activeTargetRefused.stderr || activeTargetRefused.stdout);
+    assert.match(activeTargetRefused.stdout, /code="active_session_target"/);
+    assert.match(activeTargetRefused.stdout, /Stop the session first/);
+    assert.doesNotMatch(activeTargetRefused.stdout, /capture tab reset/);
+
+    const adoptedStopped = await runAsync(['session', 'stop', adoptedSessionId], tempRoot, 3_000);
+    assert.equal(adoptedStopped.status, 0, adoptedStopped.stderr || adoptedStopped.stdout);
 
     const closed = await runAsync(['tab', 'close', targetId.slice(0, 8), '--port', String(fixture.port)], tempRoot, 3_000);
     assert.equal(closed.status, 0, closed.stderr || closed.stdout);

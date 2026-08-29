@@ -136,6 +136,21 @@ async function captureCommand(fn: () => Promise<void>): Promise<{ stdout: string
   }
 }
 
+async function captureRenderedCommand(fn: () => Promise<void>): Promise<string> {
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  const output: string[] = [];
+  process.stdout.write = ((chunk: unknown) => {
+    output.push(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await fn();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  return output.join('');
+}
+
 test('cmdMotionRec one-shot waits for readiness, applies/restores viewport, records one input landmark, and finalizes artifacts', async () => {
   const root = makeRoot('oneshot');
   const client = new FakeClient();
@@ -549,7 +564,11 @@ test('cmdMotionRec composed start/stop applies viewport for the recording window
       startOpts = opts;
       ensurePrivateDir(path.join(recDir, 'frames'));
       writeBinaryPrivate(path.join(recDir, 'frames', '000001.png'), TINY_PNG);
-      writeNdjsonPrivate(path.join(recDir, 'events.jsonl'), [{ kind: 'input', mark: 'click:button.send' }]);
+      writeNdjsonPrivate(path.join(recDir, 'events.jsonl'), [
+        { kind: 'input', mark: 'click:button.send' },
+        { kind: 'rect-sample-dropped', reason: 'element-cap', count: 7 },
+        { kind: 'binding-dropped', reason: 'rate-limited', count: 3 },
+      ]);
       writeNdjsonPrivate(path.join(recDir, 'rects.jsonl'), [{ frame: 1, elements: [] }]);
       return { recId: 'rec-composed', recDir, state: 'recording', reapedStale: null };
     },
@@ -564,7 +583,10 @@ test('cmdMotionRec composed start/stop applies viewport for the recording window
     await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], start: true, viewport: '390x844' }, []));
     assert.deepEqual(startOpts, { sessionDir: root, viewport: { width: 390, height: 844 } }, 'the command passes viewport ownership into the lifecycle without mutating CDP itself');
 
-    await captureCommand(() => cmdMotionRec({ command: 'motion', positional: [], stop: true }, []));
+    const finalizedOutput = await captureRenderedCommand(() => cmdMotionRec({ command: 'motion', positional: [], stop: true }, []));
+    assert.match(finalizedOutput, /rect-sample-elements-dropped="7"/);
+    assert.match(finalizedOutput, /binding-records-dropped="3"/);
+    assert.match(finalizedOutput, /Retained rect samples contain only the frame and element facts the recorder retained; 7 rect-sample element fact\(s\) and 3 binding record\(s\) were dropped/);
     // The recorder lifecycle owns restoration, including reaps/session-stop;
     // this command-level stub bypasses that lifecycle implementation.
     for (const artifact of ['frames', 'rects.jsonl', 'events.jsonl', 'markers.json', 'meta.json']) {

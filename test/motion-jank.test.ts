@@ -161,7 +161,7 @@ test('motion jank retains post-navigation observer entries without assigning the
   assert.doesNotMatch(analysis.timingNote, /buffered from before the recorder arm baseline/);
 });
 
-test('motion jank routes a pre-arm buffered observer entry to unavailable rather than a negative recorder-relative time', () => {
+test('motion jank excludes pre-arm buffered observer entries and counts them separately from recording results', () => {
   const analysis = analyzeMotionJank({
     rects,
     events: [
@@ -173,23 +173,32 @@ test('motion jank routes a pre-arm buffered observer entry to unavailable rather
     markers,
   });
 
-  assert.equal(analysis.layoutShifts.length, 1);
-  assert.equal(analysis.layoutShifts[0].tMs, null, 'a pre-arm layout shift is never assigned a negative recorder-relative time');
-  assert.equal(analysis.layoutShifts[0].attribution, 'unavailable');
-  assert.deepEqual(analysis.layoutShifts[0].rects, []);
-  assert.equal(analysis.longTasks.length, 1);
-  assert.equal(analysis.longTasks[0].timingDomain, 'unavailable');
-  assert.equal(analysis.longTasks[0].startMs, null);
-  assert.equal(analysis.longTasks[0].endMs, null);
+  assert.equal(analysis.layoutShifts.length, 0);
+  assert.equal(analysis.longTasks.length, 0);
+  assert.equal(analysis.preRecordingObserverEntriesExcluded, 2);
+  assert.doesNotMatch(analysis.timingNote, /navigation gap/);
+});
 
-  // Every retained observer timestamp is nonnegative or explicitly null.
-  for (const shift of analysis.layoutShifts) assert.ok(shift.tMs === null || shift.tMs >= 0);
-  for (const task of analysis.longTasks) assert.ok(task.startMs === null || task.startMs >= 0);
-
-  // No navigation occurred: the unavailable-timing note must attribute the pre-arm buffered
-  // cause and must NOT falsely claim these entries occurred after a navigation gap.
-  assert.doesNotMatch(analysis.timingNote, /navigation gap/, 'a pre-arm buffered entry must not be attributed to a navigation gap');
-  assert.match(analysis.timingNote, /buffered from before the recorder arm baseline, with a document timestamp that predates it/);
+test('motion jank renders the count of excluded pre-recording observer entries', async () => {
+  const sessionDir = path.join(CAPTURE_ROOT, `u27-session-pre-arm-${process.pid}-${Date.now()}`);
+  const recDir = path.join(sessionDir, 'motion', 'recs', 'rec-pre-arm');
+  ensurePrivateDir(recDir);
+  writeNdjsonPrivate(path.join(recDir, 'rects.jsonl'), rects);
+  writeNdjsonPrivate(path.join(recDir, 'events.jsonl'), [
+    { kind: 'performance', entryType: 'longtask', startTime: 20, duration: 60 },
+  ]);
+  writeJsonPrivate(path.join(recDir, 'markers.json'), markers);
+  writeJsonPrivate(path.join(recDir, 'meta.json'), { id: 'rec-pre-arm', state: 'finalized', frames: 4, durationMs: 80, action: null });
+  await setActiveSession({ sessionId: 'u27-session-pre-arm', dir: sessionDir, harId: null, targetId: null, stepCount: 0 });
+  try {
+    const output = await captureStdout(() => cmdMotionJank({ command: 'motion', positional: ['rec-pre-arm'] }, []));
+    assert.match(output, /pre-recording-observer-entries-excluded="1"/);
+    assert.match(output, /1 buffered PerformanceObserver entry was excluded because it predates the recorder arm baseline/);
+    assert.match(output, /0 long-task record\(s\)/);
+  } finally {
+    clearActiveSession();
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
 });
 
 test('motion jank preserves rect-sample loss without marking retained frame timestamp counts incomplete', () => {
@@ -235,6 +244,7 @@ test('motion jank reads finalized recording artifacts through the resolver and r
     const output = await captureStdout(() => cmdMotionJank({ command: 'motion', positional: ['rec-fixture'] }, []));
     assert.match(output, /Trace timestamps are relative to the first trace event/);
     assert.match(output, /long-task-records="2"/);
+    assert.match(output, /pre-recording-observer-entries-excluded="0"/);
     assert.match(output, /attribution inferred from rect samples bracketing/);
 
     for (const frameTotal of [0, 1, 2]) {

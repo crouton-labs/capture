@@ -226,22 +226,30 @@ export async function detectCdpPortsAsync(): Promise<CdpEndpoint[]> {
 // browser out of everything discovered on localhost. Shared so `capture
 // detect`'s printed default always matches what auto-discovery actually
 // picks for session start / navigate / etc.
-export function pickPreferredEndpoint(
+export interface PreferredEndpointSelection {
+  endpoint: CdpEndpoint;
+  reason: string;
+}
+
+export function pickPreferredEndpointWithReason(
   endpoints: CdpEndpoint[],
   defaultBrowser: string | null,
-): CdpEndpoint {
+): PreferredEndpointSelection {
   // Endpoints that already host a real page/tab are real browsers. CDP-
   // speaking non-browser processes (Node/workerd inspectors, etc.) never do,
   // so prefer real browsers whenever at least one is present — this is what
   // keeps an unrelated CDP listener from being picked over the intended one.
   const withPages = endpoints.filter((e) => e.hasPageTarget);
   const candidates = withPages.length > 0 ? withPages : endpoints;
+  const candidateScope = withPages.length > 0
+    ? 'among endpoints with a live page target'
+    : 'because no discovered endpoint has a live page target';
 
   if (defaultBrowser) {
     const match = candidates.find(
       (p) => p.bundleId === defaultBrowser && !p.isElectron,
     );
-    if (match) return match;
+    if (match) return { endpoint: match, reason: `matched the configured default browser ${candidateScope}` };
   }
 
   // Prefer a recognized browser over other Chromium hosts (Spotify, app
@@ -249,12 +257,20 @@ export function pickPreferredEndpoint(
   const knownBrowser = candidates.find(
     (endpoint) => endpoint.bundleId !== 'unknown' && !endpoint.isElectron,
   );
-  if (knownBrowser) return knownBrowser;
+  if (knownBrowser) return { endpoint: knownBrowser, reason: `is a recognized non-Electron browser ${candidateScope}` };
   const nonElectron = candidates.find((endpoint) => !endpoint.isElectron);
-  return nonElectron ?? candidates[0];
+  if (nonElectron) return { endpoint: nonElectron, reason: `is the first non-Electron endpoint ${candidateScope}` };
+  return { endpoint: candidates[0], reason: `is the first discovered endpoint ${candidateScope}` };
 }
 
-export async function detectCdpPort(): Promise<number> {
+export function pickPreferredEndpoint(
+  endpoints: CdpEndpoint[],
+  defaultBrowser: string | null,
+): CdpEndpoint {
+  return pickPreferredEndpointWithReason(endpoints, defaultBrowser).endpoint;
+}
+
+export async function detectCdpEndpoint(): Promise<CdpEndpoint & { selectionReason: string }> {
   const endpoints = await detectCdpPortsAsync();
   if (endpoints.length === 0) {
     throw new Error(
@@ -264,6 +280,10 @@ export async function detectCdpPort(): Promise<number> {
         '  Electron apps expose CDP automatically',
     );
   }
+  const { endpoint, reason } = pickPreferredEndpointWithReason(endpoints, getDefaultBrowserId());
+  return { ...endpoint, selectionReason: reason };
+}
 
-  return pickPreferredEndpoint(endpoints, getDefaultBrowserId()).port;
+export async function detectCdpPort(): Promise<number> {
+  return (await detectCdpEndpoint()).port;
 }

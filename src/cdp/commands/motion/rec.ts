@@ -546,8 +546,45 @@ async function handleStop(parsed: ParsedArgs): Promise<void> {
   emitFinalizedResult(parsed, stopped);
 }
 
+type RecordingLossCounts =
+  | { rectSampleElementsDropped: number; bindingRecordsDropped: number }
+  | { unavailableReason: string };
+
+function recordingLossCounts(recDir: string): RecordingLossCounts {
+  let raw: string;
+  try {
+    raw = readPrivateFile(path.join(recDir, 'events.jsonl')).toString('utf8');
+  } catch (error) {
+    return { unavailableReason: `events.jsonl could not be read (${error instanceof Error ? error.message : String(error)})` };
+  }
+  let rectSampleElementsDropped = 0;
+  let bindingRecordsDropped = 0;
+  for (const line of raw.split('\n').filter(Boolean)) {
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      return { unavailableReason: 'events.jsonl contains a malformed event record' };
+    }
+    if (!event || typeof event !== 'object') continue;
+    const { kind, count } = event as { kind?: unknown; count?: unknown };
+    if (kind !== 'rect-sample-dropped' && kind !== 'binding-dropped') continue;
+    if (!Number.isSafeInteger(count) || count < 0) return { unavailableReason: `${String(kind)} has no non-negative integer count` };
+    if (kind === 'rect-sample-dropped') rectSampleElementsDropped += count;
+    else bindingRecordsDropped += count;
+  }
+  return { rectSampleElementsDropped, bindingRecordsDropped };
+}
+
 function emitFinalizedResult(parsed: ParsedArgs, stopped: FinalizedRecording & { action?: string }): void {
   const durationS = `${(stopped.durationMs / 1000).toFixed(1)}s`;
+  const lossCounts = recordingLossCounts(stopped.recDir);
+  const lossAttrs = 'unavailableReason' in lossCounts
+    ? { 'rect-sample-elements-dropped': 'unavailable', 'binding-records-dropped': 'unavailable' }
+    : { 'rect-sample-elements-dropped': lossCounts.rectSampleElementsDropped, 'binding-records-dropped': lossCounts.bindingRecordsDropped };
+  const lossFacts = 'unavailableReason' in lossCounts
+    ? [fact`Dropped rect-sample element and binding-record counts are unavailable: ${lossCounts.unavailableReason}.`]
+    : [fact`Retained rect samples contain only the frame and element facts the recorder retained; ${lossCounts.rectSampleElementsDropped} rect-sample element fact(s) and ${lossCounts.bindingRecordsDropped} binding record(s) were dropped.`];
   const result: RenderableResult = {
     tag: 'recording',
     attestation: { kind: 'recording', id: stopped.recId, path: stopped.recDir },
@@ -557,6 +594,7 @@ function emitFinalizedResult(parsed: ParsedArgs, stopped: FinalizedRecording & {
       duration: durationS,
       state: stopped.state,
       'event-records': stopped.eventCount ?? 'unavailable',
+      ...lossAttrs,
       'baseline-availability': baselineAvailability(stopped.recDir),
       ...(stopped.action ? { action: stopped.action } : {}),
       ...(stopped.viewportRestored !== null ? { 'viewport-restored': stopped.viewportRestored } : {}),
@@ -571,6 +609,7 @@ function emitFinalizedResult(parsed: ParsedArgs, stopped: FinalizedRecording & {
         : stopped.eventCount !== null
           ? fact`Recording finalized: ${stopped.frames} frame(s) over ${durationS}, ${stopped.eventCount} event record(s).`
           : fact`Recording finalized: ${stopped.frames} frame(s) over ${durationS}.`,
+    sections: lossFacts,
     artifacts: formatArtifactList(listRecordingArtifacts(stopped.recDir)),
   };
   emitResult(result, { json: parsed.json });

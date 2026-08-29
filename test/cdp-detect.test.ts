@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   identifyBrowserBundleId,
   pickPreferredEndpoint,
+  pickPreferredEndpointWithReason,
   type CdpEndpoint,
 } from '../src/cdp/detect.js';
 
@@ -34,9 +35,12 @@ test('endpoint selection prefers the default recognized browser over Spotify', (
     bundleId: 'company.thebrowser.browser',
   });
 
-  assert.equal(
-    pickPreferredEndpoint([spotify, arc], 'company.thebrowser.browser').port,
-    62535,
-  );
+  const configuredDefault = pickPreferredEndpointWithReason([spotify, arc], 'company.thebrowser.browser');
+  assert.equal(configuredDefault.endpoint.port, 62535);
+  assert.equal(configuredDefault.reason, 'matched the configured default browser among endpoints with a live page target');
+
+  const knownBrowser = pickPreferredEndpointWithReason([spotify, arc], null);
+  assert.equal(knownBrowser.endpoint.port, 62535);
+  assert.equal(knownBrowser.reason, 'is a recognized non-Electron browser among endpoints with a live page target');
   assert.equal(pickPreferredEndpoint([spotify, arc], null).port, 62535);
 });

@@ -131,6 +131,28 @@ test('session start (no url) emits a <session> block, creates shots/ and NOT a11
   }
 });
 
+test('session start --port pins its targetless session to the explicit browser endpoint', async () => {
+  const out = captureStdout();
+  let id: string | undefined;
+  let dir: string | undefined;
+  try {
+    await sessionMain(sessionArgs(['start'], { port: 9444 }), []);
+    const active = getActiveSession();
+    assert.ok(active);
+    id = active.sessionId;
+    dir = active.dir;
+    assert.equal(active.port, 9444);
+    const text = out.logs.join('');
+    assert.match(text, /port="9444"/);
+    assert.match(text, /CDP endpoint on port 9444 selected by explicit --port/);
+  } finally {
+    out.restore();
+    if (id) await stopSilently(id);
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    clearActiveSession();
+  }
+});
+
 test('session start --json mirrors the <session> result as JSON', async () => {
   const out = captureStdout();
   let dir: string | undefined;
@@ -178,6 +200,33 @@ test('session start --target adopts the resolved tab and records its canonical i
     assert.match(text, /target="ABCDEF012345"/);
     assert.match(text, /port="9333"/);
     assert.match(text, /tab ABCDEF012345 adopted at https:\/\/example\.test\/adopted/);
+    assert.match(text, /CDP endpoint on port 9333 selected by explicit --port; --port overrides endpoint selection and --target overrides tab selection/);
+  } finally {
+    __setSessionStartWorld();
+    out.restore();
+    if (id) await stopSilently(id);
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    clearActiveSession();
+  }
+});
+
+test('session start reports an auto-selected browser endpoint, its preferred-selection reason, and the explicit overrides', async () => {
+  const out = captureStdout();
+  let id: string | undefined;
+  let dir: string | undefined;
+  __setSessionStartWorld({
+    detectCdpPort: async () => ({ port: 9334, app: 'Capture Chrome', selectionReason: 'matched the configured default browser among endpoints with a live page target' }),
+    findTabById: async () => ({ id: 'AUTO012345678', title: 'Auto tab', url: 'https://example.test/auto', type: 'page' }),
+  });
+  try {
+    await sessionMain(sessionArgs(['start'], { target: 'AUTO' }), []);
+    const active = getActiveSession();
+    assert.ok(active);
+    id = active.sessionId;
+    dir = active.dir;
+    const text = out.logs.join('');
+    assert.match(text, /Capture Chrome on port 9334 auto-selected because it matched the configured default browser among endpoints with a live page target; capture-launched browser recency does not affect selection/);
+    assert.match(text, /--port overrides endpoint selection and --target overrides tab selection/);
   } finally {
     __setSessionStartWorld();
     out.restore();

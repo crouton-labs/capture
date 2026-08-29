@@ -543,7 +543,7 @@ test('real-chrome (C1): styles.json reports total/kept/truncated when the page h
     // PRE-FIX PROOF: before this remediation, `coverage` carried no
     // `totalCandidateElements`/`keptElements`/`elementsTruncated` fields —
     // this test's assertions on those fields fail against the pre-fix shape.
-    assert.equal(styles.coverage.totalCandidateElements, STYLES_CAP_ELEMENT_COUNT, 'total must count every candidate element, not stop at the cap');
+    assert.equal(styles.coverage.totalCandidateElements, STYLES_CAP_ELEMENT_COUNT + 1, 'total includes body plus every fixture div candidate');
     assert.equal(styles.elements.length, 150, 'emitted elements are capped at STYLES_MAX_ELEMENTS');
     assert.equal(styles.coverage.keptElements, 150);
     assert.equal(styles.coverage.elementsTruncated, true, 'truncation must be an explicit boolean fact, not inferred from array length alone');
@@ -563,8 +563,8 @@ test('real-chrome (C1): a page with FEWER elements than the cap reports elements
     const { ctx, written } = makeRealCtx(client, smallUrl);
     await collectStyles(ctx);
     const styles = written.get('styles.json') as StylesReport;
-    assert.equal(styles.coverage.totalCandidateElements, 1);
-    assert.equal(styles.coverage.keptElements, 1);
+    assert.equal(styles.coverage.totalCandidateElements, 2);
+    assert.equal(styles.coverage.keptElements, 2);
     assert.equal(styles.coverage.elementsTruncated, false);
   } finally {
     client.close();
@@ -592,10 +592,8 @@ test('real-chrome (D1): styles.json element backendNodeId EQUALS geometry.json b
     const styles = written.get('styles.json') as StylesReport;
     const geometry = written.get('geometry.json') as GeometryJson;
 
-    assert.equal(styles.elements.length, 1, 'the fixture has exactly one candidate element');
-    assert.equal(geometry.elements.length, 1, 'geometry.json enumerates the same single element');
-    assert.notEqual(styles.elements[0].backendNodeId, undefined, 'styles.json must carry a backendNodeId, not just a collector-local id');
-    assert.notEqual(geometry.elements[0].backendNodeId, undefined);
+    assert.equal(styles.elements.length, 2, 'the fixture includes body and #box as style candidates');
+    assert.equal(geometry.elements.length, 3, 'geometry.json enumerates html, body, and #box');
 
     // Independently resolve #box's real CDP backendNodeId as ground truth, ruling out a
     // coincidental match between two independently-stubbed values (there is no stub here —
@@ -606,13 +604,16 @@ test('real-chrome (D1): styles.json element backendNodeId EQUALS geometry.json b
     const groundTruthBackendNodeId = described.node?.backendNodeId;
     assert.ok(groundTruthBackendNodeId);
 
-    assert.equal(styles.elements[0].backendNodeId, groundTruthBackendNodeId);
+    const styleBox = styles.elements.find((element) => element.backendNodeId === groundTruthBackendNodeId);
+    const geometryBox = geometry.elements.find((element) => element.selector === '#box');
+    assert.ok(styleBox, 'styles.json must carry #box’s backendNodeId, not just a collector-local id');
+    assert.ok(geometryBox, 'geometry.json must carry #box’s geometry record');
     assert.equal(
-      geometry.elements[0].backendNodeId,
+      geometryBox.backendNodeId,
       groundTruthBackendNodeId,
-      `expected styles.json's backendNodeId (${styles.elements[0].backendNodeId}) to EQUAL geometry.json's (${geometry.elements[0].backendNodeId}) for the same DOM node`,
+      `expected styles.json's backendNodeId (${styleBox.backendNodeId}) to EQUAL geometry.json's (${geometryBox.backendNodeId}) for the same DOM node`,
     );
-    assert.equal(styles.elements[0].backendNodeId, geometry.elements[0].backendNodeId);
+    assert.equal(styleBox.backendNodeId, geometryBox.backendNodeId);
   } finally {
     client.close();
   }

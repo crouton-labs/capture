@@ -40,6 +40,10 @@ export async function cmdMotionJank(parsed: ParsedArgs, _args: string[]): Promis
       sections.push(text`Layout-shift records: 0.`);
     }
 
+    if (analysis.preRecordingObserverEntriesExcluded > 0) {
+      sections.push(fact`${analysis.preRecordingObserverEntriesExcluded} buffered PerformanceObserver entr${analysis.preRecordingObserverEntriesExcluded === 1 ? 'y was' : 'ies were'} excluded because ${analysis.preRecordingObserverEntriesExcluded === 1 ? 'it predates' : 'they predate'} the recorder arm baseline.`);
+    }
+
     if (analysis.artifactLoss.length) {
       sections.push(lineList(analysis.artifactLoss.map(formatArtifactLoss)));
     }
@@ -59,9 +63,10 @@ export async function cmdMotionJank(parsed: ParsedArgs, _args: string[]): Promis
         'long-task-records-incomplete': analysis.longTasksIncomplete,
         'layout-shift-records': analysis.layoutShifts.length,
         'layout-shift-records-incomplete': analysis.layoutShiftsIncomplete,
+        'pre-recording-observer-entries-excluded': analysis.preRecordingObserverEntriesExcluded,
         'timestamp-uncertainty': analysis.frameTimestampUncertainty,
       },
-      summary: fact`${analysis.longTasks.length} long-task record(s)${analysis.longTasksIncomplete ? ' (incomplete)' : ''}, ${analysis.layoutShifts.length} layout-shift record(s)${analysis.layoutShiftsIncomplete ? ' (incomplete)' : ''}.`,
+      summary: fact`${analysis.longTasks.length} long-task record(s)${analysis.longTasksIncomplete ? ' (incomplete)' : ''}, ${analysis.layoutShifts.length} layout-shift record(s)${analysis.layoutShiftsIncomplete ? ' (incomplete)' : ''}; ${analysis.preRecordingObserverEntriesExcluded} pre-recording observer entr${analysis.preRecordingObserverEntriesExcluded === 1 ? 'y' : 'ies'} excluded.`,
       sections,
     };
     emitResult(result, { json: parsed.json });

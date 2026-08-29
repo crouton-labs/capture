@@ -44,7 +44,7 @@ export function buildBrowserLaunchedResult(
       fact` (pid ${browser.pid}) is answering CDP.`,
     ),
     sections,
-    followUp: line(text`capture tab quit `, data(browser.port)),
+    followUp: line(text`capture session start --port `, data(browser.port)),
   };
 }
 

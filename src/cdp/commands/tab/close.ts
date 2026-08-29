@@ -20,7 +20,7 @@ input:
   --port <port>   CDP endpoint (default: the auto-discovered preferred endpoint)
 
 output: <tab-closed port=… target=…> — the closed tab's full target id and last observed URL.
-effects: closes exactly one page tab. Refuses unless any active session's background-tab ownership is known, and never closes that session's tab; reset or stop the session first.`;
+effects: closes exactly one page tab. Refuses unless any active session's background-tab ownership is known, and never closes that session's tab; stop the session first.`;
 
 export function buildTabClosedResult(tab: CDPTarget, port: number): RenderableResult {
   return {
@@ -82,7 +82,7 @@ export async function cmdTabClose(parsed: ParsedArgs, _args: string[]): Promise<
       throw captureError(
         'precondition',
         'active_session_target',
-        `target ${resolved.id} is the active session ${active.sessionId}'s tab; capture tab close never leaves an active session pointing at a closed target. Use capture tab reset <url> to replace it or capture session stop ${active.sessionId} first.`,
+        `target ${resolved.id} is the active session ${active.sessionId}'s tab; capture tab close never leaves an active session pointing at a closed target. Stop the session first: capture session stop ${active.sessionId}.`,
       );
     }
 

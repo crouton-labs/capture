@@ -498,7 +498,7 @@ function printSessionHelp(): void {
 export interface SessionStartWorld {
   createHar(dir: string): Promise<string>;
   deleteHar(harId: string): Promise<void>;
-  detectCdpPort(): Promise<number>;
+  detectCdpPort(): Promise<number | { port: number; app: string; selectionReason: string }>;
   openTab(port: number, url: string): Promise<CDPTarget>;
   findTabById(port: number, targetId: string): Promise<CDPTarget | null>;
   closeTarget(port: number, targetId: string): Promise<void>;
@@ -515,8 +515,8 @@ const productionStartWorld: SessionStartWorld = {
   },
   deleteHar: deleteHarRecording,
   async detectCdpPort() {
-    const { detectCdpPort } = await import('../cdp.js');
-    return detectCdpPort();
+    const { detectCdpEndpoint } = await import('../cdp/detect.js');
+    return detectCdpEndpoint();
   },
   async openTab(port, url) {
     const { openTab } = await import('../cdp.js');
@@ -630,6 +630,8 @@ async function start(parsed: ParsedArgs): Promise<void> {
     let bridgeSocket: string | null = null;
     let bridgePid: number | null = null;
     let cdpPort: number | null = null;
+    let selectedBrowser: string | null = null;
+    let endpointSelectionReason: string | null = null;
 
     try {
       ensurePrivateDir(path.join(dir, 'shots'));
@@ -639,8 +641,13 @@ async function start(parsed: ParsedArgs): Promise<void> {
       const acquiredHarId = harId;
       acquired.push({ label: 'HAR recording', release: () => startWorld.deleteHar(acquiredHarId) });
 
-      if (url || requestedTarget || hold) {
-        cdpPort = parsed.port ?? await startWorld.detectCdpPort();
+      if (parsed.port !== undefined) {
+        cdpPort = parsed.port;
+      } else if (url || requestedTarget || hold) {
+        const detected = await startWorld.detectCdpPort();
+        cdpPort = typeof detected === 'number' ? detected : detected.port;
+        selectedBrowser = typeof detected === 'number' ? null : detected.app;
+        endpointSelectionReason = typeof detected === 'number' ? null : detected.selectionReason;
       }
 
       if (requestedTarget) {
@@ -710,6 +717,11 @@ async function start(parsed: ParsedArgs): Promise<void> {
 
     const rows: FactLine[] = [fact`bundle dir: ${dir}`];
     if (target) rows.push(url ? fact`tab ${target.id} opened at ${url}` : fact`tab ${target.id} adopted at ${target.url}`);
+    if (cdpPort !== null) rows.push(
+      parsed.port !== undefined
+        ? fact`CDP endpoint on port ${cdpPort} selected by explicit --port; --port overrides endpoint selection and --target overrides tab selection.`
+        : fact`${selectedBrowser ?? 'CDP endpoint'} on port ${cdpPort} auto-selected because it ${endpointSelectionReason ?? 'was selected by automatic endpoint detection'}; capture-launched browser recency does not affect selection. --port overrides endpoint selection and --target overrides tab selection.`,
+    );
     if (pageLoadTimedOut) rows.push(fact`page load timed out after 10000ms; the session stays attached to target ${target?.id ?? ''}`);
     if (harId) rows.push(fact`HAR recording ${harId} — traffic auto-appends while the session is active`);
     if (hold) rows.push(fact`held CDP bridge: pid ${bridgePid ?? 0}`);
