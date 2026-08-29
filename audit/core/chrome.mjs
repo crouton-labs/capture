@@ -6,20 +6,28 @@ import { join } from "node:path";
 const CHROME_VERSION = "143.0.7499.40";
 const READY_TIMEOUT_MS = 8_000;
 
-function chromePath() {
+function chromePath(flavor = "headless-shell") {
   if (process.env.CAPTURE_TEST_CHROME_PATH) return process.env.CAPTURE_TEST_CHROME_PATH;
   const platform = process.platform === "darwin" ? (process.arch === "arm64" ? "mac_arm" : "mac") : process.platform === "linux" ? "linux" : process.platform === "win32" ? "win64" : undefined;
   if (!platform) throw new Error(`No Chrome-for-Testing mapping for ${process.platform}/${process.arch}; set CAPTURE_TEST_CHROME_PATH.`);
-  const app = platform === "mac_arm" ? "chrome-headless-shell-mac-arm64" : platform === "mac" ? "chrome-headless-shell-mac-x64" : platform === "linux" ? "chrome-headless-shell-linux64" : "chrome-headless-shell-win64";
-  return join(process.env.HOME ?? "", ".cache", "puppeteer", "chrome-headless-shell", `${platform}-${CHROME_VERSION}`, app, process.platform === "win32" ? "chrome-headless-shell.exe" : "chrome-headless-shell");
+  if (flavor === "headless-shell") {
+    const app = platform === "mac_arm" ? "chrome-headless-shell-mac-arm64" : platform === "mac" ? "chrome-headless-shell-mac-x64" : platform === "linux" ? "chrome-headless-shell-linux64" : "chrome-headless-shell-win64";
+    return join(process.env.HOME ?? "", ".cache", "puppeteer", "chrome-headless-shell", `${platform}-${CHROME_VERSION}`, app, process.platform === "win32" ? "chrome-headless-shell.exe" : "chrome-headless-shell");
+  }
+  if (flavor === "chrome") {
+    const app = platform === "mac_arm" ? "chrome-mac-arm64" : platform === "mac" ? "chrome-mac-x64" : platform === "linux" ? "chrome-linux64" : "chrome-win64";
+    const executable = process.platform === "darwin" ? join("Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing") : process.platform === "win32" ? "chrome.exe" : "chrome";
+    return join(process.env.HOME ?? "", ".cache", "puppeteer", "chrome", `${platform}-${CHROME_VERSION}`, app, executable);
+  }
+  throw new Error(`Unknown Chrome flavor: ${flavor}`);
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Launches the pinned Chrome-for-Testing build in a fresh profile and returns its CDP port. */
-export async function launchChrome({ args = [], timeoutMs = READY_TIMEOUT_MS } = {}) {
+export async function launchChrome({ args = [], flavor = "headless-shell", timeoutMs = READY_TIMEOUT_MS } = {}) {
   const profileDir = await mkdtemp(join(tmpdir(), "capture-audit-chrome-"));
-  const proc = spawn(chromePath(), ["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--remote-debugging-port=0", `--user-data-dir=${profileDir}`, ...args, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+  const proc = spawn(chromePath(flavor), ["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--remote-debugging-port=0", `--user-data-dir=${profileDir}`, ...args, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
   let exited = false;
   proc.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-16_000); });

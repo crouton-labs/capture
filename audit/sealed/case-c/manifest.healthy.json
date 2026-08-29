@@ -1,0 +1,16 @@
+{
+  "variant": "healthy",
+  "caseRevision": "c.2",
+  "palette": {
+    "brand": "#1f5c7a",
+    "brandInk": "#ffffff",
+    "surface": "#ffffff",
+    "surfaceSunken": "#d2d6da",
+    "surfaceRaised": "#f7f8f9",
+    "text": "#1c2126",
+    "textMuted": "#4a4f57",
+    "line": "#c3c9ce",
+    "accent": "#b4532b"
+  },
+  "densityScale": 1
+}

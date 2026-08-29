@@ -1,0 +1,63 @@
+{
+  "opaqueCaseId": "k9-lumen",
+  "caseId": "case-c",
+  "fixtureRevision": "c.2",
+  "vagueSymptom": "Every week someone phones the front desk to ask what our refund window is — including people who tell us they had the season pass page open in front of them at the time.",
+  "plantedCondition": "manifest.palette.textMuted is #6e737c instead of #4a4f57. The token passes AA on the page's white surfaces (4.77:1) and fails on the recessed rules-and-refunds panel surface #d2d6da (3.26:1), where the refund-window sentence lives. Four further defects — X-Robots-Tag: noindex on the document, a missing alt attribute on the pass-comparison graphic, a console.error-reported TypeError in the closures-notice renderer, and an h2→h4 skip in the sign-up section — are unconditional fixture furniture present under both manifests and explain nothing.",
+  "requiredDiagnosisFacts": [
+    { "id": "panel-text-below-threshold", "fact": "Body text in the rules-and-refunds panel renders at roughly 3.3:1 against the panel background, below the 4.5:1 contrast requirement for normal text.", "why": "This is the condition itself, stated as a measured fact rather than as a category." },
+    { "id": "refund-sentence-affected", "fact": "The refund-window sentence is one of the affected nodes.", "why": "Ties the condition to the artifact the symptom names; a generic 'the page has contrast problems' does not select." },
+    { "id": "localized-not-global", "fact": "The same muted text colour passes on the page's white surfaces; the failure is specific to the composition with the recessed panel surface.", "why": "Distinguishes a real diagnosis from 'the page's grey text is too light', and is the fact that proves the agent read node-level attribution rather than a category score." },
+    { "id": "explains-symptom", "fact": "This is why a caller with the page open cannot read the refund window.", "why": "The oracle grades interpretation; the causal link must be stated, not implied." }
+  ],
+  "requiredEvidence": [
+    { "id": "audited-surface-enumerated", "evidence": "The report establishes the state of the page across more than one audit category, naming the other defective conditions it found.", "why": "Breadth is what the case exists to price. A report that names only one condition has not shown it knows the condition is the culprit." },
+    { "id": "contrast-measurement", "evidence": "A contrast ratio for the refund sentence (or the panel body text containing it) and the threshold it fails, from a capture command with a transcript ordinal.", "why": "The load-bearing measurement. A qualitative 'the text is too light' is not established." },
+    { "id": "decoys-ruled-out", "evidence": "Each of the noindex directive, the missing alt attribute on the pass-comparison graphic, the console-reported TypeError and missing closures banner, and the skipped heading level is named and excluded with a reason tied to an observation.", "why": "This is the selection property. Naming the right answer without excluding the alternatives does not distinguish a diagnosis from a guess." },
+    { "id": "text-renders", "evidence": "The refund sentence is present at full size in the rendered DOM.", "why": "Rules out the console-error story specifically, which is the most causal-looking competitor." }
+  ],
+  "plausibleWrongAnswer": "The document response carries X-Robots-Tag: noindex, so the page is excluded from search and people cannot find it. (A real planted condition — the cheapest single observation on the fixture — that explains nothing about a caller who already has the page open.)",
+  "ranges": {
+    "faulty": [
+      { "name": "refundSentenceContrast", "min": 3.2, "max": 3.32 },
+      { "name": "refundSentenceContrastMobile", "min": 3.2, "max": 3.32 },
+      { "name": "mutedOnWhiteContrast", "min": 4.7, "max": 4.83 },
+      { "name": "refundSentencePresent", "min": 1, "max": 1 },
+      { "name": "refundSentenceFontSizePx", "min": 12, "max": 16 },
+      { "name": "contrastFailuresOutsidePanel", "min": 0, "max": 0 },
+      { "name": "robotsHeaderNoindex", "min": 1, "max": 1 },
+      { "name": "passGridAltMissing", "min": 1, "max": 1 },
+      { "name": "consoleErrorCount", "min": 1, "max": 3 },
+      { "name": "closuresBannerAbsent", "min": 1, "max": 1 },
+      { "name": "headingSkipPresent", "min": 1, "max": 1 },
+      { "name": "paletteTokenApplied", "min": 1, "max": 1 }
+    ],
+    "healthy": [
+      { "name": "refundSentenceContrast", "min": 5.55, "max": 5.73 },
+      { "name": "refundSentenceContrastMobile", "min": 5.55, "max": 5.73 },
+      { "name": "mutedOnWhiteContrast", "min": 8.15, "max": 8.34 },
+      { "name": "refundSentencePresent", "min": 1, "max": 1 },
+      { "name": "refundSentenceFontSizePx", "min": 12, "max": 16 },
+      { "name": "contrastFailuresOutsidePanel", "min": 0, "max": 0 },
+      { "name": "robotsHeaderNoindex", "min": 1, "max": 1 },
+      { "name": "passGridAltMissing", "min": 1, "max": 1 },
+      { "name": "consoleErrorCount", "min": 1, "max": 3 },
+      { "name": "closuresBannerAbsent", "min": 1, "max": 1 },
+      { "name": "headingSkipPresent", "min": 1, "max": 1 },
+      { "name": "paletteTokenApplied", "min": 1, "max": 1 }
+    ]
+  },
+  "intendedCapability": "real Lighthouse audit",
+  "intendedCapabilityStatus": "unshipped",
+  "intendedCapabilityRequiredForPass": false,
+  "intendedCapabilityMatchers": [["audit"], ["page", "audit"], ["measure", "audit"], ["session", "audit"], ["lighthouse"]],
+  "escapeHatchMatchers": [["cdp"], ["page", "exec"]],
+  "environment": {
+    "chromeBuild": "Chrome for Testing 143.0.7499.40 (full build; NOT chrome-headless-shell)",
+    "chromeFlavor": "chrome",
+    "flags": ["--headless=new"],
+    "coldCache": true,
+    "repetitions": 1
+  },
+  "budgets": { "calls": 40, "minutes": 25, "stdoutTokens": 40000 }
+}

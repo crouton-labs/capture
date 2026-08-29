@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Season Passes &middot; Millbrook Community Pool</title>
+<meta name="description" content="Season pass options, sign-up steps, pool hours, and the rules and refund policy for Millbrook Community Pool.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%231f5c7a'/%3E%3Cpath d='M2 10.5c1.2 0 1.2-1.2 2.4-1.2s1.2 1.2 2.4 1.2 1.2-1.2 2.4-1.2 1.2 1.2 2.4 1.2 1.2-1.2 2.4-1.2' stroke='%23fff' stroke-width='1.2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/assets/base.css">
+<link rel="stylesheet" href="/assets/layout.css">
+<link rel="stylesheet" href="/assets/components.css">
+<script src="/assets/site.js" defer></script>
+<script src="/assets/notices.js" defer></script>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="shell site-header__inner">
+    <a class="wordmark" href="/">
+      <span class="wordmark__mark" aria-hidden="true">MPR</span>
+      <span class="wordmark__name">Millbrook Parks &amp; Recreation</span>
+    </a>
+    <nav class="site-nav" aria-label="Main">
+      <a href="/">Home</a>
+      <a href="/hours">Hours</a>
+      <a href="/programs">Programs</a>
+      <a href="/contact">Contact</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero shell">
+    <div class="hero__copy">
+      <p class="eyebrow">Millbrook Community Pool</p>
+      <h1>Season passes are on sale</h1>
+      <p class="lede">One pass covers open swim, the lap lanes, and the shallow-water play area from opening day through the Sunday of Labor Day weekend.</p>
+      <p class="fineprint" data-field="sale-window">Sale dates for this season are being loaded.</p>
+    </div>
+    <figure class="hero__media media-frame">
+      <img src="/media/pool-deck.png" alt="Swimmers in the marked lap lanes at Millbrook Community Pool, with deck chairs along the far edge" width="1200" height="800">
+    </figure>
+  </section>
+
+  <section class="section shell" aria-labelledby="hours-heading">
+    <h2 id="hours-heading">Pool hours</h2>
+    <dl class="hours" data-field="hours-periods"></dl>
+  </section>
+
+  <section class="section shell" aria-labelledby="passes-heading">
+    <h2 id="passes-heading">Pass options</h2>
+    <p class="section__intro" data-field="pass-intro">Pass details for this season are being loaded.</p>
+    <img src="/media/pass-grid.png" class="pass-grid" width="1200" height="700">
+    <p class="fineprint" data-field="pass-note"></p>
+  </section>
+
+  <section class="section shell" aria-labelledby="signup-heading">
+    <h2 id="signup-heading">How to sign up</h2>
+    <ol class="steps">
+      <li class="step">
+        <span class="step__number" aria-hidden="true">1</span>
+        <h4>Fill out the pass request below</h4>
+        <p class="fineprint">Give us the name on the pass, a mailing address in the service area, and how many people the household pass should cover.</p>
+      </li>
+      <li class="step">
+        <span class="step__number" aria-hidden="true">2</span>
+        <h4>Bring proof of residency to the front desk</h4>
+        <p class="fineprint">A utility bill or a lease dated within the last ninety days is enough. Residency sets the rate you pay.</p>
+      </li>
+      <li class="step">
+        <span class="step__number" aria-hidden="true">3</span>
+        <h4>Pay and pick up your cards</h4>
+        <p class="fineprint">We take cash, check, and card at the desk. Cards are printed while you wait and are good for the whole season.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="section shell" aria-labelledby="request-heading">
+    <h2 id="request-heading">Pass request form</h2>
+    <form class="request-form" data-request-form novalidate>
+      <div class="field field--wide">
+        <label for="request-name">Name on the pass</label>
+        <input id="request-name" name="name" type="text" autocomplete="name" required>
+      </div>
+      <div class="field field--wide">
+        <label for="request-email">Email</label>
+        <input id="request-email" name="email" type="email" autocomplete="email" aria-describedby="request-email-hint" required>
+        <p class="fineprint" id="request-email-hint">We use this only to tell you when the cards are ready.</p>
+      </div>
+      <div class="field field--wide">
+        <label for="request-address">Mailing address</label>
+        <textarea id="request-address" name="address" rows="2" autocomplete="street-address" required></textarea>
+      </div>
+      <div class="field">
+        <label for="request-household">Household size</label>
+        <input id="request-household" name="householdSize" type="number" min="1" max="12" step="1" value="1" aria-describedby="request-household-hint" required>
+        <p class="fineprint" id="request-household-hint">Everyone living at the address, including children under five.</p>
+      </div>
+      <div class="field">
+        <label for="request-tier">Pass type</label>
+        <select id="request-tier" name="tier" required>
+          <option value="">Choose a pass type</option>
+        </select>
+        <p class="fineprint" id="request-tier-hint">Rates for each type are shown in the comparison above.</p>
+      </div>
+      <div class="field field--wide">
+        <label for="request-notes">Notes for the desk</label>
+        <textarea id="request-notes" name="notes" rows="3"></textarea>
+      </div>
+      <div class="field field--wide form-actions">
+        <button type="submit" class="button button--primary">Submit request</button>
+        <p class="form-status fineprint" role="status" data-request-status></p>
+      </div>
+    </form>
+  </section>
+
+  <section class="section shell" aria-labelledby="rules-heading">
+    <h2 id="rules-heading">Rules and refunds</h2>
+    <div class="panel panel--sunken" data-slot="rules"></div>
+  </section>
+
+  <section class="section shell" aria-labelledby="notices-heading">
+    <h2 id="notices-heading">Seasonal notices</h2>
+    <div class="notices">
+      <div data-slot="hours"></div>
+      <div data-slot="closures"></div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="shell site-footer__inner">
+    <div class="footer-col">
+      <p class="footer-col__title">Millbrook Community Pool</p>
+      <p class="fineprint">418 Warren Street<br>Millbrook, OH 44012</p>
+      <p class="fineprint">(440) 555-0147</p>
+      <p class="fineprint" data-field="staffed-hours"></p>
+    </div>
+    <div class="footer-col">
+      <p class="footer-col__title">Recreation department</p>
+      <ul class="footer-links">
+        <li><a href="/programs">Programs and lessons</a></li>
+        <li><a href="/facilities">Parks and facilities</a></li>
+        <li><a href="/contact">Contact the department</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <p class="footer-col__title">Season partners</p>
+      <ul class="partners">
+        <li><img class="partner-mark" src="/media/partner-schools.png" alt="Millbrook City Schools" width="240" height="80"></li>
+        <li><img class="partner-mark" src="/media/partner-health.png" alt="Riverside Health Alliance" width="240" height="80"></li>
+      </ul>
+    </div>
+  </div>
+  <div class="shell site-footer__legal">
+    <p class="fineprint">Millbrook Parks &amp; Recreation is a department of the City of Millbrook. Pass rates are set each spring by the Recreation Board and apply for the stated season only.</p>
+    <p class="fineprint">Pool operations follow the Ohio Department of Health bathing-facility code. Lifeguard staffing may be reduced during severe weather.</p>
+  </div>
+</footer>
+
+</body>
+</html>
