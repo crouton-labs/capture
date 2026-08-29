@@ -4,8 +4,13 @@ import * as path from 'node:path';
 import { detectCdpPort } from '../detect.js';
 import { captureError } from '../../errors.js';
 import { type ParsedArgs } from '../types.js';
-import { CAPTURE_ROOT, ensurePrivateDir, writeJsonPrivate, writePrivateFile } from '../../session/artifacts.js';
+import { CAPTURE_ROOT, ensurePrivateDir, processPidBirthProvider, writeJsonPrivate, writePrivateFile } from '../../session/artifacts.js';
 import { getActiveSession } from '../../session-context.js';
+import { withSessionLifecycle } from '../../session/coordinator.js';
+import { collectorHostSocketPath, startCollectorHost } from '../bridge/spawn.js';
+import { sendHostRequest } from '../host/client.js';
+import { scanCollectorHost } from '../host/handle.js';
+import { stopAndReapCollectorHostAtSessionStop } from '../host/lifecycle.js';
 import { capped, emitResult, fact, formatArtifactList, line, lineList, text, type FactLine, type JsonValue, type RenderableResult } from '../../output/render.js';
 
 export const COMMAND_BLOCK = `<command name="lighthouse">
@@ -113,6 +118,66 @@ function categoriesFrom(report: LighthouseReport): readonly Category[] {
       failingAudits,
     };
   });
+}
+
+type TracingReservation = { socketPath: string; nonce: string; token: string };
+
+function claimFailure(message: string): never {
+  throw captureError('precondition', 'claim_held', `${message} Run \`capture session collectors\` to see live collectors, stop the holder, then re-issue.`);
+}
+
+async function reserveTracing(port: number): Promise<TracingReservation | undefined> {
+  const active = getActiveSession();
+  if (!active?.targetId || active.port !== port) return undefined;
+  return withSessionLifecycle(active.dir, async () => {
+    const session = getActiveSession();
+    if (!session || session.dir !== active.dir || !session.targetId || session.port !== port) return undefined;
+    let scanned = scanCollectorHost(session.dir);
+    if (scanned.classification === 'unknown' || scanned.classification === 'malformed') {
+      throw captureError('precondition', 'collector_host_unavailable', `This session's collector host is ${scanned.classification}; Lighthouse cannot reserve the browser-global tracing claim.`);
+    }
+    if (scanned.classification === 'dead') {
+      const reaped = await stopAndReapCollectorHostAtSessionStop(session.dir);
+      if (reaped.status === 'terminal') throw captureError('precondition', 'collector_host_unavailable', `This session's collector host could not be reaped: ${reaped.error}`);
+      scanned = scanCollectorHost(session.dir);
+    }
+    if (scanned.classification === 'absent') {
+      await startCollectorHost(collectorHostSocketPath(session.dir), port, session.targetId, session.dir);
+      scanned = scanCollectorHost(session.dir);
+    }
+    if (scanned.classification !== 'live' || !scanned.handle) {
+      throw captureError('precondition', 'collector_host_unavailable', 'Collector host did not publish a live handle for Lighthouse.');
+    }
+    if (scanned.handle.targetId !== session.targetId) {
+      throw captureError('precondition', 'collector_host_target_mismatch', 'A collector host is bound to a different session target. Stop the session before running Lighthouse.');
+    }
+    const collector = scanned.handle.collectors[0];
+    if (collector) {
+      claimFailure(`Lighthouse: tracing is held by ${collector.kind} collector ${collector.id} on target tab ${session.targetId}.`);
+    }
+    const birth = processPidBirthProvider.read(process.pid);
+    if (birth.status !== 'found') {
+      throw captureError('precondition', 'collector_host_unavailable', 'Lighthouse could not establish its process identity to reserve the tracing claim.');
+    }
+    const response = await sendHostRequest(scanned.handle.socketPath, {
+      type: 'claim-reserve', nonce: scanned.handle.nonce, claims: ['tracing'], holderLabel: 'lighthouse', pid: process.pid, birth: birth.identity,
+    });
+    if (!response.ok) {
+      const message = response.error ?? 'collector host refused the tracing reservation.';
+      if (message.startsWith('Claim ')) claimFailure(`Lighthouse could not reserve the browser-global tracing claim: ${message}`);
+      throw captureError('precondition', 'collector_host_reservation_failed', `Lighthouse could not reserve the browser-global tracing claim: ${message}`);
+    }
+    const reservation = response.reservation as { token?: unknown } | undefined;
+    if (!reservation || typeof reservation.token !== 'string') {
+      throw captureError('internal', 'collector_host_reservation_malformed', 'Collector host returned a malformed tracing reservation.');
+    }
+    return { socketPath: scanned.handle.socketPath, nonce: scanned.handle.nonce, token: reservation.token };
+  });
+}
+
+async function releaseTracing(reservation: TracingReservation): Promise<void> {
+  const response = await sendHostRequest(reservation.socketPath, { type: 'claim-release', nonce: reservation.nonce, token: reservation.token });
+  if (!response.ok) throw captureError('cleanup', 'tracing_claim_release_failed', `Lighthouse finished but its tracing reservation could not be released: ${response.error ?? 'collector host refused the release.'}`);
 }
 
 function reportDirectory(): { id: string; dir: string } {
@@ -242,7 +307,9 @@ export async function cmdLighthouse(parsed: ParsedArgs, _args: string[]): Promis
   const preset = parsed.preset === 'desktop' ? 'desktop' : 'mobile';
   const categories = parsed.categories?.split(',') ?? ['performance'];
   const port = parsed.port ?? await detectCdpPort();
+  const reservation = await reserveTracing(port);
   let run: Awaited<ReturnType<typeof lighthouseModule.default>> | undefined;
+  let primary: unknown;
   try {
     run = await lighthouseModule.default(url, {
       port,
@@ -251,8 +318,15 @@ export async function cmdLighthouse(parsed: ParsedArgs, _args: string[]): Promis
       logLevel: 'error',
     }, preset === 'desktop' ? lighthouseModule.desktopConfig : undefined);
   } catch (error) {
-    throw captureError('world', 'lighthouse_failed', `Lighthouse could not run: ${error instanceof Error ? error.message : String(error)}`, error);
+    primary = captureError('world', 'lighthouse_failed', `Lighthouse could not run: ${error instanceof Error ? error.message : String(error)}`, error);
   }
+  let releaseFailure: unknown;
+  if (reservation) {
+    try { await releaseTracing(reservation); } catch (error) { releaseFailure = error; }
+  }
+  if (primary && releaseFailure) throw new AggregateError([primary, releaseFailure], 'Lighthouse failed and its tracing reservation could not be released.');
+  if (primary) throw primary;
+  if (releaseFailure) throw releaseFailure;
   if (!run) throw captureError('world', 'lighthouse_no_report', 'Lighthouse completed without a report.');
 
   const reports = reportStrings(run.report);
