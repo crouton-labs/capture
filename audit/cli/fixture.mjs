@@ -4,7 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { CASES, auditRoot, getCase } from "../core/registry.mjs";
 import { startFixture } from "../core/server.mjs";
-import { launchChrome } from "../core/chrome.mjs";
+import { launchChrome, targetUrl } from "../core/chrome.mjs";
 import { connect } from "../core/cdp-client.mjs";
 import { invokeCapture } from "../core/capture-invoke.mjs";
 import { prepareDumpDirectory, responseRecord, unavailableBody } from "../core/dump.mjs";
@@ -38,13 +38,21 @@ export async function preflight(args) {
   const chromeFlavor = (await fixtureModule(entry)).chromeFlavor;
   for (const currentVariant of ["faulty", "healthy"]) {
     const server = await startFixture({ caseId: entry.id, variant: currentVariant, runId: `preflight-${Date.now()}` });
-    const chrome = await launchChrome({ flavor: chromeFlavor });
-    const cdp = await connect(`http://127.0.0.1:${chrome.port}`);
+    let chrome;
+    let cdp;
     try {
+      chrome = await launchChrome({ fixtureUrl: server.url, flavor: chromeFlavor });
+      cdp = await connect(`http://127.0.0.1:${chrome.port}`);
       const capture = (argv, options = {}) => invokeCapture(argv, { ...options, env: { ...options.env, CDP_PORT: String(chrome.port) } });
-      const result = await server.preflight({ cdp, capture });
+      const result = await server.preflight({ url: targetUrl(server.url), cdp, capture });
       results.push(result);
-    } finally { await cdp.close(); await chrome.stop(); await server.stop(); }
+    } finally {
+      try { await cdp?.close(); }
+      finally {
+        try { await chrome?.stop(); }
+        finally { await server.stop(); }
+      }
+    }
   }
   let okay = true;
   for (const result of results) for (const assertion of result.assertions ?? []) { const pass = Boolean(assertion.ok); okay &&= pass; console.log(`${result.variant}\t${pass ? "PASS" : "FAIL"}\t${assertion.name}\texpected=${JSON.stringify(assertion.expected)}\tactual=${JSON.stringify(assertion.actual)}`); }
@@ -74,34 +82,39 @@ export async function dump(args) {
   await prepareDumpDirectory(output);
   const server = await startFixture({ caseId: entry.id, variant: currentVariant, runId: `${entry.id}-dump` });
   const fixture = await fixtureModule(entry);
-  const chrome = await launchChrome({ flavor: fixture.chromeFlavor }); const cdp = await connect(`http://127.0.0.1:${chrome.port}`);
+  let chrome;
+  let cdp;
+  let capture;
   let dumpSessionId;
-  const capture = (argv, options = {}) => invokeCapture(argv, { ...options, env: { ...options.env, CDP_PORT: String(chrome.port) } });
-  const requestWillBeSent = new Map(), responseEvents = [], loadingFinished = new Map(), consoleOutput = [], doms = [], activeRequests = new Set();
-  const snapshot = async (label = `interaction-${doms.length}`) => {
-    const result = await cdp.send("Runtime.evaluate", { expression: "document.documentElement.outerHTML", returnByValue: true });
-    const file = `dom-${String(doms.length).padStart(3, "0")}-${label.replace(/[^a-zA-Z0-9._-]/g, "_")}.html`;
-    await writeFile(join(output, file), result.result.value, "utf8"); doms.push({ label, file }); return file;
-  };
-  cdp.on("Network.requestWillBeSent", (params) => {
-    const priorRequest = requestWillBeSent.get(params.requestId);
-    if (params.redirectResponse) responseEvents.push({ request: priorRequest, response: { requestId: params.requestId, timestamp: params.timestamp, response: params.redirectResponse, source: "Network.requestWillBeSent.redirectResponse" }, redirect: true });
-    requestWillBeSent.set(params.requestId, params); activeRequests.add(params.requestId);
-  });
-  cdp.on("Network.responseReceived", (params) => responseEvents.push({ request: requestWillBeSent.get(params.requestId), response: params }));
-  cdp.on("Network.loadingFinished", (params) => { loadingFinished.set(params.requestId, params); activeRequests.delete(params.requestId); });
-  cdp.on("Network.loadingFailed", (params) => activeRequests.delete(params.requestId));
-  cdp.on("Runtime.consoleAPICalled", (params) => consoleOutput.push({ type: params.type, timestamp: params.timestamp, stackTrace: params.stackTrace, args: params.args }));
   try {
+    chrome = await launchChrome({ fixtureUrl: server.url, flavor: fixture.chromeFlavor });
+    cdp = await connect(`http://127.0.0.1:${chrome.port}`);
+    const browserUrl = targetUrl(server.url);
+    capture = (argv, options = {}) => invokeCapture(argv, { ...options, env: { ...options.env, CDP_PORT: String(chrome.port) } });
+    const requestWillBeSent = new Map(), responseEvents = [], loadingFinished = new Map(), consoleOutput = [], doms = [], activeRequests = new Set();
+    const snapshot = async (label = `interaction-${doms.length}`) => {
+      const result = await cdp.send("Runtime.evaluate", { expression: "document.documentElement.outerHTML", returnByValue: true });
+      const file = `dom-${String(doms.length).padStart(3, "0")}-${label.replace(/[^a-zA-Z0-9._-]/g, "_")}.html`;
+      await writeFile(join(output, file), result.result.value, "utf8"); doms.push({ label, file }); return file;
+    };
+    cdp.on("Network.requestWillBeSent", (params) => {
+      const priorRequest = requestWillBeSent.get(params.requestId);
+      if (params.redirectResponse) responseEvents.push({ request: priorRequest, response: { requestId: params.requestId, timestamp: params.timestamp, response: params.redirectResponse, source: "Network.requestWillBeSent.redirectResponse" }, redirect: true });
+      requestWillBeSent.set(params.requestId, params); activeRequests.add(params.requestId);
+    });
+    cdp.on("Network.responseReceived", (params) => responseEvents.push({ request: requestWillBeSent.get(params.requestId), response: params }));
+    cdp.on("Network.loadingFinished", (params) => { loadingFinished.set(params.requestId, params); activeRequests.delete(params.requestId); });
+    cdp.on("Network.loadingFailed", (params) => activeRequests.delete(params.requestId));
+    cdp.on("Runtime.consoleAPICalled", (params) => consoleOutput.push({ type: params.type, timestamp: params.timestamp, stackTrace: params.stackTrace, args: params.args }));
     await cdp.send("Network.enable"); await cdp.send("Runtime.enable"); await cdp.send("Page.enable");
     const target = cdp.webSocketUrl.split("/").at(-1);
     const started = await capture(["session", "start", "--target", target, "--port", String(chrome.port)]);
     if (started.exitCode !== 0) throw new Error(`capture session start failed: ${started.stderr}`);
     dumpSessionId = /<session id="([^"]+)"/.exec(started.stdout)?.[1];
-    const navigated = await capture(["page", "navigate", server.url]);
+    const navigated = await capture(["page", "navigate", browserUrl]);
     if (navigated.exitCode !== 0) throw new Error(`capture page navigate failed: ${navigated.stderr}`);
     await snapshot("load");
-    if (typeof fixture.dumpScript === "function") await fixture.dumpScript({ url: server.url, cdp, capture, snapshot });
+    if (typeof fixture.dumpScript === "function") await fixture.dumpScript({ url: browserUrl, cdp, capture, snapshot });
     const idleDeadline = Date.now() + 5_000;
     while (activeRequests.size && Date.now() < idleDeadline) await new Promise((resolveWait) => setTimeout(resolveWait, 25));
     const bodyRecords = [];
@@ -126,5 +139,14 @@ export async function dump(args) {
     // would clear a fixture on bytes nobody read. Keep the artifacts, refuse the success status.
     if (missingBodies.length) throw new Error(`dump incomplete, do not review it: ${missingBodies.length} response body/bodies unavailable (${missingBodies.join(", ")}). Artifacts written to ${output}`);
     console.log(output);
-  } finally { if (dumpSessionId) await capture(["session", "stop", dumpSessionId]); await cdp.close(); await chrome.stop(); await server.stop(); }
+  } finally {
+    try { if (dumpSessionId) await capture?.(["session", "stop", dumpSessionId]); }
+    finally {
+      try { await cdp?.close(); }
+      finally {
+        try { await chrome?.stop(); }
+        finally { await server.stop(); }
+      }
+    }
+  }
 }

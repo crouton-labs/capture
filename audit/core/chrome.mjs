@@ -1,57 +1,130 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 const CHROME_VERSION = "143.0.7499.40";
-const READY_TIMEOUT_MS = 8_000;
-
-function chromePath(flavor = "headless-shell") {
-  if (process.env.CAPTURE_TEST_CHROME_PATH) return process.env.CAPTURE_TEST_CHROME_PATH;
-  const platform = process.platform === "darwin" ? (process.arch === "arm64" ? "mac_arm" : "mac") : process.platform === "linux" ? "linux" : process.platform === "win32" ? "win64" : undefined;
-  if (!platform) throw new Error(`No Chrome-for-Testing mapping for ${process.platform}/${process.arch}; set CAPTURE_TEST_CHROME_PATH.`);
-  if (flavor === "headless-shell") {
-    const app = platform === "mac_arm" ? "chrome-headless-shell-mac-arm64" : platform === "mac" ? "chrome-headless-shell-mac-x64" : platform === "linux" ? "chrome-headless-shell-linux64" : "chrome-headless-shell-win64";
-    return join(process.env.HOME ?? "", ".cache", "puppeteer", "chrome-headless-shell", `${platform}-${CHROME_VERSION}`, app, process.platform === "win32" ? "chrome-headless-shell.exe" : "chrome-headless-shell");
-  }
-  if (flavor === "chrome") {
-    const app = platform === "mac_arm" ? "chrome-mac-arm64" : platform === "mac" ? "chrome-mac-x64" : platform === "linux" ? "chrome-linux64" : "chrome-win64";
-    const executable = process.platform === "darwin" ? join("Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing") : process.platform === "win32" ? "chrome.exe" : "chrome";
-    return join(process.env.HOME ?? "", ".cache", "puppeteer", "chrome", `${platform}-${CHROME_VERSION}`, app, executable);
-  }
-  throw new Error(`Unknown Chrome flavor: ${flavor}`);
-}
+const READY_TIMEOUT_MS = 30_000;
+export const TARGET_IMAGE = "capture-audit-target:143.0.7499.40";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Launches the pinned Chrome-for-Testing build in a fresh profile and returns its CDP port. */
-export async function launchChrome({ args = [], flavor = "headless-shell", timeoutMs = READY_TIMEOUT_MS } = {}) {
-  const profileDir = await mkdtemp(join(tmpdir(), "capture-audit-chrome-"));
-  const proc = spawn(chromePath(flavor), ["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--remote-debugging-port=0", `--user-data-dir=${profileDir}`, ...args, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
-  let stderr = "";
-  let exited = false;
-  proc.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-16_000); });
-  const exitedPromise = new Promise((resolve) => proc.once("exit", () => { exited = true; resolve(); }));
+function command(program, args, { input } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(program, args, { stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    const stdout = [], stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.once("error", reject);
+    child.once("close", (exitCode, signal) => {
+      const result = { stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8"), exitCode, signal };
+      if (exitCode === 0) resolve(result);
+      else reject(new Error(`${program} ${args.join(" ")} failed (${signal ?? exitCode}): ${result.stderr.trim() || result.stdout.trim()}`));
+    });
+    if (input === undefined) return;
+    child.stdin.end(input);
+  });
+}
+
+function targetImage() { return process.env.AUDIT_TARGET_IMAGE ?? TARGET_IMAGE; }
+
+function requireFlavor(flavor) {
+  if (flavor !== "headless-shell" && flavor !== "chrome") throw new Error(`Unknown Chrome flavor: ${flavor}`);
+}
+
+function fixturePort(url) {
+  const fixture = new URL(url);
+  if (fixture.hostname !== "127.0.0.1" && fixture.hostname !== "localhost") throw new Error(`Fixture URL must be loopback-only: ${url}`);
+  if (!fixture.port) throw new Error(`Fixture URL must include its ephemeral TCP port: ${url}`);
+  return fixture.port;
+}
+
+function hostPort(output) {
+  const match = /:(\d+)\s*$/m.exec(output);
+  if (!match) throw new Error(`Docker did not publish Chrome's CDP port: ${output.trim()}`);
+  return Number(match[1]);
+}
+
+/** Rewrites a loopback fixture URL for the target container's host gateway. */
+export function targetUrl(url) {
+  const rewritten = new URL(url);
+  if (rewritten.hostname !== "127.0.0.1" && rewritten.hostname !== "localhost") throw new Error(`Fixture URL must be loopback-only: ${url}`);
+  rewritten.hostname = "host.docker.internal";
+  return rewritten.href.replace(/\/$/, "");
+}
+
+async function targetContainerId(port) {
+  const listed = await command("docker", ["ps", "--filter", "label=capture.audit.target=true", "--format", "{{.ID}}"]);
+  const ids = listed.stdout.trim().split("\n").filter(Boolean);
+  for (const id of ids) {
+    const published = await command("docker", ["port", id, "9222/tcp"]);
+    if (hostPort(published.stdout) === port) return id;
+  }
+  throw new Error(`No audit target container publishes CDP port ${port}`);
+}
+
+/** Enumerates the running target filesystem as container root and scans it for sealed-case terms. */
+export async function inspectTargetFilesystem(port, sealedTerms = []) {
+  if (!Array.isArray(sealedTerms) || !sealedTerms.every((term) => typeof term === "string" && term.length)) throw new TypeError("sealedTerms must be non-empty strings");
+  const containerId = await targetContainerId(port);
+  const files = await command("docker", ["exec", "--user", "0", containerId, "sh", "-c", "find / -xdev -type f -print | LC_ALL=C sort"]);
+  let termMatches = "";
+  if (sealedTerms.length) {
+    const scan = await command("docker", ["exec", "--interactive", "--user", "0", containerId, "sh", "-c", "cat >/tmp/audit-sealed-terms && find / -xdev -type f -print0 | xargs -0 grep -I -l -F -f /tmp/audit-sealed-terms 2>/dev/null || true; rm -f /tmp/audit-sealed-terms"], { input: `${sealedTerms.join("\n")}\n` });
+    termMatches = scan.stdout;
+  }
+  const paths = files.stdout.trim().split("\n").filter(Boolean);
+  return { fileCount: paths.length, matchingPaths: paths.filter((path) => /(?:^|\/)(?:capture|sealed|oracle|case-[a-e])(?:\/|$)/i.test(path)), sealedTermMatches: termMatches.trim().split("\n").filter((path) => path && path !== "/tmp/audit-sealed-terms") };
+}
+
+/** Launches pinned Chrome-for-Testing in an isolated linux/amd64 container and returns its host CDP port. */
+export async function launchChrome({ args = [], fixtureUrl, flavor = "headless-shell", timeoutMs = READY_TIMEOUT_MS } = {}) {
+  requireFlavor(flavor);
+  const allowedFixturePort = fixturePort(fixtureUrl);
+  if (!Array.isArray(args) || !args.every((arg) => typeof arg === "string")) throw new TypeError("Chrome args must be strings");
+  if (args.some((arg) => arg.startsWith("--remote-debugging-") || arg.startsWith("--user-data-dir="))) throw new Error("The audit target owns CDP and profile flags");
+  let containerId;
+  let startedPromise;
+  let stopping;
+  const onSignal = (signal) => {
+    void (startedPromise ?? Promise.resolve()).then(stop, stop).catch((cleanupError) => console.error(`Could not remove audit Chrome after ${signal}: ${cleanupError.message}`)).finally(() => process.kill(process.pid, signal));
+  };
+  const onSigint = () => onSignal("SIGINT");
+  const onSigterm = () => onSignal("SIGTERM");
+  const stop = async () => {
+    if (stopping) return stopping;
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
+    stopping = containerId ? command("docker", ["rm", "--force", containerId]) : Promise.resolve();
+    return stopping;
+  };
   try {
+    process.once("SIGINT", onSigint);
+    process.once("SIGTERM", onSigterm);
+    await (startedPromise = command("docker", ["run", "--detach", "--rm", "--platform", "linux/amd64", "--cap-drop", "ALL", "--cap-add", "NET_ADMIN", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "SETPCAP", "--publish", "127.0.0.1::9222", "--shm-size", "512m", "--label", "capture.audit.target=true", "--env", `CHROME_FLAVOR=${flavor}`, "--env", `AUDIT_FIXTURE_PORT=${allowedFixturePort}`, targetImage(), ...args]).then((result) => {
+      containerId = result.stdout.trim();
+      if (!/^[a-f0-9]{12,64}$/.test(containerId)) throw new Error(`Docker returned an invalid target container id: ${containerId}`);
+      return result;
+    }));
+    const published = await command("docker", ["port", containerId, "9222/tcp"]);
+    const port = hostPort(published.stdout);
     const deadline = Date.now() + timeoutMs;
+    let lastProbeError;
     while (Date.now() < deadline) {
-      const match = /DevTools listening on ws:\/\/[^:]+:(\d+)\//.exec(stderr);
-      if (match) {
-        const port = Number(match[1]);
-        try {
-          if ((await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(250) })).ok) {
-            return { proc, port, profileDir, async stop() { if (!exited) { proc.kill("SIGTERM"); await Promise.race([exitedPromise, sleep(2_000)]); if (!exited) proc.kill("SIGKILL"); } await rm(profileDir, { recursive: true, force: true }); } };
-          }
-        } catch { /* Chrome can announce CDP before its HTTP listener is ready. */ }
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(500) });
+        if (response.ok) {
+          const version = await response.json();
+          if (version.Browser !== `HeadlessChrome/${CHROME_VERSION}` && version.Browser !== `Chrome/${CHROME_VERSION}`) throw new Error(`Target Chrome version mismatch: ${version.Browser}`);
+          return { port, stop };
+        }
+        lastProbeError = new Error(`CDP endpoint returned ${response.status}`);
+      } catch (error) {
+        // During readiness the published port is authoritative; connection refusal and fetch timeout only mean Chrome has not opened it yet.
+        lastProbeError = error;
       }
-      if (exited) throw new Error(`Chrome exited before CDP became ready. stderr:\n${stderr}`);
-      await sleep(25);
+      await sleep(50);
     }
-    throw new Error(`Chrome did not expose CDP within ${timeoutMs}ms. stderr:\n${stderr}`);
+    throw new Error(`Chrome did not expose CDP within ${timeoutMs}ms${lastProbeError ? `: ${lastProbeError.message}` : ""}`);
   } catch (error) {
-    if (!exited) proc.kill("SIGKILL");
-    await exitedPromise;
-    await rm(profileDir, { recursive: true, force: true });
+    await stop().catch((cleanupError) => { throw new AggregateError([error, cleanupError], "Chrome launch failed and its target container could not be removed"); });
     throw error;
   }
 }
