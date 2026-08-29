@@ -25,7 +25,7 @@ function buildOptions(outfile) {
     bundle: true,
     platform: 'node',
     format: 'cjs',
-    external: ['esbuild'],
+    external: ['esbuild', 'lighthouse'],
     banner: { js: '#!/usr/bin/env node' },
     define: {
       'globalThis.__CAPTURE_VERSION__': JSON.stringify(pkg.version),

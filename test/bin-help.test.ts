@@ -152,7 +152,7 @@ test('page branch grammar names the leaf: `page click` is rejected at the valida
 test('every remaining scaffold leaf is registered with a clear non-zero placeholder', () => {
   withTempRoot((tempRoot) => {
     const commands = [
-      ['lighthouse', 'https://example.com'],
+
       ['session', 'collectors'],
     ];
     for (const command of commands) {

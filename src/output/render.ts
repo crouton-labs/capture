@@ -73,6 +73,7 @@ export const RESULT_TAGS = [
   'heap-objects',
   'retainers',
   'heap-diff',
+  'lighthouse',
 ] as const;
 
 export type ResultTag = (typeof RESULT_TAGS)[number];
@@ -749,6 +750,8 @@ export interface Attestation {
 
 export type ResultAttrs = Record<string, string | number | boolean | undefined>;
 
+export type JsonValue = string | number | boolean | null | readonly JsonValue[] | { readonly [key: string]: JsonValue };
+
 export interface RenderableResult {
   /** Trusted block tag — must be one of RESULT_TAGS. */
   readonly tag: ResultTag;
@@ -762,6 +765,10 @@ export interface RenderableResult {
   readonly attrs?: ResultAttrs;
   /** Snapshot/recording identity + optional method note. */
   readonly attestation?: Attestation;
+  /** Optional structured JSON mirror for artifact names. Prose retains the rendered FactLine artifact list. */
+  readonly jsonArtifacts?: readonly string[];
+  /** Optional structured JSON mirror for sections. Prose retains the rendered FactLine sections. */
+  readonly jsonSections?: readonly JsonValue[];
   /** Lead sentence(s), rendered immediately after the opening tag. */
   readonly summary?: FactLine;
   /** Pre-formatted artifact listing (typically via formatArtifactList),
@@ -848,6 +855,13 @@ function mergeAttestationAttrs(attrs: ResultAttrs, attestation?: Attestation): R
     merged[key] = value;
   }
   return merged;
+}
+
+function jsonValue(value: JsonValue): JsonValue {
+  if (typeof value === 'string') return capLength(neutralizeControl(value), DEFAULT_DATA_MAX);
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
+  if (Array.isArray(value)) return value.map(jsonValue);
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [capLength(neutralizeControl(key), DEFAULT_DATA_MAX), jsonValue(child)]));
 }
 
 function assembleBody(result: RenderableResult): string {
