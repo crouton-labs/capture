@@ -63,7 +63,7 @@ function installHeldScope(tag: string): { session: ActiveSessionState; teardown:
   const session = makeFakeSession(tag);
   fs.mkdirSync(session.dir, { recursive: true, mode: 0o700 }); // lock parent must exist
   const restore = __setScopeSerializationDepsForTest({
-    isRecorderHeldClient: () => true,
+    isMotionHeldClient: () => true,
     getActiveSession: () => session,
   });
   return {

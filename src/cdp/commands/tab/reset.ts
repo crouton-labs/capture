@@ -5,10 +5,10 @@
  *
  * Under an active session this is a session-lifecycle transition: it admits
  * as a session operation, runs under the session's `.lifecycle.lock`, and
- * REFUSES while a recording is live (a recorder is bound to the old target;
- * reset never rebinds a live recorder). Reset only clears a dangling recorder
- * pointer; dead recorders are left for the next stop/start to finalize (their
- * frames are preserved). The session's `{targetId, port}` pair is published
+ * REFUSES while a recording is live (the collector host is bound to the old
+ * target; reset never rebinds it). Reset only clears the session's dangling
+ * recording pointer; a dead collector host is left for the next stop/start to
+ * finalize its artifacts. The session's `{targetId, port}` pair is published
  * atomically under the lock.
  *
  * Emits a `<tab-reset>` block; page-derived strings flow through `data()`
@@ -23,11 +23,10 @@ import {
   admitSessionOperation,
   withSessionLifecycle,
   withSessionScopeLifecycle,
-  scanRecorderHandles,
-  clearDanglingRecorderPointer,
   type LifecycleSeams,
 } from '../../../session/coordinator.js';
 import { captureError, invalidInput } from '../../../errors.js';
+import { scanCollectorHost } from '../../host/handle.js';
 import { type CDPTarget, type ParsedArgs } from '../../types.js';
 import {
   data,
@@ -44,7 +43,7 @@ input:
   --port <port>   CDP endpoint (default: the active session's port, else the auto-discovered preferred endpoint)
 
 output: <tab-reset port=… target=…> — the fresh tab's target id and url, plus whether the active session's target was repointed at it.
-effects: opens a new background browser tab (the old tab is left behind, not closed) and waits up to 10s for its load event. Under an active session it refuses while a recording is live (stop it first: \`capture motion rec --stop\`), clears a dangling recorder pointer (dead recorders are left for the next stop/start to finalize; their frames are preserved), and updates the session's {target, port} pair together.`;
+effects: opens a new background browser tab (the old tab is left behind, not closed) and waits up to 10s for its load event. Under an active session it refuses while a recording is live (stop it first: \`capture motion rec --stop\`), clears the session's dangling recording pointer (a dead collector host remains for the next stop/start to finalize its artifacts), and updates the session's {target, port} pair together.`;
 
 /** Pure `<tab-reset>` result builder — exported for tests. */
 export function buildTabResetResult(
@@ -144,11 +143,11 @@ export async function cmdTabReset(parsed: ParsedArgs, _args: string[]): Promise<
       const result = await withSessionLifecycle(session.dir, async () => {
         const fresh = getActiveSession();
         if (!fresh || fresh.dir !== session.dir) throw captureError('precondition', 'session_unavailable', 'The active capture session is no longer available.');
-        const scan = scanRecorderHandles(session.dir, deps.lifecycle);
-        if (scan.some(h => h.classification === 'unknown')) throw captureError('world', 'recorder_liveness_unknown', 'Cannot determine recorder liveness; refusing to reset.');
-        if (scan.some(h => h.classification === 'malformed')) throw captureError('precondition', 'recorder_unavailable', 'A malformed recorder handle exists on this session; resolve it before resetting.');
-        if (scan.some(h => h.classification === 'live')) throw captureError('precondition', 'recorder_active', 'A recording is active on this session; stop it first: `capture motion rec --stop`. Reset never rebinds a live recorder.');
-        await clearDanglingRecorderPointer(session.dir, scan);
+        const host = scanCollectorHost(session.dir);
+        if (host.classification === 'unknown') throw captureError('world', 'recorder_liveness_unknown', 'Cannot determine collector-host liveness; refusing to reset.');
+        if (host.classification === 'malformed') throw captureError('precondition', 'recorder_unavailable', 'A malformed collector-host handle exists on this session; resolve it before resetting.');
+        if (host.classification === 'live' && host.handle?.collectors.some(collector => collector.kind === 'motion')) throw captureError('precondition', 'recorder_active', 'A recording is active on this session; stop it first: `capture motion rec --stop`. Reset never rebinds a live recorder.');
+        if (fresh.activeRecId) await updateSessionState(session.dir, { activeRecId: null });
         const port = fresh.port ?? parsed.port ?? (await deps.detectCdpPort());
         const tab = await openTabOrThrow(port, url);
         await boundedLoadWait(tab);

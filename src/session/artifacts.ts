@@ -214,6 +214,57 @@ export function readPrivateFile(filePath: string): Buffer { return pinnedParent(
 export function openPrivateAppendFd(filePath: string): number {
   return pinnedParent(filePath, name => openRegular(name, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT, true));
 }
+
+/** A streamed artifact payload stays invisible at `<name>.part` until this
+ * writer fsyncs and atomically publishes it as `<name>`. */
+export interface PrivateChunkWriter {
+  write(data: string | Buffer): void;
+  commit(): number;
+  discard(): void;
+}
+
+export function openPrivateChunkWriter(filePath: string): PrivateChunkWriter {
+  const target = assertUnderCaptureRoot(filePath);
+  const partial = `${target}.part`;
+  const fd = openPrivateAppendFd(partial);
+  let closed = false;
+  let finished = false;
+  let bytes = 0;
+  const close = (): void => {
+    if (closed) return;
+    fs.fsyncSync(fd);
+    closeDescriptor(fd, 'artifact-temp-close');
+    closed = true;
+  };
+  return {
+    write(data) {
+      if (finished) throw new Error('chunk writer is already finalized');
+      const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      writeAll(fd, buffer);
+      bytes += buffer.length;
+    },
+    commit() {
+      if (finished) return bytes;
+      close();
+      pinnedParent(target, name => {
+        const partName = `${name}.part`;
+        const part = fs.lstatSync(partName);
+        if (!part.isFile()) throw new Error(`chunk artifact is not a regular file: ${partName}`);
+        try { if (fs.lstatSync(name).isSymbolicLink()) throw new Error(`refusing to replace symlinked private artifact: ${name}`); }
+        catch (error) { if (!isMissing(error)) throw error; }
+        fs.renameSync(partName, name);
+      });
+      finished = true;
+      return bytes;
+    },
+    discard() {
+      if (finished) return;
+      try { close(); } catch { if (!closed) { try { fs.closeSync(fd); } catch {} closed = true; } }
+      try { unlinkPrivateFile(partial); } catch (error) { if (!isMissing(error)) throw error; }
+      finished = true;
+    },
+  };
+}
 export function appendPrivateFile(filePath: string, data: string | Buffer): void { pinnedParent(filePath, name => { const fd = openRegular(name, fs.constants.O_WRONLY | fs.constants.O_APPEND); let primary: unknown; try { writeAll(fd, data); syscall('artifact-temp-fsync', () => fs.fsyncSync(fd)); } catch (error) { primary = error; } try { closeDescriptor(fd, 'artifact-temp-close'); } catch (closeError) { if (primary) combineFailure(primary, closeError, 'private artifact append failed'); throw closeError; } if (primary) throw primary; }); }
 function cleanupOwnedFile(name: string, expected?: Identity): void {
   if (!expected) return;

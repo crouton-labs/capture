@@ -21,7 +21,7 @@
  */
 import { connectForCommand, withPageAction, type SettleFacts } from '../../connection.js';
 import { EventBroker } from '../../bridge/server.js';
-import { isRecorderHeldClient, type RecorderHeldClient } from '../../recorder-client.js';
+import { isMotionHeldClient, type MotionHeldClient } from '../../host/held-client.js';
 import { type CDPClient } from '../../client.js';
 import { type ParsedArgs } from '../../types.js';
 import { CaptureError, captureError, invalidInput } from '../../../errors.js';
@@ -96,7 +96,7 @@ interface NavCore {
  * target returns no loaderId — recover with exactly one dest→about:blank→dest
  * bounce, bundling the wait only on the final re-navigate.
  */
-async function navigateViaRecorder(client: RecorderHeldClient, url: string): Promise<NavCore> {
+async function navigateViaRecorder(client: MotionHeldClient, url: string): Promise<NavCore> {
   const first = await client.dispatch('Page.navigate', { url }, LOAD_EVENT_NAME, timing.innerTimeoutMs);
   const loaderId = (first.result as { loaderId?: string } | undefined)?.loaderId;
   if (loaderId) {
@@ -276,12 +276,12 @@ export async function cmdPageNavigate(parsed: ParsedArgs, _args: string[]): Prom
     { ...parsed, command: 'navigate' },
     { settleMs: settle },
     async (client, _tab) => {
-      const routed = isRecorderHeldClient(client);
+      const routed = isMotionHeldClient(client);
       // Holder for the direct path's currently-armed load wait, so an
       // outer-deadline abandonment can cancel it (clearing its inner timer).
       const armed = { cancel: () => {} };
       const work = routed
-        ? navigateViaRecorder(client as unknown as RecorderHeldClient, url)
+        ? navigateViaRecorder(client as unknown as MotionHeldClient, url)
         : navigateDirect(client, url, armed);
       let raced: Awaited<ReturnType<typeof raceNavDeadline>>;
       try {

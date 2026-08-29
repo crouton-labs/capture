@@ -55,10 +55,6 @@ test('the cdp barrel namespace lacks the three stale exports and keeps the live 
     'getAccessibilityTree',
     'navigateAndWait', // tab open's load-wait helper survives in record.ts
     'ConsoleRecorder',
-    'acquireTabLock',
-    'isTabLocked',
-    'releaseTabLock',
-    'withTabLock',
     'cdpMain',
   ]) {
     assert.equal(typeof (mod as Record<string, unknown>)[live], 'function', `barrel must keep exporting ${live}`);
@@ -89,7 +85,7 @@ test('createHarRecording is confined to har-manager.ts plus the session-start co
 test('the sole live HAR lane — session manager + internal streaming recorder — is retained', () => {
   assert.equal(fs.existsSync(path.join(SRC, 'har-manager.ts')), true, 'src/har-manager.ts must survive');
   assert.equal(fs.existsSync(path.join(SRC, 'cdp', 'har-recorder.ts')), true, 'src/cdp/har-recorder.ts must survive');
-  // HARRecorder stays a direct internal import of the recorder bridge, never a public barrel export.
-  const bridge = fs.readFileSync(path.join(SRC, 'cdp', 'recorder-bridge.ts'), 'utf-8');
-  assert.match(bridge, /import \{ HARRecorder \} from '\.\/har-recorder\.js'/);
+  // HARRecorder stays internal to the collector host, never a public barrel export.
+  const motionCollector = fs.readFileSync(path.join(SRC, 'cdp', 'host', 'collectors', 'motion.ts'), 'utf-8');
+  assert.match(motionCollector, /import \{ HARRecorder \} from '\.\.\/\.\.\/har-recorder\.js'/);
 });

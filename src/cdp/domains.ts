@@ -29,11 +29,11 @@ export async function enableDomainsForSnap(client: CDPClient): Promise<void> {
 }
 
 /**
- * Enables the CDP domains the motion recorder bridge needs: frame/navigation metadata and
+ * Enables the CDP domains the motion collector needs: frame/navigation metadata and
  * `Page.startScreencast` (Page), element geometry for rect/selector resolution (DOM), script
  * execution for the injected Mutation/Resize/Performance observers (Runtime), request/response
  * timing for `motion response` (Network), and playback-rate control for the animation inventory
- * (Animation). `Tracing.start` is configured with its own category set by the recorder bridge
+ * (Animation). `Tracing.start` is configured with its own category set by the motion collector
  * (U13) and is not a plain `.enable` call, so it is not included here.
  */
 export async function enableDomainsForMotionRec(client: CDPClient): Promise<void> {

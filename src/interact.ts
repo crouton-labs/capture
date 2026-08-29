@@ -37,14 +37,14 @@ import { parseSelectorInput, type SelectorInputKind } from './output/selector.js
 
 /**
  * The minimal CDP surface this module drives. `CDPClient` and
- * `RecorderHeldClient` satisfy it structurally; `motion rec --do` adapts
+ * `MotionHeldClient` satisfy it structurally; `motion rec --do` adapts
  * `RecorderSession.handleCdp` onto it.
  */
 export interface LiveClient {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
   /**
    * Optional marked dispatch — transports that record labeled input
-   * landmarks (the recorder bridge's `mark` mechanism) expose it so a
+   * landmarks (the motion collector's `mark` mechanism) expose it so a
    * mutating call that is not auto-markable (`Runtime.callFunctionOn` in
    * {@link scrollResolved}) can carry its landmark. When absent, a marked
    * call degrades to a plain `send` (nothing is recording landmarks).
@@ -53,7 +53,7 @@ export interface LiveClient {
   /**
    * Optional recorder hook — suppresses the landmark on the next focus
    * click's initiating edge so a routed `type --into` lands one landmark on
-   * its actual text insertion (see `RecorderHeldClient`).
+   * its actual text insertion (see `MotionHeldClient`).
    */
   suppressNextFocusClickMark?(): void;
 }

@@ -12,8 +12,8 @@ import {
 } from '../har-manager.js';
 import { getActiveSession, updateActiveSession, type ActiveSessionState } from '../session-context.js';
 import { withSessionScopeLifecycle } from '../session/coordinator.js';
-import { RecorderHeldClient, isRecorderHeldClient } from './recorder-client.js';
-import { recDirFor, readRecorderJson } from './motion/recorder.js';
+import { MotionHeldClient, isMotionHeldClient } from './host/held-client.js';
+import { scanCollectorHost } from './host/handle.js';
 import { captureError } from '../errors.js';
 
 function getPortFromWebSocketDebuggerUrl(url?: string): number | null {
@@ -41,12 +41,12 @@ export interface ConnectionSeams {
   resolveTab: (parsed: ParsedArgs) => Promise<{ port: number; tab: CDPTarget } | null>;
   createClient: (wsUrl: string) => CDPClient;
   appendHar: typeof appendToHar;
-  /** Recorder-routed actions only: the recorder bridge's `har-flush` health
-   * barrier (`RecorderHeldClient.flushHar()`) — resolves once every HAR
+  /** Motion-routed actions only: the collector host's `har-flush` health
+   * barrier (`MotionHeldClient.flushHar()`) — resolves once every HAR
    * entry/body/append the recorder's streaming collector had completed at
    * call time is durably in the owning session's live HAR; throws on a
    * latched fatal store failure. Never invoked for a non-recorder action. */
-  flushRecorderHar: (client: RecorderHeldClient) => Promise<void>;
+  flushRecorderHar: (client: MotionHeldClient) => Promise<void>;
   /** Monotonic clock (ms) — measured settle facts derive from it, never from wall time. */
   now: () => number;
   sleep: (ms: number) => Promise<void>;
@@ -150,51 +150,31 @@ function connectToActiveRecorder(
   parsed: ParsedArgs,
 ): { client: CDPClient; tab: CDPTarget } {
   const recId = session.activeRecId!;
-  const recDir = recDirFor(session.dir, recId);
-  const rj = readRecorderJson(recDir);
-
-  if (!rj) {
+  const scanned = scanCollectorHost(session.dir);
+  const collector = scanned.handle?.collectors.find(value => value.id === recId && value.kind === 'motion');
+  if (scanned.classification !== 'live' || !scanned.handle || !collector) {
     throw captureError(
       'precondition',
       'recorder_unavailable',
-      `The active session claims recording "${recId}" but its live-recorder handle (recorder.json) is missing — it was already finalized or reaped. Recover with: capture motion rec --stop.`,
-    );
-  }
-  if (
-    typeof rj.socketPath !== 'string' || rj.socketPath.length === 0
-    || typeof rj.targetId !== 'string' || rj.targetId.length === 0
-    || typeof rj.nonce !== 'string' || !/^[0-9a-f]{64}$/.test(rj.nonce)
-  ) {
-    throw captureError(
-      'precondition',
-      'recorder_unavailable',
-      `The active session's recorder handle for "${recId}" is malformed (missing or invalid socketPath/targetId/nonce). Recover with: capture motion rec --stop.`,
-    );
-  }
-  if (rj.state !== 'recording') {
-    throw captureError(
-      'precondition',
-      'recorder_unavailable',
-      `The active session's recorder "${recId}" is not currently recording (state: ${rj.state}) — it is finalized or mid-teardown. Recover with: capture motion rec --stop.`,
+      `The active session claims recording "${recId}" but its live collector-host handle is unavailable. Recover with: capture motion rec --stop.`,
     );
   }
 
   const actionLabel = deriveActionLabel(parsed);
-  const client = new RecorderHeldClient({ socketPath: rj.socketPath, nonce: rj.nonce, actionLabel });
+  const client = new MotionHeldClient({ socketPath: scanned.handle.socketPath, nonce: scanned.handle.nonce, actionLabel });
   const tab: CDPTarget = {
-    id: rj.targetId,
+    id: scanned.handle.targetId,
     title: '',
-    url: rj.url ?? '',
+    url: session.url ?? '',
     type: 'page',
     webSocketDebuggerUrl: undefined,
   };
 
-  console.error(`Routing via active recorder ${recId} (recorder-held tab connection, action "${actionLabel}")`);
+  console.error(`Routing via active motion collector ${recId} (collector-host tab connection, action "${actionLabel}")`);
 
-  // Documented cast — RecorderHeldClient only ever needs to satisfy the
+  // Documented cast — MotionHeldClient only ever needs to satisfy the
   // structural send/on/onDisconnect/close surface every command leaf calls;
-  // see recorder-client.ts's own header for why this mirrors
-  // recorder-bridge.ts's `asCDPClient()`.
+  // see held-client.ts and host/collectors/motion.ts's `asCDPClient()`.
   return { client: client as unknown as CDPClient, tab };
 }
 
@@ -204,8 +184,8 @@ export async function connectForCommand(
   const activeSession = seams.getActiveSession();
   if (activeSession && shouldRouteToRecorder(activeSession, parsed)) {
     const routed = connectToActiveRecorder(activeSession, parsed);
-    // The recorder bridge owns its own persistent target connection, so
-    // the persisted offline/online state must be reissued here too — the
+    // The collector host owns its own persistent target connection, so the
+    // persisted offline/online state must be reissued here too — the
     // ephemeral connection that ran `network offline` has since closed.
     await applyActiveSessionNetworkConditions(routed.client, activeSession, routed.tab.id);
     return routed;
@@ -285,7 +265,7 @@ interface Collectors {
 }
 
 async function startCollectors(parsed: ParsedArgs, client: CDPClient): Promise<Collectors> {
-  const routed = isRecorderHeldClient(client);
+  const routed = isMotionHeldClient(client);
 
   let consoleRecorder: ConsoleRecorder | undefined;
   if (!routed) {
@@ -433,7 +413,7 @@ export async function withPageAction<T>(
     // this request.
     if (collectors.routed) {
       try {
-        await seams.flushRecorderHar(client as unknown as RecorderHeldClient);
+        await seams.flushRecorderHar(client as unknown as MotionHeldClient);
       } catch (err) {
         throw captureError(
           'artifact',

@@ -13,7 +13,7 @@ import { collectAnimation } from '../src/cdp/measure/collectors/animation.js';
 // Test harness — a recording SnapshotWriter (no real fs) plus a stub
 // CDPClient per collector, following the pattern established by
 // `test/snapshot-settledness.test.ts` (Runtime.evaluate pattern-matched by
-// marker-comment `.includes(...)`) and `test/recorder-bridge.test.ts`
+// marker-comment `.includes(...)`) and `test/motion-collector.test.ts`
 // (EventEmitter-based stub for CDP domain events, `fire()`/synchronous
 // emit from inside `send()`).
 // ============================================================================

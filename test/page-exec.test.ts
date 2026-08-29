@@ -499,7 +499,7 @@ test('page exec: a primary+disable dual failure reports exec_failed preserving b
 test('page exec: a held recorder connection with no active session throws recorder_session_missing before any CDP call', async () => {
   const client = stubClient(execHandlers({ result: { value: 1 } }));
   const deps = installDeps(client); // no session → getActiveSession() returns null
-  const restore = __setPageExecDepsForTest({ isRecorderHeldClient: () => true });
+  const restore = __setPageExecDepsForTest({ isMotionHeldClient: () => true });
   try {
     let thrown: unknown;
     await runCmd(async () => {
@@ -566,7 +566,7 @@ test('page exec: two held-recorder callers serialize the whole focus scope via t
       return { result, settle: { requestedMs: 0, waitedMs: 0, completed: true } };
     }) as never,
     getActiveSession: () => session,
-    isRecorderHeldClient: () => true,
+    isMotionHeldClient: () => true,
   });
 
   const fmt = () =>

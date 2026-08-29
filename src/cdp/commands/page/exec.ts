@@ -24,7 +24,7 @@ import { getActiveSession } from '../../../session-context.js';
 import { createOneshotSession } from '../../../session/commands.js';
 import { writePrivateFile } from '../../../session/artifacts.js';
 import { withScopeSerialization } from '../../scope-lock.js';
-import { isRecorderHeldClient } from '../../recorder-client.js';
+import { isMotionHeldClient } from '../../host/held-client.js';
 import { hasImports, bundleExec } from '../../../vault/bundle.js';
 import {
   capped,
@@ -66,10 +66,10 @@ export interface PageExecDeps {
   withPageAction: typeof withPageAction;
   getActiveSession: typeof getActiveSession;
   createOneshotSession: typeof createOneshotSession;
-  isRecorderHeldClient: typeof isRecorderHeldClient;
+  isMotionHeldClient: typeof isMotionHeldClient;
 }
 
-let deps: PageExecDeps = { withPageAction, getActiveSession, createOneshotSession, isRecorderHeldClient };
+let deps: PageExecDeps = { withPageAction, getActiveSession, createOneshotSession, isMotionHeldClient };
 
 /** Swap the connection/session seams for the CDP-stub tests. */
 export function __setPageExecDepsForTest(overrides: Partial<PageExecDeps>): () => void {
@@ -181,7 +181,7 @@ async function evaluateWithFocusEmulation(client: ExecClient, expression: string
     'focus',
     'page exec',
     () => focusScopedEvaluate(client, expression),
-    { isRecorderHeldClient: deps.isRecorderHeldClient, getActiveSession: deps.getActiveSession },
+    { isMotionHeldClient: deps.isMotionHeldClient, getActiveSession: deps.getActiveSession },
   );
 }
 

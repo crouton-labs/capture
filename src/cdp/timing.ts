@@ -2,7 +2,7 @@
  * Shared timing helpers for `measure`/`motion`. See the design's "Recorder timing model":
  * the authoritative clock for every reported timestamp is `performance.now()`, relative to
  * the recorder-armed marker (`t=0`). Screencast frames carry a wall-clock `metadata.timestamp`
- * and Tracing events carry a monotonic `ts` in their own domains; the recorder bridge (U13/U14)
+ * and Tracing events carry a monotonic `ts` in their own domains; the motion collector (U13/U14)
  * converts both into the `performance.now()` domain by baseline-offset subtraction using the
  * baseline this module reads.
  */
@@ -22,7 +22,7 @@ export interface BracketedTiming<T> {
  * context. Used to attribute a discrete action (e.g. an `Input.dispatch*` call) to a window in
  * the recorder's authoritative `performance.now()` clock domain. The action's landmark label
  * (`mark`, when the caller supplied one) is recorded host-side only — appended straight to
- * `events.jsonl` alongside these two bracket numbers (see `../recorder-bridge.ts`'s `handleCdp`)
+ * `events.jsonl` alongside these two bracket numbers (see `host/collectors/motion.ts`'s `handleCdp`)
  * — never written into the page's own PerformanceTimeline via `performance.mark()`: that page-
  * visible side channel was removed (a predictable, page-observable channel the injected
  * PerformanceObserver would otherwise re-observe as its own event, in violation of the
@@ -59,10 +59,10 @@ export interface TraceClockBaseline {
 
 /**
  * Reads one synchronized (`performance.now()`, wall-clock) pair from the page in a single
- * round trip. The recorder bridge reads this once when it arms (`rec-start`) as the anchor half
- * of the three-way `markers.json` baseline; the other two members — the first screencast frame's
+ * round trip. The motion collector reads this once when it arms as the anchor half of the
+ * three-way `markers.json` baseline; the other two members — the first screencast frame's
  * `metadata.timestamp` (wall-clock seconds) and the first Tracing batch's earliest event `ts`
- * (trace-clock microseconds) — are captured separately by the recorder bridge itself as those
+ * (trace-clock microseconds) — are captured separately by the motion collector as those
  * events arrive (not by this function, since neither exists yet at arm time). Post-processing
  * converts frame-time and trace-time into the `performance.now()` domain by subtracting this
  * baseline's wall-clock offset.

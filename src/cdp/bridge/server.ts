@@ -218,17 +218,18 @@ export async function runBridgeServer(socketPath: string, port?: number): Promis
 export function prepareSocketPath(socketPath: string): void {
   fs.mkdirSync(path.dirname(socketPath), { recursive: true });
   try {
+    if (!fs.lstatSync(socketPath).isSocket()) throw new Error(`socket path is not a Unix socket: ${socketPath}`);
     fs.unlinkSync(socketPath);
-  } catch {
-    // No stale socket to remove.
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
 }
 
 /**
  * Binds a Unix-domain `net.Server` at `socketPath` that frames each
  * connection's input as newline-delimited JSON, invoking `handleLine` once
- * per complete line. This is the wire framing every bridge mode (plain
- * browser-level bridge, recorder bridge) shares — "one request per
+ * per complete line. This is the wire framing both bridge modes (plain
+ * browser-level bridge and collector host) share — "one request per
  * connection, one response, then the socket closes" is a convention the
  * caller's `handleLine` implements by writing exactly one response per
  * line and letting the client end the connection; the server itself is
@@ -269,7 +270,7 @@ export function closeNdjsonSocket(server: net.Server, socketPath: string): void 
     // Already closed.
   }
   try {
-    fs.unlinkSync(socketPath);
+    if (fs.lstatSync(socketPath).isSocket()) fs.unlinkSync(socketPath);
   } catch {
     // Already gone.
   }

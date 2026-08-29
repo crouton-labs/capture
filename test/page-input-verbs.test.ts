@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import { cmdPageClick, __setPageInputDepsForTest } from '../src/cdp/commands/page/click.js';
 import { cmdPageType } from '../src/cdp/commands/page/type.js';
 import { cmdPageScroll } from '../src/cdp/commands/page/scroll.js';
-import { RecorderHeldClient } from '../src/cdp/recorder-client.js';
+import { MotionHeldClient } from '../src/cdp/host/held-client.js';
 import type { ParsedArgs, CDPTarget } from '../src/cdp/types.js';
 import type { ActiveSessionState } from '../src/session-context.js';
 
@@ -575,7 +575,7 @@ test('page scroll: the one mutating call carries the landmark when the transport
 
 // ---------------------------------------------------------------------------
 // Recorder routing — the landmark fires for all three verbs through a real
-// RecorderHeldClient (scroll needs the sendMarked lane added in this unit).
+// MotionHeldClient (scroll needs the sendMarked lane added in this unit).
 // ---------------------------------------------------------------------------
 
 function startFakeRecorderServer(socketPath: string): {
@@ -607,7 +607,7 @@ test('recorder routing: click, type, and scroll each land exactly one labeled la
   fs.rmSync(socketPath, { force: true });
   const server = startFakeRecorderServer(socketPath);
   try {
-    const held = new RecorderHeldClient({ socketPath, actionLabel: 'page:target' });
+    const held = new MotionHeldClient({ socketPath, nonce: 'a'.repeat(64), actionLabel: 'page:target' });
 
     // click — the press edge auto-marks; the release does not.
     await held.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1, y: 1 });
@@ -618,7 +618,7 @@ test('recorder routing: click, type, and scroll each land exactly one labeled la
     // scroll — the explicit marked lane this unit adds.
     await held.sendMarked('Runtime.callFunctionOn', { objectId: 'obj-1' }, 'scroll:.feed,to=bottom');
 
-    const marks = server.seen.map((r) => [r.method, r.mark]);
+    const marks = server.seen.map((r) => [r.method, r.annotation]);
     assert.deepEqual(marks, [
       ['Input.dispatchMouseEvent', 'page:target'],
       ['Input.dispatchMouseEvent', undefined],

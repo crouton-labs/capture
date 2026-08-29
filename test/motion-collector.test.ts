@@ -2,26 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
-import * as net from 'node:net';
-import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
-import { listenNdjsonSocket, closeNdjsonSocket } from '../src/cdp/bridge/server.js';
-import { recorderSocketPath } from '../src/cdp/bridge/spawn.js';
-import {
-  RecorderSession,
-  handleRecorderRequest,
-  joinTerminalStopFailure,
-  OBSERVER_INSTALLED_SENTINEL,
-  type RecorderCdpClient,
-} from '../src/cdp/recorder-bridge.js';
-import { type RecorderRequest, type RecorderResponse } from '../src/cdp/bridge/protocol.js';
+import { RecorderSession, OBSERVER_INSTALLED_SENTINEL, type RecorderCdpClient } from '../src/cdp/host/collectors/motion.js';
 
-// U11b: `RecorderRequest` requires a control-socket admission nonce. These tests
-// exercise `handleRecorderRequest` / `RecorderSession.handleCdp` directly (the
-// nonce gate lives upstream in `runRecorderBridge`'s socket handleLine), so any
-// well-formed 64-hex value satisfies the type contract.
 const TEST_NONCE = 'ab'.repeat(32);
 
 // A 1x1 transparent PNG, base64-encoded — stands in for a screencast frame's `data`.
@@ -123,7 +108,7 @@ class StubCdpClient extends EventEmitter implements RecorderCdpClient {
 
 function freshRecDir(label: string): string {
   fs.mkdirSync(CAPTURE_ROOT, { recursive: true });
-  return path.join(CAPTURE_ROOT, `recorder-bridge-test-${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  return path.join(CAPTURE_ROOT, `motion-collector-test-${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
 }
 
 function readNdjson(filePath: string): unknown[] {
@@ -332,25 +317,6 @@ test('Tracing.dataCollected batches and injected-observer bindingCalled entries 
   }
 });
 
-test('the terminal rec-stop settle joins a stop failure with a drain error — neither replaces the other; a drain-only failure passes through unchanged', () => {
-  const failedStop = { reqId: 7, ok: false as const, type: 'rec-stop' as const, error: 'tracing teardown exploded' };
-  const joined = joinTerminalStopFailure(failedStop, new Error('HAR sink append rejected'));
-  assert.ok(joined.includes('tracing teardown exploded'), joined);
-  assert.ok(joined.includes('HAR sink append rejected'), joined);
-  assert.notEqual(joined, 'HAR sink append rejected', 'the stop failure must not be replaced wholesale by the drain error');
-
-  const okStop = {
-    reqId: 8,
-    ok: true as const,
-    type: 'rec-stop' as const,
-    frameCount: 0,
-    eventCount: 0,
-    durationMs: 1,
-    markers: { performanceNowMs: 0, wallClockMs: 0, firstScreencastTimestampSec: null, firstTraceEventTsUs: null, baselinesPending: true },
-  };
-  assert.equal(joinTerminalStopFailure(okStop, new Error('drain only')), 'drain only');
-});
-
 test('rec-stop stops screencast/tracing, tears down observers, and returns frame/event counts', async () => {
   const recDir = freshRecDir('stop');
   const client = new StubCdpClient();
@@ -376,7 +342,7 @@ test('rec-stop stops screencast/tracing, tears down observers, and returns frame
     assert.ok(methods.includes('Runtime.removeBinding'));
 
     // Graceful: stopping again (or starting again) is a clean error, not a throw/crash.
-    await assert.rejects(() => session.stop(), /cannot stop/i);
+    await assert.rejects(() => session.stop(), /cannot (stop|drain)/i);
     await assert.rejects(() => session.start(), /cannot start/i);
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
@@ -405,153 +371,6 @@ test('stop is best-effort against a dying tab \u2014 CDP calls throwing does not
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }
-});
-
-test('handleRecorderRequest dispatches rec-start/cdp/rec-stop with matching reqId + type, and turns a bad rec-stop into an ok:false response', async () => {
-  const recDir = freshRecDir('dispatch');
-  const client = new StubCdpClient();
-  const session = new RecorderSession({ client, recDir });
-
-  try {
-    const badStop = await handleRecorderRequest(session, { reqId: 9, type: 'rec-stop', nonce: TEST_NONCE });
-    assert.equal(badStop.ok, false);
-    assert.equal(badStop.type, 'rec-stop');
-    assert.equal(badStop.reqId, 9);
-    assert.match((badStop as { error: string }).error, /cannot stop/i);
-
-    const started = await handleRecorderRequest(session, { reqId: 1, type: 'rec-start', nonce: TEST_NONCE });
-    assert.equal(started.ok, true);
-    assert.equal(started.type, 'rec-start');
-    assert.equal(started.reqId, 1);
-    assert.ok('markers' in started && typeof started.markers.performanceNowMs === 'number');
-
-    const cdp = await handleRecorderRequest(session, {
-      reqId: 2,
-      type: 'cdp',
-      nonce: TEST_NONCE,
-      method: 'DOM.enable',
-    });
-    assert.equal(cdp.ok, true);
-    assert.equal(cdp.type, 'cdp');
-    assert.equal(cdp.reqId, 2);
-
-    const stopped = await handleRecorderRequest(session, { reqId: 3, type: 'rec-stop', nonce: TEST_NONCE });
-    assert.equal(stopped.ok, true);
-    assert.equal(stopped.type, 'rec-stop');
-    assert.ok('frameCount' in stopped);
-  } finally {
-    fs.rmSync(recDir, { recursive: true, force: true });
-  }
-});
-
-test('the recorder speaks the same one-request-per-connection NDJSON wire shape over a real unix socket', async () => {
-  const recDir = freshRecDir('wire');
-  const client = new StubCdpClient();
-  const session = new RecorderSession({ client, recDir });
-  // Unix socket paths are capped (~104 chars on macOS) — bind under the
-  // system tmp root directly rather than nesting under the (longer) recDir,
-  // which is how production code (`recorderSocketPath`) would still be fine
-  // for its own, shorter, recDir names.
-  const socketPath = path.join(os.tmpdir(), `rb-${process.pid}-${Math.random().toString(36).slice(2, 8)}.sock`);
-
-  async function handleLine(line: string, socket: net.Socket): Promise<void> {
-    const req = JSON.parse(line) as RecorderRequest;
-    const resp = await handleRecorderRequest(session, req);
-    socket.write(JSON.stringify(resp) + '\n');
-  }
-
-  const server = await listenNdjsonSocket(socketPath, handleLine);
-
-  function sendOverSocket(req: RecorderRequest): Promise<RecorderResponse> {
-    return new Promise((resolve, reject) => {
-      const socket = net.createConnection(socketPath);
-      let buffer = '';
-      socket.on('connect', () => socket.write(JSON.stringify(req) + '\n'));
-      socket.on('data', (chunk) => {
-        buffer += chunk.toString('utf-8');
-        const idx = buffer.indexOf('\n');
-        if (idx < 0) return;
-        socket.end();
-        resolve(JSON.parse(buffer.slice(0, idx)) as RecorderResponse);
-      });
-      socket.on('error', reject);
-    });
-  }
-
-  try {
-    const startResp = await sendOverSocket({ reqId: 1, type: 'rec-start', nonce: TEST_NONCE });
-    assert.equal(startResp.ok, true);
-    assert.equal(startResp.type, 'rec-start');
-    assert.equal(startResp.reqId, 1);
-
-    const cdpResp = await sendOverSocket({
-      reqId: 2,
-      type: 'cdp',
-      nonce: TEST_NONCE,
-      method: 'Input.dispatchMouseEvent',
-      mark: 'input_click',
-    });
-    assert.equal(cdpResp.ok, true);
-    assert.equal(cdpResp.type, 'cdp');
-    assert.equal(cdpResp.reqId, 2);
-
-    const stopResp = await sendOverSocket({ reqId: 3, type: 'rec-stop', nonce: TEST_NONCE });
-    assert.equal(stopResp.ok, true);
-    assert.equal(stopResp.type, 'rec-stop');
-    assert.equal(stopResp.reqId, 3);
-    assert.ok('eventCount' in stopResp && stopResp.eventCount === 1);
-  } finally {
-    closeNdjsonSocket(server, socketPath);
-    fs.rmSync(recDir, { recursive: true, force: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Socket path length: `recorderSocketPath()` itself, not a hand-rolled short
-// path under `os.tmpdir()`, must produce a bindable socket even for a
-// realistic, deep session recording directory.
-// ---------------------------------------------------------------------------
-
-test('recorderSocketPath() stays short and bindable for a realistic, deep session rec path', async () => {
-  // Mirrors the real production shape (`{CAPTURE_ROOT}/{session}/motion/recs/{recId}`) with
-  // generously long session/recId segments \u2014 long enough that naively nesting the socket
-  // inside this directory would risk exceeding the ~104-byte macOS AF_UNIX pathname limit
-  // once combined with a real (often long) `os.tmpdir()` prefix, which is exactly why the
-  // socket path below is derived independently of recDir.
-  const session = `cap-${'a'.repeat(24)}`;
-  const recId = `rec-${'b'.repeat(24)}`;
-  const recDir = path.join(CAPTURE_ROOT, session, 'motion', 'recs', recId);
-  fs.mkdirSync(recDir, { recursive: true });
-
-  const socketPath = recorderSocketPath(recDir);
-  try {
-    assert.ok(
-      Buffer.byteLength(socketPath, 'utf-8') <= 100,
-      `socket path should stay well under the AF_UNIX length limit, got ${socketPath.length} bytes: ${socketPath}`,
-    );
-    // The socket must NOT be nested inside recDir \u2014 recDir's own length/depth must not affect
-    // the socket path (that's the whole point of separating them).
-    assert.ok(!socketPath.startsWith(recDir), 'socket path must not be nested under recDir');
-
-    async function handleLine(line: string, socket: net.Socket): Promise<void> {
-      socket.write(line);
-    }
-    const server = await listenNdjsonSocket(socketPath, handleLine);
-    try {
-      assert.equal(fs.statSync(path.dirname(socketPath)).mode & 0o777, 0o700);
-    } finally {
-      closeNdjsonSocket(server, socketPath);
-    }
-  } finally {
-    fs.rmSync(recDir, { recursive: true, force: true });
-  }
-});
-
-test('recorderSocketPath() is deterministic per recDir and distinct across different recDirs', () => {
-  const recDirA = path.join(CAPTURE_ROOT, 'cap-aaa', 'motion', 'recs', 'rec-aaa');
-  const recDirB = path.join(CAPTURE_ROOT, 'cap-bbb', 'motion', 'recs', 'rec-bbb');
-  assert.equal(recorderSocketPath(recDirA), recorderSocketPath(recDirA));
-  assert.notEqual(recorderSocketPath(recDirA), recorderSocketPath(recDirB));
 });
 
 // ---------------------------------------------------------------------------
@@ -709,7 +528,7 @@ test('the binding channel rate-caps events per second, dropping the excess and s
   const client = new StubCdpClient();
   const session = new RecorderSession({ client, recDir });
 
-  // `checkBindingRateLimit()` (src/cdp/recorder-bridge.ts) gates on real
+  // `checkBindingRateLimit()` (src/cdp/host/collectors/motion.ts) gates on real
   // wall-clock `Date.now()`, and each accepted binding synchronously appends
   // to disk (`appendNdjsonPrivate` → a sync file append) — under system load
   // (e.g. this whole suite running in parallel) the 400-call loop below can
@@ -1083,7 +902,7 @@ test('handleCdp on an idle (unstarted) session proceeds to protocol/wait handlin
   }
 });
 
-test('recorder bridge arms its unscoped event wait before synchronous send and preserves method result separately', async () => {
+test('motion collector arms its unscoped event wait before synchronous send and preserves method result separately', async () => {
   const recDir = freshRecDir('handlecdp-arm-before-send');
   const client = new StubCdpClient();
   const originalSend = client.send.bind(client);
@@ -1118,7 +937,7 @@ test('recorder bridge arms its unscoped event wait before synchronous send and p
   }
 });
 
-test('recorder bridge preserves a delayed method failure after the event deadline without an unhandled rejection', async () => {
+test('motion collector preserves a delayed method failure after the event deadline without an unhandled rejection', async () => {
   const recDir = freshRecDir('handlecdp-delayed-send-failure');
   const client = new StubCdpClient();
   const originalSend = client.send.bind(client);
@@ -1148,7 +967,7 @@ test('recorder bridge preserves a delayed method failure after the event deadlin
   }
 });
 
-test('marked recorder bridge preserves a delayed wrapper failure after the event deadline', async () => {
+test('marked motion collector preserves a delayed wrapper failure after the event deadline', async () => {
   const recDir = freshRecDir('handlecdp-delayed-marked-failure');
   const client = new StubCdpClient();
   const originalSend = client.send.bind(client);
@@ -1905,7 +1724,7 @@ test('a marked cdp request never evaluates performance.mark(...) into the page, 
 // and each rect-identity property walk releases every materialized remote handle.
 // ---------------------------------------------------------------------------
 
-test('the entire recorder bridge (observer script, rect/resize identity drains, teardown) runs scoped to a CDP isolated world, not the page main world', async () => {
+test('the entire motion collector (observer script, rect/resize identity drains, teardown) runs scoped to a CDP isolated world, not the page main world', async () => {
   const recDir = freshRecDir('i3-isolated-world');
   const client = new StubCdpClient();
   const originalSend = client.send.bind(client);

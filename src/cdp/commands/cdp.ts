@@ -24,7 +24,7 @@ import { connectForCommand } from '../connection.js';
 import { getBrowserClient, findTabById } from '../targets.js';
 import { detectCdpPort } from '../detect.js';
 import { sendBridgeRequest } from '../bridge/client.js';
-import { isRecorderHeldClient } from '../recorder-client.js';
+import { isMotionHeldClient } from '../host/held-client.js';
 import { type ParsedArgs } from '../types.js';
 import {
   capped,
@@ -70,7 +70,7 @@ Effects:
 
 /**
  * The minimal client surface both scopes drive. Satisfied structurally by
- * `CDPClient`, `RecorderHeldClient`, and test stubs \u2014 the injectable
+ * `CDPClient`, `MotionHeldClient`, and test stubs \u2014 the injectable
  * `connect` parameter on `runPageScope` exists so tests can exercise the
  * command wiring against a stub without a live browser.
  */
@@ -311,7 +311,7 @@ export async function runBrowserScope(
 /**
  * Exported for testing (`test/recorder-navigate-waitevent.test.ts`,
  * `test/cdp-command.test.ts`): the recorder-held branch below
- * (`isRecorderHeldClient(client)`) is the actual command wiring
+ * (`isMotionHeldClient(client)`) is the actual command wiring
  * `capture cdp --wait-event` runs under an active recording, and the
  * injectable `connect` lets `test/cdp-command.test.ts` drive the non-held
  * branch against a stub client.
@@ -327,17 +327,17 @@ export async function runPageScope(
   try {
     let result: unknown;
     let event: unknown;
-    if (isRecorderHeldClient(client)) {
-      // The recorder-held adapter's `.on()` is a documented no-op (nothing
+    if (isMotionHeldClient(client)) {
+      // The motion-held adapter's `.on()` is a documented no-op (nothing
       // pushes unsolicited events back over its one-request-one-response
       // socket) — `waitForEventOnce` below would hang until its own timeout.
       // `.waitEvent()`/`.dispatch()` are the real event-wait surface for this
-      // adapter, routing the wait through the recorder bridge's own event
-      // broker. When both a method and a wait-event are requested,
-      // `.dispatch()` carries them in ONE request so the bridge arms the wait
-      // before dispatching the call — sending them as two separate requests
+      // adapter, routing the wait through the collector host's event broker.
+      // When both a method and a wait-event are requested, `.dispatch()`
+      // carries them in ONE request so the host arms the wait before
+      // dispatching the call — sending them as two separate requests
       // (`.send()` then `.waitEvent()`) risks the action firing the event
-      // before the wait-only request even reaches the bridge. This command has
+      // before the wait-only request even reaches the host. This command has
       // no fragment-nav-style multi-call logic and already throws on an
       // event-wait timeout, so one combined request preserves the complete
       // result contract (contrast `page/navigate.ts`'s multi-call

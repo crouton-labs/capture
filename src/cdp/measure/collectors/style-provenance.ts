@@ -38,7 +38,7 @@
 import { resolveAuthoredSourceLocation, type ResolvedSourceLocation } from '../../source-map.js';
 import { sanitizeString } from '../redaction.js';
 import type { CDPClient } from '../../client.js';
-import { isRecorderHeldClient } from '../../recorder-client.js';
+import { isMotionHeldClient } from '../../host/held-client.js';
 
 // ============================================================================
 // Output shape
@@ -600,7 +600,7 @@ export async function captureStyleSheetHeaders(
   const urls = new Map<string, string>();
   // A recorder-routed command cannot subscribe through its one-request socket;
   // ask the recorder's owning CDP connection to collect the same redelivery.
-  if (isRecorderHeldClient(client)) {
+  if (isMotionHeldClient(client)) {
     try {
       for (const header of await client.collectStyleSheetHeaders()) urls.set(header.styleSheetId, header.sourceURL);
       return { urls, stop: () => {}, available: true };

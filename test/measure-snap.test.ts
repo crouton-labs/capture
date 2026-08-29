@@ -7,7 +7,10 @@ import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
 import { CDPClient } from '../src/cdp/client.js';
-import { CAPTURE_ROOT, ensurePrivateDir, writeJsonPrivate } from '../src/session/artifacts.js';
+import { CAPTURE_ROOT, ensurePrivateDir, processPidBirthProvider, writeJsonPrivate } from '../src/session/artifacts.js';
+import { closeNdjsonSocket, listenNdjsonSocket } from '../src/cdp/bridge/server.js';
+import { collectorHostSocketPath } from '../src/cdp/bridge/spawn.js';
+import { collectorHostPath } from '../src/cdp/host/handle.js';
 import { clearActiveSession, setActiveSession } from '../src/session-context.js';
 import { resolveSnapRef } from '../src/output/artifact.js';
 import { withAppliedViewport } from '../src/cdp/commands/measure/snap.js';
@@ -383,23 +386,26 @@ test('viewport request preserves a foreign DPR2 override without allocating arti
   }
 });
 
-test('viewport request rejects a recorder-held target before it allocates a session snap', liveChromeOpts, async () => {
-  const sessionId = `cap-recorder-viewport-${Date.now().toString(36)}`;
+test('viewport request rejects a motion collector-held target before it allocates a session snap', liveChromeOpts, async () => {
+  const sessionId = `cap-motion-viewport-${Date.now().toString(36)}`;
   const sessionDir = path.join(CAPTURE_ROOT, sessionId);
   const recId = 'rec-live';
   const recDir = path.join(sessionDir, 'motion', 'recs', recId);
   cleanupRoots.add(sessionDir);
   ensurePrivateDir(recDir);
-  writeJsonPrivate(path.join(recDir, 'recorder.json'), {
-    recId,
+  const observed = processPidBirthProvider.read(process.pid);
+  assert.equal(observed.status, 'found');
+  const socketPath = collectorHostSocketPath(sessionDir);
+  const collectorHost = await listenNdjsonSocket(socketPath, () => {});
+  writeJsonPrivate(collectorHostPath(sessionDir), {
     pid: process.pid,
-    socketPath: path.join(recDir, 'recorder.sock'),
+    birth: observed.identity,
+    socketPath,
     nonce: 'a'.repeat(64),
     targetId,
-    url: pageUrl,
     startedAt: new Date().toISOString(),
-    state: 'recording',
-    markers: { performanceNowMs: 0, wallClockMs: 0, firstScreencastTimestampSec: null, firstTraceEventTsUs: null, baselinesPending: true },
+    collectors: [{ id: recId, kind: 'motion', dir: recDir, claims: ['screencast'], startedAt: new Date().toISOString() }],
+    reservations: [],
   });
   await setActiveSession({ sessionId, dir: sessionDir, harId: null, targetId, stepCount: 0, bridgeSocket: null, activeRecId: recId });
   try {
@@ -407,8 +413,9 @@ test('viewport request rejects a recorder-held target before it allocates a sess
     assert.equal(rejected.status, 1);
     const result = JSON.parse(rejected.stdout) as { attrs: { status: string } };
     assert.equal(result.attrs.status, 'viewport_unavailable');
-    assert.equal(fs.existsSync(path.join(sessionDir, 'measure', 'snaps')), false, 'a recorder-owned target must reject before session snap allocation');
+    assert.equal(fs.existsSync(path.join(sessionDir, 'measure', 'snaps')), false, 'a motion collector-owned target must reject before session snap allocation');
   } finally {
     clearActiveSession();
+    closeNdjsonSocket(collectorHost, socketPath);
   }
 });

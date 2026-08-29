@@ -43,7 +43,7 @@ type Scenario = 'stable' | 'churning' | 'freeze';
 
 /**
  * Stands in for `CDPClient` — no real Chrome, no real websocket. Follows
- * `test/recorder-bridge.test.ts`'s `StubCdpClient` pattern: `send` pattern-
+ * `test/motion-collector.test.ts`'s `StubCdpClient` pattern: `send` pattern-
  * matches on `Runtime.evaluate`'s `expression` string via `.includes(...)`
  * against `settle.ts`'s marker constants.
  */
@@ -224,7 +224,7 @@ class StubCdpClient {
  * `domains.ts`/`settle.ts`/`snapshot.ts` declare their client parameter as
  * the concrete `CDPClient` class (private-field members, so TS won't
  * structurally accept a plain stub there) — same seam
- * `recorder-bridge.test.ts`/`recorder-bridge.ts` uses (`asCDPClient`). Both
+ * `motion-collector.test.ts`/`host/collectors/motion.ts` uses (`asCDPClient`). Both
  * only ever call `.send()` on it.
  */
 function asClient(stub: StubCdpClient): CDPClient {

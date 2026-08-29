@@ -12,13 +12,13 @@ import { startComposedRecorder } from '../src/cdp/motion/recorder.js';
 import { cmdPageType } from '../src/cdp/commands/page/type.js';
 import { liveChromeOpts } from './fixtures/live-chrome.js';
 
-async function spawnTestRecorderBridge(socketPath: string, port: number, targetId: string, recDir: string, harId: string): Promise<{ socketPath: string; pid: number }> {
-  const child = spawn(process.execPath, ['--import', 'tsx', 'src/capture.ts', '__bridge-serve', '--socket', socketPath, '--port', String(port), '--target', targetId, 'recorder', recDir, harId], { cwd: process.cwd(), detached: true, stdio: 'ignore' });
+async function spawnTestCollectorHost(socketPath: string, port: number, targetId: string, sessionDir: string): Promise<{ socketPath: string; pid: number }> {
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/capture.ts', '__bridge-serve', '--socket', socketPath, '--port', String(port), '--target', targetId, 'host', sessionDir], { cwd: process.cwd(), detached: true, stdio: 'ignore' });
   child.unref();
-  if (!child.pid) throw new Error('test recorder bridge did not spawn');
+  if (!child.pid) throw new Error('test collector host did not spawn');
   const deadline = Date.now() + 8000;
   while (!fs.existsSync(socketPath)) {
-    if (Date.now() > deadline) throw new Error('test recorder bridge did not become reachable');
+    if (Date.now() > deadline) throw new Error('test collector host did not become reachable');
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   return { socketPath, pid: child.pid };
@@ -310,7 +310,7 @@ test('motion rec composed lifecycle records a real Chrome routed type action bet
   const restore = __setMotionRecDepsForTest({
     startComposedRecorder: (opts) => startComposedRecorder(opts, {
       detectPort: async () => chrome.port,
-      spawnRecorderBridge: (socketPath, port, targetId, recDir, harId) => spawnTestRecorderBridge(socketPath, port, targetId, recDir, harId),
+      spawnCollectorHost: (socketPath, port, targetId, sessionDir) => spawnTestCollectorHost(socketPath, port, targetId, sessionDir),
     }),
   });
   try {

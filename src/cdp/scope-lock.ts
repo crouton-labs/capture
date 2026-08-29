@@ -5,12 +5,12 @@
  * reads). Each scope is an enable→work→restore sequence whose intermediate
  * state lives on the connection. A DIRECT connection needs no serialization —
  * its emulation/domain state is scoped to its own websocket session, which
- * closes with the command. The recorder, however, holds ONE persistent tab
- * connection whose state outlives any single command, so two concurrent
+ * closes with the command. The motion collector, however, holds ONE persistent
+ * tab connection whose state outlives any single command, so two concurrent
  * routed callers could otherwise clear/disable one another's live state
- * (the recorder bridge's `handleCdp` is strictly per-request — it provides
- * no serialization of its own). When the client is the recorder-held
- * adapter, the whole scope therefore runs under the owning session's private
+ * (its dispatch is strictly per-request and provides no serialization).
+ * When the client is the motion-held adapter, the whole scope therefore runs
+ * under the owning session's private
  * cross-process lock (`.<scope>-scope.lock`, the shared `acquirePrivateLock`
  * authority every session lock uses).
  */
@@ -18,14 +18,14 @@ import * as path from 'path';
 import { acquirePrivateLock } from '../session/artifacts.js';
 import { getActiveSession } from '../session-context.js';
 import { captureError } from '../errors.js';
-import { isRecorderHeldClient } from './recorder-client.js';
+import { isMotionHeldClient } from './host/held-client.js';
 
 export interface ScopeSerializationDeps {
-  isRecorderHeldClient: (client: unknown) => boolean;
+  isMotionHeldClient: (client: unknown) => boolean;
   getActiveSession: typeof getActiveSession;
 }
 
-let deps: ScopeSerializationDeps = { isRecorderHeldClient, getActiveSession };
+let deps: ScopeSerializationDeps = { isMotionHeldClient, getActiveSession };
 
 /** Swap the held-client/session seams for the CDP-stub tests. */
 export function __setScopeSerializationDepsForTest(overrides: Partial<ScopeSerializationDeps>): () => void {
@@ -50,7 +50,7 @@ export async function withScopeSerialization<T>(
   overrides?: ScopeSerializationDeps,
 ): Promise<T> {
   const d = overrides ?? deps;
-  if (!d.isRecorderHeldClient(client)) {
+  if (!d.isMotionHeldClient(client)) {
     return fn();
   }
   const session = d.getActiveSession();

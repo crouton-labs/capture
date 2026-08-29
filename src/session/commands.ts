@@ -27,7 +27,7 @@ import {
   startSessionLogTailer,
   stopSessionLogTailers,
 } from './log-tailer.js';
-import { teardownAnyLiveRecorderAtSessionStop, isTerminalRecStopFailure } from '../cdp/motion/recorder.js';
+import { stopAndReapCollectorHostAtSessionStop } from '../cdp/host/lifecycle.js';
 import {
   emitResult,
   fact,
@@ -1409,19 +1409,9 @@ async function stop(parsed: ParsedArgs): Promise<void> {
       await stopSessionLogTailers(session.logPids ?? []);
       if (session.bridgePid || session.bridgeSocket) stopBridge(session.bridgePid, session.bridgeSocket);
 
-      let recorderTeardown: Awaited<ReturnType<typeof teardownAnyLiveRecorderAtSessionStop>> | null = null;
-      try {
-        recorderTeardown = await teardownAnyLiveRecorderAtSessionStop(session.dir);
-      } catch (error) {
-        // A terminal `rec-stop` failure (the bridge authenticated the request
-        // and explicitly refused — e.g. a fatal HAR drain) must NOT be
-        // swallowed into a warning: it escapes to the outer `stop_failed`
-        // lane below, so no bundle is committed and no live HAR/recorder
-        // handle is deleted while admitted append work may still be lost.
-        // Non-fatal teardown noise (dead handle, liveness-unknown, malformed
-        // handle) keeps the existing warn-and-continue policy.
-        if (isTerminalRecStopFailure(error)) throw error;
-        console.error(`Warning: could not finalize active recording: ${error instanceof Error ? error.message : error}`);
+      const hostTeardown = await stopAndReapCollectorHostAtSessionStop(session.dir);
+      if (hostTeardown.status === 'terminal') {
+        throw new Error(`collector host teardown failed: ${hostTeardown.error}`);
       }
 
       const shotsDir = path.join(session.dir, 'shots');
@@ -1465,7 +1455,7 @@ async function stop(parsed: ParsedArgs): Promise<void> {
         other,
         snaps,
         recs,
-        pendingViewportRestorations: recorderTeardown?.pendingViewportRestorations ?? [],
+        pendingViewportRestorations: [],
       };
 
       // The immutable bundle is the commit point. Live HAR deletion, stopped
@@ -1477,8 +1467,6 @@ async function stop(parsed: ParsedArgs): Promise<void> {
       committed = true;
 
       const rows = bundleRows(manifest);
-      if (recorderTeardown && 'recId' in recorderTeardown) rows.push(fact`recorder ${recorderTeardown.recId} finalized — state ${recorderTeardown.state}, viewport restored ${String(recorderTeardown.viewportRestored)}`);
-      if (recorderTeardown?.pendingViewportRestorations.length) rows.push(fact`pending viewport restorations: ${recorderTeardown.pendingViewportRestorations.length}`);
       emitResult({
         tag: 'session-stopped',
         attrs: { id, path: bundlePath },

@@ -6,7 +6,7 @@ import { type ParsedArgs } from '../../types.js';
 import { CDPClient } from '../../client.js';
 import { findTabById, openTab } from '../../targets.js';
 import { detectCdpPort } from '../../detect.js';
-import { RecorderSession } from '../../recorder-bridge.js';
+import { RecorderSession } from '../../host/collectors/motion.js';
 import { parseViewport, type Viewport } from '../../viewport.js';
 import {
   emitResult,
@@ -260,9 +260,9 @@ export async function driveOneShotAction(recorder: Pick<RecorderSession, 'handle
   await scrollResolved(live, resolved, parsedAction.to, { mark: action });
 }
 
-/** Exported for the focused artifact-layout test. This is the one-shot
- * counterpart of U14's composed finalizer: it writes the same finalized
- * inventory and deliberately never creates recorder.json. */
+/** Exported for the focused artifact-layout test. This one-shot counterpart
+ * of the composed host finalizer writes the same finalized inventory without
+ * creating a live collector-host handle. */
 export function finalizeOneShotRecording(
   recDir: string,
   recId: string,

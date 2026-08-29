@@ -4,7 +4,7 @@ import { randomBytes } from 'crypto';
 
 import { type ParsedArgs } from '../../types.js';
 import { withConnection } from '../../connection.js';
-import { isRecorderHeldClient } from '../../recorder-client.js';
+import { isMotionHeldClient } from '../../host/held-client.js';
 import { parseViewport, type Viewport } from '../../viewport.js';
 import { parseColorScheme, withAppliedColorScheme, type ColorScheme } from '../../color-scheme.js';
 import { captureSnapshotSubstrate, COLLECTOR_NAMES, SnapshotCaptureTimeout } from '../../measure/snapshot.js';
@@ -132,7 +132,7 @@ interface ScreenInfo {
  * never clears an override it cannot restore.
  */
 async function viewportOwnership(client: ViewportClient): Promise<ViewportOwnership> {
-  if (isRecorderHeldClient(client)) return { owner: 'recorder' };
+  if (isMotionHeldClient(client)) return { owner: 'recorder' };
   try {
     const [page, screens] = await Promise.all([
       client.send('Runtime.evaluate', {

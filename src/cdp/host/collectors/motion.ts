@@ -1,41 +1,16 @@
 /**
- * The recorder bridge: a specialized instance of capture's held bridge
- * (`./bridge/server.ts`) that owns ONE tab-level CDP connection for the
- * lifetime of a `capture motion rec` recording instead of a browser-level
- * one. Same NDJSON-over-unix-socket wire style, same detached-process
- * shape as `session start --hold` — this file adds no new IPC or process
- * model, only the recorder-specific request handling and CDP driving.
+ * The motion collector runs inside the collector host's single tab-level CDP
+ * connection. Its lifecycle enables the motion domains, starts screencast and
+ * tracing, injects observers, records marked dispatches, flushes the session
+ * HAR, and drains the recording on host stop.
  *
- * Lifecycle (see `./bridge/protocol.ts` for the wire messages):
- *  - `rec-start` — enables the motion-rec CDP domains, starts
- *    `Page.startScreencast` + `Tracing`, injects the Mutation/Resize/
- *    PerformanceObserver script, captures the clock baseline, and returns
- *    it for the caller's `markers.json` (this module does not write that
- *    file — see U14's lifecycle routing).
- *  - `cdp` — a CDP request routed through the held tab connection, used by
- *    intervening session commands during a composed recording. An optional
- *    `mark` brackets the dispatch with two performance.now() reads and
- *    appends a labeled input-landmark record to `events.jsonl`.
- *  - `rec-stop` — stops screencast + tracing, flushes/tears down the
- *    injected observers, and returns frame/event counts + duration for the
- *    caller's `meta.json` (this module does not write that file either).
- *  - `har-flush` — the non-attributing action-return HAR health barrier: a
- *    recorder-routed page action awaits it before claiming success, so every
- *    HAR entry/body/append the streaming collector had already completed is
- *    durably in the owning session's live HAR first (health only, no counts
- *    — see `./bridge/protocol.ts`'s `RecHarFlushRequest`). Served directly in
- *    the wire lane (`runRecorderBridge`'s `handleLine`), because the collector
- *    is owned by this process body, not by `RecorderSession`.
+ * Frames land as PNGs under `{recDir}/frames/`; per-frame element rects append
+ * to `{recDir}/rects.jsonl`; trace batches, observer entries, input landmarks,
+ * and best-effort errors append to `{recDir}/events.jsonl` through the private
+ * artifact helpers.
  *
- * Frames land as PNGs under `{recDir}/frames/`; per-frame element rects
- * append to `{recDir}/rects.jsonl`; trace batches, observer entries, input
- * landmarks, and best-effort errors append to `{recDir}/events.jsonl` — all
- * writes go through the secure artifact helpers (`../session/artifacts.js`,
- * U03), never ad-hoc `fs.writeFile`.
- *
- * Navigation: a `navigate` mid-recording destroys the page's JS world (and
- * therefore the injected observers) same as any full navigation would.
- * `Tracing` continues across it (it is CDP-session-scoped), but the recorder
+ * Navigation destroys the page's JS world and injected observers. `Tracing`
+ * continues across it because it is CDP-session-scoped, while the collector
  * listens for `Page.frameNavigated` on the main frame and re-creates the
  * isolated world + re-injects the observer script best-effort afterward (the
  * binding, scoped to the world name, auto-reattaches to the recreated world
@@ -83,30 +58,27 @@
  */
 
 import * as crypto from 'crypto';
-import * as net from 'net';
+import * as fs from 'fs';
 import * as path from 'path';
-import { CDPClient } from './client.js';
-import { findTabByIdAcrossEndpoints } from './targets.js';
-import { enableDomainsForMotionRec } from './domains.js';
-import { readTraceClockBaseline, withDocumentPerformanceNow } from './timing.js';
-import {
-  EventBroker,
-  listenNdjsonSocket,
-  closeNdjsonSocket,
-  installProcessCleanup,
-} from './bridge/server.js';
-import {
-  type RecorderRequest,
-  type RecorderResponse,
-  type RecorderClockBaselines,
-  type RecCdpRequest,
-  type RecStopRequest,
-  type RecHarFlushRequest,
-} from './bridge/protocol.js';
-import { ensurePrivateDir, appendNdjsonPrivate, writeBinaryPrivate, writeJsonPrivate } from '../session/artifacts.js';
-import { resolveIndexedObjectIds, describeBackendNodeId } from './measure/collectors/geometry.js';
-import { HARRecorder } from './har-recorder.js';
-import { appendToHarRecording } from '../har-manager.js';
+import { CDPClient } from '../../client.js';
+import { enableDomainsForMotionRec } from '../../domains.js';
+import { readTraceClockBaseline, withDocumentPerformanceNow } from '../../timing.js';
+import { EventBroker } from '../../bridge/server.js';
+import { ensurePrivateDir, appendNdjsonPrivate, removeArtifactTree, writeBinaryPrivate, writeJsonPrivate } from '../../../session/artifacts.js';
+import { resolveIndexedObjectIds, describeBackendNodeId } from '../../measure/collectors/geometry.js';
+import { HARRecorder } from '../../har-recorder.js';
+import { appendToHarRecording } from '../../../har-manager.js';
+import { RetainedCollectorStartFailure, type Collector, type CollectorContext, type DrainCause, type DrainOutcome, type DispatchNotice, type DispatchOutcome } from '../collector.js';
+
+export interface RecorderClockBaselines {
+  performanceNowMs: number;
+  wallClockMs: number;
+  firstScreencastTimestampSec: number | null;
+  firstTraceEventTsUs: number | null;
+  baselinesPending: boolean;
+}
+
+interface RecCdpRequest extends RecCdpCall { reqId: number; }
 
 /**
  * The subset of `RecCdpRequest` that `RecorderSession.handleCdp` actually reads. The one-shot
@@ -417,6 +389,10 @@ function asCDPClient(client: RecorderCdpClient): CDPClient {
   return client as unknown as CDPClient;
 }
 
+function structuralMarkLabel(action: string): string {
+  return `mark-${crypto.createHash('sha256').update(action).digest('hex')}`;
+}
+
 export class RecorderSession {
   readonly recDir: string;
   readonly framesDir: string;
@@ -703,6 +679,18 @@ export class RecorderSession {
     }
   }
 
+  /** Records a host-routed marked dispatch without issuing a second CDP call. */
+  recordRoutedDispatch(notice: DispatchNotice, outcome: DispatchOutcome): void {
+    this.appendEvent({
+      kind: 'input',
+      action: notice.annotation,
+      mark: structuralMarkLabel(notice.annotation ?? ''),
+      method: notice.method,
+      startPerformanceNow: notice.atPerformanceNowMs,
+      endPerformanceNow: outcome.atPerformanceNowMs,
+    });
+  }
+
   /** Runs CSS header redelivery on the one connection that can receive its events while recording. */
   private async collectStyleSheetHeaders(): Promise<{ headers: Array<{ styleSheetId: string; sourceURL: string }> }> {
     const headers = new Map<string, string>();
@@ -720,11 +708,21 @@ export class RecorderSession {
     }
   }
 
+  /** Synchronous admission cutoff used by the collector host before any drain awaits. */
+  closeAdmission(): void {
+    if (this.state === 'recording') this.state = 'stopping';
+  }
+
   async stop(): Promise<RecorderStopSummary> {
-    if (this.state !== 'recording') {
-      throw new Error(`cannot stop recorder in state "${this.state}"`);
+    this.closeAdmission();
+    return this.drain();
+  }
+
+  async drain(): Promise<RecorderStopSummary> {
+    if (this.state !== 'stopping') {
+      throw new Error(`cannot drain recorder in state "${this.state}"`);
     }
-    // Flips away from 'recording' before any other await in this method, so every
+    // `closeAdmission()` flips state before any drain await, so every
     // state-sensitive guard (`handleFrameNavigated`, `handleCdp`) already sees the recorder
     // as no longer recording for the rest of this teardown.
     this.state = 'stopping';
@@ -825,7 +823,7 @@ export class RecorderSession {
    * `Runtime.evaluate` with no contextId runs in the page main world). */
   private requireIsolatedContextId(): number {
     if (this.isolatedWorldContextId === undefined) {
-      throw new Error('recorder bridge has no active isolated world context');
+      throw new Error('motion collector has no active isolated world context');
     }
     return this.isolatedWorldContextId;
   }
@@ -839,7 +837,7 @@ export class RecorderSession {
     if (this.mainFrameId) return this.mainFrameId;
     const tree = (await this.client.send('Page.getFrameTree', {})) as { frameTree?: { frame?: { id?: string } } };
     const frameId = tree.frameTree?.frame?.id;
-    if (!frameId) throw new Error('recorder bridge could not resolve the main frame id via Page.getFrameTree');
+    if (!frameId) throw new Error('motion collector could not resolve the main frame id via Page.getFrameTree');
     this.mainFrameId = frameId;
     return frameId;
   }
@@ -873,7 +871,7 @@ export class RecorderSession {
     })) as { executionContextId?: number };
     const contextId = created.executionContextId;
     if (typeof contextId !== 'number') {
-      throw new Error('recorder bridge isolated world creation returned no execution context id');
+      throw new Error('motion collector isolated world creation returned no execution context id');
     }
     const evaluation = (await this.client.send('Runtime.evaluate', {
       expression: buildObserverScript(RECORDER_BINDING_NAME, this.bindingNonce),
@@ -1453,333 +1451,6 @@ export class RecorderSession {
 
 /** A structural-safe implementation mark is deliberately distinct from the
  * verbatim action identity retained in the adjacent `action` field. */
-function structuralMarkLabel(action: string): string {
-  return `mark-${crypto.createHash('sha256').update(action).digest('hex')}`;
-}
-
-// ---------------------------------------------------------------------------
-// Wire dispatch — the same "one request per connection, one response"
-// convention the plain bridge uses (see ./bridge/server.ts).
-// ---------------------------------------------------------------------------
-
-/**
- * Session-scoped request dispatch. `har-flush` is deliberately absent from
- * the accepted union: the streaming HAR collector lives in `runRecorderBridge`'s
- * process body, so `handleLine` serves that request there and never forwards
- * it here.
- */
-export async function handleRecorderRequest(
-  session: RecorderSession,
-  req: Exclude<RecorderRequest, RecHarFlushRequest>,
-): Promise<RecorderResponse> {
-  try {
-    switch (req.type) {
-      case 'rec-start': {
-        const markers = await session.start();
-        return { reqId: req.reqId, ok: true, type: 'rec-start', markers };
-      }
-      case 'rec-stop': {
-        const summary = await session.stop();
-        return { reqId: req.reqId, ok: true, type: 'rec-stop', ...summary };
-      }
-      case 'cdp': {
-        const { result, event, waitOutcome } = await session.handleCdp(req);
-        return { reqId: req.reqId, ok: true, type: 'cdp', result, event, waitOutcome };
-      }
-      default: {
-        const exhaustive: never = req;
-        throw new Error(`Unknown recorder request: ${JSON.stringify(exhaustive)}`);
-      }
-    }
-  } catch (err) {
-    return {
-      reqId: req.reqId,
-      ok: false,
-      type: req.type,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Process entrypoint — spawned detached by `./bridge/spawn.ts`'s
-// `startRecorderBridge()`, invoked via `capture __bridge-serve ... recorder
-// <recDir>` (see ./commands/bridge-serve.ts).
-// ---------------------------------------------------------------------------
-
-export interface RunRecorderBridgeOptions {
-  socketPath: string;
-  targetId: string;
-  recDir: string;
-  /** The owning session's live HAR recording id — the streaming `HARRecorder`
-   * installed on the held tab connection appends its evidence there (via
-   * `har-manager.ts`'s `appendToHarRecording`; each batch is one `O_APPEND`
-   * no-follow write of one NDJSON record, so cross-process writers interleave
-   * whole records without a lock — nothing else is needed here). */
-  harId: string;
-  port?: number;
-}
-
-/** Filename of the nonce boot file the recorder writes into `recDir` BEFORE
- * binding its control socket — the private back-channel that hands the
- * server-generated admission nonce to the starter. The starter reads,
- * validates, persists (into `recorder.json`), and DELETES it; `recorder.json`
- * is the one persistent authority for the nonce afterward. */
-export const RECORDER_NONCE_BOOT_FILE = 'recorder-nonce.json';
-
-/** Constant-time nonce comparison (same pattern as `session/log-tailer.ts`'s
- * gate): length check + `crypto.timingSafeEqual`, so a probing client learns
- * nothing about the expected token from response timing. */
-function nonceMatches(expected: string, candidate: unknown): boolean {
-  if (typeof candidate !== 'string') return false;
-  const left = Buffer.from(expected);
-  const right = Buffer.from(candidate);
-  return left.length === right.length && crypto.timingSafeEqual(left, right);
-}
-
-interface RecorderBridgeDeps {
-  createClient: (webSocketDebuggerUrl: string) => CDPClient;
-  findTab: typeof findTabByIdAcrossEndpoints;
-  /** Process-exit seam — injectable so in-proc tests of the authenticated
-   * `rec-stop` self-exit path don't kill the test runner. */
-  exit: (code: number) => void;
-}
-
-const defaultRecorderBridgeDeps: RecorderBridgeDeps = {
-  createClient: (url) => new CDPClient(url),
-  findTab: findTabByIdAcrossEndpoints,
-  exit: (code) => process.exit(code),
-};
-
-let recorderBridgeDeps = defaultRecorderBridgeDeps;
-
-/** Focused tests inject the CDP/tab/exit boundary; production always uses the
- * real client, resolver, and `process.exit`. Returns a restore function. */
-export function __setRecorderBridgeDepsForTest(overrides: Partial<RecorderBridgeDeps>): () => void {
-  const previous = recorderBridgeDeps;
-  recorderBridgeDeps = { ...recorderBridgeDeps, ...overrides };
-  return () => { recorderBridgeDeps = previous; };
-}
-
-/**
- * Joins the terminal rec-stop's two possible failures into the one wire
- * error message the caller sees. A drain-only failure surfaces the exact
- * drain error unchanged; when `RecorderSession.stop()` ALSO failed, its
- * failure is never replaced wholesale — both messages are joined so both
- * stay distinguishable. Module-level (not a bridge closure) so the focused
- * settle-join regression test exercises exactly the production join.
- */
-export function joinTerminalStopFailure(stopResp: RecorderResponse, drainError: unknown): string {
-  const drainMessage = drainError instanceof Error ? drainError.message : String(drainError);
-  if (stopResp.ok) return drainMessage;
-  return `rec-stop teardown failed: ${stopResp.error}; HAR drain failed: ${drainMessage}`;
-}
-
-export async function runRecorderBridge(opts: RunRecorderBridgeOptions): Promise<void> {
-  const port = opts.port ?? (await resolvePort());
-  const resolved = await recorderBridgeDeps.findTab(opts.targetId, port);
-  if (!resolved?.tab.webSocketDebuggerUrl) {
-    throw new Error(`No tab found for target "${opts.targetId}" on port ${port}.`);
-  }
-
-  const client = recorderBridgeDeps.createClient(resolved.tab.webSocketDebuggerUrl);
-  await client.waitReady();
-
-  // HAR evidence streams from the moment the held connection is ready —
-  // BEFORE the control socket exists, so network activity between recorder
-  // boot and the caller's `rec-start` is already captured. Exactly-once
-  // delivery is the HARRecorder's own contract; cross-process file safety is
-  // har-manager's append-only store (one O_APPEND write per batch, no lock).
-  const har = new HARRecorder(client, (batch) => appendToHarRecording(opts.harId, batch));
-  await har.start();
-
-  const session = new RecorderSession({ client, recDir: opts.recDir });
-
-  // Server-generated control-socket admission token. Written to the private
-  // boot file BEFORE the socket is bound: spawn.ts's socket-file readiness
-  // poll therefore guarantees the starter can read it without racing us.
-  const nonce = crypto.randomBytes(32).toString('hex');
-  writeJsonPrivate(path.join(opts.recDir, RECORDER_NONCE_BOOT_FILE), { nonce });
-
-  let server: net.Server | null = null;
-  const cleanup = (): void => {
-    if (server) closeNdjsonSocket(server, opts.socketPath);
-    try {
-      client.close();
-    } catch {
-      // Already closed.
-    }
-  };
-
-  // One-owner terminal-rec-stop latch (U11c). `listenNdjsonSocket` fire-and-
-  // forgets every line (`void handleLine(...)`) and does not serialize them,
-  // so more than one authenticated `rec-stop` line can reach `handleLine`
-  // before the first has finished. This flag is read and set in the SAME
-  // synchronous prefix as the nonce gate and `session.state` check below (no
-  // `await` between the read and the set), so exactly one authenticated,
-  // stoppable-state `rec-stop` ever claims the HAR admission cut, drain
-  // settlement, response, cleanup, and exit. Every other rec-stop line (a
-  // repeat, a concurrent loser, or one that arrives while the session is
-  // already `idle`/`stopping`) falls through to the ordinary
-  // `handleRecorderRequest` path below, which resolves it through
-  // `RecorderSession.stop()`'s own state guard into the existing
-  // deterministic `ok:false` rejection — never a second drain/exit.
-  let terminalStopClaimed = false;
-
-  /**
-   * Settles the one authenticated, stoppable-state `rec-stop` that claimed
-   * the terminal latch. `RecorderSession.stop()` (screencast/tracing/observer
-   * teardown, best-effort and independent of the HAR store) runs to
-   * completion first; only then is the already-initiated `drainSettlement`
-   * awaited, so the response is withheld until every pre-cut HAR body fetch,
-   * the exactly-once frozen-lifecycle finalization, and every U02 append have
-   * settled (U11c's success ordering). A latched fatal HAR drain (sink/store
-   * rejection, or any unexpected assembly/validation failure) is terminal and
-   * authoritative: it overrides even a successful `RecorderSession.stop()`
-   * with an explicit `ok:false` response carrying the exact primary error —
-   * the recorder never claims success once its evidence store is fatally
-   * broken, and the HAR store itself is never reset — and when the stop
-   * teardown ALSO failed, the drain error never replaces it wholesale: both
-   * messages are joined (`joinTerminalStopFailure`) so both failures stay
-   * distinguishable in the one response. Response is flushed
-   * (write completion callback) before the socket ends, cleanup runs, and the
-   * injected exit seam fires non-zero on fatal / zero on success.
-   */
-  async function settleTerminalRecStop(req: RecStopRequest, socket: net.Socket, drainSettlement: Promise<void>): Promise<void> {
-    const stopResp = await handleRecorderRequest(session, req);
-    let finalResp: RecorderResponse = stopResp;
-    try {
-      await drainSettlement;
-    } catch (err) {
-      finalResp = {
-        reqId: req.reqId,
-        ok: false,
-        type: 'rec-stop',
-        error: joinTerminalStopFailure(stopResp, err),
-      };
-    }
-    await new Promise<void>((resolveWrite) => {
-      socket.write(JSON.stringify(finalResp) + '\n', () => resolveWrite());
-    });
-    socket.end();
-    cleanup();
-    recorderBridgeDeps.exit(finalResp.ok ? 0 : 1);
-  }
-
-  async function handleLine(line: string, socket: net.Socket): Promise<void> {
-    let req: RecorderRequest;
-    try {
-      req = JSON.parse(line);
-    } catch {
-      return;
-    }
-    // A syntactically valid JSON line can still parse to a non-object
-    // (`null`, a number, a string, a boolean, an array) — `JSON.parse` alone
-    // does not guarantee `RecorderRequest` shape. Drop those the same way as
-    // a parse failure: any property read below (`raw.nonce`, `raw.reqId`,
-    // `raw.type`) on `null`/a primitive would throw inside this async
-    // handler, and `listenNdjsonSocket` invokes handlers as a fire-and-forget
-    // `void handleLine(...)` (src/cdp/bridge/server.ts), so an uncaught throw
-    // here becomes an unhandled rejection that kills the detached bridge
-    // process and orphans the live recording.
-    if (req === null || typeof req !== 'object' || Array.isArray(req)) return;
-    // Admission gate — constant-time nonce check on EVERY request, before any
-    // handler runs. No request type is exempt and there is no compat lane: a
-    // missing/mismatched nonce is answered `unauthorized` with zero side
-    // effects (reqId/type coerced defensively — the line is untrusted input).
-    const raw = req as unknown as Record<string, unknown>;
-    if (!nonceMatches(nonce, raw.nonce)) {
-      const reqId = typeof raw.reqId === 'number' ? (raw.reqId as number) : 0;
-      const type: RecorderRequest['type'] =
-        raw.type === 'rec-start' || raw.type === 'rec-stop' || raw.type === 'cdp' || raw.type === 'har-flush'
-          ? raw.type
-          : 'cdp';
-      socket.write(JSON.stringify({ reqId, ok: false, type, error: 'unauthorized' }) + '\n');
-      return;
-    }
-    // U12 har-flush health barrier — served here, in the wire lane, because
-    // the streaming HAR collector (`har`) is owned by this process body, not
-    // by RecorderSession. Non-attributing: `har.flush()` waits for every body
-    // fetch in flight and every sink append queued at call time, then throws
-    // the latched fatal store error if any of that work failed — so `ok:true`
-    // is a health/completion fact, never an action entry count. It creates no
-    // collector and takes no ownership: `har` stays the one collector for the
-    // bridge's whole life regardless of how many flush sockets open and close.
-    // A latched fatal answers `ok:false` with the exact primary error but does
-    // NOT tear the bridge down — terminal authority (drain, final response,
-    // cleanup, exit) belongs exclusively to the rec-stop latch below, and once
-    // that latch is claimed a later flush gets a deterministic rejection
-    // rather than sharing or re-driving the drain.
-    if (req.type === 'har-flush') {
-      let resp: RecorderResponse;
-      if (terminalStopClaimed) {
-        resp = {
-          reqId: req.reqId,
-          ok: false,
-          type: 'har-flush',
-          error: 'recorder is stopping — HAR finalization is owned by the terminal rec-stop',
-        };
-      } else {
-        try {
-          await har.flush();
-          resp = { reqId: req.reqId, ok: true, type: 'har-flush' };
-        } catch (err) {
-          resp = {
-            reqId: req.reqId,
-            ok: false,
-            type: 'har-flush',
-            error: err instanceof Error ? err.message : String(err),
-          };
-        }
-      }
-      socket.write(JSON.stringify(resp) + '\n');
-      return;
-    }
-    // Terminal admission cut (U11c). `har.drain()`'s own first synchronous
-    // line closes Network-event admission (see har-recorder.ts's `drain()`),
-    // so initiating it HERE — after the nonce gate and `rec-stop` recognition,
-    // synchronously before `handleRecorderRequest`'s first internal await —
-    // guarantees no Network event arriving after this authenticated rec-stop
-    // can allocate, mutate, or append. The cut only fires for a rec-stop that
-    // will actually proceed (`session.state === 'recording'`) and only for the
-    // first such request (`terminalStopClaimed`); an idle/already-stopping
-    // rec-stop and a losing concurrent/repeat rec-stop take zero side effects
-    // here and fall through to the ordinary dispatch below. A rejection
-    // handler is attached to `drainSettlement` in this same synchronous frame
-    // so a fatal drain can never surface as an unhandled rejection through
-    // `listenNdjsonSocket`'s fire-and-forget `void handleLine(...)`,
-    // regardless of when the awaited settlement inside
-    // `settleTerminalRecStop` actually runs.
-    if (req.type === 'rec-stop' && session.state === 'recording' && !terminalStopClaimed) {
-      terminalStopClaimed = true;
-      const drainSettlement = har.drain();
-      drainSettlement.catch(() => {
-        // Handled below via settleTerminalRecStop's own await; this no-op
-        // catch only prevents Node from ever treating this promise as an
-        // unhandled rejection.
-      });
-      await settleTerminalRecStop(req, socket, drainSettlement);
-      return;
-    }
-
-    const resp = await handleRecorderRequest(session, req);
-    socket.write(JSON.stringify(resp) + '\n');
-  }
-
-  server = await listenNdjsonSocket(opts.socketPath, handleLine);
-  installProcessCleanup(cleanup, client);
-  // Intentionally does not resolve further: the open server and the live tab
-  // websocket keep this detached process alive until an authenticated
-  // `rec-stop` completes (the self-exit above) — the caller waits for that
-  // verified exit and only escalates to an identity-checked SIGTERM
-  // (`stopBridge()`) on timeout.
-}
-
-async function resolvePort(): Promise<number> {
-  const { detectCdpPort } = await import('./detect.js');
-  return detectCdpPort();
-}
-
 // ---------------------------------------------------------------------------
 // Injected in-page instrumentation
 // ---------------------------------------------------------------------------
@@ -1802,6 +1473,106 @@ async function resolvePort(): Promise<number> {
  * payload before trusting it; that is a separate check from the global's key and stops a hostile
  * page from forging binding-channel events by calling `window[BINDING]` directly.
  */
+export class MotionCollector implements Collector<{ frames: number; durationMs: number; eventCount: number; markers: RecorderClockBaselines; state: string }> {
+  readonly kind = 'motion' as const;
+  readonly claims = ['tracing', 'screencast'] as const;
+  private session: RecorderSession | undefined;
+  private context: CollectorContext | undefined;
+  private har: HARRecorder | undefined;
+  private harDrain: Promise<void> | undefined;
+  private stopped: RecorderStopSummary | undefined;
+  private viewportApplied = false;
+
+  async start(context: CollectorContext): Promise<void> {
+    const config = context.config as { harId?: unknown; viewport?: { width?: unknown; height?: unknown } } | null;
+    if (typeof config?.harId !== 'string' || config.harId.length === 0) throw new Error('motion collector requires a session HAR recording id');
+    this.context = context;
+    try {
+      if (config.viewport) {
+        const { width, height } = config.viewport;
+        if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) throw new Error('motion viewport must contain positive integer width and height');
+        writeJsonPrivate(path.join(context.dir, 'viewport-override.json'), { phase: 'attempting', targetId: context.targetId, retainOnStop: true });
+        await context.client.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+        this.viewportApplied = true;
+        writeJsonPrivate(path.join(context.dir, 'viewport-override.json'), { phase: 'applied', targetId: context.targetId, retainOnStop: true });
+      }
+      this.har = new HARRecorder(context.client, batch => appendToHarRecording(config.harId as string, batch));
+      await this.har.start();
+      this.session = new RecorderSession({ client: context.client, recDir: context.dir });
+      await this.session.start();
+    } catch (startError) {
+      this.closeAdmission();
+      await this.harDrain?.catch(() => undefined);
+      if (!this.viewportApplied) throw startError;
+      try {
+        await context.client.send('Emulation.clearDeviceMetricsOverride');
+        this.viewportApplied = false;
+        removeArtifactTree(path.join(context.dir, 'viewport-override.json'));
+      } catch (cleanupError) {
+        writeJsonPrivate(path.join(context.dir, 'viewport-override.json'), {
+          phase: 'restore-failed',
+          targetId: context.targetId,
+          retainOnStop: true,
+          startError: startError instanceof Error ? startError.message : String(startError),
+          cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        });
+        throw new RetainedCollectorStartFailure('motion collector start failed and its viewport override could not be cleared', startError, cleanupError);
+      }
+      throw startError;
+    }
+  }
+
+  closeAdmission(): void {
+    this.session?.closeAdmission();
+    if (this.har && !this.harDrain) {
+      this.harDrain = this.har.drain();
+      this.harDrain.catch(() => undefined);
+    }
+  }
+
+  async control(message: unknown): Promise<unknown> {
+    if (!this.session || !this.har) throw new Error('motion collector was not started');
+    const request = message as { type?: unknown; method?: unknown; params?: unknown; annotation?: unknown; waitEvent?: unknown; timeoutMs?: unknown } | null;
+    if (request?.type === 'har-flush') return this.har.flush();
+    if (request?.type !== 'cdp') throw new Error('unsupported motion collector control request');
+    return this.session.handleCdp({
+      reqId: 0,
+      method: typeof request.method === 'string' ? request.method : undefined,
+      params: request.params && typeof request.params === 'object' && !Array.isArray(request.params) ? request.params as Record<string, unknown> : {},
+      mark: typeof request.annotation === 'string' ? request.annotation : undefined,
+      waitEvent: typeof request.waitEvent === 'string' ? request.waitEvent : undefined,
+      timeoutMs: typeof request.timeoutMs === 'number' ? request.timeoutMs : undefined,
+    });
+  }
+
+  async drain(cause: DrainCause): Promise<DrainOutcome<{ frames: number; durationMs: number; eventCount: number; markers: RecorderClockBaselines; state: string }>> {
+    if (!this.session || !this.context) throw new Error('motion collector was not started');
+    if (!cause.clientUsable) this.context.noteLoss('transport_lost');
+    this.closeAdmission();
+    const [stopped] = await Promise.all([this.stopped ??= this.session.drain(), this.harDrain]);
+    this.stopped = stopped;
+    let viewportRestored: boolean | null = null;
+    if (this.viewportApplied && cause.trigger !== 'explicit') {
+      try {
+        await this.context.client.send('Emulation.clearDeviceMetricsOverride');
+        removeArtifactTree(path.join(this.context.dir, 'viewport-override.json'));
+        viewportRestored = true;
+      } catch {
+        viewportRestored = false;
+      }
+    }
+    writeJsonPrivate(path.join(this.context.dir, 'markers.json'), stopped.markers);
+    return { summary: { frames: stopped.frameCount, durationMs: stopped.durationMs, eventCount: stopped.eventCount, markers: stopped.markers, state: stopped.frameCount > 0 ? 'finalized' : 'partial', viewportRestored, viewportRetained: this.viewportApplied && cause.trigger === 'explicit' }, files: [] };
+  }
+
+  onDispatch(notice: DispatchNotice): ((outcome: DispatchOutcome) => void) | void {
+    if (!this.session || !notice.annotation) return;
+    return outcome => { if (outcome.ok) this.session!.recordRoutedDispatch(notice, outcome); };
+  }
+
+  abandon(): void {}
+}
+
 function buildObserverScript(bindingName: string, nonce: string): string {
   return `(function() {
     var BINDING = ${JSON.stringify(bindingName)};

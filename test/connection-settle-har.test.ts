@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 
 // U08: the action-specific settle/HAR lifecycle (`withPageAction`), strict A2
@@ -21,9 +20,11 @@ import {
 } from '../src/cdp/connection.js';
 import { CaptureError } from '../src/errors.js';
 import { createHarRecording } from '../src/har-manager.js';
-import { CAPTURE_ROOT } from '../src/session/artifacts.js';
-import { RecorderHeldClient, isRecorderHeldClient } from '../src/cdp/recorder-client.js';
-import { recDirFor } from '../src/cdp/motion/recorder.js';
+import { CAPTURE_ROOT, ensurePrivateDir, processPidBirthProvider } from '../src/session/artifacts.js';
+import { closeNdjsonSocket, listenNdjsonSocket } from '../src/cdp/bridge/server.js';
+import { collectorHostSocketPath } from '../src/cdp/bridge/spawn.js';
+import { isMotionHeldClient } from '../src/cdp/host/held-client.js';
+import { collectorHostPath } from '../src/cdp/host/handle.js';
 import type { ParsedArgs, CDPTarget } from '../src/cdp/types.js';
 import type { ActiveSessionState } from '../src/session-context.js';
 
@@ -159,15 +160,29 @@ function sessionState(overrides: Partial<ActiveSessionState>): ActiveSessionStat
   };
 }
 
-/** A valid, mutable temp session dir for recorder.json fixtures. */
 function makeTempSessionDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'u08-sess-'));
+  const dir = path.join(CAPTURE_ROOT, `connection-settle-${process.pid}-${Math.random().toString(16).slice(2)}`);
+  ensurePrivateDir(dir);
+  return dir;
 }
 
-function writeRecorderJson(sessionDir: string, recId: string, body: unknown): void {
-  const recDir = recDirFor(sessionDir, recId);
-  fs.mkdirSync(recDir, { recursive: true });
-  fs.writeFileSync(path.join(recDir, 'recorder.json'), typeof body === 'string' ? body : JSON.stringify(body));
+function writeHostHandle(sessionDir: string, recId: string, body: unknown = undefined): void {
+  if (body !== undefined) {
+    fs.writeFileSync(collectorHostPath(sessionDir), typeof body === 'string' ? body : JSON.stringify(body));
+    return;
+  }
+  const birth = processPidBirthProvider.read(process.pid);
+  assert.equal(birth.status, 'found');
+  fs.writeFileSync(collectorHostPath(sessionDir), JSON.stringify({
+    pid: process.pid,
+    birth: birth.identity,
+    socketPath: collectorHostSocketPath(sessionDir),
+    targetId: 'tab-new',
+    nonce: 'a'.repeat(64),
+    startedAt: new Date().toISOString(),
+    collectors: [{ id: recId, kind: 'motion', dir: path.join(sessionDir, 'motion', 'recs', recId), claims: [], startedAt: new Date().toISOString() }],
+    reservations: [],
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -250,17 +265,9 @@ test('withPageAction: a callback failure claims no settle and never appends', as
 
 test('withPageAction: a recorder-routed action starts no local collectors but still settles', async () => {
   const sessionDir = makeTempSessionDir();
-  writeRecorderJson(sessionDir, 'rec-live', {
-    recId: 'rec-live',
-    pid: process.pid,
-    socketPath: path.join(sessionDir, 'rec.sock'),
-    targetId: 'tab-rec',
-    url: null,
-    nonce: 'a'.repeat(64),
-    startedAt: new Date().toISOString(),
-    state: 'recording',
-    markers: {},
-  });
+  const socketPath = collectorHostSocketPath(sessionDir);
+  const server = await listenNdjsonSocket(socketPath, () => {});
+  writeHostHandle(sessionDir, 'rec-live');
   const createSpy: string[] = [];
   const h = installSeams({
     getActiveSession: () => sessionState({ dir: sessionDir, activeRecId: 'rec-live' }),
@@ -275,7 +282,7 @@ test('withPageAction: a recorder-routed action starts no local collectors but st
       { settleMs: 2500 },
       async (client) => {
         // A routed client is the recorder-held adapter, not a fresh direct client.
-        assert.ok(isRecorderHeldClient(client), 'routed action must use the recorder-held client');
+        assert.ok(isMotionHeldClient(client), 'routed action must use the recorder-held client');
         h.log.push('callback');
         return 'routed';
       },
@@ -290,6 +297,7 @@ test('withPageAction: a recorder-routed action starts no local collectors but st
     assert.deepEqual(settle, { requestedMs: 2500, waitedMs: 2500, completed: true });
   } finally {
     h.restore();
+    closeNdjsonSocket(server, socketPath);
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
@@ -302,38 +310,13 @@ test('connectForCommand: a claimed-but-unusable recorder is recorder_unavailable
   const sessionDir = makeTempSessionDir();
   const cases: Array<{ name: string; write: () => void }> = [
     { name: 'absent handle', write: () => {} },
-    { name: 'malformed JSON', write: () => writeRecorderJson(sessionDir, 'rec-x', 'not json at all') },
-    {
-      name: 'missing socketPath field',
-      write: () =>
-        writeRecorderJson(sessionDir, 'rec-x', {
-          recId: 'rec-x',
-          pid: process.pid,
-          targetId: 'tab-rec',
-          url: null,
-          startedAt: new Date().toISOString(),
-          state: 'recording',
-          markers: {},
-        }),
-    },
-    {
-      name: 'finalized (wrong state)',
-      write: () =>
-        writeRecorderJson(sessionDir, 'rec-x', {
-          recId: 'rec-x',
-          pid: process.pid,
-          socketPath: path.join(sessionDir, 'rec.sock'),
-          targetId: 'tab-rec',
-          url: null,
-          startedAt: new Date().toISOString(),
-          state: 'finalized',
-          markers: {},
-        }),
-    },
+    { name: 'malformed JSON', write: () => writeHostHandle(sessionDir, 'rec-x', 'not json at all') },
+    { name: 'incomplete handle', write: () => writeHostHandle(sessionDir, 'rec-x', { pid: process.pid }) },
+    { name: 'live host without the active collector', write: () => writeHostHandle(sessionDir, 'other-rec') },
   ];
 
   for (const c of cases) {
-    fs.rmSync(recDirFor(sessionDir, 'rec-x'), { recursive: true, force: true });
+    fs.rmSync(collectorHostPath(sessionDir), { force: true });
     c.write();
     const resolveSpy: string[] = [];
     const h = installSeams({
@@ -376,7 +359,7 @@ test('connectForCommand: direct CDP is allowed when no session has exactly one t
     });
     try {
       const { client } = await connectForCommand(parsedFor({ target: undefined }));
-      assert.ok(!isRecorderHeldClient(client));
+      assert.ok(!isMotionHeldClient(client));
       assert.deepEqual(resolveSpy, ['resolved']);
     } finally {
       h.restore();
@@ -396,7 +379,7 @@ test('connectForCommand: direct CDP is allowed when no session has exactly one t
     });
     try {
       const { client } = await connectForCommand(parsedFor({ target: 'tab-other' }));
-      assert.ok(!isRecorderHeldClient(client), 'a diverted target uses a direct client');
+      assert.ok(!isMotionHeldClient(client), 'a diverted target uses a direct client');
       assert.equal(resolveSpy.length, 1, 'the diverted target resolved through the direct lane');
     } finally {
       h.restore();
