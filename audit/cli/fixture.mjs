@@ -1,12 +1,13 @@
-import { access, mkdir, readdir, readFile, utimes, writeFile } from "node:fs/promises";
+import { access, readdir, utimes, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { basename, extname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { CASES, auditRoot, getCase } from "../core/registry.mjs";
 import { startFixture } from "../core/server.mjs";
 import { launchChrome } from "../core/chrome.mjs";
 import { connect } from "../core/cdp-client.mjs";
 import { invokeCapture } from "../core/capture-invoke.mjs";
+import { prepareDumpDirectory, responseRecord } from "../core/dump.mjs";
 
 function option(args, name, fallback) { const index = args.indexOf(name); return index < 0 ? fallback : args[index + 1] ?? (() => { throw new Error(`${name} needs a value`); })(); }
 function variant(args) { const value = option(args, "--variant", "faulty"); if (value !== "faulty" && value !== "healthy") throw new Error("--variant must be faulty or healthy"); return value; }
@@ -70,21 +71,25 @@ async function normalizeTimestamps(dir) {
 export async function dump(args) {
   const entry = requireCase(args); const currentVariant = variant(args);
   const output = resolve(auditRoot, "runs", `${entry.id}-dump`);
-  await mkdir(output, { recursive: true });
+  await prepareDumpDirectory(output);
   const server = await startFixture({ caseId: entry.id, variant: currentVariant, runId: `${entry.id}-dump` });
   const fixture = await fixtureModule(entry);
   const chrome = await launchChrome({ flavor: fixture.chromeFlavor }); const cdp = await connect(`http://127.0.0.1:${chrome.port}`);
   let dumpSessionId;
   const capture = (argv, options = {}) => invokeCapture(argv, { ...options, env: { ...options.env, CDP_PORT: String(chrome.port) } });
-  const responses = new Map(), consoleOutput = [], doms = [], activeRequests = new Set();
+  const requestWillBeSent = new Map(), responseEvents = [], loadingFinished = new Map(), consoleOutput = [], doms = [], activeRequests = new Set();
   const snapshot = async (label = `interaction-${doms.length}`) => {
     const result = await cdp.send("Runtime.evaluate", { expression: "document.documentElement.outerHTML", returnByValue: true });
     const file = `dom-${String(doms.length).padStart(3, "0")}-${label.replace(/[^a-zA-Z0-9._-]/g, "_")}.html`;
     await writeFile(join(output, file), result.result.value, "utf8"); doms.push({ label, file }); return file;
   };
-  cdp.on("Network.requestWillBeSent", (params) => activeRequests.add(params.requestId));
-  cdp.on("Network.responseReceived", (params) => responses.set(params.requestId, { requestId: params.requestId, url: params.response.url, status: params.response.status, headers: params.response.headers, mimeType: params.response.mimeType }));
-  cdp.on("Network.loadingFinished", (params) => activeRequests.delete(params.requestId));
+  cdp.on("Network.requestWillBeSent", (params) => {
+    const priorRequest = requestWillBeSent.get(params.requestId);
+    if (params.redirectResponse) responseEvents.push({ request: priorRequest, response: { requestId: params.requestId, timestamp: params.timestamp, response: params.redirectResponse, source: "Network.requestWillBeSent.redirectResponse" }, redirect: true });
+    requestWillBeSent.set(params.requestId, params); activeRequests.add(params.requestId);
+  });
+  cdp.on("Network.responseReceived", (params) => responseEvents.push({ request: requestWillBeSent.get(params.requestId), response: params }));
+  cdp.on("Network.loadingFinished", (params) => { loadingFinished.set(params.requestId, params); activeRequests.delete(params.requestId); });
   cdp.on("Network.loadingFailed", (params) => activeRequests.delete(params.requestId));
   cdp.on("Runtime.consoleAPICalled", (params) => consoleOutput.push({ type: params.type, timestamp: params.timestamp, stackTrace: params.stackTrace, args: params.args }));
   try {
@@ -100,18 +105,20 @@ export async function dump(args) {
     const idleDeadline = Date.now() + 5_000;
     while (activeRequests.size && Date.now() < idleDeadline) await new Promise((resolveWait) => setTimeout(resolveWait, 25));
     const bodyRecords = [];
-    for (const response of responses.values()) {
+    for (const event of responseEvents) {
+      const responseEvent = event.response;
+      const response = responseRecord(event.request, responseEvent, event.redirect ? null : loadingFinished.get(responseEvent.requestId));
       try {
         const body = await cdp.send("Network.getResponseBody", { requestId: response.requestId });
         const bytes = Buffer.from(body.body, body.base64Encoded ? "base64" : "utf8"); const name = responseName(bodyRecords.length, response);
         if (textResponse(response)) { const file = `${name}.txt`; await writeFile(join(output, file), bytes); bodyRecords.push({ ...response, body: { kind: "text", file, verbatim: true } }); }
-        else bodyRecords.push({ ...response, body: { kind: "binary", name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") } });
+        else bodyRecords.push({ ...response, body: { kind: "binary", storage: "digest-only", fileWritten: false, resourceName: name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") } });
       } catch (error) { bodyRecords.push({ ...response, bodyError: error instanceof Error ? error.message : String(error) }); }
     }
     const missingBodies = bodyRecords.filter((record) => record.bodyError).map((record) => record.url);
     await writeFile(join(output, "responses.json"), `${JSON.stringify(bodyRecords, null, 2)}\n`);
     await writeFile(join(output, "console.json"), `${JSON.stringify(consoleOutput, null, 2)}\n`);
-    await writeFile(join(output, "dump.json"), `${JSON.stringify({ caseId: entry.id, variant: currentVariant, url: server.url, document: doms[0]?.file, doms, responses: "responses.json", console: "console.json", complete: missingBodies.length === 0, missingBodies }, null, 2)}\n`);
+    await writeFile(join(output, "dump.json"), `${JSON.stringify({ caseId: entry.id, variant: currentVariant, url: server.url, document: doms[0]?.file, doms, responses: "responses.json", console: "console.json", binaryBodyConvention: { storage: "digest-only", fileWritten: false, description: "Binary response bodies are represented by resourceName, size, and sha256; no binary body file is written." }, complete: missingBodies.length === 0, missingBodies }, null, 2)}\n`);
     await normalizeTimestamps(output);
     // A dump missing a response body makes the opacity acceptance test worthless: the reviewer
     // would clear a fixture on bytes nobody read. Keep the artifacts, refuse the success status.

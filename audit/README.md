@@ -6,7 +6,7 @@ Serve a fixture locally with `audit/bin/audit fixture serve --case case-a [--var
 
 Verify both sealed variants before a run with `audit/bin/audit fixture preflight --case case-a`. It launches a fresh pinned Chrome profile and exits non-zero when an assertion fails.
 
-Inspect browser-visible fixture evidence with `audit/bin/audit fixture dump --case case-a [--variant faulty|healthy]`. It writes DOM, responses, headers, and console data to `audit/runs/case-a-dump/`.
+Inspect browser-visible fixture evidence with `audit/bin/audit fixture dump --case case-a [--variant faulty|healthy]`. It clears and rewrites `audit/runs/case-a-dump/` with DOM, responses, headers, console data, and raw browser network timing. Text response bodies are written as files; binary bodies are intentionally digest records (`storage: "digest-only"`, `fileWritten: false`, `resourceName`, `size`, and `sha256`) in `responses.json`, not missing files. `dump.json` states that convention alongside the dump's completeness.
 
 Record a verified route with `audit/bin/audit reference record --case case-a --transcript /path/transcript.ndjson [--provisional]`.
 
