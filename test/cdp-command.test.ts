@@ -487,6 +487,9 @@ test('cdp -h states the at-least-one-of input constraint and the inline --params
   assert.match(helpText, /--port <port>/);
   assert.match(helpText, /one-shot method-response and event-wait timeout/);
   assert.match(helpText, /WebSocket connection setup is separately bounded to 5000ms/);
+  assert.match(helpText, /each invocation opens an isolated CDP connection and closes it when the command exits/);
+  assert.match(helpText, /Domain enables and remote object handles \(objectIds\) are connection-scoped/);
+  assert.match(helpText, /A multi-step protocol sequence needs connection state that survives between its calls/);
   assert.match(helpText, /Output:/);
   assert.match(helpText, /Effects:/);
   assert.doesNotMatch(helpText, /Example/i, 'D6 leaf help carries no examples');

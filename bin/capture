@@ -230196,6 +230196,9 @@ Input:
   --target <id>                with --browser: attach a flattened CDP session on the held connection to this target (for target-scoped domains), including an already-open tab adopted by \`session start --hold\` without --url; without --browser: the page target to run against. 8-char id prefix accepted.
   --timeout <ms>               one-shot method-response and event-wait timeout (default ${DEFAULT_TIMEOUT_MS}ms). WebSocket connection setup is separately bounded to 5000ms.
 
+Connection lifetime:
+  Unless --browser routes through a held session, each invocation opens an isolated CDP connection and closes it when the command exits. Domain enables and remote object handles (objectIds) are connection-scoped, so a later one-shot invocation cannot use either. A multi-step protocol sequence needs connection state that survives between its calls.
+
 Output:
   <cdp-result method=\u2026 wait-event=\u2026 scope=\u2026> \u2014 the protocol result and/or awaited event as an escaped, length-capped JSON payload. --json mirrors the same block with the payload at full fidelity.
 
