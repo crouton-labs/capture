@@ -36,11 +36,11 @@ Add `--gate` to `check` or `diff` and it exits nonzero on findings, so the same 
 
 Eight short clips. Every overlay is real: the text is extracted from the command's actual stdout, the boxes are drawn at the coordinates the command printed, and the inset images are files a command actually wrote.
 
-Each preview below is a few seconds of the clip. Click through for the full version.
+Each player below contains the full clip. Use its controls to play, pause, scrub, or fullscreen.
 
 ### 1. Every command succeeded. The page is still broken.
 
-![ghost overlay](demo/previews/1-ghost-overlay.gif)
+<video src="https://github.com/user-attachments/assets/eb82b71b-a981-49b7-a0cc-c823dcda43c9" controls muted playsinline></video>
 
 An agent checks out. The promo code applies and the total drops $691.20 → $518.40, so the page is clearly working. Then it clicks **Complete purchase** — reported clicked, nothing happens. Rather than guess, it measures. The hit test resolves the click to something that is not the button, and `measure map paint` names it: `#consent`, z-index 99, **covering 100.00%** of the button's ink box.
 
@@ -50,7 +50,7 @@ Playwright throws "element intercepts pointer events" and names nothing. A scree
 
 ### 2. The page looks finished. The measurements disagree.
 
-![check gate](demo/previews/2-check-gate.gif)
+<video src="https://github.com/user-attachments/assets/37cd9cc9-0ac8-4f53-938b-799065657261" controls muted playsinline></video>
 
 One command measures a team-access page against thresholds and draws every failure onto it at real coordinates: a row control at 28×28 under the 44×44 floor, a helper line at 2.16:1 contrast, an identity column clipping the address it is showing you. Each finding carries a cropped PNG of its own evidence, and the gate exits nonzero.
 
@@ -58,7 +58,7 @@ One command measures a team-access page against thresholds and draws every failu
 
 ### 3. Two changes shipped. Which one moved the button?
 
-![measure diff](demo/previews/3-measure-diff.gif)
+<video src="https://github.com/user-attachments/assets/e33641f0-61d1-4e0a-a80a-232782a0d35a" controls muted playsinline></video>
 
 A report switches to Weekly, then a design-system stylesheet lands live. The Publish button is somewhere new. A pixel diff can only say "3% of pixels differ" — this names the element, both of its boxes, how far it moved, and the declaration that now wins, down to `tokens-v2.css` line 6.
 
@@ -66,7 +66,7 @@ A report switches to Weekly, then a design-system stylesheet lands live. The Pub
 
 ### 4. The layout flips between two pixel widths. Which two?
 
-![sweep breakpoint](demo/previews/4-sweep-breakpoint.gif)
+<video src="https://github.com/user-attachments/assets/b07923e9-9e10-4af3-a3f4-b5cdebc24309" controls muted playsinline></video>
 
 Instead of dragging a window edge until something snaps, sweep the axis. The viewport steps 619 → 620 → 621 → 622, the grid goes one column to two, and the command brackets the exact pair it happened between.
 
@@ -74,7 +74,7 @@ Instead of dragging a window edge until something snaps, sweep the axis. The vie
 
 ### 5. Name a component. Get the component.
 
-![component shot](demo/previews/5-component-shot.gif)
+<video src="https://github.com/user-attachments/assets/584c2a67-c684-4019-be84-e6ae2145567c" controls muted playsinline></video>
 
 The agent asks for a card and gets a cropped, padded, zoomed image of exactly that card — no coordinates, no full-viewport screenshot to squint at. It can ask by CSS selector or by the visible label a screen reader would read. Ask for `button` when six match, and it refuses to guess and lists all six.
 
@@ -82,7 +82,7 @@ The agent asks for a card and gets a cropped, padded, zoomed image of exactly th
 
 ### 6. How fast did that click actually answer?
 
-![motion response](demo/previews/6-motion-response.gif)
+<video src="https://github.com/user-attachments/assets/a88cb918-cd42-4681-8bd2-9f725dbf8a57" controls muted playsinline></video>
 
 Record a real interaction, then read its timeline off the recording rather than eyeballing a screenshot: input dispatch, DOM mutation at +7.20ms, first paint at +18.76ms across 6276 changed pixels, settled at +325.06ms. Every row names the evidence it came from.
 
@@ -90,7 +90,7 @@ Record a real interaction, then read its timeline off the recording rather than 
 
 ### 7. Seven seconds of motion, in one still.
 
-![motion mask](demo/previews/7-motion-mask.gif)
+<video src="https://github.com/user-attachments/assets/001e21ff-bfed-4cd9-9b2e-350562c751f6" controls muted playsinline></video>
 
 A whole animated interaction collapsed into a single image where colour encodes *when* each pixel changed — blue is early, red is late, and the entire route of the payload is one picture. Underneath it, the changed regions ranked largest first with the window each one moved in.
 
@@ -98,7 +98,7 @@ A whole animated interaction collapsed into a single image where colour encodes 
 
 ### 8. Drive the browser you are already signed into.
 
-![live session](demo/previews/8-live-session.gif)
+<video src="https://github.com/user-attachments/assets/5924757d-96e0-456e-94ce-0575d50a7faa" controls muted playsinline></video>
 
 No storage-state dance and no separate automation profile. Attach over `--port`, adopt the tab already in front of you, drive it, and finish with one bundle: the recording, the HAR, the shots and the measurements together. The network panel is drawn from the captured HAR — every field read from that entry, nothing inferred, and credential headers withheld with their length marked in place.
 
