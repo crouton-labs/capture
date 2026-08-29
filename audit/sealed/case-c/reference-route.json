@@ -1,0 +1,248 @@
+{
+  "caseId": "case-c",
+  "measuredAt": "2026-08-29T19:40:04.635Z",
+  "provisional": true,
+  "captureBuildHash": "fa99d7779475f40e033f4e0fc5aa9cf5e3fee062",
+  "chromeBuild": "unknown",
+  "hostClass": "darwin-arm64",
+  "route": [
+    {
+      "ordinal": 1,
+      "argv": [
+        "-h"
+      ],
+      "elapsedMs": 154,
+      "stdoutTokens": 583
+    },
+    {
+      "ordinal": 2,
+      "argv": [
+        "tab",
+        "-h"
+      ],
+      "elapsedMs": 153,
+      "stdoutTokens": 406
+    },
+    {
+      "ordinal": 3,
+      "argv": [
+        "tab",
+        "launch",
+        "-h"
+      ],
+      "elapsedMs": 151,
+      "stdoutTokens": 224
+    },
+    {
+      "ordinal": 4,
+      "argv": [
+        "tab",
+        "launch",
+        "--url",
+        "http://127.0.0.1:63528"
+      ],
+      "elapsedMs": 615,
+      "stdoutTokens": 114
+    },
+    {
+      "ordinal": 5,
+      "argv": [
+        "session",
+        "-h"
+      ],
+      "elapsedMs": 150,
+      "stdoutTokens": 298
+    },
+    {
+      "ordinal": 6,
+      "argv": [
+        "session",
+        "start",
+        "-h"
+      ],
+      "elapsedMs": 165,
+      "stdoutTokens": 418
+    },
+    {
+      "ordinal": 7,
+      "argv": [
+        "session",
+        "start",
+        "--url",
+        "http://127.0.0.1:63528",
+        "--port",
+        "63795"
+      ],
+      "elapsedMs": 296,
+      "stdoutTokens": 171
+    },
+    {
+      "ordinal": 8,
+      "argv": [
+        "page",
+        "-h"
+      ],
+      "elapsedMs": 202,
+      "stdoutTokens": 378
+    },
+    {
+      "ordinal": 9,
+      "argv": [
+        "page",
+        "elements",
+        "-h"
+      ],
+      "elapsedMs": 190,
+      "stdoutTokens": 204
+    },
+    {
+      "ordinal": 10,
+      "argv": [
+        "page",
+        "elements",
+        "--all",
+        "--limit",
+        "100"
+      ],
+      "elapsedMs": 1855,
+      "stdoutTokens": 1694
+    },
+    {
+      "ordinal": 11,
+      "argv": [
+        "page",
+        "shot",
+        "-h"
+      ],
+      "elapsedMs": 189,
+      "stdoutTokens": 640
+    },
+    {
+      "ordinal": 12,
+      "argv": [
+        "page",
+        "shot",
+        "--full-page",
+        "--out",
+        "/tmp/audit-refroute-k9-lumen-1788032078/work/full.png"
+      ],
+      "elapsedMs": 1053,
+      "stdoutTokens": 194
+    },
+    {
+      "ordinal": 13,
+      "argv": [
+        "measure",
+        "-h"
+      ],
+      "elapsedMs": 201,
+      "stdoutTokens": 384
+    },
+    {
+      "ordinal": 14,
+      "argv": [
+        "measure",
+        "snap",
+        "-h"
+      ],
+      "elapsedMs": 199,
+      "stdoutTokens": 554
+    },
+    {
+      "ordinal": 15,
+      "argv": [
+        "measure",
+        "snap",
+        "--pixels"
+      ],
+      "elapsedMs": 3410,
+      "stdoutTokens": 217
+    },
+    {
+      "ordinal": 16,
+      "argv": [
+        "measure",
+        "explain",
+        "-h"
+      ],
+      "elapsedMs": 190,
+      "stdoutTokens": 293
+    },
+    {
+      "ordinal": 17,
+      "argv": [
+        "measure",
+        "explain",
+        "snap-mtes7jnj-3f480df5",
+        "--selector",
+        "backend:142",
+        "--size",
+        "--text"
+      ],
+      "elapsedMs": 202,
+      "stdoutTokens": 1332
+    },
+    {
+      "ordinal": 18,
+      "argv": [
+        "measure",
+        "check",
+        "-h"
+      ],
+      "elapsedMs": 192,
+      "stdoutTokens": 236
+    },
+    {
+      "ordinal": 19,
+      "argv": [
+        "measure",
+        "check",
+        "snap-mtes7jnj-3f480df5",
+        "--for",
+        "contrast",
+        "--selector",
+        "backend:142",
+        "--limit",
+        "20"
+      ],
+      "elapsedMs": 220,
+      "stdoutTokens": 270
+    },
+    {
+      "ordinal": 20,
+      "argv": [
+        "page",
+        "shot",
+        "--crop-selector",
+        "backend:127",
+        "--pad",
+        "12",
+        "--zoom",
+        "1.5",
+        "--out",
+        "/tmp/audit-refroute-k9-lumen-1788032078/work/rules-refunds.png"
+      ],
+      "elapsedMs": 871,
+      "stdoutTokens": 249
+    },
+    {
+      "ordinal": 21,
+      "argv": [
+        "measure",
+        "explain",
+        "snap-mtes7jnj-3f480df5",
+        "--selector",
+        "backend:56",
+        "--text"
+      ],
+      "elapsedMs": 201,
+      "stdoutTokens": 1141
+    }
+  ],
+  "totals": {
+    "calls": 21,
+    "elapsedSeconds": 10.859,
+    "stdoutTokens": 10000
+  },
+  "notes": "Solved. Independent operator, envelope clean: 21 calls, 10.9s, 10,064 stdout+stderr tokens against a 40-call/25-min/40k budget, gapless ordinals 1-21, no failures, no .failure sidecar, and ZERO escape hatches (no cdp, no page exec, no local calculation, no external auditor) - verified from the transcript, not from the operator's claim. Host darwin-arm64 (this Mac), not the pinned audit target; re-tune numeric margins before any counted run.\n\nProvisional for two reasons. First, capture still has no Lighthouse leaf, so this is a route around the intended capability rather than through it. Second, and more important for anyone reading a ratio against this denominator: the route found the root cause but would NOT satisfy the oracle's requiredEvidence. It never enumerated the other audited conditions, never ruled out the noindex/alt/console-error/heading-skip decoys, and never established localized-not-global (that the same muted colour passes on white surfaces). This is the cost of REACHING the answer, not the cost of a passing run; a run that must satisfy requiredEvidence will legitimately exceed it.\n\nThe route turns on ordinal 19, 'measure check <snap> --for contrast --selector backend:142 --limit 20', which returned 3.26:1 against the composited panel background. That command only works because commit a911d51 fixed contrast compositing over ancestor backgrounds earlier the same day. An earlier operator on the pre-fix binary did not solve this fixture in 31 calls, and got the same number only by reading two RGB values with measure explain and computing WCAG locally.\n\nDo not read the improvement as a clean measurement of that fix. Two variables changed between the two attempts: the binary, and the oracle's vagueSymptom, which was tightened (fa99d77) to put the caller on the rules-and-refunds panel and thereby exclude a placement/scroll-depth story the earlier operator diagnosed instead."
+}
