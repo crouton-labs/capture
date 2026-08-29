@@ -48,9 +48,9 @@
     ]
   },
   "intendedCapability": "real Lighthouse audit",
-  "intendedCapabilityStatus": "unshipped",
+  "intendedCapabilityStatus": "shipped",
   "intendedCapabilityRequiredForPass": false,
-  "intendedCapabilityMatchers": [["audit"], ["page", "audit"], ["measure", "audit"], ["session", "audit"], ["lighthouse"]],
+  "intendedCapabilityMatchers": [["lighthouse"]],
   "escapeHatchMatchers": [["cdp"], ["page", "exec"]],
   "environment": {
     "chromeBuild": "Chrome for Testing 143.0.7499.40 (full build; NOT chrome-headless-shell)",

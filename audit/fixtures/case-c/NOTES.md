@@ -44,7 +44,11 @@ Case C was built to price a capability capture does not have — a real Lighthou
 
 Silas ruled (2026-08-29) that the case keeps its five defects exactly as built and is reclassified rather than widened: **it tests whether an agent can attribute a contrast failure to the right node and select it against four decoys.** The design's rule that a case solved by a non-intended route must have its defect set widened does not fire here, because the difficulty that rule wants already lives in grading — the 21-call route found the cause and would still fail, missing three of the oracle's four `requiredEvidence` items.
 
-The oracle's `intendedCapability`, `intendedCapabilityStatus: "unshipped"`, and `intendedCapabilityRequiredForPass: false` are unchanged and remain literally true: capture still has no Lighthouse leaf, and passing never required one. The grader will keep reporting `firstClassCapability: "unavailable"` for Case C runs, which is a true statement about the Lighthouse leaf and not a claim that the case was unsolvable.
+The oracle's `intendedCapability` ("real Lighthouse audit") and `intendedCapabilityRequiredForPass: false` are unchanged: passing this case never required Lighthouse, and still does not. `intendedCapabilityStatus` is now `shipped` and the matchers are `[["lighthouse"]]`, corrected on 2026-08-29 because `capture lighthouse` shipped as a real root noun running Lighthouse 12.8.2. Silas's ruling above pinned that field on the premise that "capture still has no Lighthouse leaf", and that premise expired; the design mandates the correction once the leaf lands (`design-case-c-lighthouse.md`, **Open questions**). The stale guesses `["audit"]`, `["page","audit"]`, `["measure","audit"]`, and `["session","audit"]` name nouns that do not exist and are deleted.
+
+The grader therefore now reports `firstClassCapability` as `used` or `absent` for Case C runs instead of `unavailable`. That is the truthful report: `absent` means the operator solved it without the Lighthouse leaf, which is a real and interesting result, where `unavailable` would falsely claim the leaf did not exist.
+
+`measure check` is deliberately **not** an intended-capability matcher. The design fixes it as Case C's adversarial non-Lighthouse route — the baseline the Lighthouse route is measured against — so matching it as the intended capability would erase the separation the case exists to measure.
 
 ## Reference route
 
