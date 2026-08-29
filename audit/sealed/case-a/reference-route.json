@@ -1,0 +1,263 @@
+{
+  "caseId": "case-a",
+  "measuredAt": "2026-08-29T21:35:09.828Z",
+  "provisional": true,
+  "captureBuildHash": "1407986ef947b44daa563092695ea36b00ca4358",
+  "chromeBuild": "unknown",
+  "hostClass": "darwin-arm64",
+  "route": [
+    {
+      "ordinal": 1,
+      "argv": [
+        "-h"
+      ],
+      "elapsedMs": 156,
+      "stdoutTokens": 583
+    },
+    {
+      "ordinal": 2,
+      "argv": [
+        "tab",
+        "-h"
+      ],
+      "elapsedMs": 163,
+      "stdoutTokens": 406
+    },
+    {
+      "ordinal": 3,
+      "argv": [
+        "tab",
+        "launch",
+        "-h"
+      ],
+      "elapsedMs": 164,
+      "stdoutTokens": 224
+    },
+    {
+      "ordinal": 4,
+      "argv": [
+        "tab",
+        "launch",
+        "--url",
+        "http://127.0.0.1:63801"
+      ],
+      "elapsedMs": 877,
+      "stdoutTokens": 114
+    },
+    {
+      "ordinal": 5,
+      "argv": [
+        "session",
+        "-h"
+      ],
+      "elapsedMs": 154,
+      "stdoutTokens": 298
+    },
+    {
+      "ordinal": 6,
+      "argv": [
+        "session",
+        "start",
+        "-h"
+      ],
+      "elapsedMs": 158,
+      "stdoutTokens": 418
+    },
+    {
+      "ordinal": 7,
+      "argv": [
+        "session",
+        "start",
+        "--url",
+        "http://127.0.0.1:63801",
+        "--port",
+        "50187"
+      ],
+      "elapsedMs": 291,
+      "stdoutTokens": 171
+    },
+    {
+      "ordinal": 8,
+      "argv": [
+        "page",
+        "-h"
+      ],
+      "elapsedMs": 196,
+      "stdoutTokens": 378
+    },
+    {
+      "ordinal": 9,
+      "argv": [
+        "page",
+        "elements",
+        "-h"
+      ],
+      "elapsedMs": 199,
+      "stdoutTokens": 204
+    },
+    {
+      "ordinal": 10,
+      "argv": [
+        "page",
+        "elements",
+        "--all",
+        "--limit",
+        "200"
+      ],
+      "elapsedMs": 412,
+      "stdoutTokens": 521
+    },
+    {
+      "ordinal": 11,
+      "argv": [
+        "page",
+        "click",
+        "-h"
+      ],
+      "elapsedMs": 208,
+      "stdoutTokens": 291
+    },
+    {
+      "ordinal": 12,
+      "argv": [
+        "page",
+        "type",
+        "-h"
+      ],
+      "elapsedMs": 209,
+      "stdoutTokens": 302
+    },
+    {
+      "ordinal": 13,
+      "argv": [
+        "page",
+        "click",
+        "backend:39"
+      ],
+      "elapsedMs": 3255,
+      "stdoutTokens": 77
+    },
+    {
+      "ordinal": 14,
+      "argv": [
+        "page",
+        "elements",
+        "--all",
+        "--limit",
+        "100"
+      ],
+      "elapsedMs": 403,
+      "stdoutTokens": 504
+    },
+    {
+      "ordinal": 15,
+      "argv": [
+        "session",
+        "har",
+        "-h"
+      ],
+      "elapsedMs": 153,
+      "stdoutTokens": 608
+    },
+    {
+      "ordinal": 16,
+      "argv": [
+        "session",
+        "har",
+        "--full",
+        "--limit",
+        "20"
+      ],
+      "elapsedMs": 149,
+      "stdoutTokens": 518
+    },
+    {
+      "ordinal": 17,
+      "argv": [
+        "page",
+        "click",
+        "backend:39",
+        "--settle",
+        "1000"
+      ],
+      "elapsedMs": 1779,
+      "stdoutTokens": 78
+    },
+    {
+      "ordinal": 18,
+      "argv": [
+        "page",
+        "elements",
+        "--all",
+        "--limit",
+        "100"
+      ],
+      "elapsedMs": 406,
+      "stdoutTokens": 504
+    },
+    {
+      "ordinal": 19,
+      "argv": [
+        "session",
+        "har",
+        "--full",
+        "--limit",
+        "10"
+      ],
+      "elapsedMs": 155,
+      "stdoutTokens": 955
+    },
+    {
+      "ordinal": 20,
+      "argv": [
+        "page",
+        "exec",
+        "-h"
+      ],
+      "elapsedMs": 191,
+      "stdoutTokens": 372
+    },
+    {
+      "ordinal": 21,
+      "argv": [
+        "page",
+        "exec",
+        "window.__auditOriginalFetch = window.fetch; window.fetch = async (...args) => { const response = await window.__auditOriginalFetch(...args); const url = String(args[0] instanceof Request ? args[0].url : args[0]); if (url.includes(\"/api/tax-estimate\")) { const body = await response.clone().json(); delete body.shipping; return new Response(JSON.stringify(body), {status: response.status, statusText: response.statusText, headers: response.headers}); } return response; }; return \"tax shipping field removed\";",
+        "--settle",
+        "0"
+      ],
+      "elapsedMs": 392,
+      "stdoutTokens": 35
+    },
+    {
+      "ordinal": 22,
+      "argv": [
+        "page",
+        "click",
+        "backend:39",
+        "--settle",
+        "1000"
+      ],
+      "elapsedMs": 1791,
+      "stdoutTokens": 76
+    },
+    {
+      "ordinal": 23,
+      "argv": [
+        "page",
+        "elements",
+        "--all",
+        "--limit",
+        "100"
+      ],
+      "elapsedMs": 388,
+      "stdoutTokens": 503
+    }
+  ],
+  "totals": {
+    "calls": 23,
+    "elapsedSeconds": 12.249,
+    "stdoutTokens": 8140
+  },
+  "notes": "Solved blind in 23 calls by an independent operator (run refroute-p3-harbor-1788038986) who reproduced the symptom, read both recalculation responses from session har, and established the counterfactual. Provisional because capture ships no first-class request/response mocking: tab network is only offline/online, so the operator wrapped window.fetch through page exec to strip the tax response's colliding shipping field. A graded run must still satisfy the oracle's requiredEvidence; this denominator records the cost of reaching the answer, not of a passing run. Operator friction: 10 of 23 calls were help traversal, and session har --full repeated request headers around the small JSON bodies it wanted."
+}

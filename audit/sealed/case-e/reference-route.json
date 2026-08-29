@@ -1,0 +1,415 @@
+{
+  "caseId": "case-e",
+  "measuredAt": "2026-08-29T21:35:43.124Z",
+  "provisional": true,
+  "captureBuildHash": "1407986ef947b44daa563092695ea36b00ca4358",
+  "chromeBuild": "unknown",
+  "hostClass": "darwin-arm64",
+  "route": [
+    {
+      "ordinal": 1,
+      "argv": [
+        "-h"
+      ],
+      "elapsedMs": 163,
+      "stdoutTokens": 583
+    },
+    {
+      "ordinal": 2,
+      "argv": [
+        "tab",
+        "-h"
+      ],
+      "elapsedMs": 166,
+      "stdoutTokens": 406
+    },
+    {
+      "ordinal": 3,
+      "argv": [
+        "tab",
+        "launch",
+        "-h"
+      ],
+      "elapsedMs": 157,
+      "stdoutTokens": 224
+    },
+    {
+      "ordinal": 4,
+      "argv": [
+        "tab",
+        "launch",
+        "--url",
+        "http://127.0.0.1:63803"
+      ],
+      "elapsedMs": 332,
+      "stdoutTokens": 90
+    },
+    {
+      "ordinal": 5,
+      "argv": [
+        "session",
+        "-h"
+      ],
+      "elapsedMs": 155,
+      "stdoutTokens": 298
+    },
+    {
+      "ordinal": 6,
+      "argv": [
+        "session",
+        "start",
+        "-h"
+      ],
+      "elapsedMs": 154,
+      "stdoutTokens": 418
+    },
+    {
+      "ordinal": 7,
+      "argv": [
+        "session",
+        "start",
+        "--url",
+        "http://127.0.0.1:63803",
+        "--port",
+        "50200",
+        "--hold"
+      ],
+      "elapsedMs": 515,
+      "stdoutTokens": 178
+    },
+    {
+      "ordinal": 8,
+      "argv": [
+        "page",
+        "-h"
+      ],
+      "elapsedMs": 193,
+      "stdoutTokens": 378
+    },
+    {
+      "ordinal": 9,
+      "argv": [
+        "page",
+        "elements",
+        "-h"
+      ],
+      "elapsedMs": 190,
+      "stdoutTokens": 204
+    },
+    {
+      "ordinal": 10,
+      "argv": [
+        "page",
+        "elements",
+        "--all",
+        "--limit",
+        "200"
+      ],
+      "elapsedMs": 405,
+      "stdoutTokens": 204
+    },
+    {
+      "ordinal": 11,
+      "argv": [
+        "cdp",
+        "-h"
+      ],
+      "elapsedMs": 154,
+      "stdoutTokens": 479
+    },
+    {
+      "ordinal": 12,
+      "argv": [
+        "cdp",
+        "Memory.getDOMCounters"
+      ],
+      "elapsedMs": 392,
+      "stdoutTokens": 43
+    },
+    {
+      "ordinal": 13,
+      "argv": [
+        "cdp",
+        "Performance.getMetrics"
+      ],
+      "elapsedMs": 398,
+      "stdoutTokens": 35
+    },
+    {
+      "ordinal": 14,
+      "argv": [
+        "cdp",
+        "Runtime.getHeapUsage"
+      ],
+      "elapsedMs": 403,
+      "stdoutTokens": 55
+    },
+    {
+      "ordinal": 15,
+      "argv": [
+        "page",
+        "click",
+        "-h"
+      ],
+      "elapsedMs": 182,
+      "stdoutTokens": 291
+    },
+    {
+      "ordinal": 16,
+      "argv": [
+        "page",
+        "click",
+        "ax:Quick View"
+      ],
+      "elapsedMs": 3263,
+      "stdoutTokens": 77
+    },
+    {
+      "ordinal": 17,
+      "argv": [
+        "page",
+        "elements",
+        "--all",
+        "--limit",
+        "200"
+      ],
+      "elapsedMs": 463,
+      "stdoutTokens": 269
+    },
+    {
+      "ordinal": 18,
+      "argv": [
+        "cdp",
+        "Memory.getDOMCounters"
+      ],
+      "elapsedMs": 392,
+      "stdoutTokens": 43
+    },
+    {
+      "ordinal": 19,
+      "argv": [
+        "cdp",
+        "Runtime.getHeapUsage"
+      ],
+      "elapsedMs": 397,
+      "stdoutTokens": 55
+    },
+    {
+      "ordinal": 20,
+      "argv": [
+        "page",
+        "click",
+        "ax:Close",
+        "--settle",
+        "500"
+      ],
+      "elapsedMs": 1269,
+      "stdoutTokens": 75
+    },
+    {
+      "ordinal": 21,
+      "argv": [
+        "cdp",
+        "Runtime.getHeapUsage"
+      ],
+      "elapsedMs": 369,
+      "stdoutTokens": 55
+    },
+    {
+      "ordinal": 22,
+      "argv": [
+        "cdp",
+        "Memory.getDOMCounters"
+      ],
+      "elapsedMs": 373,
+      "stdoutTokens": 43
+    },
+    {
+      "ordinal": 23,
+      "argv": [
+        "cdp",
+        "HeapProfiler.collectGarbage"
+      ],
+      "elapsedMs": 361,
+      "stdoutTokens": 33
+    },
+    {
+      "ordinal": 24,
+      "argv": [
+        "cdp",
+        "Runtime.getHeapUsage"
+      ],
+      "elapsedMs": 727,
+      "stdoutTokens": 54
+    },
+    {
+      "ordinal": 25,
+      "argv": [
+        "cdp",
+        "Memory.getDOMCounters"
+      ],
+      "elapsedMs": 732,
+      "stdoutTokens": 43
+    },
+    {
+      "ordinal": 26,
+      "argv": [
+        "page",
+        "exec",
+        "-h"
+      ],
+      "elapsedMs": 184,
+      "stdoutTokens": 372
+    },
+    {
+      "ordinal": 27,
+      "argv": [
+        "cdp",
+        "Runtime.evaluate",
+        "--params",
+        "{\"expression\":\"Object.fromEntries(Object.entries(getEventListeners(window)).map(([k,v])=>[k,v.map(x=>({type:x.type,useCapture:x.useCapture,passive:x.passive,once:x.once,handler:String(x.listener)}))]))\",\"includeCommandLineAPI\":true,\"returnByValue\":true}"
+      ],
+      "elapsedMs": 370,
+      "stdoutTokens": 102
+    },
+    {
+      "ordinal": 28,
+      "argv": [
+        "page",
+        "click",
+        "ax:Quick View",
+        "--settle",
+        "300",
+        "--no-screenshot"
+      ],
+      "elapsedMs": 697,
+      "stdoutTokens": 43
+    },
+    {
+      "ordinal": 29,
+      "argv": [
+        "page",
+        "click",
+        "ax:Close",
+        "--settle",
+        "200",
+        "--no-screenshot"
+      ],
+      "elapsedMs": 598,
+      "stdoutTokens": 44
+    },
+    {
+      "ordinal": 30,
+      "argv": [
+        "cdp",
+        "HeapProfiler.collectGarbage"
+      ],
+      "elapsedMs": 379,
+      "stdoutTokens": 33
+    },
+    {
+      "ordinal": 31,
+      "argv": [
+        "cdp",
+        "Memory.getDOMCounters"
+      ],
+      "elapsedMs": 351,
+      "stdoutTokens": 43
+    },
+    {
+      "ordinal": 32,
+      "argv": [
+        "cdp",
+        "Runtime.evaluate",
+        "--params",
+        "{\"expression\":\"Object.fromEntries(Object.entries(getEventListeners(window)).map(([k,v])=>[k,v.map(x=>String(x.listener))]))\",\"includeCommandLineAPI\":true,\"returnByValue\":true}"
+      ],
+      "elapsedMs": 346,
+      "stdoutTokens": 124
+    },
+    {
+      "ordinal": 33,
+      "argv": [
+        "cdp",
+        "Runtime.evaluate",
+        "--params",
+        "{\"expression\":\"(()=>{const xs=getEventListeners(window).message||[]; for(const x of xs) window.removeEventListener(\\\"message\\\",x.listener,x.useCapture); return xs.length})()\",\"includeCommandLineAPI\":true,\"returnByValue\":true}"
+      ],
+      "elapsedMs": 384,
+      "stdoutTokens": 44
+    },
+    {
+      "ordinal": 34,
+      "argv": [
+        "cdp",
+        "HeapProfiler.collectGarbage"
+      ],
+      "elapsedMs": 361,
+      "stdoutTokens": 33
+    },
+    {
+      "ordinal": 35,
+      "argv": [
+        "cdp",
+        "Memory.getDOMCounters"
+      ],
+      "elapsedMs": 361,
+      "stdoutTokens": 43
+    },
+    {
+      "ordinal": 36,
+      "argv": [
+        "cdp",
+        "Runtime.getHeapUsage"
+      ],
+      "elapsedMs": 375,
+      "stdoutTokens": 55
+    },
+    {
+      "ordinal": 37,
+      "argv": [
+        "session",
+        "stop",
+        "-h"
+      ],
+      "elapsedMs": 151,
+      "stdoutTokens": 134
+    },
+    {
+      "ordinal": 38,
+      "argv": [
+        "session",
+        "stop",
+        "cap-mtewbhx3-vmwx"
+      ],
+      "elapsedMs": 259,
+      "stdoutTokens": 115
+    },
+    {
+      "ordinal": 39,
+      "argv": [
+        "tab",
+        "quit",
+        "-h"
+      ],
+      "elapsedMs": 156,
+      "stdoutTokens": 142
+    },
+    {
+      "ordinal": 40,
+      "argv": [
+        "tab",
+        "quit",
+        "50200"
+      ],
+      "elapsedMs": 265,
+      "stdoutTokens": 29
+    }
+  ],
+  "totals": {
+    "calls": 40,
+    "elapsedSeconds": 17.542,
+    "stdoutTokens": 5989
+  },
+  "notes": "Solved blind in 40 calls by an independent operator (run refroute-r2-verdant-1788038989) who reproduced the leak across two real open/close cycles, forced GC between them, and attributed it to a message listener surviving each cycle. Provisional because capture ships no heap or retainer surface at all: 21 of the 40 calls are raw 'cdp' (Memory.getDOMCounters, Runtime.getHeapUsage, HeapProfiler.collectGarbage, Runtime.evaluate with getEventListeners) and 13 more are help traversal. The route never produced a heap retaining path, so it does not satisfy the oracle's requiredEvidence; this denominator records the cost of reaching the answer, not of a passing run."
+}
