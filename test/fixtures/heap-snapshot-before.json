@@ -1,0 +1,35 @@
+{
+  "snapshot": {
+    "meta": {
+      "node_fields": ["id", "edge_count", "type", "name", "self_size"],
+      "node_types": ["number", "number", ["hidden", "object", "string"], "string", "number"],
+      "edge_fields": ["to_node", "name_or_index", "type"],
+      "edge_types": ["number", "string_or_number", ["property", "element"]],
+      "trace_function_info_fields": [],
+      "trace_node_fields": [],
+      "sample_fields": [],
+      "location_fields": []
+    },
+    "node_count": 7,
+    "edge_count": 7
+  },
+  "nodes": [
+    1, 3, 0, 0, 1,
+    2, 1, 1, 1, 10,
+    3, 2, 1, 2, 20,
+    4, 1, 1, 3, 30,
+    5, 0, 2, 4, 8,
+    6, 0, 2, 4, 8,
+    8, 0, 1, 6, 4
+  ],
+  "edges": [
+    5, 7, 0,
+    10, 8, 0,
+    30, 9, 0,
+    15, 9, 0,
+    15, 9, 0,
+    25, 10, 0,
+    20, 10, 0
+  ],
+  "strings": ["(root)", "A", "B", "Target", "shared", "New", "Gone", "a", "b", "target", "value"]
+}
