@@ -34,9 +34,10 @@ export async function serve(args) {
 export async function preflight(args) {
   const entry = requireCase(args);
   const results = [];
+  const chromeFlavor = (await fixtureModule(entry)).chromeFlavor;
   for (const currentVariant of ["faulty", "healthy"]) {
     const server = await startFixture({ caseId: entry.id, variant: currentVariant, runId: `preflight-${Date.now()}` });
-    const chrome = await launchChrome();
+    const chrome = await launchChrome({ flavor: chromeFlavor });
     const cdp = await connect(`http://127.0.0.1:${chrome.port}`);
     try {
       const capture = (argv, options = {}) => invokeCapture(argv, { ...options, env: { ...options.env, CDP_PORT: String(chrome.port) } });
@@ -71,7 +72,8 @@ export async function dump(args) {
   const output = resolve(auditRoot, "runs", `${entry.id}-dump`);
   await mkdir(output, { recursive: true });
   const server = await startFixture({ caseId: entry.id, variant: currentVariant, runId: `${entry.id}-dump` });
-  const chrome = await launchChrome(); const cdp = await connect(`http://127.0.0.1:${chrome.port}`);
+  const fixture = await fixtureModule(entry);
+  const chrome = await launchChrome({ flavor: fixture.chromeFlavor }); const cdp = await connect(`http://127.0.0.1:${chrome.port}`);
   let dumpSessionId;
   const capture = (argv, options = {}) => invokeCapture(argv, { ...options, env: { ...options.env, CDP_PORT: String(chrome.port) } });
   const responses = new Map(), consoleOutput = [], doms = [], activeRequests = new Set();
@@ -94,7 +96,6 @@ export async function dump(args) {
     const navigated = await capture(["page", "navigate", server.url]);
     if (navigated.exitCode !== 0) throw new Error(`capture page navigate failed: ${navigated.stderr}`);
     await snapshot("load");
-    const fixture = await fixtureModule(entry);
     if (typeof fixture.dumpScript === "function") await fixture.dumpScript({ url: server.url, cdp, capture, snapshot });
     const idleDeadline = Date.now() + 5_000;
     while (activeRequests.size && Date.now() < idleDeadline) await new Promise((resolveWait) => setTimeout(resolveWait, 25));
