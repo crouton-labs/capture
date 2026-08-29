@@ -61,11 +61,11 @@ function makePng(width: number, height: number): Buffer {
 /** The CDP surface the real captureScreenshot drives for a plain (no
  * emulation) capture. Emulation handlers are added only by the tests that
  * expect them — any other method throws, which is itself the proof. */
-function captureHandlers(png: Buffer, opts: { emulation?: boolean; media?: boolean; contentHeight?: number } = {}): Handlers {
+function captureHandlers(png: Buffer, opts: { emulation?: boolean; media?: boolean; contentHeight?: number; pageX?: number; pageY?: number } = {}): Handlers {
   const handlers: Handlers = {
     'Page.getLayoutMetrics': () => ({
       contentSize: { width: 1280, height: opts.contentHeight ?? 800 },
-      cssVisualViewport: { clientWidth: 1280, clientHeight: 800, pageX: 0, pageY: 0 },
+      cssVisualViewport: { clientWidth: 1280, clientHeight: 800, pageX: opts.pageX ?? 0, pageY: opts.pageY ?? 0 },
     }),
     'Runtime.evaluate': (params) => String(params.expression ?? '').includes('window.innerWidth')
       ? ({ result: { value: { width: 1280, height: 800 } } })
@@ -296,7 +296,7 @@ test('a CSS crop fails rather than silently falling back to an uncropped viewpor
 test('--crop-selector resolves exactly one target, pads its border box, and captures at the requested zoom', async () => {
   const outPath = path.join(os.tmpdir(), `u07-selector-crop-${process.pid}.png`);
   const client = stubClient({
-    ...captureHandlers(makePng(176, 176)),
+    ...captureHandlers(makePng(176, 176), { pageX: 100, pageY: 400 }),
     'DOM.enable': () => ({}),
     'DOM.getDocument': () => ({ root: { nodeId: 1 } }),
     'DOM.querySelectorAll': () => ({ nodeIds: [2] }),
@@ -310,10 +310,10 @@ test('--crop-selector resolves exactly one target, pads its border box, and capt
     const { stdout, exitCode } = await runCmd(() => cmdPageShot(parsedFor({ cropSelector: '.tile', pad: 8, zoom: '4', out: outPath }), []));
     assert.equal(exitCode, undefined);
     const clip = client.calls.find((call) => call.method === 'Page.captureScreenshot')?.params.clip as Record<string, number>;
-    assert.deepEqual(clip, { x: 18.5, y: 134, width: 44, height: 44, scale: 4 });
+    assert.deepEqual(clip, { x: 118.5, y: 534, width: 44, height: 44, scale: 4 });
     assert.match(stdout, /crop-source="selector" crop-selector="\.tile" crop-backend-node-id="14" requested-zoom="4"/);
-    assert.match(stdout, /captured CSS region 44×44 at page origin 18\.5,134/);
-    assert.match(stdout, /border box plus 8px padding requested x=18\.5 y=134 w=44 h=44 at zoom 4/);
+    assert.match(stdout, /captured CSS region 44×44 at page origin 118\.5,534/);
+    assert.match(stdout, /border box plus 8px padding requested x=118\.5 y=534 w=44 h=44 at zoom 4/);
   } finally {
     cleanup(state);
     fs.rmSync(outPath, { force: true });

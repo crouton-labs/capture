@@ -19,6 +19,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { type ParsedArgs } from '../../types.js';
 import { withConnection } from '../../connection.js';
+import { type CDPClient } from '../../client.js';
 import { captureScreenshotWithCssViewport, type CapturedRegion, type ScreenshotCrop } from '../../screenshot.js';
 import { parseViewport, type Viewport } from '../../viewport.js';
 import { parseColorScheme, withAppliedColorScheme, type ColorScheme } from '../../color-scheme.js';
@@ -231,6 +232,25 @@ function padded(rect: ScreenshotCrop, pad: number): ScreenshotCrop {
   return { x: rect.x - pad, y: rect.y - pad, width: rect.width + 2 * pad, height: rect.height + 2 * pad };
 }
 
+async function pageBorderRect(client: CDPClient, backendNodeId: number): Promise<ScreenshotCrop | undefined> {
+  const box = (await client.send('DOM.getBoxModel', { backendNodeId })) as { model?: unknown };
+  const rect = borderRect(box.model);
+  if (!rect) return undefined;
+
+  // DOM box-model quads are relative to the live viewport. Screenshot clips
+  // use page coordinates, so account for the scroll DOM.scrollIntoViewIfNeeded
+  // just performed for a selector crop.
+  const metrics = (await client.send('Page.getLayoutMetrics')) as {
+    cssVisualViewport?: { pageX?: unknown; pageY?: unknown };
+  };
+  const pageX = metrics.cssVisualViewport?.pageX;
+  const pageY = metrics.cssVisualViewport?.pageY;
+  if (typeof pageX !== 'number' || !Number.isFinite(pageX) || typeof pageY !== 'number' || !Number.isFinite(pageY)) {
+    throw new Error('Page.getLayoutMetrics returned no valid visual-viewport page origin for --crop-selector.');
+  }
+  return { ...rect, x: rect.x + pageX, y: rect.y + pageY };
+}
+
 // ---------------------------------------------------------------------------
 // page shot
 // ---------------------------------------------------------------------------
@@ -340,8 +360,7 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
         const resolved = await resolveLiveTarget(client as unknown as LiveClient, parsed.cropSelector);
         if (!resolved.ok) return { failure: resolved } as const;
         await client.send('DOM.scrollIntoViewIfNeeded', { backendNodeId: resolved.backendNodeId });
-        const box = (await client.send('DOM.getBoxModel', { backendNodeId: resolved.backendNodeId })) as { model?: unknown };
-        const rect = borderRect(box.model);
+        const rect = await pageBorderRect(client, resolved.backendNodeId);
         if (!rect) throw new Error(`Resolved target backend:${resolved.backendNodeId} has no measurable border box for --crop-selector.`);
         const pad = parsed.pad ?? 0;
         requestedCrop = padded(rect, pad);

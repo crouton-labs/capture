@@ -16371,7 +16371,7 @@ async function scrollResolved(client, resolved, to, opts = {}) {
   try {
     const params = {
       objectId,
-      functionDeclaration: 'function(to) { const n = to === "top" ? 0 : to === "bottom" ? this.scrollHeight : Number(to); const top = Math.max(0, Math.min(n, this.scrollHeight - this.clientHeight)); if (this.scrollTop === top) return top; return new Promise((resolve) => { this.addEventListener("scrollend", () => resolve(this.scrollTop), { once: true }); this.scrollTo({ top, behavior: "smooth" }); }); }',
+      functionDeclaration: 'function(to) { const root = this === document.documentElement || this === document.body; const container = root ? document.scrollingElement : this; const n = to === "top" ? 0 : to === "bottom" ? container.scrollHeight : Number(to); const top = Math.max(0, Math.min(n, container.scrollHeight - container.clientHeight)); if (container.scrollTop === top) return top; return new Promise((resolve) => { const eventTarget = root ? document : this; eventTarget.addEventListener("scrollend", () => resolve(container.scrollTop), { once: true }); if (root) window.scrollTo({ top, behavior: "smooth" }); else this.scrollTo({ top, behavior: "smooth" }); }); }',
       arguments: [{ value: to }],
       awaitPromise: true,
       returnByValue: true
@@ -228244,6 +228244,18 @@ function borderRect(model) {
 function padded(rect3, pad) {
   return { x: rect3.x - pad, y: rect3.y - pad, width: rect3.width + 2 * pad, height: rect3.height + 2 * pad };
 }
+async function pageBorderRect(client, backendNodeId2) {
+  const box = await client.send("DOM.getBoxModel", { backendNodeId: backendNodeId2 });
+  const rect3 = borderRect(box.model);
+  if (!rect3) return void 0;
+  const metrics = await client.send("Page.getLayoutMetrics");
+  const pageX = metrics.cssVisualViewport?.pageX;
+  const pageY = metrics.cssVisualViewport?.pageY;
+  if (typeof pageX !== "number" || !Number.isFinite(pageX) || typeof pageY !== "number" || !Number.isFinite(pageY)) {
+    throw new Error("Page.getLayoutMetrics returned no valid visual-viewport page origin for --crop-selector.");
+  }
+  return { ...rect3, x: rect3.x + pageX, y: rect3.y + pageY };
+}
 async function cmdPageShot(parsed, _args) {
   if (parsed.help) {
     console.log(USAGE6);
@@ -228340,8 +228352,7 @@ async function cmdPageShot(parsed, _args) {
         const resolved = await resolveLiveTarget(client, parsed.cropSelector);
         if (!resolved.ok) return { failure: resolved };
         await client.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: resolved.backendNodeId });
-        const box = await client.send("DOM.getBoxModel", { backendNodeId: resolved.backendNodeId });
-        const rect3 = borderRect(box.model);
+        const rect3 = await pageBorderRect(client, resolved.backendNodeId);
         if (!rect3) throw new Error(`Resolved target backend:${resolved.backendNodeId} has no measurable border box for --crop-selector.`);
         const pad = parsed.pad ?? 0;
         requestedCrop = padded(rect3, pad);
@@ -228402,6 +228413,10 @@ effects:
 // src/cdp/commands/page/elements.ts
 async function collectElements(client, opts = {}) {
   const nodes = await readFullAXTree(client);
+  const parents = /* @__PURE__ */ new Map();
+  for (const node of nodes) {
+    for (const childId of node.childIds ?? []) parents.set(childId, node);
+  }
   const records = [];
   for (const node of nodes) {
     if (node.ignored) continue;
@@ -228410,6 +228425,8 @@ async function collectElements(client, opts = {}) {
     if (!opts.all) {
       if (!INTERACTIVE_ROLES.has(role)) continue;
       if (node.backendDOMNodeId === void 0) continue;
+    } else if ((role === "StaticText" || role === "InlineTextBox") && typeof node.name?.value === "string" && node.name.value.length > 0 && node.name.value === parents.get(node.nodeId)?.name?.value) {
+      continue;
     }
     records.push({
       role,

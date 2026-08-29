@@ -501,6 +501,7 @@ test('page scroll: --to bottom moves the container and auto-screenshots', async 
     const scrollCall = client.calls.find((c) => c.method === 'Runtime.callFunctionOn');
     assert.ok(scrollCall, 'the scroll must drive the container in-page');
     assert.match(String(scrollCall.params.functionDeclaration), /scrollTo\(\{ top, behavior: "smooth" \}\)/, 'scrolling uses the native smooth animation so a recorder receives repaint frames');
+    assert.match(String(scrollCall.params.functionDeclaration), /root \? document : this/, 'root scrolling must wait for document scrollend, not the html element event');
     assert.equal(scrollCall.params.awaitPromise, true, 'the command reports the final offset only after the smooth scroll ends');
     assert.deepEqual(scrollCall.params.arguments, [{ value: 'bottom' }]);
     assert.deepEqual(deps.shots, [{ action: 'scroll', label: '.feed', noScreenshot: undefined }]);

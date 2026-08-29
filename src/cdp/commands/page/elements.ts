@@ -72,6 +72,10 @@ export async function collectElements(
   opts: { all?: boolean } = {},
 ): Promise<ElementRecord[]> {
   const nodes = await readFullAXTree(client);
+  const parents = new Map<string, (typeof nodes)[number]>();
+  for (const node of nodes) {
+    for (const childId of node.childIds ?? []) parents.set(childId, node);
+  }
 
   const records: ElementRecord[] = [];
   for (const node of nodes) {
@@ -81,6 +85,13 @@ export async function collectElements(
     if (!opts.all) {
       if (!INTERACTIVE_ROLES.has(role)) continue;
       if (node.backendDOMNodeId === undefined) continue;
+    } else if (
+      (role === 'StaticText' || role === 'InlineTextBox') &&
+      typeof node.name?.value === 'string' &&
+      node.name.value.length > 0 &&
+      node.name.value === parents.get(node.nodeId)?.name?.value
+    ) {
+      continue;
     }
     records.push({
       role,

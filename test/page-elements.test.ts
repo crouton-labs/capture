@@ -181,6 +181,25 @@ test('--all returns the full exposed tree, including non-interactive and non-DOM
   assert.ok(!output.includes('group "Toolbar group (no DOM node)" backend:'));
 });
 
+test('--all omits StaticText and InlineTextBox rows only when their parent has identical text', async () => {
+  const nodes = [
+    { nodeId: '1', backendDOMNodeId: 1, role: { value: 'RootWebArea' }, name: { value: '' }, childIds: ['2', '4'] },
+    { nodeId: '2', backendDOMNodeId: 2, role: { value: 'heading' }, name: { value: 'Title' }, childIds: ['3'] },
+    { nodeId: '3', backendDOMNodeId: 3, role: { value: 'StaticText' }, name: { value: 'Title' } },
+    { nodeId: '4', backendDOMNodeId: 4, role: { value: 'paragraph' }, name: { value: '' }, childIds: ['5'] },
+    { nodeId: '5', backendDOMNodeId: 5, role: { value: 'StaticText' }, name: { value: 'Body' }, childIds: ['6'] },
+    { nodeId: '6', role: { value: 'InlineTextBox' }, name: { value: 'Body' } },
+  ];
+  const records = await collectElements(stubClient(axHandlers(nodes)), { all: true });
+
+  assert.deepEqual(records.map((record) => [record.role, record.name]), [
+    ['RootWebArea', ''],
+    ['heading', 'Title'],
+    ['paragraph', ''],
+    ['StaticText', 'Body'],
+  ]);
+});
+
 // ---------------------------------------------------------------------------
 // --limit: default 100, explicit elements-truncated fact when capped (I-5)
 // ---------------------------------------------------------------------------

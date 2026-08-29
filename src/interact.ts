@@ -489,7 +489,7 @@ export async function scrollResolved(
     const params: Record<string, unknown> = {
       objectId,
       functionDeclaration:
-        'function(to) { const n = to === "top" ? 0 : to === "bottom" ? this.scrollHeight : Number(to); const top = Math.max(0, Math.min(n, this.scrollHeight - this.clientHeight)); if (this.scrollTop === top) return top; return new Promise((resolve) => { this.addEventListener("scrollend", () => resolve(this.scrollTop), { once: true }); this.scrollTo({ top, behavior: "smooth" }); }); }',
+        'function(to) { const root = this === document.documentElement || this === document.body; const container = root ? document.scrollingElement : this; const n = to === "top" ? 0 : to === "bottom" ? container.scrollHeight : Number(to); const top = Math.max(0, Math.min(n, container.scrollHeight - container.clientHeight)); if (container.scrollTop === top) return top; return new Promise((resolve) => { const eventTarget = root ? document : this; eventTarget.addEventListener("scrollend", () => resolve(container.scrollTop), { once: true }); if (root) window.scrollTo({ top, behavior: "smooth" }); else this.scrollTo({ top, behavior: "smooth" }); }); }',
       arguments: [{ value: to }],
       awaitPromise: true,
       returnByValue: true,
