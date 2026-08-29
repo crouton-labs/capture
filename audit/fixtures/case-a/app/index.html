@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout · Alder &amp; Vine</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2323624a'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+<script src="/checkout.js" defer></script>
+</head>
+<body>
+<main class="checkout">
+  <header class="masthead">
+    <p class="brand">Alder &amp; Vine</p>
+    <p class="step">Step 3 of 3 · Review order</p>
+  </header>
+
+  <section class="panel cart" aria-labelledby="cart-heading">
+    <h1 id="cart-heading">Your cart</h1>
+    <ul id="cart-lines" class="lines">
+      <li class="line" data-sku="AV-1042" data-quantity="1" data-unit-price="52.00">
+        <span class="line-name">Cedar cutting board</span>
+        <span class="line-meta">AV-1042 · Qty 1</span>
+        <span class="line-price">$52.00</span>
+      </li>
+      <li class="line" data-sku="AV-2210" data-quantity="2" data-unit-price="24.75">
+        <span class="line-name">Stoneware mug</span>
+        <span class="line-meta">AV-2210 · Qty 2</span>
+        <span class="line-price">$49.50</span>
+      </li>
+      <li class="line" data-sku="AV-3381" data-quantity="1" data-unit-price="21.40">
+        <span class="line-name">Linen tea towel</span>
+        <span class="line-meta">AV-3381 · Qty 1</span>
+        <span class="line-price">$21.40</span>
+      </li>
+    </ul>
+    <p class="cart-note">Free shipping on orders over $75.00.</p>
+    <p id="free-shipping-badge" class="badge" data-eligible="true">Free shipping applied</p>
+  </section>
+
+  <section class="panel delivery" aria-labelledby="delivery-heading">
+    <h2 id="delivery-heading">Delivery</h2>
+    <p class="address">Alma Reyes · 1120 NW Marshall St, Portland, OR</p>
+    <div class="field">
+      <label for="postal-code">ZIP code</label>
+      <input id="postal-code" name="postalCode" type="text" value="97209" inputmode="numeric" autocomplete="postal-code" maxlength="10">
+    </div>
+    <button id="recalculate" type="button">Recalculate</button>
+    <p id="status" class="status" role="status"></p>
+  </section>
+
+  <section class="panel summary" id="summary" data-state="pending" aria-labelledby="summary-heading">
+    <h2 id="summary-heading">Order summary</h2>
+    <dl class="rows">
+      <div class="row"><dt>Subtotal</dt><dd id="summary-subtotal">&mdash;</dd></div>
+      <div class="row"><dt>Shipping</dt><dd id="summary-shipping">&mdash;</dd></div>
+      <div class="row"><dt>Tax</dt><dd id="summary-tax">&mdash;</dd></div>
+      <div class="row row-total"><dt>Total</dt><dd id="summary-total">&mdash;</dd></div>
+    </dl>
+    <p id="summary-note" class="summary-note"></p>
+    <button id="continue" type="button" class="primary">Continue to payment</button>
+  </section>
+</main>
+</body>
+</html>

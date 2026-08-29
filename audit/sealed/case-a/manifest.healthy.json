@@ -1,0 +1,13 @@
+{
+  "variant": "healthy",
+  "caseRevision": "a.1",
+  "shippingQuote": {
+    "shipping": 0,
+    "service": "Ground",
+    "quoteReference": "Q-97209"
+  },
+  "taxCalculation": {
+    "tax": 4.73,
+    "jurisdiction": "OR"
+  }
+}

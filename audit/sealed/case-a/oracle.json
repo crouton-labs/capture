@@ -1,0 +1,72 @@
+{
+  "opaqueCaseId": "r7-atlas",
+  "caseId": "case-a",
+  "fixtureRevision": "a.1",
+  "vagueSymptom": "After I recalculate this checkout, free shipping sometimes turns into a $19 charge even though the cart still says it qualifies.",
+  "plantedCondition": "The runtime tax-calculation response adds a top-level shipping field with value 19.00; the public generic merge applies that later response after the valid zero-dollar shipping quote.",
+  "requiredDiagnosisFacts": [
+    {
+      "id": "tax-endpoint",
+      "fact": "The tax-calculation endpoint supplies the conflicting data.",
+      "why": "The shipping quote is independently valid and is not the source of the displayed charge."
+    },
+    {
+      "id": "conflicting-field-value",
+      "fact": "Its top-level shipping field has the value 19.00.",
+      "why": "The specific unexpected field and value identify the planted condition."
+    },
+    {
+      "id": "valid-quote-overwritten",
+      "fact": "The generic merge overwrites the valid zero-dollar shipping quote with the tax response's shipping value.",
+      "why": "This explains why qualification remains visible while the combined summary charges for shipping."
+    }
+  ],
+  "requiredEvidence": [
+    {
+      "id": "mock-tax-counterfactual",
+      "evidence": "Replacing only the tax response with the same payload minus shipping removes the charge on a repeated recalculation.",
+      "why": "This response-mock counterfactual establishes the tax response as the cause."
+    },
+    {
+      "id": "mock-shipping-negative-control",
+      "evidence": "Replacing the shipping response without changing the tax response does not remove the charge on a repeated recalculation.",
+      "why": "This negative control rules out the plausible shipping-rule or shipping-quote explanation."
+    }
+  ],
+  "plausibleWrongAnswer": "A shipping-threshold or postcode-eligibility rule rejects the cart.",
+  "ranges": {
+    "faulty": [
+      { "name": "displayedShippingCents", "min": 1900, "max": 1900 },
+      { "name": "qualificationBadgeVisible", "min": 1, "max": 1 },
+      { "name": "taxPayloadRemovalShippingCents", "min": 0, "max": 0 },
+      { "name": "shippingResponseOnlyShippingCents", "min": 1900, "max": 1900 }
+    ],
+    "healthy": [
+      { "name": "displayedShippingCents", "min": 0, "max": 0 },
+      { "name": "qualificationBadgeVisible", "min": 1, "max": 1 },
+      { "name": "taxPayloadRemovalShippingCents", "min": 0, "max": 0 },
+      { "name": "shippingResponseOnlyShippingCents", "min": 100, "max": 100 }
+    ]
+  },
+  "intendedCapability": "network response mocking",
+  "intendedCapabilityMatchers": [
+    ["page", "mock"],
+    ["tab", "network", "mock"]
+  ],
+  "intendedCapabilityStatus": "unshipped",
+  "escapeHatchMatchers": [
+    ["cdp"],
+    ["page", "exec"]
+  ],
+  "environment": {
+    "chromeBuild": "143.0.7499.40",
+    "flags": [],
+    "coldCache": true,
+    "repetitions": 3
+  },
+  "budgets": {
+    "calls": 40,
+    "minutes": 25,
+    "stdoutTokens": 40000
+  }
+}
