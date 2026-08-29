@@ -1,0 +1,26 @@
+#!/usr/bin/env node
+import { access } from "node:fs/promises";
+import { constants } from "node:fs";
+import { list, serve, preflight, dump } from "../cli/fixture.mjs";
+import { record } from "../cli/reference.mjs";
+
+const args = process.argv.slice(2);
+const usage = "Usage: audit fixture <list|serve|preflight|dump> | audit reference record | audit grade <runId>";
+
+try {
+  if (args[0] === "fixture" && args[1] === "list") await list();
+  else if (args[0] === "fixture" && args[1] === "serve") await serve(args.slice(2));
+  else if (args[0] === "fixture" && args[1] === "preflight") await preflight(args.slice(2));
+  else if (args[0] === "fixture" && args[1] === "dump") await dump(args.slice(2));
+  else if (args[0] === "reference" && args[1] === "record") await record(args.slice(2));
+  else if (args[0] === "grade") {
+    const grader = new URL("../grader/grade.mjs", import.meta.url);
+    try { await access(grader, constants.R_OK); } catch { throw new Error("grader not built yet"); }
+    const module = await import(grader);
+    if (typeof module.grade !== "function") throw new Error("grader not built yet");
+    await module.grade(args.slice(1));
+  } else throw new Error(usage);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}
