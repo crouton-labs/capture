@@ -1,0 +1,62 @@
+{
+  "opaqueCaseId": "m6-orbit",
+  "caseId": "case-e",
+  "fixtureRevision": "e.1",
+  "vagueSymptom": "After I open and close Quick View several times, the tab gets heavier and sluggish; closing the modal does not seem to give the memory back.",
+  "plantedCondition": "The runtime widget-preferences response returns a different channel key for each read, so destroy removes no listener registered under the earlier key.",
+  "requiredDiagnosisFacts": [
+    {
+      "id": "retained-growth",
+      "fact": "The post-interaction heap snapshot retains additional objects after six Quick View open/close cycles while the baseline does not.",
+      "why": "A before/after heap comparison establishes retained growth rather than process-memory noise."
+    },
+    {
+      "id": "detached-frame-documents",
+      "fact": "At least six detached review-frame document roots remain after the faulty run, while the healthy control retains none.",
+      "why": "The detached frame/document population identifies the removed modal content as the retained population."
+    },
+    {
+      "id": "listener-retaining-path",
+      "fact": "A surviving message listener retains each removed review-frame document and its parsed review payload.",
+      "why": "The retaining path distinguishes JavaScript retention from decoded images or ordinary browser cache growth."
+    },
+    {
+      "id": "registration-removal-mismatch",
+      "fact": "Listener removal did not match the channel key used for registration, so destroy silently left each listener installed.",
+      "why": "This is the concrete lifecycle failure responsible for the retained frames."
+    }
+  ],
+  "requiredEvidence": [
+    {
+      "id": "heap-before-after",
+      "evidence": "Heap snapshots taken after forced GC before and after at least six open/close cycles show the detached-frame retention in the faulty variant.",
+      "why": "Forced collection and the temporal comparison rule out ordinary live state."
+    },
+    {
+      "id": "healthy-key-control",
+      "evidence": "Changing only the runtime channel-key sequence to the healthy manifest removes the detached documents entirely after forced GC.",
+      "why": "The control rules out decoded image data and browser-cache growth as the explanation."
+    },
+    {
+      "id": "listener-attribution",
+      "evidence": "The heap retaining path passes through the surviving message-listener registry to the detached document and parsed payload.",
+      "why": "Retainer attribution establishes the mechanism instead of merely observing growth."
+    }
+  ],
+  "plausibleWrongAnswer": "Decoded product images or normal browser cache growth accounts for the memory increase.",
+  "ranges": {
+    "faulty": [{ "name": "detachedFrameDocuments", "min": 6, "max": 10000 }],
+    "healthy": [{ "name": "detachedFrameDocuments", "min": 0, "max": 0 }]
+  },
+  "intendedCapability": "heap profiling",
+  "intendedCapabilityMatchers": [["heap"]],
+  "intendedCapabilityStatus": "unshipped",
+  "escapeHatchMatchers": [["cdp"], ["page", "exec"]],
+  "environment": {
+    "chromeBuild": "143.0.7499.40",
+    "flags": [],
+    "coldCache": true,
+    "repetitions": 3
+  },
+  "budgets": { "calls": 40, "minutes": 25, "stdoutTokens": 40000 }
+}
