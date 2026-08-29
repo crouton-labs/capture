@@ -21,8 +21,8 @@ import { cmdPageElements } from './elements.js';
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="page">
-operations against the live session tab — interact with it or inspect its current state
-use when driving or inspecting the tab a session opened or adopted; use tab for browser and tab lifecycle
+verbs against the live session tab — act on it (click, type, scroll, navigate, exec) and look at it (shot, elements)
+use when driving or inspecting the tab a session opened or adopted; nothing here records an artifact you query later — \`measure snap\`, \`motion rec\`, \`perf trace\`, and \`heap snapshot\` do that
 </command>`;
 
 export const PAGE_USAGE = `<command name="page" description="operations against the live session tab">

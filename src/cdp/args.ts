@@ -19,7 +19,7 @@ const VALUE_FLAGS = new Set([
   '--filter', '--name', '--filter-url', '--filter-status', '--filter-method', '--limit', '--params', '--wait-event',
   '--timeout', '--socket', '--settle-timeout', '--state', '--for', '--before', '--after', '--snap', '--set-file',
   '--axis', '--from', '--to', '--viewport-height', '--rec-id', '--selector', '--do', '--element', '--prop', '--action', '--occurrence',
-  '--state-padding', '--crop', '--crop-selector', '--pad', '--zoom',
+  '--state-padding', '--crop', '--crop-selector', '--pad', '--zoom', '--constructor', '--node', '--paths', '--sort', '--rules', '--categories', '--preset',
 ]);
 
 function valueFor(flag: string, next: string | undefined): string {
@@ -59,18 +59,27 @@ function validateKnownLeaf(command: string, positional: readonly string[]): void
   const leaf = positional[0];
   if (leaf === undefined) return;
   const branches: Record<string, readonly string[]> = {
-    session: ['start', 'stop', 'list', 'view', 'har', 'log'],
+    session: ['start', 'stop', 'list', 'view', 'har', 'log', 'collectors'],
     page: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements'],
-    tab: ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network'],
+    tab: ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network', 'mock'],
     measure: ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map'],
     motion: ['rec', 'mask', 'timeline', 'jank', 'response'],
+    perf: ['trace', 'vitals', 'insights'],
+    heap: ['snapshot', 'census', 'objects', 'retainers', 'diff'],
     lib: ['list', 'search', 'show', 'read'],
   };
   const known = branches[command];
-  if (known && !known.includes(leaf)) throw invalidInput(`Unknown ${command} leaf: ${leaf}.`, 'unknown_command');
+  if (known && !known.includes(leaf)) {
+    if (command === 'perf' || command === 'heap') throw schemaInput(command, leaf, `one of ${known.join(', ')}`, '<leaf>');
+    throw invalidInput(`Unknown ${command} leaf: ${leaf}.`, 'unknown_command');
+  }
   if (command === 'measure' && leaf === 'map' && positional[1] !== undefined) {
     const mapLeaf = positional[1];
     if (!['focus', 'scroll', 'layers', 'ax', 'paint'].includes(mapLeaf)) throw invalidInput(`Unknown measure map leaf: ${mapLeaf}.`, 'unknown_command');
+  }
+  if (command === 'tab' && leaf === 'mock' && positional[1] !== undefined) {
+    const mockLeaf = positional[1];
+    if (!['start', 'stop'].includes(mockLeaf)) throw schemaInput('tab mock', mockLeaf, 'start or stop', '<leaf>');
   }
 }
 
@@ -78,6 +87,25 @@ function requireCount(values: readonly string[], min: number, max: number, comma
   if (values.length < min || values.length > max) {
     const expected = min === max ? `exactly ${min}` : `${min}..${max}`;
     throw invalidInput(`${command} received ${values.length} positional argument(s); expected ${expected}.`);
+  }
+}
+
+function schemaInput(command: string, received: string, expected: string, field: string): ReturnType<typeof invalidInput> {
+  return invalidInput(`received: ${received}\nexpected: ${expected}\nfield: ${field}\nNext: Run \`capture ${command} -h\` and read the schema before re-issuing.`);
+}
+
+function requireSchemaCount(values: readonly string[], min: number, max: number, command: string, field: string): void {
+  if (values.length < min || values.length > max) {
+    const expected = min === max ? `exactly ${min}` : `${min}..${max}`;
+    throw schemaInput(command, `${values.length} positional argument(s)`, expected, field);
+  }
+}
+
+function assertSchemaUrl(value: string, command: string, field: string): void {
+  try {
+    assertParseableUrl(value, `${command} URL`);
+  } catch {
+    throw schemaInput(command, value, 'an absolute parseable URL', field);
   }
 }
 
@@ -98,13 +126,29 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
     }
     return;
   }
+  if (parsed.command === 'lighthouse') {
+    requireSchemaCount(parsed.positional, 1, 1, 'lighthouse', '<url>');
+    assertSchemaUrl(parsed.positional[0], 'lighthouse', '<url>');
+    if (parsed.categories !== undefined) {
+      const categories = parsed.categories.split(',');
+      if (categories.length === 0 || categories.some(category => !['performance', 'accessibility', 'best-practices', 'seo'].includes(category))) {
+        throw schemaInput('lighthouse', parsed.categories, 'a comma-separated list of performance, accessibility, best-practices, or seo', '--categories');
+      }
+    }
+    if (parsed.preset !== undefined && !['mobile', 'desktop'].includes(parsed.preset)) throw schemaInput('lighthouse', parsed.preset, 'mobile or desktop', '--preset');
+    return;
+  }
   if (parsed.positional[0] === undefined) return;
 
   const leaf = parsed.positional[0];
   const values = parsed.positional.slice(1);
   if (parsed.command === 'session') {
+    if (leaf === 'collectors') {
+      requireSchemaCount(values, 0, 0, 'session collectors', '(none)');
+      return;
+    }
     const ranges: Record<string, readonly [number, number]> = {
-      start: [0, 0], stop: [1, 1], list: [0, 0], view: [1, 1], har: [0, 1], log: [1, 1],
+      start: [0, 0], stop: [1, 1], list: [0, 0], view: [1, 1], har: [0, 1], log: [1, 1], collectors: [0, 0],
     };
     const [min, max] = ranges[leaf];
     requireCount(values, min, max, `session ${leaf}`);
@@ -137,6 +181,14 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
   }
 
   if (parsed.command === 'tab') {
+    if (leaf === 'mock') {
+      const mockLeaf = values[0];
+      if (mockLeaf === undefined) return;
+      const mockValues = values.slice(1);
+      requireSchemaCount(mockValues, 0, 0, `tab mock ${mockLeaf}`, '(none)');
+      if (mockLeaf === 'start' && !parsed.rules?.trim()) throw schemaInput('tab mock start', parsed.rules ?? '(missing)', 'a JSON rule document path', '--rules');
+      return;
+    }
     // `launch` takes no target at all (its browser does not exist yet) and
     // `quit` takes an optional port; every other tab leaf names exactly one.
     if (leaf === 'launch' || leaf === 'list') requireCount(values, 0, 0, `tab ${leaf}`);
@@ -175,6 +227,59 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
       const targets = values.slice(1);
       requireCount(targets, ['focus', 'ax', 'paint'].includes(mapLeaf) ? 1 : 0, 1, `measure map ${mapLeaf}`);
       if (mapLeaf === 'paint' && !parsed.selector?.trim()) throw invalidInput('measure map paint requires --selector.');
+    }
+    return;
+  }
+
+  if (parsed.command === 'perf') {
+    if (leaf === 'trace') {
+      requireSchemaCount(values, 0, 1, 'perf trace', '[url]');
+      if (parsed.start && parsed.stop) throw schemaInput('perf trace', '--start --stop', 'one lifecycle flag', '--start|--stop');
+      if (parsed.start || parsed.stop) {
+        if (values.length || parsed.do || parsed.duration !== undefined) throw schemaInput('perf trace', 'lifecycle and one-shot arguments combined', '--start or --stop alone', '[url]|--do|--duration');
+      } else {
+        if (values[0] !== undefined) assertSchemaUrl(values[0], 'perf trace', '[url]');
+        if (parsed.do !== undefined) {
+          try {
+            parseDoAction(parsed.do);
+          } catch {
+            throw schemaInput('perf trace', parsed.do, 'the motion rec --do action grammar', '--do');
+          }
+        }
+      }
+    } else {
+      requireSchemaCount(values, 1, 1, `perf ${leaf}`, '<trace>');
+    }
+    return;
+  }
+
+  if (parsed.command === 'heap') {
+    if (leaf === 'snapshot') {
+      requireSchemaCount(values, 0, 1, 'heap snapshot', '[url]');
+      if (values[0] !== undefined) assertSchemaUrl(values[0], 'heap snapshot', '[url]');
+    }
+    if (leaf === 'census') {
+      requireSchemaCount(values, 1, 1, 'heap census', '<snapshot>');
+      if (parsed.axis !== undefined && !['constructor', 'string'].includes(parsed.axis)) throw schemaInput('heap census', parsed.axis, 'constructor or string', '--axis');
+    }
+    if (leaf === 'objects') {
+      requireSchemaCount(values, 1, 1, 'heap objects', '<snapshot>');
+      const constructor = typeof parsed.constructor === 'string' ? parsed.constructor.trim() : '';
+      if (!constructor) throw schemaInput('heap objects', '(missing)', 'an exact constructor name reported by capture heap census', '--constructor');
+      if (parsed.sort !== undefined && !['retained', 'self'].includes(parsed.sort)) throw schemaInput('heap objects', parsed.sort, 'retained or self', '--sort');
+    }
+    if (leaf === 'retainers') {
+      requireSchemaCount(values, 1, 1, 'heap retainers', '<snapshot>');
+      if (parsed.node === undefined) throw schemaInput('heap retainers', '(missing)', 'a Chrome snapshot object id', '--node');
+      try {
+        integer(parsed.node, '--node', 1, Number.MAX_SAFE_INTEGER, true);
+      } catch {
+        throw schemaInput('heap retainers', parsed.node, 'a positive safe-integer Chrome snapshot object id', '--node');
+      }
+    }
+    if (leaf === 'diff') {
+      requireSchemaCount(values, 0, 0, 'heap diff', '(none)');
+      if (!parsed.before || !parsed.after) throw schemaInput('heap diff', `--before=${parsed.before ?? '(missing)'}, --after=${parsed.after ?? '(missing)'}`, 'both heap snapshot references', '--before and --after');
     }
     return;
   }
@@ -295,6 +400,13 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
     else if (arg === '--prop') { parsed.prop = valueFor(arg, next); i++; }
     else if (arg === '--action') { parsed.action = valueFor(arg, next); i++; }
     else if (arg === '--occurrence') { parsed.occurrence = integer(valueFor(arg, next), '--occurrence', 1, Number.MAX_SAFE_INTEGER, true); i++; }
+    else if (arg === '--constructor') { parsed.constructor = valueFor(arg, next); i++; }
+    else if (arg === '--node') { parsed.node = valueFor(arg, next); i++; }
+    else if (arg === '--paths') { parsed.paths = integer(valueFor(arg, next), '--paths', 1, Number.MAX_SAFE_INTEGER, true); i++; }
+    else if (arg === '--sort') { parsed.sort = valueFor(arg, next); i++; }
+    else if (arg === '--rules') { parsed.rules = valueFor(arg, next); i++; }
+    else if (arg === '--categories') { parsed.categories = valueFor(arg, next); i++; }
+    else if (arg === '--preset') { parsed.preset = valueFor(arg, next); i++; }
     else if (arg === '-h') parsed.help = true;
     else if (arg.startsWith('--')) throw invalidInput(`Unknown flag: ${arg}.`, 'unknown_flag');
     else positional.push(arg);
@@ -314,7 +426,7 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
  */
 function needsEndpointResolution(parsed: ParsedArgs): boolean {
   if (parsed.help || parsed.command === 'lib') return false;
-  const branchOnly = ['session', 'page', 'tab', 'measure', 'motion'].includes(parsed.command)
+  const branchOnly = ['session', 'page', 'tab', 'measure', 'motion', 'perf', 'heap'].includes(parsed.command)
     && (parsed.positional.length === 0 || (parsed.command === 'measure' && parsed.positional.length === 1 && parsed.positional[0] === 'map'));
   if (branchOnly) return false;
   if (parsed.command === 'session' && parsed.positional[0] !== 'start') return false;

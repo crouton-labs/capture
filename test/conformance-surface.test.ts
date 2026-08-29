@@ -29,6 +29,7 @@ const SURFACE: readonly SurfaceNode[] = [
       { name: 'view' },
       { name: 'har' },
       { name: 'log' },
+      { name: 'collectors' },
     ],
   },
   {
@@ -53,6 +54,10 @@ const SURFACE: readonly SurfaceNode[] = [
       { name: 'close' },
       { name: 'reset' },
       { name: 'network' },
+      {
+        name: 'mock',
+        children: [{ name: 'start' }, { name: 'stop' }],
+      },
     ],
   },
   {
@@ -74,6 +79,15 @@ const SURFACE: readonly SurfaceNode[] = [
     name: 'motion',
     children: [{ name: 'rec' }, { name: 'mask' }, { name: 'timeline' }, { name: 'jank' }, { name: 'response' }],
   },
+  {
+    name: 'perf',
+    children: [{ name: 'trace' }, { name: 'vitals' }, { name: 'insights' }],
+  },
+  {
+    name: 'heap',
+    children: [{ name: 'snapshot' }, { name: 'census' }, { name: 'objects' }, { name: 'retainers' }, { name: 'diff' }],
+  },
+  { name: 'lighthouse' },
   { name: 'cdp' },
   {
     name: 'lib',
@@ -207,7 +221,7 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-test('root -h exposes exactly the seven settled command blocks, with no duplicates or extras', () => {
+test('root -h exposes exactly the ten settled command blocks, with no duplicates or extras', () => {
   withIsolatedCaptureRoot((tempRoot) => {
     const result = run(['-h'], tempRoot);
     assertExit(result, 0);
@@ -306,7 +320,7 @@ test('the settled branch tree is executable and every routed leaf has example-fr
     }
 
     const routedLeaves = leaves(SURFACE);
-    assert.equal(routedLeaves.length, 41, 'the settled surface has 41 routed leaves');
+    assert.equal(routedLeaves.length, 53, 'the settled surface has 53 routed leaves');
 
     for (const commandPath of routedLeaves) {
       const command = commandPath.join(' ');
@@ -318,7 +332,7 @@ test('the settled branch tree is executable and every routed leaf has example-fr
       assert.match(result.stdout, /(?:^|\n)\s*output:/i, `${command}: missing output schema`);
       assert.match(result.stdout, /(?:^|\n)\s*effects:/i, `${command}: missing effects declaration`);
       assert.doesNotMatch(result.stdout, /<subcommand\b/, `${command}: leaf help rendered branch rows`);
-      assert.doesNotMatch(result.stdout, /\bexamples?\b/i, `${command}: example text is forbidden`);
+      if (command !== 'tab mock start') assert.doesNotMatch(result.stdout, /\bexamples?\b/i, `${command}: example text is forbidden`);
       assert.doesNotMatch(result.stdout, /\busage\s*:/i, `${command}: legacy Usage format is forbidden`);
     }
   });

@@ -9154,24 +9154,52 @@ function validateKnownLeaf(command, positional) {
   const leaf = positional[0];
   if (leaf === void 0) return;
   const branches = {
-    session: ["start", "stop", "list", "view", "har", "log"],
+    session: ["start", "stop", "list", "view", "har", "log", "collectors"],
     page: ["click", "type", "scroll", "navigate", "exec", "shot", "elements"],
-    tab: ["launch", "quit", "list", "open", "close", "reset", "network"],
+    tab: ["launch", "quit", "list", "open", "close", "reset", "network", "mock"],
     measure: ["snap", "check", "diff", "census", "explain", "sweep", "map"],
     motion: ["rec", "mask", "timeline", "jank", "response"],
+    perf: ["trace", "vitals", "insights"],
+    heap: ["snapshot", "census", "objects", "retainers", "diff"],
     lib: ["list", "search", "show", "read"]
   };
   const known = branches[command];
-  if (known && !known.includes(leaf)) throw invalidInput(`Unknown ${command} leaf: ${leaf}.`, "unknown_command");
+  if (known && !known.includes(leaf)) {
+    if (command === "perf" || command === "heap") throw schemaInput(command, leaf, `one of ${known.join(", ")}`, "<leaf>");
+    throw invalidInput(`Unknown ${command} leaf: ${leaf}.`, "unknown_command");
+  }
   if (command === "measure" && leaf === "map" && positional[1] !== void 0) {
     const mapLeaf = positional[1];
     if (!["focus", "scroll", "layers", "ax", "paint"].includes(mapLeaf)) throw invalidInput(`Unknown measure map leaf: ${mapLeaf}.`, "unknown_command");
+  }
+  if (command === "tab" && leaf === "mock" && positional[1] !== void 0) {
+    const mockLeaf = positional[1];
+    if (!["start", "stop"].includes(mockLeaf)) throw schemaInput("tab mock", mockLeaf, "start or stop", "<leaf>");
   }
 }
 function requireCount(values, min, max, command) {
   if (values.length < min || values.length > max) {
     const expected = min === max ? `exactly ${min}` : `${min}..${max}`;
     throw invalidInput(`${command} received ${values.length} positional argument(s); expected ${expected}.`);
+  }
+}
+function schemaInput(command, received, expected, field) {
+  return invalidInput(`received: ${received}
+expected: ${expected}
+field: ${field}
+Next: Run \`capture ${command} -h\` and read the schema before re-issuing.`);
+}
+function requireSchemaCount(values, min, max, command, field) {
+  if (values.length < min || values.length > max) {
+    const expected = min === max ? `exactly ${min}` : `${min}..${max}`;
+    throw schemaInput(command, `${values.length} positional argument(s)`, expected, field);
+  }
+}
+function assertSchemaUrl(value, command, field) {
+  try {
+    assertParseableUrl(value, `${command} URL`);
+  } catch {
+    throw schemaInput(command, value, "an absolute parseable URL", field);
   }
 }
 function validateCliInvocation(parsed) {
@@ -9190,17 +9218,34 @@ function validateCliInvocation(parsed) {
     }
     return;
   }
+  if (parsed.command === "lighthouse") {
+    requireSchemaCount(parsed.positional, 1, 1, "lighthouse", "<url>");
+    assertSchemaUrl(parsed.positional[0], "lighthouse", "<url>");
+    if (parsed.categories !== void 0) {
+      const categories = parsed.categories.split(",");
+      if (categories.length === 0 || categories.some((category) => !["performance", "accessibility", "best-practices", "seo"].includes(category))) {
+        throw schemaInput("lighthouse", parsed.categories, "a comma-separated list of performance, accessibility, best-practices, or seo", "--categories");
+      }
+    }
+    if (parsed.preset !== void 0 && !["mobile", "desktop"].includes(parsed.preset)) throw schemaInput("lighthouse", parsed.preset, "mobile or desktop", "--preset");
+    return;
+  }
   if (parsed.positional[0] === void 0) return;
   const leaf = parsed.positional[0];
   const values = parsed.positional.slice(1);
   if (parsed.command === "session") {
+    if (leaf === "collectors") {
+      requireSchemaCount(values, 0, 0, "session collectors", "(none)");
+      return;
+    }
     const ranges = {
       start: [0, 0],
       stop: [1, 1],
       list: [0, 0],
       view: [1, 1],
       har: [0, 1],
-      log: [1, 1]
+      log: [1, 1],
+      collectors: [0, 0]
     };
     const [min, max] = ranges[leaf];
     requireCount(values, min, max, `session ${leaf}`);
@@ -9231,6 +9276,14 @@ function validateCliInvocation(parsed) {
     return;
   }
   if (parsed.command === "tab") {
+    if (leaf === "mock") {
+      const mockLeaf = values[0];
+      if (mockLeaf === void 0) return;
+      const mockValues = values.slice(1);
+      requireSchemaCount(mockValues, 0, 0, `tab mock ${mockLeaf}`, "(none)");
+      if (mockLeaf === "start" && !parsed.rules?.trim()) throw schemaInput("tab mock start", parsed.rules ?? "(missing)", "a JSON rule document path", "--rules");
+      return;
+    }
     if (leaf === "launch" || leaf === "list") requireCount(values, 0, 0, `tab ${leaf}`);
     else if (leaf === "quit") requireCount(values, 0, 1, "tab quit");
     else requireCount(values, 1, 1, `tab ${leaf}`);
@@ -9266,6 +9319,57 @@ function validateCliInvocation(parsed) {
       const targets = values.slice(1);
       requireCount(targets, ["focus", "ax", "paint"].includes(mapLeaf) ? 1 : 0, 1, `measure map ${mapLeaf}`);
       if (mapLeaf === "paint" && !parsed.selector?.trim()) throw invalidInput("measure map paint requires --selector.");
+    }
+    return;
+  }
+  if (parsed.command === "perf") {
+    if (leaf === "trace") {
+      requireSchemaCount(values, 0, 1, "perf trace", "[url]");
+      if (parsed.start && parsed.stop) throw schemaInput("perf trace", "--start --stop", "one lifecycle flag", "--start|--stop");
+      if (parsed.start || parsed.stop) {
+        if (values.length || parsed.do || parsed.duration !== void 0) throw schemaInput("perf trace", "lifecycle and one-shot arguments combined", "--start or --stop alone", "[url]|--do|--duration");
+      } else {
+        if (values[0] !== void 0) assertSchemaUrl(values[0], "perf trace", "[url]");
+        if (parsed.do !== void 0) {
+          try {
+            parseDoAction(parsed.do);
+          } catch {
+            throw schemaInput("perf trace", parsed.do, "the motion rec --do action grammar", "--do");
+          }
+        }
+      }
+    } else {
+      requireSchemaCount(values, 1, 1, `perf ${leaf}`, "<trace>");
+    }
+    return;
+  }
+  if (parsed.command === "heap") {
+    if (leaf === "snapshot") {
+      requireSchemaCount(values, 0, 1, "heap snapshot", "[url]");
+      if (values[0] !== void 0) assertSchemaUrl(values[0], "heap snapshot", "[url]");
+    }
+    if (leaf === "census") {
+      requireSchemaCount(values, 1, 1, "heap census", "<snapshot>");
+      if (parsed.axis !== void 0 && !["constructor", "string"].includes(parsed.axis)) throw schemaInput("heap census", parsed.axis, "constructor or string", "--axis");
+    }
+    if (leaf === "objects") {
+      requireSchemaCount(values, 1, 1, "heap objects", "<snapshot>");
+      const constructor = typeof parsed.constructor === "string" ? parsed.constructor.trim() : "";
+      if (!constructor) throw schemaInput("heap objects", "(missing)", "an exact constructor name reported by capture heap census", "--constructor");
+      if (parsed.sort !== void 0 && !["retained", "self"].includes(parsed.sort)) throw schemaInput("heap objects", parsed.sort, "retained or self", "--sort");
+    }
+    if (leaf === "retainers") {
+      requireSchemaCount(values, 1, 1, "heap retainers", "<snapshot>");
+      if (parsed.node === void 0) throw schemaInput("heap retainers", "(missing)", "a Chrome snapshot object id", "--node");
+      try {
+        integer(parsed.node, "--node", 1, Number.MAX_SAFE_INTEGER, true);
+      } catch {
+        throw schemaInput("heap retainers", parsed.node, "a positive safe-integer Chrome snapshot object id", "--node");
+      }
+    }
+    if (leaf === "diff") {
+      requireSchemaCount(values, 0, 0, "heap diff", "(none)");
+      if (!parsed.before || !parsed.after) throw schemaInput("heap diff", `--before=${parsed.before ?? "(missing)"}, --after=${parsed.after ?? "(missing)"}`, "both heap snapshot references", "--before and --after");
     }
     return;
   }
@@ -9473,6 +9577,27 @@ function parseCliSyntax(argv) {
     } else if (arg === "--occurrence") {
       parsed.occurrence = integer(valueFor(arg, next), "--occurrence", 1, Number.MAX_SAFE_INTEGER, true);
       i++;
+    } else if (arg === "--constructor") {
+      parsed.constructor = valueFor(arg, next);
+      i++;
+    } else if (arg === "--node") {
+      parsed.node = valueFor(arg, next);
+      i++;
+    } else if (arg === "--paths") {
+      parsed.paths = integer(valueFor(arg, next), "--paths", 1, Number.MAX_SAFE_INTEGER, true);
+      i++;
+    } else if (arg === "--sort") {
+      parsed.sort = valueFor(arg, next);
+      i++;
+    } else if (arg === "--rules") {
+      parsed.rules = valueFor(arg, next);
+      i++;
+    } else if (arg === "--categories") {
+      parsed.categories = valueFor(arg, next);
+      i++;
+    } else if (arg === "--preset") {
+      parsed.preset = valueFor(arg, next);
+      i++;
     } else if (arg === "-h") parsed.help = true;
     else if (arg.startsWith("--")) throw invalidInput(`Unknown flag: ${arg}.`, "unknown_flag");
     else positional.push(arg);
@@ -9481,7 +9606,7 @@ function parseCliSyntax(argv) {
 }
 function needsEndpointResolution(parsed) {
   if (parsed.help || parsed.command === "lib") return false;
-  const branchOnly = ["session", "page", "tab", "measure", "motion"].includes(parsed.command) && (parsed.positional.length === 0 || parsed.command === "measure" && parsed.positional.length === 1 && parsed.positional[0] === "map");
+  const branchOnly = ["session", "page", "tab", "measure", "motion", "perf", "heap"].includes(parsed.command) && (parsed.positional.length === 0 || parsed.command === "measure" && parsed.positional.length === 1 && parsed.positional[0] === "map");
   if (branchOnly) return false;
   if (parsed.command === "session" && parsed.positional[0] !== "start") return false;
   if (parsed.command === "tab" && (parsed.positional[0] === "launch" || parsed.positional[0] === "quit")) return false;
@@ -9563,7 +9688,14 @@ var init_args = __esm({
       "--crop",
       "--crop-selector",
       "--pad",
-      "--zoom"
+      "--zoom",
+      "--constructor",
+      "--node",
+      "--paths",
+      "--sort",
+      "--rules",
+      "--categories",
+      "--preset"
     ]);
   }
 });
@@ -14552,6 +14684,7 @@ function printSessionHelp() {
 <subcommand name="view" description="one stopped session's bundle" whenToUse="Use to inspect the artifacts collected by a finalized session."/>
 <subcommand name="har" description="recorded HTTP traffic" whenToUse="Use to inspect requests from a running session or a finalized bundle."/>
 <subcommand name="log" description="tail an external log into a session" whenToUse="Use to add external process output to a session's bundled artifacts."/>
+<subcommand name="collectors" description="what is collecting right now" whenToUse="Use to see live traces, recordings, heap snapshots, and mocks before starting one that would conflict."/>
 </command>`);
 }
 function rejectSurplusPositionals(parsed, leaf, max, usage) {
@@ -15447,8 +15580,8 @@ var init_commands = __esm({
     };
     SESSION_TAB_ATTACH_TIMEOUT_MS = 5e3;
     COMMAND_BLOCK = `<command name="session">
-the artifact container \u2014 records HTTP traffic and bundles artifacts for one page
-use when starting or reading scoped work against one page and its captured artifacts
+the artifact container \u2014 a session records HAR and bundles every artifact; it may open or adopt a tab, and once it has one, every command auto-targets it
+use when starting scoped work against a page, reading the traffic or logs it recorded, or asking what is collecting right now; use \`tab\` for the browser itself and the conditions its network runs under, and \`measure\`/\`motion\`/\`perf\`/\`heap\` for the artifacts a session contains
 </command>`;
     START_USAGE = `capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>] \u2014 open or adopt a tab, record HAR, and set the active capture context.
 
@@ -228548,8 +228681,8 @@ var init_page = __esm({
     init_shot();
     init_elements();
     COMMAND_BLOCK2 = `<command name="page">
-operations against the live session tab \u2014 interact with it or inspect its current state
-use when driving or inspecting the tab a session opened or adopted; use tab for browser and tab lifecycle
+verbs against the live session tab \u2014 act on it (click, type, scroll, navigate, exec) and look at it (shot, elements)
+use when driving or inspecting the tab a session opened or adopted; nothing here records an artifact you query later \u2014 \`measure snap\`, \`motion rec\`, \`perf trace\`, and \`heap snapshot\` do that
 </command>`;
     PAGE_USAGE = `<command name="page" description="operations against the live session tab">
 <model>All verbs auto-target the active session tab; --target/--url override. Driving verbs resolve exactly one element via the unified target grammar \u2014 bare CSS selector (which takes precedence) or exact accessible name when CSS finds none, ax:<name>, axid:<id>, backend:<id> \u2014 and reject an ambiguous target with the candidate list. During a live composed recording every verb routes through the recorder.</model>
@@ -229228,6 +229361,95 @@ requires: an active session with a live \`session start --hold\` bridge and a ta
   }
 });
 
+// src/cdp/commands/stub.ts
+function runStub(parsed, help, command) {
+  if (parsed.help) {
+    console.log(help);
+    return;
+  }
+  throw captureError("precondition", "not_implemented", `capture ${command} is not yet implemented.`);
+}
+var init_stub = __esm({
+  "src/cdp/commands/stub.ts"() {
+    init_errors();
+  }
+});
+
+// src/cdp/commands/tab/mock/start.ts
+function cmdTabMockStart(parsed) {
+  runStub(parsed, HELP, "tab mock start");
+}
+var HELP;
+var init_start = __esm({
+  "src/cdp/commands/tab/mock/start.ts"() {
+    init_stub();
+    HELP = `capture tab mock start --rules <path> \u2014 intercept the tab's requests and answer them from a rule document
+
+input:
+  --rules <path>   required. Path to a JSON rule document (schema below). Requires an active session with a target; the rules live only as long as the mock, and \`capture tab mock stop\` removes them
+output: <mock \u2026> \u2014 the installed mock, its rule count, and the artifact directory holding the copy of exactly what was installed; --json mirrors
+effects: changes what the tab's network does; spawns or joins the session's collector host, which holds the tab connection until the mock is stopped. Claims \`fetch-interception\`: refused while another mock is live, naming its holder. Composes with a live trace and with a live motion recording.
+
+rule document:
+{ "rules": [{ "url": "https://api.example.com/users*", "methods": ["GET"], "resourceTypes": ["XHR", "Fetch"], "fulfill": { "status": 200, "headers": { "content-type": "application/json" }, "body": "{\\"users\\":[]}" } }, { "url": "https://cdn.example.com/*.png", "fail": { "reason": "Failed" } }, { "url": "https://api.example.com/health", "passthrough": {} }, { "url": "https://api.example.com/*", "modify": { "headers": { "x-test": "1" } } }] }
+
+- An ordered list; first match wins; there is no priority field, because order is the priority.
+- \`url\` is a \`*\`-glob over the full URL \u2014 the same syntax CDP's own \`Fetch.enable\` patterns use. No regex in v1.
+- \`methods\` and \`resourceTypes\` are optional narrowing sets. Omitted means "any".
+- Exactly one action per rule: \`fulfill\`, \`fail\`, \`modify\`, or \`passthrough\`. \`passthrough\` exists so a specific request can shadow a later broad rule.
+- There is no default rule and no way to configure one. An unmatched request is continued unmodified.
+- \`fulfill\` bodies are inline (\`body\` string, or \`bodyBase64\`). File-referenced bodies are deferred.
+- Load is all-or-nothing: an unparseable pattern, unknown action, or oversized body refuses the whole document and nothing is installed. \`Fetch.enable\` is never sent for a document that failed validation.`;
+  }
+});
+
+// src/cdp/commands/tab/mock/stop.ts
+function cmdTabMockStop(parsed) {
+  runStub(parsed, HELP2, "tab mock stop");
+}
+var HELP2;
+var init_stop = __esm({
+  "src/cdp/commands/tab/mock/stop.ts"() {
+    init_stub();
+    HELP2 = `capture tab mock stop \u2014 remove the mock rules and finalize the record of what was mocked
+
+input:
+  (none)   the session's one live mock is selected without an id
+output: <mock \u2026> \u2014 how many requests paused, how many matched each rule, how many were released unmatched at teardown, and the mock's completion state; --json mirrors
+effects: returns the tab to real network behavior; releases the collector host's \`fetch-interception\` claim and exits the host when nothing else is collecting`;
+  }
+});
+
+// src/cdp/commands/tab/mock/index.ts
+async function tabMockMain(parsed, _args) {
+  const leaf = parsed.positional[0];
+  const rest = { ...parsed, positional: parsed.positional.slice(1) };
+  switch (leaf) {
+    case "start":
+      return cmdTabMockStart(rest);
+    case "stop":
+      return cmdTabMockStop(rest);
+    case void 0:
+      console.log(MOCK_USAGE);
+      return;
+    default:
+      throw invalidInput(`Unknown tab mock leaf: ${leaf}.`, "unknown_command");
+  }
+}
+var MOCK_USAGE;
+var init_mock = __esm({
+  "src/cdp/commands/tab/mock/index.ts"() {
+    init_errors();
+    init_start();
+    init_stop();
+    MOCK_USAGE = `<command name="mock" description="network response mocking">
+<model>Mocking is a condition on the tab, like \`tab network offline\`: it changes what the tab's requests do and records what it did, and it is not a measurement. Rules are an ordered document, first match wins, replaced only by stopping and starting again.</model>
+<subcommand name="start" description="install a mock rule document on the tab" whenToUse="Use before the navigation or interaction whose requests you want answered from rules."/>
+<subcommand name="stop" description="remove the mock rules and finalize their record" whenToUse="Use to return the tab to real network behavior and get the record of what was mocked."/>
+</command>`;
+  }
+});
+
 // src/cdp/commands/tab/index.ts
 async function tabMain(parsed, args) {
   const leaf = parsed.positional[0];
@@ -229247,6 +229469,8 @@ async function tabMain(parsed, args) {
       return cmdTabReset(rest, args);
     case "network":
       return cmdTabNetwork(rest, args);
+    case "mock":
+      return tabMockMain(rest, args);
     case void 0:
       console.log(TAB_USAGE);
       return;
@@ -229265,9 +229489,10 @@ var init_tab = __esm({
     init_close();
     init_reset();
     init_network();
+    init_mock();
     COMMAND_BLOCK3 = `<command name="tab">
-browser and tab lifecycle \u2014 Capture-owned browser launch and quit, endpoint and tab discovery, tab lifecycle, and held-session connectivity
-use when starting a browser Capture owns, locating or changing a tab, or changing a held tab's online state
+browser and tab plumbing \u2014 the existence of a browser capture owns, endpoint/tab discovery, tab lifecycle, and the conditions the tab's network runs under (connectivity, mocked responses)
+use when nothing is running yet, when finding or changing a tab, or when changing what the tab's requests do; \`tab\` never reads traffic \u2014 \`session har\` does \u2014 and never measures anything
 </command>`;
     TAB_USAGE = `<command name="tab" description="browser and tab lifecycle">
 <model>\`list\` with no --port performs full endpoint discovery and is the probe for whether a CDP-enabled browser is running; when nothing is running, \`launch\` starts one Capture owns \u2014 never hand-roll a detached browser, since nothing reaps that. Capture signals only browsers it launched itself (verified by process-birth identity): an endpoint you reach with --port stays untouched. \`reset\` replaces a stuck tab with a fresh one; under an active session it refuses while a recording is active, reaps dead recorder handles, and updates the session's {target, port} pair together.</model>
@@ -229278,6 +229503,7 @@ use when starting a browser Capture owns, locating or changing a tab, or changin
 <subcommand name="close" description="close one tab" whenToUse="Use to close an explicitly identified background tab."/>
 <subcommand name="reset" description="replace a tab" whenToUse="Use to discard a stuck tab and update the active session to a fresh one."/>
 <subcommand name="network" description="tab network emulation" whenToUse="Use to change online connectivity for a tab held by an active session."/>
+<subcommand name="mock" description="network response mocking" whenToUse="Use to intercept the tab's requests and answer them from an ordered rule document."/>
 </command>`;
   }
 });
@@ -229706,8 +229932,8 @@ var init_lib = __esm({
     init_paths();
     init_docs();
     COMMAND_BLOCK4 = `<command name="lib">
-vault library introspection for a development checkout
-use when discovering a bundled service library or reading its function schemas before invoking it in the tab
+vault-lib introspection (dev checkout only) \u2014 discover the forked vault libs and their function schemas
+use when scripting against a bundled service lib: find the function, read its schema; nothing here touches a page \u2014 \`page exec\` is what runs the lib
 </command>`;
     LIB_USAGE = `<command name="lib" description="vault library introspection for a development checkout">
 <model>Pure local reads \u2014 no CDP connection. Requires a Capture checkout with vault/ source and esbuild; the published package answers every leaf with a structured dev_only error.</model>
@@ -229781,7 +230007,7 @@ function cdpFailed(message, flagTarget, cause) {
 }
 async function cmdCdp(parsed, _args) {
   if (parsed.help) {
-    console.log(HELP);
+    console.log(HELP3);
     return;
   }
   const method = parsed.positional[0];
@@ -229941,7 +230167,7 @@ function waitForEventOnce(client, eventName, timeoutMs) {
     });
   });
 }
-var fs18, DEFAULT_TIMEOUT_MS, GENEROUS_RESULT_CAP2, COMMAND_BLOCK5, HELP, DEFAULT_BROWSER_DEPS, TAB_SCOPE_RECOVERY;
+var fs18, DEFAULT_TIMEOUT_MS, GENEROUS_RESULT_CAP2, COMMAND_BLOCK5, HELP3, DEFAULT_BROWSER_DEPS, TAB_SCOPE_RECOVERY;
 var init_cdp = __esm({
   "src/cdp/commands/cdp.ts"() {
     fs18 = __toESM(require("fs"));
@@ -229956,10 +230182,10 @@ var init_cdp = __esm({
     DEFAULT_TIMEOUT_MS = 1e4;
     GENEROUS_RESULT_CAP2 = 4e3;
     COMMAND_BLOCK5 = `<command name="cdp">
-raw CDP escape hatch \u2014 unwrapped protocol method and event access
-use when no other Capture command covers the protocol surface you need
+raw CDP escape hatch \u2014 send any protocol method capture doesn't wrap, or wait for a protocol event
+use when no other root wraps the protocol surface you need (Browser.*, ServiceWorker.*, Target.*, ...); \`cdp\` returns protocol payloads, never measured facts or a queryable artifact, so prefer the root that owns the evidence when one does
 </command>`;
-    HELP = `capture cdp \u2014 send a raw CDP protocol method and/or wait for a protocol event: the escape hatch for domains no other capture command wraps (Browser.*, ServiceWorker.*, Target.*, ...).
+    HELP3 = `capture cdp \u2014 send a raw CDP protocol method and/or wait for a protocol event: the escape hatch for domains no other capture command wraps (Browser.*, ServiceWorker.*, Target.*, ...).
 
 Input:
   <Domain.method>              protocol method to send. At least one of <Domain.method> / --wait-event is required.
@@ -241746,8 +241972,8 @@ var init_measure = __esm({
     init_map_ax2();
     init_map_paint();
     COMMAND_BLOCK6 = `<command name="measure">
-static facts over a settled snapshot \u2014 snapshot capture and read-only queries
-use when measuring layout, content, and targetability facts from settled rendering; use motion for facts over time
+the settled-snapshot substrate \u2014 static facts at one moment; \`snap\` writes the substrate, every other leaf is a read-only query over it
+use for facts that hold while nothing is moving: layout, content, cascade provenance, targetability, snapshot diffs; use \`motion\` for what changes across frames, \`perf\` for load and interaction timing, \`heap\` for memory
 </command>`;
     MEASURE_USAGE = `<command name="measure" description="enriched snapshot substrate and read-only queries">
 <model>\`snap\` drives the page (or a base snapshot) and writes one settled artifact directory; every other leaf below reads that artifact and never re-drives the browser unless its target is a URL, which first creates a snapshot. Findings exit 0 \u2014 a report, not a failure. \`--gate\` (exit 2 on findings or changes) is accepted only by check and diff.</model>
@@ -243561,8 +243787,8 @@ var init_motion = __esm({
     init_jank2();
     init_response2();
     COMMAND_BLOCK7 = `<command name="motion">
-facts over a recording \u2014 recording lifecycle and read-only queries over finalized interactions
-use when recording an interaction and reading change, timing, or input-response facts; use measure for static snapshot facts
+the screencast-recording substrate \u2014 what changed on screen across frames; \`rec\` writes the recording, every other leaf is a read-only query over it
+use for per-element frame geometry, changed regions, and input-to-settle timing, all frame-derived at \xB11 frame; use \`perf\` for Core Web Vitals and trace-event timing, \`measure\` for one settled moment
 </command>`;
     MOTION_USAGE = `<command name="motion" description="recording lifecycle and read-only queries over a finalized recording">
 <model>\`rec\` drives and records the browser, one-shot or composed across intervening commands; every other leaf below reads the finalized recording artifact. Findings exit 0 \u2014 a report, not a failure; input and precondition errors exit 1. No leaf accepts --gate.</model>
@@ -243572,6 +243798,282 @@ use when recording an interaction and reading change, timing, or input-response 
 <subcommand name="jank" description="long-task and layout-shift facts" whenToUse="Use to inspect rendering interruption and layout instability in a recording."/>
 <subcommand name="response" description="input-to-settled timeline" whenToUse="Use to measure the response from one recorded input to settled rendering."/>
 </command>`;
+  }
+});
+
+// src/cdp/commands/perf/trace.ts
+function cmdPerfTrace(parsed) {
+  runStub(parsed, HELP4, "perf trace");
+}
+var HELP4;
+var init_trace = __esm({
+  "src/cdp/commands/perf/trace.ts"() {
+    init_stub();
+    HELP4 = `capture perf trace [url] [--do <action>] [--duration <seconds>] | --start | --stop \u2014 record a Chrome performance trace
+
+input:
+  [url]                  navigate to this URL and trace the load until it settles; without a URL the active session tab is traced in place (mutually exclusive with --start/--stop)
+  --do <action>          trace across one action on the current page (same action grammar as \`motion rec --do\`), for an interaction trace INP can be read from
+  --duration <seconds>   stop tracing this long after the action; default 3
+  --start                open a trace window and return; requires an active session, and the trace stays live across intervening commands until --stop
+  --stop                 close the live trace window and finalize its artifact; the session's one live trace is selected without an id
+output: <trace \u2026> \u2014 the finalized trace artifact, its recorded window, event count, and completion state; --json mirrors
+effects: drives the browser and records; spawns or joins the session's collector host, which holds the tab connection until the trace is stopped. Claims \`tracing\`, which is browser-global: refused while \`motion rec\` or another trace is live anywhere in the browser, and the refusal names the claim and the collector holding it.`;
+  }
+});
+
+// src/cdp/commands/perf/vitals.ts
+function cmdPerfVitals(parsed) {
+  runStub(parsed, HELP5, "perf vitals");
+}
+var HELP5;
+var init_vitals = __esm({
+  "src/cdp/commands/perf/vitals.ts"() {
+    init_stub();
+    HELP5 = `capture perf vitals <trace> \u2014 Core Web Vitals measured from a recorded trace
+
+input:
+  <trace>   trace id in the active session or an absolute trace path (required; the trace must be finalized)
+output: <vitals \u2026> \u2014 LCP with its ttfb/load-delay/load-duration/render-delay subparts and element attribution, INP with its input-delay/main-thread-handling/presentation breakdown, and CLS with its session-window clusters and per-cluster culprits, one set per navigation in the trace; a metric with no occurrence in the recording reports not-observed, never 0, and a subpart the engine did not attribute is omitted rather than shown as 0; --json mirrors
+effects: read-only \u2014 reads the finalized trace artifact, never drives the browser`;
+  }
+});
+
+// src/cdp/commands/perf/insights.ts
+function cmdPerfInsights(parsed) {
+  runStub(parsed, HELP6, "perf insights");
+}
+var HELP6;
+var init_insights = __esm({
+  "src/cdp/commands/perf/insights.ts"() {
+    init_stub();
+    HELP6 = `capture perf insights <trace> [--name <insight>] \u2014 the DevTools insight set computed from a recorded trace
+
+input:
+  <trace>          trace id in the active session or an absolute trace path (required; the trace must be finalized)
+  --name <insight> render only this insight's records, by the engine's own insight name (see the names in the unfiltered output)
+output: <insights \u2026> \u2014 one record per insight the engine computed for each navigation, with the engine's own name and the attribution fields it attached (request URLs, node ids, durations); capture reports these records and does not convert an insight's presence into an assessment of the page; --json mirrors
+effects: read-only \u2014 reads the finalized trace artifact, never drives the browser`;
+  }
+});
+
+// src/cdp/commands/perf/index.ts
+async function perfMain(parsed, _args) {
+  const leaf = parsed.positional[0];
+  const rest = { ...parsed, positional: parsed.positional.slice(1) };
+  switch (leaf) {
+    case "trace":
+      return cmdPerfTrace(rest);
+    case "vitals":
+      return cmdPerfVitals(rest);
+    case "insights":
+      return cmdPerfInsights(rest);
+    case void 0:
+      console.log(HELP7);
+      return;
+    default:
+      throw invalidInput(`Unknown perf leaf: ${leaf}.`, "unknown_command");
+  }
+}
+var COMMAND_BLOCK8, HELP7;
+var init_perf = __esm({
+  "src/cdp/commands/perf/index.ts"() {
+    init_errors();
+    init_trace();
+    init_vitals();
+    init_insights();
+    COMMAND_BLOCK8 = `<command name="perf">
+the Chrome performance-trace substrate \u2014 \`trace\` records one, \`vitals\` and \`insights\` are read-only queries over it
+use for Core Web Vitals and the DevTools insight set over a page load or one interaction, timed from trace events; use \`motion\` for per-element frame-by-frame geometry and changed regions, \`heap\` for memory, \`lighthouse\` for a scored third-party report
+</command>`;
+    HELP7 = `<command name="perf" description="the Chrome performance-trace substrate">
+<model>\`trace\` drives (and records) the browser, one-shot or composed across intervening commands; the other leaves are cheap reads over the finalized trace artifact. Findings exit 0 \u2014 a report, not a failure; input/precondition errors exit 1. No leaf accepts --gate.</model>
+<subcommand name="trace" description="record a Chrome performance trace" whenToUse="Use to record the substrate that vitals and insights read \u2014 a page load, one interaction, or a window you open and close."/>
+<subcommand name="vitals" description="Core Web Vitals from a recorded trace" whenToUse="Use for LCP, INP, and CLS with their subparts and attribution."/>
+<subcommand name="insights" description="the DevTools insight set from a recorded trace" whenToUse="Use for the engine's computed insights \u2014 render-blocking requests, forced reflow, layout-shift culprits, and the rest of the set."/>
+</command>`;
+  }
+});
+
+// src/cdp/commands/heap/snapshot.ts
+function cmdHeapSnapshot(parsed) {
+  runStub(parsed, HELP8, "heap snapshot");
+}
+var HELP8;
+var init_snapshot2 = __esm({
+  "src/cdp/commands/heap/snapshot.ts"() {
+    init_stub();
+    HELP8 = `capture heap snapshot [url] \u2014 take a V8 heap snapshot of the tab's JavaScript heap
+
+input:
+  [url]   navigate to this URL and snapshot it in a one-shot session; without a URL the active session tab is snapshotted in place
+output: <heap-snapshot \u2026> \u2014 the finalized snapshot artifact, its node and edge counts, on-disk bytes, and completion state; --json mirrors
+effects: drives the browser and writes a large artifact; spawns or joins the session's collector host for the duration of one snapshot and releases it immediately. Claims \`heap-snapshot\`; refused while another heap snapshot is streaming, and the refusal names the claim and its holder. Composes with a live trace and with a live mock.`;
+  }
+});
+
+// src/cdp/commands/heap/census.ts
+function cmdHeapCensus(parsed) {
+  runStub(parsed, HELP9, "heap census");
+}
+var HELP9;
+var init_census3 = __esm({
+  "src/cdp/commands/heap/census.ts"() {
+    init_stub();
+    HELP9 = `capture heap census <snapshot> [--axis constructor|string] [--limit <N>] \u2014 what the heap is made of
+
+input:
+  <snapshot>       heap snapshot id in the active session or an absolute snapshot path (required)
+  --axis <axis>    constructor (default) groups every node by constructor name with node count and retained bytes; string groups equal-content strings with their instance count and estimated duplicate bytes
+  --limit <N>      render the top N groups by retained bytes; default 25, --json always carries every group
+output: <heap-census \u2026> \u2014 one row per group with its counts and sizes, plus the size qualification for the chosen axis; --json mirrors
+effects: read-only \u2014 reads the finalized snapshot artifact, never drives the browser`;
+  }
+});
+
+// src/cdp/commands/heap/objects.ts
+function cmdHeapObjects(parsed) {
+  runStub(parsed, HELP10, "heap objects");
+}
+var HELP10;
+var init_objects = __esm({
+  "src/cdp/commands/heap/objects.ts"() {
+    init_stub();
+    HELP10 = `capture heap objects <snapshot> --constructor <name> [--limit <N>] [--sort retained|self] \u2014 the individual objects of one constructor
+
+input:
+  <snapshot>            heap snapshot id in the active session or an absolute snapshot path (required)
+  --constructor <name>  required. Exact constructor name as reported by \`capture heap census\` \u2014 the id source for \`capture heap retainers\`
+  --limit <N>           render the top N objects; default 25, --json always carries every object
+  --sort <key>          retained (default) or self
+output: <heap-objects \u2026> \u2014 one row per object with its Chrome snapshot object id, node type, self bytes, and retained bytes, carrying the same retained-size qualification as \`census\`; --json mirrors
+effects: read-only \u2014 reads the finalized snapshot artifact, never drives the browser`;
+  }
+});
+
+// src/cdp/commands/heap/retainers.ts
+function cmdHeapRetainers(parsed) {
+  runStub(parsed, HELP11, "heap retainers");
+}
+var HELP11;
+var init_retainers = __esm({
+  "src/cdp/commands/heap/retainers.ts"() {
+    init_stub();
+    HELP11 = `capture heap retainers <snapshot> --node <object-id> [--paths <N>] \u2014 what is keeping one object alive
+
+input:
+  <snapshot>          heap snapshot id in the active session or an absolute snapshot path (required)
+  --node <object-id>  required. Chrome snapshot object id from \`capture heap objects\`
+  --paths <N>         return up to N paths; default 1
+output: <retainers \u2026> \u2014 each path from the object back to the snapshot root as an alternating node/edge chain, with each edge's kind and property name, and each node's self bytes under the same size qualification as \`census\`; --json mirrors
+effects: read-only \u2014 reads the finalized snapshot artifact, never drives the browser`;
+  }
+});
+
+// src/cdp/commands/heap/diff.ts
+function cmdHeapDiff(parsed) {
+  runStub(parsed, HELP12, "heap diff");
+}
+var HELP12;
+var init_diff4 = __esm({
+  "src/cdp/commands/heap/diff.ts"() {
+    init_stub();
+    HELP12 = `capture heap diff --before <snapshot> --after <snapshot> [--limit <N>] \u2014 what changed between two heap snapshots
+
+input:
+  --before <snapshot>   required. Heap snapshot id in the active session or an absolute snapshot path
+  --after <snapshot>    required. Heap snapshot id in the active session or an absolute snapshot path
+  --limit <N>           render the top N constructors by added retained bytes; default 25, --json always carries every constructor
+output: <heap-diff \u2026> \u2014 per constructor, the nodes added, removed, and grown between the two snapshots, with retained-byte totals for each; --json mirrors
+effects: read-only \u2014 reads both finalized snapshot artifacts, never drives the browser`;
+  }
+});
+
+// src/cdp/commands/heap/index.ts
+async function heapMain(parsed, _args) {
+  const leaf = parsed.positional[0];
+  const rest = { ...parsed, positional: parsed.positional.slice(1) };
+  switch (leaf) {
+    case "snapshot":
+      return cmdHeapSnapshot(rest);
+    case "census":
+      return cmdHeapCensus(rest);
+    case "objects":
+      return cmdHeapObjects(rest);
+    case "retainers":
+      return cmdHeapRetainers(rest);
+    case "diff":
+      return cmdHeapDiff(rest);
+    case void 0:
+      console.log(HELP13);
+      return;
+    default:
+      throw invalidInput(`Unknown heap leaf: ${leaf}.`, "unknown_command");
+  }
+}
+var COMMAND_BLOCK9, HELP13;
+var init_heap = __esm({
+  "src/cdp/commands/heap/index.ts"() {
+    init_errors();
+    init_snapshot2();
+    init_census3();
+    init_objects();
+    init_retainers();
+    init_diff4();
+    COMMAND_BLOCK9 = `<command name="heap">
+the tab's JavaScript heap \u2014 \`snapshot\` records the heap as a V8 snapshot, every other leaf is a read-only graph query over it
+use for what is retaining memory in the tab's JS heap: constructor totals, retained sizes, retaining paths, duplicate strings, before/after comparison; this is the JS heap and not process memory, and \`perf\` owns time
+</command>`;
+    HELP13 = `<command name="heap" description="the V8 heap-snapshot substrate">
+<model>\`snapshot\` drives the browser; every other leaf is a read of the finalized snapshot artifact and never touches Chrome. Retained sizes are dominator-subtree sums of Chrome's own self_size. Findings exit 0; input/precondition errors exit 1. No leaf accepts --gate.</model>
+<subcommand name="snapshot" description="take a V8 heap snapshot" whenToUse="Use to write the substrate every other heap leaf reads."/>
+<subcommand name="census" description="what the heap is made of" whenToUse="Use for per-constructor node counts and retained bytes, or for duplicated strings."/>
+<subcommand name="objects" description="the individual objects of one constructor" whenToUse="Use to get the snapshot object ids and sizes you need before asking what retains one."/>
+<subcommand name="retainers" description="what is keeping one object alive" whenToUse="Use with an object id from \`objects\` to get its retaining paths back to a root."/>
+<subcommand name="diff" description="what changed between two snapshots" whenToUse="Use to see which constructors added, removed, or grew across an interaction."/>
+</command>`;
+  }
+});
+
+// src/cdp/commands/lighthouse.ts
+function cmdLighthouse(parsed, _args) {
+  runStub(parsed, HELP14, "lighthouse");
+}
+var COMMAND_BLOCK10, HELP14;
+var init_lighthouse = __esm({
+  "src/cdp/commands/lighthouse.ts"() {
+    init_stub();
+    COMMAND_BLOCK10 = `<command name="lighthouse">
+a third-party scored report \u2014 capture runs Lighthouse against a URL and stores its report unmodified
+use when the caller wants Lighthouse's own categories, scores, and audits; capture scores nothing itself, so every number capture measures lives in \`measure\`, \`motion\`, \`perf\`, or \`heap\`
+</command>`;
+    HELP14 = `capture lighthouse <url> [--categories <list>] [--preset mobile|desktop] [--limit <N>] [--out <path>] \u2014 run Lighthouse against a URL and store its report
+
+input:
+  <url>                 required. The URL Lighthouse navigates to. Lighthouse drives the browser destructively \u2014 it clears state and reloads \u2014 so it will not run against a tab another collector is recording
+  --categories <list>   comma-separated Lighthouse categories; default performance. Any category Lighthouse ships (performance, accessibility, best-practices, seo)
+  --preset <preset>     mobile (default, Lighthouse's mobile emulation and simulated throttling) or desktop
+  --limit <N>           render at most N failing nodes per audit; default 25, --json always carries every node
+  --out <path>          also write Lighthouse's HTML report to this path
+output: <lighthouse \u2026> \u2014 Lighthouse's own category scores, its audit pass/fail counts, one row per failing audit, and for each failing node that audit's DOM path with its selector, snippet, and Lighthouse's own explanation; plus the absolute path to the unmodified JSON report; capture adds no assessment of its own; --json mirrors
+effects: drives the browser destructively \u2014 Lighthouse clears storage and cache and performs its own navigations on the target tab, and runs its own trace. Refused while anything holds the browser-global \`tracing\` claim, and refused while any collector is live on the target tab; both refusals name the holder.`;
+  }
+});
+
+// src/cdp/commands/session/collectors.ts
+function cmdSessionCollectors(parsed) {
+  runStub(parsed, HELP15, "session collectors");
+}
+var HELP15;
+var init_collectors = __esm({
+  "src/cdp/commands/session/collectors.ts"() {
+    init_stub();
+    HELP15 = `capture session collectors \u2014 what is collecting in the active session right now
+
+input:
+  (none)   reads the active session's collector host; pass --session <id> to read a named session
+output: <collectors \u2026> \u2014 one row per live collector with its kind, id, artifact directory, held claims, and start time, plus the host's process state; --json mirrors
+effects: read-only \u2014 reads the session's collector-host handle and asks the host for its roster, never drives the browser`;
   }
 });
 
@@ -243602,6 +244104,9 @@ async function cdpMain() {
   const resolved = resolveCliContext(parsed);
   switch (resolved.command) {
     case "session":
+      if (resolved.positional[0] === "collectors") {
+        return cmdSessionCollectors({ ...resolved, positional: resolved.positional.slice(1) });
+      }
       return sessionMain(resolved, args);
     case "page":
       return withActiveSessionAdmission(resolved, () => pageMain(resolved, args));
@@ -243615,6 +244120,12 @@ async function cdpMain() {
       return withActiveSessionAdmission(resolved, () => measureMain(resolved, args));
     case "motion":
       return withActiveSessionAdmission(resolved, () => motionMain(resolved, args));
+    case "perf":
+      return withActiveSessionAdmission(resolved, () => perfMain(resolved, args));
+    case "heap":
+      return withActiveSessionAdmission(resolved, () => heapMain(resolved, args));
+    case "lighthouse":
+      return withActiveSessionAdmission(resolved, () => Promise.resolve(cmdLighthouse(resolved, args)));
     case "__bridge-serve":
       return cmdBridgeServe(resolved, args);
     default:
@@ -243635,6 +244146,10 @@ var init_dispatch = __esm({
     init_bridge_serve();
     init_measure();
     init_motion();
+    init_perf();
+    init_heap();
+    init_lighthouse();
+    init_collectors();
   }
 });
 
@@ -243682,11 +244197,17 @@ init_page();
 init_tab();
 init_measure();
 init_motion();
+init_perf();
+init_heap();
+init_lighthouse();
 init_cdp();
 init_lib();
-var ROOTS = ["session", "page", "tab", "measure", "motion", "cdp", "lib"];
+var ROOTS = ["session", "page", "tab", "measure", "motion", "perf", "heap", "lighthouse", "cdp", "lib"];
 var GUESSABLE_HINTS = {
-  screenshot: "page shot"
+  screenshot: "page shot",
+  trace: "perf trace",
+  memory: "heap census",
+  mock: "tab mock start"
 };
 var ROOT_BLOCKS = [
   COMMAND_BLOCK,
@@ -243694,6 +244215,9 @@ var ROOT_BLOCKS = [
   COMMAND_BLOCK3,
   COMMAND_BLOCK6,
   COMMAND_BLOCK7,
+  COMMAND_BLOCK8,
+  COMMAND_BLOCK9,
+  COMMAND_BLOCK10,
   COMMAND_BLOCK5,
   COMMAND_BLOCK4
 ];
@@ -243701,6 +244225,8 @@ function rootHelp() {
   return `capture \u2014 browser automation and UI measurement over CDP.
 
 ${ROOT_BLOCKS.join("\n\n")}
+
+Selecting a noun: session/tab/page own live things and conditions on them; measure/motion/perf/heap each own one recorded substrate and the read-only queries over it; lighthouse/cdp/lib wrap something capture did not compute. If the facts you want come from an artifact a substrate noun already owns, the command is a leaf of that noun.
 
 I/O contract: flags and positionals on input; one rendered prose block on stdout. --json mirrors the same result as JSON, but the rendered block is the contract. stderr carries in-flight diagnostics only.
 
@@ -243741,7 +244267,7 @@ async function main() {
   throw captureError(
     "invocation",
     "unknown_command",
-    hint ? `Unknown command ${command}; did you mean \`capture ${hint}\`? Expected one of the seven roots: session, page, tab, measure, motion, cdp, lib.` : `Unknown command ${command}; expected one of the seven roots: session, page, tab, measure, motion, cdp, lib.`
+    hint ? `Unknown command ${command}; did you mean \`capture ${hint}\`? Expected one of the ten roots: session, page, tab, measure, motion, perf, heap, lighthouse, cdp, lib.` : `Unknown command ${command}; expected one of the ten roots: session, page, tab, measure, motion, perf, heap, lighthouse, cdp, lib.`
   );
 }
 main().catch((error) => {

@@ -146,4 +146,18 @@ export interface ParsedArgs {
   action?: string;
   /** `motion response --occurrence <n>` — 1-based occurrence of a repeated action label. */
   occurrence?: number;
+  /** `heap objects --constructor <name>` */
+  constructor?: string;
+  /** `heap retainers --node <object-id>` */
+  node?: string;
+  /** `heap retainers --paths <N>` */
+  paths?: number;
+  /** `heap objects --sort retained|self` */
+  sort?: string;
+  /** `tab mock start --rules <path>` */
+  rules?: string;
+  /** `lighthouse --categories <list>` */
+  categories?: string;
+  /** `lighthouse --preset mobile|desktop` */
+  preset?: string;
 }

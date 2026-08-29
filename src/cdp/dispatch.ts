@@ -2,7 +2,7 @@
  * Shared dispatch for every routed command. Two jobs live here:
  *
  *  1. Route each root (`session`, `page`, `tab`, `measure`, `motion`,
- *     `cdp`, `lib`, hidden `__bridge-serve`) to its branch main.
+ *     `perf`, `heap`, `lighthouse`, `cdp`, `lib`, hidden `__bridge-serve`) to its branch main.
  *  2. Invoke the `--gate` guard ONCE for the whole surface: every command
  *     that is not `measure check|diff` rejects the flag structurally here,
  *     before any branch main runs.
@@ -20,6 +20,10 @@ import { cmdCdp } from './commands/cdp.js';
 import { cmdBridgeServe } from './commands/bridge-serve.js';
 import { measureMain } from './commands/measure/index.js';
 import { motionMain } from './commands/motion/index.js';
+import { perfMain } from './commands/perf/index.js';
+import { heapMain } from './commands/heap/index.js';
+import { cmdLighthouse } from './commands/lighthouse.js';
+import { cmdSessionCollectors } from './commands/session/collectors.js';
 
 /** The dotted leaf name the gate rejection reports, derived from the parsed
  * command plus its first positional (the branch-leaf token). */
@@ -70,13 +74,20 @@ export async function cdpMain(): Promise<void> {
   const resolved = resolveCliContext(parsed);
 
   switch (resolved.command) {
-    case 'session': return sessionMain(resolved, args);
+    case 'session':
+      if (resolved.positional[0] === 'collectors') {
+        return cmdSessionCollectors({ ...resolved, positional: resolved.positional.slice(1) });
+      }
+      return sessionMain(resolved, args);
     case 'page': return withActiveSessionAdmission(resolved, () => pageMain(resolved, args));
     case 'tab': return tabMain(resolved, args);
     case 'lib': return cmdLib(resolved, args);
     case 'cdp': return cmdCdp(resolved, args);
     case 'measure': return withActiveSessionAdmission(resolved, () => measureMain(resolved, args));
     case 'motion': return withActiveSessionAdmission(resolved, () => motionMain(resolved, args));
+    case 'perf': return withActiveSessionAdmission(resolved, () => perfMain(resolved, args));
+    case 'heap': return withActiveSessionAdmission(resolved, () => heapMain(resolved, args));
+    case 'lighthouse': return withActiveSessionAdmission(resolved, () => Promise.resolve(cmdLighthouse(resolved, args)));
     case '__bridge-serve': return cmdBridgeServe(resolved, args);
     default:
       // capture.ts routes only the known roots into cdpMain(); an unknown

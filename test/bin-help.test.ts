@@ -42,7 +42,7 @@ function withTempRoot(fn: (tempRoot: string) => void): void {
   }
 }
 
-test('bare `capture` and `capture -h` print the assembled root help: seven <command> blocks + footer, exit 0, read-only', () => {
+test('bare `capture` and `capture -h` print the assembled root help: ten <command> blocks + footer, exit 0, read-only', () => {
   withTempRoot((tempRoot) => {
     for (const args of [[], ['-h']]) {
       const result = run(args, tempRoot);
@@ -50,10 +50,10 @@ test('bare `capture` and `capture -h` print the assembled root help: seven <comm
       assert.equal(result.stderr, '');
 
       const blocks = result.stdout.match(/<command name="/g) ?? [];
-      assert.equal(blocks.length, 7, `expected exactly seven <command> blocks, got ${blocks.length}`);
-      for (const name of ['session', 'page', 'tab', 'measure', 'motion', 'cdp', 'lib']) {
+      assert.equal(blocks.length, 10, `expected exactly ten <command> blocks, got ${blocks.length}`);
+      for (const name of ['session', 'page', 'tab', 'measure', 'motion', 'perf', 'heap', 'lighthouse', 'cdp', 'lib']) {
         assert.ok(result.stdout.includes(`<command name="${name}">`), `missing <command name="${name}">`);
-        const block = new RegExp(`<command name="${name}">\\n[^\\n]+\\nuse when [^\\n]+\\n</command>`).exec(result.stdout)?.[0];
+        const block = new RegExp(`<command name="${name}">\\n[^\\n]+\\nuse (?:when|for) [^\\n]+\\n</command>`).exec(result.stdout)?.[0];
         assert.ok(block, `${name} must contribute exactly a concept line and a selection rule at root`);
       }
       assert.ok(!result.stdout.includes(' · '), 'root help must not catalog branch leaves');
@@ -72,12 +72,15 @@ test('bare `capture` and `capture -h` print the assembled root help: seven <comm
 
 test('each branch help lists description-and-selection rows without leaf signatures', () => {
   const branches = [
-    { args: ['session', '-h'], name: 'session', leaves: ['start', 'stop', 'list', 'view', 'har', 'log'] },
+    { args: ['session', '-h'], name: 'session', leaves: ['start', 'stop', 'list', 'view', 'har', 'log', 'collectors'] },
     { args: ['page', '-h'], name: 'page', leaves: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements'] },
-    { args: ['tab', '-h'], name: 'tab', leaves: ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network'] },
+    { args: ['tab', '-h'], name: 'tab', leaves: ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network', 'mock'] },
+    { args: ['tab', 'mock', '-h'], name: 'mock', leaves: ['start', 'stop'] },
     { args: ['measure', '-h'], name: 'measure', leaves: ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map'] },
     { args: ['measure', 'map', '-h'], name: 'map', leaves: ['focus', 'scroll', 'layers', 'ax', 'paint'] },
     { args: ['motion', '-h'], name: 'motion', leaves: ['rec', 'mask', 'timeline', 'jank', 'response'] },
+    { args: ['perf', '-h'], name: 'perf', leaves: ['trace', 'vitals', 'insights'] },
+    { args: ['heap', '-h'], name: 'heap', leaves: ['snapshot', 'census', 'objects', 'retainers', 'diff'] },
     { args: ['lib', '-h'], name: 'lib', leaves: ['list', 'search', 'show', 'read'] },
   ];
 
@@ -98,12 +101,12 @@ test('each branch help lists description-and-selection rows without leaf signatu
   });
 });
 
-test('an unknown command is a structured <error code="unknown_command" kind="invocation"> naming the seven roots, exit 1, read-only', () => {
+test('an unknown command is a structured <error code="unknown_command" kind="invocation"> naming the ten roots, exit 1, read-only', () => {
   withTempRoot((tempRoot) => {
     const result = run(['bogus'], tempRoot);
     assert.equal(result.status, 1);
     assert.ok(result.stdout.includes('<error code="unknown_command" kind="invocation">'), result.stdout);
-    assert.ok(result.stdout.includes('session, page, tab, measure, motion, cdp, lib'));
+    assert.ok(result.stdout.includes('session, page, tab, measure, motion, perf, heap, lighthouse, cdp, lib'));
     assert.deepEqual(readdirSync(tempRoot), []);
   });
 });
@@ -114,7 +117,7 @@ test('a guessable former/legacy root name still fails, but the unknown_command m
     assert.equal(result.status, 1);
     assert.ok(result.stdout.includes('<error code="unknown_command" kind="invocation">'), result.stdout);
     assert.ok(result.stdout.includes('did you mean `capture page shot`?'), result.stdout);
-    assert.ok(result.stdout.includes('session, page, tab, measure, motion, cdp, lib'));
+    assert.ok(result.stdout.includes('session, page, tab, measure, motion, perf, heap, lighthouse, cdp, lib'));
     assert.deepEqual(readdirSync(tempRoot), []);
   });
 });
@@ -143,6 +146,52 @@ test('page branch grammar names the leaf: `page click` is rejected at the valida
     assert.ok(result.stdout.includes('page click received 0 positional argument(s); expected exactly 1.'), result.stdout);
     assert.ok(!result.stdout.includes('not_implemented'), result.stdout);
     assert.deepEqual(readdirSync(tempRoot), []);
+  });
+});
+
+test('every new leaf is registered with its own clear non-zero scaffold', () => {
+  withTempRoot((tempRoot) => {
+    const commands = [
+      ['perf', 'trace'],
+      ['perf', 'vitals', 'trace-1'],
+      ['perf', 'insights', 'trace-1'],
+      ['heap', 'snapshot'],
+      ['heap', 'census', 'heap-1'],
+      ['heap', 'objects', 'heap-1', '--constructor', 'Object'],
+      ['heap', 'retainers', 'heap-1', '--node', '1'],
+      ['heap', 'diff', '--before', 'before', '--after', 'after'],
+      ['lighthouse', 'https://example.com'],
+      ['tab', 'mock', 'start', '--rules', 'rules.json'],
+      ['tab', 'mock', 'stop'],
+      ['session', 'collectors'],
+    ];
+    for (const command of commands) {
+      const result = run([...command, '--port', '1'], tempRoot);
+      assert.equal(result.status, 1, `${command.join(' ')}: ${result.stdout}`);
+      assert.equal(result.stderr, '', `${command.join(' ')}: ${result.stderr}`);
+      assert.match(result.stdout, /<error code="not_implemented" kind="precondition">/, result.stdout);
+      assert.match(result.stdout, /is not yet implemented\./, result.stdout);
+    }
+    assert.deepEqual(readdirSync(tempRoot), []);
+  });
+});
+
+test('new-leaf schema failures name the received input, expected shape, field, and leaf help', () => {
+  withTempRoot((tempRoot) => {
+    for (const command of [
+      ['heap', 'objects', 'heap-1'],
+      ['tab', 'mock', 'start'],
+      ['lighthouse'],
+      ['perf', 'trace', '--start', '--stop'],
+    ]) {
+      const result = run([...command, '--port', '1'], tempRoot);
+      assert.equal(result.status, 1, `${command.join(' ')}: ${result.stdout}`);
+      assert.match(result.stdout, /received:/, result.stdout);
+      assert.match(result.stdout, /expected:/, result.stdout);
+      assert.match(result.stdout, /field:/, result.stdout);
+      const helpCommand = command[0] === 'tab' ? command.slice(0, 3) : command[0] === 'lighthouse' ? command.slice(0, 1) : command.slice(0, 2);
+      assert.ok(result.stdout.includes(`Next: Run \`capture ${helpCommand.join(' ')} -h\``), result.stdout);
+    }
   });
 });
 

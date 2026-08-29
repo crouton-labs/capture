@@ -330,8 +330,8 @@ export async function waitForPageLoad(
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="session">
-the artifact container — records HTTP traffic and bundles artifacts for one page
-use when starting or reading scoped work against one page and its captured artifacts
+the artifact container — a session records HAR and bundles every artifact; it may open or adopt a tab, and once it has one, every command auto-targets it
+use when starting scoped work against a page, reading the traffic or logs it recorded, or asking what is collecting right now; use \`tab\` for the browser itself and the conditions its network runs under, and \`measure\`/\`motion\`/\`perf\`/\`heap\` for the artifacts a session contains
 </command>`;
 
 const START_USAGE = `capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>] — open or adopt a tab, record HAR, and set the active capture context.
@@ -483,6 +483,7 @@ function printSessionHelp(): void {
 <subcommand name="view" description="one stopped session's bundle" whenToUse="Use to inspect the artifacts collected by a finalized session."/>
 <subcommand name="har" description="recorded HTTP traffic" whenToUse="Use to inspect requests from a running session or a finalized bundle."/>
 <subcommand name="log" description="tail an external log into a session" whenToUse="Use to add external process output to a session's bundled artifacts."/>
+<subcommand name="collectors" description="what is collecting right now" whenToUse="Use to see live traces, recordings, heap snapshots, and mocks before starting one that would conflict."/>
 </command>`);
 }
 

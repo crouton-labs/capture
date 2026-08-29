@@ -17,11 +17,12 @@ import { cmdTabOpen } from './open.js';
 import { cmdTabClose } from './close.js';
 import { cmdTabReset } from './reset.js';
 import { cmdTabNetwork } from './network.js';
+import { tabMockMain } from './mock/index.js';
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="tab">
-browser and tab lifecycle — Capture-owned browser launch and quit, endpoint and tab discovery, tab lifecycle, and held-session connectivity
-use when starting a browser Capture owns, locating or changing a tab, or changing a held tab's online state
+browser and tab plumbing — the existence of a browser capture owns, endpoint/tab discovery, tab lifecycle, and the conditions the tab's network runs under (connectivity, mocked responses)
+use when nothing is running yet, when finding or changing a tab, or when changing what the tab's requests do; \`tab\` never reads traffic — \`session har\` does — and never measures anything
 </command>`;
 
 export const TAB_USAGE = `<command name="tab" description="browser and tab lifecycle">
@@ -33,6 +34,7 @@ export const TAB_USAGE = `<command name="tab" description="browser and tab lifec
 <subcommand name="close" description="close one tab" whenToUse="Use to close an explicitly identified background tab."/>
 <subcommand name="reset" description="replace a tab" whenToUse="Use to discard a stuck tab and update the active session to a fresh one."/>
 <subcommand name="network" description="tab network emulation" whenToUse="Use to change online connectivity for a tab held by an active session."/>
+<subcommand name="mock" description="network response mocking" whenToUse="Use to intercept the tab's requests and answer them from an ordered rule document."/>
 </command>`;
 
 export async function tabMain(parsed: ParsedArgs, args: string[]): Promise<void> {
@@ -54,6 +56,8 @@ export async function tabMain(parsed: ParsedArgs, args: string[]): Promise<void>
       return cmdTabReset(rest, args);
     case 'network':
       return cmdTabNetwork(rest, args);
+    case 'mock':
+      return tabMockMain(rest, args);
     case undefined:
       console.log(TAB_USAGE);
       return;

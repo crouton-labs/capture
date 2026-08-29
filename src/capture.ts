@@ -1,8 +1,8 @@
 /**
  * capture — browser automation and UI measurement over CDP.
  *
- * Root router: seven visible roots (session, page, tab, measure, motion,
- * cdp, lib) plus the hidden `__bridge-serve` and `__log-tail-serve`
+ * Root router: ten visible roots (session, page, tab, measure, motion, perf,
+ * heap, lighthouse, cdp, lib) plus the hidden `__bridge-serve` and `__log-tail-serve`
  * internals, all dispatched below. Root help is assembled from each branch's exported
  * `COMMAND_BLOCK` — the parent walks its children, it never hardcodes a
  * child's description. An unknown first token is a structured
@@ -19,11 +19,14 @@ import { COMMAND_BLOCK as PAGE_BLOCK } from './cdp/commands/page/index.js';
 import { COMMAND_BLOCK as TAB_BLOCK } from './cdp/commands/tab/index.js';
 import { COMMAND_BLOCK as MEASURE_BLOCK } from './cdp/commands/measure/index.js';
 import { COMMAND_BLOCK as MOTION_BLOCK } from './cdp/commands/motion/index.js';
+import { COMMAND_BLOCK as PERF_BLOCK } from './cdp/commands/perf/index.js';
+import { COMMAND_BLOCK as HEAP_BLOCK } from './cdp/commands/heap/index.js';
+import { COMMAND_BLOCK as LIGHTHOUSE_BLOCK } from './cdp/commands/lighthouse.js';
 import { COMMAND_BLOCK as CDP_BLOCK } from './cdp/commands/cdp.js';
 import { COMMAND_BLOCK as LIB_BLOCK } from './cdp/commands/lib.js';
 
-/** The seven visible root children, in help order. */
-const ROOTS = ['session', 'page', 'tab', 'measure', 'motion', 'cdp', 'lib'] as const;
+/** The ten visible root children, in help order. */
+const ROOTS = ['session', 'page', 'tab', 'measure', 'motion', 'perf', 'heap', 'lighthouse', 'cdp', 'lib'] as const;
 
 /**
  * Guessable former/legacy tokens with one unambiguous current destination —
@@ -35,6 +38,9 @@ const ROOTS = ['session', 'page', 'tab', 'measure', 'motion', 'cdp', 'lib'] as c
  */
 const GUESSABLE_HINTS: Readonly<Record<string, string>> = {
   screenshot: 'page shot',
+  trace: 'perf trace',
+  memory: 'heap census',
+  mock: 'tab mock start',
 };
 
 const ROOT_BLOCKS = [
@@ -43,6 +49,9 @@ const ROOT_BLOCKS = [
   TAB_BLOCK,
   MEASURE_BLOCK,
   MOTION_BLOCK,
+  PERF_BLOCK,
+  HEAP_BLOCK,
+  LIGHTHOUSE_BLOCK,
   CDP_BLOCK,
   LIB_BLOCK,
 ] as const;
@@ -51,6 +60,8 @@ function rootHelp(): string {
   return `capture — browser automation and UI measurement over CDP.
 
 ${ROOT_BLOCKS.join('\n\n')}
+
+Selecting a noun: session/tab/page own live things and conditions on them; measure/motion/perf/heap each own one recorded substrate and the read-only queries over it; lighthouse/cdp/lib wrap something capture did not compute. If the facts you want come from an artifact a substrate noun already owns, the command is a leaf of that noun.
 
 I/O contract: flags and positionals on input; one rendered prose block on stdout. --json mirrors the same result as JSON, but the rendered block is the contract. stderr carries in-flight diagnostics only.
 
@@ -103,8 +114,8 @@ async function main(): Promise<void> {
     'invocation',
     'unknown_command',
     hint
-      ? `Unknown command ${command}; did you mean \`capture ${hint}\`? Expected one of the seven roots: session, page, tab, measure, motion, cdp, lib.`
-      : `Unknown command ${command}; expected one of the seven roots: session, page, tab, measure, motion, cdp, lib.`,
+      ? `Unknown command ${command}; did you mean \`capture ${hint}\`? Expected one of the ten roots: session, page, tab, measure, motion, perf, heap, lighthouse, cdp, lib.`
+      : `Unknown command ${command}; expected one of the ten roots: session, page, tab, measure, motion, perf, heap, lighthouse, cdp, lib.`,
   );
 }
 
