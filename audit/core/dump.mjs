@@ -6,6 +6,12 @@ export async function prepareDumpDirectory(directory) {
   await mkdir(directory, { recursive: true });
 }
 
+export function unavailableBody(response) {
+  return response.timing.responseReceived.source === "Network.requestWillBeSent.redirectResponse"
+    ? { kind: "unavailable", reason: "Chrome exposes redirect response metadata but no independently addressable redirect response body." }
+    : null;
+}
+
 /** Preserves the raw Network domain timestamps for one browser response. */
 export function responseRecord(requestWillBeSent, responseReceived, loadingFinished) {
   const { requestId, response } = responseReceived;

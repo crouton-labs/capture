@@ -7,7 +7,7 @@ import { startFixture } from "../core/server.mjs";
 import { launchChrome } from "../core/chrome.mjs";
 import { connect } from "../core/cdp-client.mjs";
 import { invokeCapture } from "../core/capture-invoke.mjs";
-import { prepareDumpDirectory, responseRecord } from "../core/dump.mjs";
+import { prepareDumpDirectory, responseRecord, unavailableBody } from "../core/dump.mjs";
 
 function option(args, name, fallback) { const index = args.indexOf(name); return index < 0 ? fallback : args[index + 1] ?? (() => { throw new Error(`${name} needs a value`); })(); }
 function variant(args) { const value = option(args, "--variant", "faulty"); if (value !== "faulty" && value !== "healthy") throw new Error("--variant must be faulty or healthy"); return value; }
@@ -108,6 +108,8 @@ export async function dump(args) {
     for (const event of responseEvents) {
       const responseEvent = event.response;
       const response = responseRecord(event.request, responseEvent, event.redirect ? null : loadingFinished.get(responseEvent.requestId));
+      const unavailable = unavailableBody(response);
+      if (unavailable) { bodyRecords.push({ ...response, body: unavailable }); continue; }
       try {
         const body = await cdp.send("Network.getResponseBody", { requestId: response.requestId });
         const bytes = Buffer.from(body.body, body.base64Encoded ? "base64" : "utf8"); const name = responseName(bodyRecords.length, response);
@@ -115,7 +117,7 @@ export async function dump(args) {
         else bodyRecords.push({ ...response, body: { kind: "binary", storage: "digest-only", fileWritten: false, resourceName: name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") } });
       } catch (error) { bodyRecords.push({ ...response, bodyError: error instanceof Error ? error.message : String(error) }); }
     }
-    const missingBodies = bodyRecords.filter((record) => record.bodyError).map((record) => record.url);
+    const missingBodies = bodyRecords.filter((record) => record.bodyError || record.body?.kind === "unavailable").map((record) => record.url);
     await writeFile(join(output, "responses.json"), `${JSON.stringify(bodyRecords, null, 2)}\n`);
     await writeFile(join(output, "console.json"), `${JSON.stringify(consoleOutput, null, 2)}\n`);
     await writeFile(join(output, "dump.json"), `${JSON.stringify({ caseId: entry.id, variant: currentVariant, url: server.url, document: doms[0]?.file, doms, responses: "responses.json", console: "console.json", binaryBodyConvention: { storage: "digest-only", fileWritten: false, description: "Binary response bodies are represented by resourceName, size, and sha256; no binary body file is written." }, complete: missingBodies.length === 0, missingBodies }, null, 2)}\n`);

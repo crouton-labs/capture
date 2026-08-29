@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { access, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepareDumpDirectory, responseRecord } from "./dump.mjs";
+import { prepareDumpDirectory, responseRecord, unavailableBody } from "./dump.mjs";
 
 test("prepareDumpDirectory removes stale artifacts before recreating the directory", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "audit-dump-"));
@@ -45,4 +45,5 @@ test("responseRecord retains a redirect response identified by requestWillBeSent
   assert.equal(record.status, 302);
   assert.deepEqual(record.timing.responseReceived, { source: "Network.requestWillBeSent.redirectResponse", timestamp: 102.75, timing: { requestTime: 101.5, receiveHeadersEnd: 1250 } });
   assert.equal(record.timing.loadingFinished, null);
+  assert.deepEqual(unavailableBody(record), { kind: "unavailable", reason: "Chrome exposes redirect response metadata but no independently addressable redirect response body." });
 });
