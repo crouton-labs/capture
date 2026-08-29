@@ -1,0 +1,41 @@
+{
+  "opaqueCaseId": "v2-harbor",
+  "caseId": "case-d",
+  "fixtureRevision": "d.1",
+  "vagueSymptom": "The product grid feels janky when I scroll, even though the cards and images look normal.",
+  "plantedCondition": "The sealed display-options response sets the vendor badge module batch size to one while keeping the same 720-card catalog as the healthy scenario.",
+  "requiredDiagnosisFacts": [
+    { "id": "forced-synchronous-layout", "fact": "Forced synchronous layout during the recorded scroll is the cause of the jank.", "why": "A slow scroll alone cannot distinguish layout thrashing from image decode or paint work." },
+    { "id": "badge-module-attribution", "fact": "The work is attributed to positionMarks in the ornaments.js vendor resource.", "why": "The trace stack identifies the responsible code rather than the product-card DOM population." },
+    { "id": "batch-write-read-pattern", "fact": "With batch size one, positionMarks alternates style writes and geometry reads for each badge.", "why": "That write-then-read sequence forces the repeated layouts; the same general module batches those phases under the healthy configuration." }
+  ],
+  "requiredEvidence": [
+    { "id": "forced-reflow-trace-insight", "evidence": "Cite the forced-reflow insight and its recorded scroll timing.", "why": "The named trace finding establishes a synchronous-layout cause rather than a screenshot inference." },
+    { "id": "vendor-layout-trace-attribution", "evidence": "Cite repeated UpdateLayoutTree timing with a positionMarks stack frame from ornaments.js during the scroll.", "why": "The stack/resource attribution rules out image-size and raw DOM-node-count explanations." }
+  ],
+  "plausibleWrongAnswer": "Large product images or the raw number of DOM nodes causes paint overload.",
+  "ranges": {
+    "faulty": [
+      { "name": "forced-reflow-insight", "min": 1, "max": 1 },
+      { "name": "badge-layout-attribution", "min": 1, "max": 1 },
+      { "name": "scroll-layout-ms", "min": 800, "max": 10000 }
+    ],
+    "healthy": [
+      { "name": "forced-reflow-insight", "min": 0, "max": 0 },
+      { "name": "badge-layout-attribution", "min": 1, "max": 1 },
+      { "name": "scroll-layout-ms", "min": 0, "max": 100 }
+    ]
+  },
+  "intendedCapability": "DevTools performance trace and insights",
+  "intendedCapabilityMatchers": [["motion", "trace"]],
+  "intendedCapabilityStatus": "unshipped",
+  "escapeHatchMatchers": [["cdp"], ["page", "exec"]],
+  "environment": {
+    "chromeBuild": "Google Chrome for Testing 143.0.7499.40",
+    "traceEngineVersion": "@paulirish/trace_engine@0.0.65",
+    "flags": [],
+    "coldCache": true,
+    "repetitions": 3
+  },
+  "budgets": { "calls": 40, "minutes": 25, "stdoutTokens": 40000 }
+}

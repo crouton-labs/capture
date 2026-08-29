@@ -1,0 +1,10 @@
+{
+  "variant": "healthy",
+  "caseRevision": "d.1",
+  "catalog": { "cardCount": 720 },
+  "widget": { "batchSize": 720 },
+  "preflight": {
+    "insight": { "present": false, "minLayoutCount": 100 },
+    "layoutMs": { "min": 0, "max": 100 }
+  }
+}
