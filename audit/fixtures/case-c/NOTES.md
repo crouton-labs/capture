@@ -34,6 +34,18 @@ Case C's `vagueSymptom` says the caller had the page open **on the rules-and-ref
 
 The wording deliberately stops short of the condition. "Could not tell us what it said" keeps the console-error and missing-content competitors alive — which is why the oracle carries `text-renders` as required evidence — while killing placement and findability.
 
+## What this case tests now
+
+Case C was built to price a capability capture does not have — a real Lighthouse audit. It no longer does. On 2026-08-29 a blind operator solved it in 21 calls with no escape hatch and no external auditor, using `measure check <snap> --for contrast --selector …`, which returns the composited 3.26:1 only because commit `a911d51` fixed contrast compositing over ancestor backgrounds that morning. **So this fixture must not be cited as evidence that capture lacks a needed capability.**
+
+Silas ruled (2026-08-29) that the case keeps its five defects exactly as built and is reclassified rather than widened: **it tests whether an agent can attribute a contrast failure to the right node and select it against four decoys.** The design's rule that a case solved by a non-intended route must have its defect set widened does not fire here, because the difficulty that rule wants already lives in grading — the 21-call route found the cause and would still fail, missing three of the oracle's four `requiredEvidence` items.
+
+The oracle's `intendedCapability`, `intendedCapabilityStatus: "unshipped"`, and `intendedCapabilityRequiredForPass: false` are unchanged and remain literally true: capture still has no Lighthouse leaf, and passing never required one. The grader will keep reporting `firstClassCapability: "unavailable"` for Case C runs, which is a true statement about the Lighthouse leaf and not a claim that the case was unsolvable.
+
+## Reference route
+
+Recorded at `audit/sealed/case-c/reference-route.json`, provisional: 21 calls, 10.9s, 10,000 stdout tokens, host `darwin-arm64`. Read its `notes` before computing any ratio against it — the route reached the answer but would not pass grading, so it is the cost of *finding* the cause, not of a *passing run*.
+
 ## First blind reference-route attempt — not a solve
 
 An independent operator ran Case C blind on 2026-08-29 under the reference-route envelope: 31 capture calls, 57.4s, 19.9k stdout tokens, inside the 40-call budget, with zero escape hatches (no `cdp`, no `page exec`, verified from the transcript). It stopped on its own confidence, not on exhaustion, and **did not solve the case** — it met none of the oracle's four `requiredDiagnosisFacts`.
