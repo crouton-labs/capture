@@ -1,0 +1,63 @@
+{
+  "opaqueCaseId": "n4-ember",
+  "caseId": "case-b",
+  "fixtureRevision": "b.1",
+  "vagueSymptom": "On a first visit this landing page appears quickly, but it still feels unfinished for several seconds.",
+  "plantedCondition": "The sealed faulty profile configuration delays its otherwise ordinary personalization response by 3200 ms; the healthy configuration changes only that delay to 80 ms.",
+  "requiredDiagnosisFacts": [
+    {
+      "id": "measured-lcp",
+      "fact": "First Contentful Paint is early while Largest Contentful Paint is measured in the faulty 2.8–3.8 second window.",
+      "why": "The reported appearance is not evidence of the final paint time."
+    },
+    {
+      "id": "hero-is-lcp",
+      "fact": "The injected above-the-fold hero image is the Largest Contentful Paint element.",
+      "why": "This identifies the late visual completion rather than treating the heading or frame as the final content."
+    },
+    {
+      "id": "resource-delay-phase",
+      "fact": "The hero resource's load delay is the dominant LCP phase, not document TTFB or image download duration.",
+      "why": "The competing slow-HTML and oversized-asset explanations predict different timing phases."
+    },
+    {
+      "id": "personalization-cause",
+      "fact": "The delayed personalization response prevents discovery of the hero resource until that response completes.",
+      "why": "The response timing supplies the causal link between the asynchronous slot and the delayed image request."
+    }
+  ],
+  "requiredEvidence": [
+    {
+      "id": "core-web-vitals-measurement",
+      "evidence": "A Core Web Vitals measurement reports FCP, LCP, the LCP image element, and LCP phase attribution for the first-visit load.",
+      "why": "A final screenshot or generic performance score cannot establish the late paint or its phases."
+    },
+    {
+      "id": "personalization-timing-attribution",
+      "evidence": "The first-visit timing shows the profile response completing before the hero request begins, while the hero's TTFB and transfer remain short.",
+      "why": "This ties delayed discovery to personalization and rules out a slow document response or oversized hero asset."
+    }
+  ],
+  "plausibleWrongAnswer": "The hero asset is too large, or the initial HTML response is slow.",
+  "ranges": {
+    "faulty": [
+      { "name": "fcpMs", "min": 0, "max": 800 },
+      { "name": "lcpMs", "min": 2800, "max": 3800 }
+    ],
+    "healthy": [
+      { "name": "fcpMs", "min": 0, "max": 800 },
+      { "name": "lcpMs", "min": 0, "max": 1200 }
+    ]
+  },
+  "intendedCapability": "Core Web Vitals",
+  "intendedCapabilityMatchers": [["page", "vitals"]],
+  "intendedCapabilityStatus": "unshipped",
+  "escapeHatchMatchers": [["cdp"], ["page", "exec"]],
+  "environment": {
+    "chromeBuild": "143.0.7499.40",
+    "flags": [],
+    "coldCache": true,
+    "repetitions": 6
+  },
+  "budgets": { "calls": 40, "minutes": 25, "stdoutTokens": 40000 }
+}

@@ -1,0 +1,7 @@
+{
+  "variant": "healthy",
+  "caseRevision": "b.1",
+  "profileDelayMs": 80,
+  "heroUrl": "/art/primary",
+  "heroSource": "./library/field.png"
+}

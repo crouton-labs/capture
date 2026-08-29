@@ -1,0 +1,18 @@
+:root { color: #17211d; background: #f6f3ec; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.site-header { align-items: center; display: flex; justify-content: space-between; margin: 0 auto; max-width: 1180px; padding: 24px 32px; }
+.wordmark { color: inherit; font-size: 1.2rem; font-weight: 750; letter-spacing: -.04em; text-decoration: none; }
+nav { display: flex; gap: 24px; }
+nav a { color: inherit; font-size: .92rem; text-decoration: none; }
+.intro { margin: 28px auto 0; max-width: 1180px; padding: 32px; }
+.eyebrow { color: #687366; font-size: .72rem; font-weight: 700; letter-spacing: .12em; margin: 0 0 18px; }
+h1 { font-size: clamp(2.7rem, 6vw, 5.8rem); letter-spacing: -.075em; line-height: .94; margin: 0; max-width: 980px; }
+.lede { font-size: 1.14rem; line-height: 1.5; margin: 24px 0 30px; max-width: 560px; }
+.hero-frame { background: #dae3d5; border-radius: 22px; min-height: min(49vw, 540px); overflow: hidden; position: relative; }
+.hero-frame img { display: block; height: 100%; object-fit: cover; position: absolute; width: 100%; }
+.hero-wash { background: linear-gradient(125deg, #b9d1bf, #e2cc9f 52%, #8db4a1); height: 100%; min-height: inherit; width: 100%; }
+.ideas { margin: 0 auto; max-width: 1180px; padding: 72px 32px 100px; }
+.ideas h2 { font-size: 1.8rem; letter-spacing: -.04em; margin: 0 0 12px; }
+.ideas p { color: #526057; margin: 0; }
+@media (max-width: 640px) { .site-header { padding: 20px; } nav { gap: 14px; } .intro { margin-top: 0; padding: 28px 20px; } .ideas { padding: 56px 20px 80px; } }
