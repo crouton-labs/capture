@@ -14,7 +14,7 @@ import { invokeCapture } from "../core/capture-invoke.mjs";
 import { AuditMetaSchema, OracleSchema } from "../core/schema.mjs";
 
 const execFileAsync = promisify(execFile);
-const PROMPT_REVISION = "v1";
+const PROMPT_REVISION = "v2";
 const HANDOFF_SETTLE_MS = 4_000;
 const PRIVATE_ORACLE_FIELDS = ["plantedCondition", "requiredDiagnosisFacts", "requiredEvidence", "plausibleWrongAnswer"];
 
@@ -148,7 +148,7 @@ export async function start(args) {
   if (entry.status !== "built") throw new Error(`Audit fixture ${entry.id} is not built`);
   const [input, template, buildHash] = await Promise.all([
     readOracleInput(entry),
-    readFile(join(auditRoot, "prompt", "blind-node.v1.md"), "utf8"),
+    readFile(join(auditRoot, "prompt", "blind-node.v2.md"), "utf8"),
     captureBuildHash(),
   ]);
   const runId = `${input.opaqueCaseId}-${Date.now()}-${randomUUID().slice(0, 8)}`;
