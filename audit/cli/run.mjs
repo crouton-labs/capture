@@ -128,7 +128,7 @@ async function startProxyOutside(ports, targetPort, logPath) {
   throw new Error("Could not allocate a CDP proxy port distinct from preflight targets");
 }
 
-function printedEnvironment({ runId, scratchDir, promptPath, fixtureUrl, proxyPort }) {
+function printedEnvironment({ runId, scratchDir, promptPath, transcriptPath, fixtureUrl, proxyPort }) {
   const wrapperDir = join(auditRoot, "wrapper");
   return [
     `Prompt: ${promptPath}`,
@@ -136,7 +136,7 @@ function printedEnvironment({ runId, scratchDir, promptPath, fixtureUrl, proxyPo
     `Fixture URL: ${fixtureUrl}`,
     "Wrapper environment:",
     `  AUDIT_RUN_ID=${runId}`,
-    `  AUDIT_TRANSCRIPT=${join(runDir, "transcript.ndjson")}`,
+    `  AUDIT_TRANSCRIPT=${transcriptPath}`,
     `  PATH=${wrapperDir}:$PATH`,
     `  CDP_PORT=${proxyPort}`,
     "Stop this run with Ctrl-C.",
@@ -222,7 +222,7 @@ export async function start(args) {
     assertInitialRunOpacity({ oracle: rawOracle, paths: { meta: JSON.stringify(meta), prompt, shim, transcript: "", connections: "", report: "" } });
     await writeFile(paths.meta, `${JSON.stringify(AuditMetaSchema.parse(meta), null, 2)}\n`);
     await assertRunDirectoryShape(runDir);
-    const lines = printedEnvironment({ runId, scratchDir: paths.scratch, promptPath: join(paths.scratch, "prompt.md"), fixtureUrl, proxyPort: proxy.port });
+    const lines = printedEnvironment({ runId, scratchDir: paths.scratch, promptPath: join(paths.scratch, "prompt.md"), transcriptPath: paths.transcript, fixtureUrl, proxyPort: proxy.port });
     console.log(`${lines.join("\n")}\nInitializing CDP handoff; wait for Run ready before launching the agent.`);
     await new Promise((resolve) => setTimeout(resolve, HANDOFF_SETTLE_MS));
     await Promise.all([writeFile(paths.connections, ""), writeFile(paths.transcript, "")]);
