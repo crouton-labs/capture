@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { MotionCollector } from './collectors/motion.js';
+import { TraceCollector } from './collectors/trace.js';
 import type { CollectorKind, CollectorKindEntry, DrainOutcome } from './collector.js';
 
 function motionReconstruct(dir: string): DrainOutcome {
@@ -28,7 +29,24 @@ const motion: CollectorKindEntry = {
   reconstruct: motionReconstruct,
 };
 
-const unsupported = (kind: Exclude<CollectorKind, 'motion'>, idSegments: string[], idPrefix: string, label: string): CollectorKindEntry => ({
+const trace: CollectorKindEntry = {
+  kind: 'trace',
+  idSegments: ['perf', 'traces'],
+  idPrefix: 'trace',
+  label: 'trace',
+  parseConfig(raw) {
+    if (raw !== undefined && (raw === null || typeof raw !== 'object' || Array.isArray(raw))) throw new Error('trace config must be an object');
+    return raw ?? {};
+  },
+  create() { return new TraceCollector(); },
+  reconstruct(dir) {
+    const file = path.join(dir, 'trace.json');
+    const bytes = fs.existsSync(file) ? fs.statSync(file).size : 0;
+    return { summary: { events: 0, windowMs: 0, navigations: 0, categories: 'devtools-default' }, files: bytes ? [{ name: 'trace.json', bytes }] : [] };
+  },
+};
+
+const unsupported = (kind: Exclude<CollectorKind, 'motion' | 'trace'>, idSegments: string[], idPrefix: string, label: string): CollectorKindEntry => ({
   kind,
   idSegments,
   idPrefix,
@@ -40,7 +58,7 @@ const unsupported = (kind: Exclude<CollectorKind, 'motion'>, idSegments: string[
 
 export const COLLECTOR_KINDS: Record<CollectorKind, CollectorKindEntry> = {
   motion,
-  trace: unsupported('trace', ['perf', 'traces'], 'trace', 'trace'),
+  trace,
   heap: unsupported('heap', ['heap', 'snapshots'], 'heap', 'heap snapshot'),
   intercept: unsupported('intercept', ['network', 'mocks'], 'mock', 'mock'),
 };

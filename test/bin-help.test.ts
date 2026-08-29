@@ -152,9 +152,6 @@ test('page branch grammar names the leaf: `page click` is rejected at the valida
 test('every new leaf is registered with its own clear non-zero scaffold', () => {
   withTempRoot((tempRoot) => {
     const commands = [
-      ['perf', 'trace'],
-      ['perf', 'vitals', 'trace-1'],
-      ['perf', 'insights', 'trace-1'],
       ['heap', 'snapshot'],
       ['heap', 'census', 'heap-1'],
       ['heap', 'objects', 'heap-1', '--constructor', 'Object'],

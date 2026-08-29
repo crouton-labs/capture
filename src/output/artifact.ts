@@ -26,7 +26,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { assertUnderCaptureRoot, type SnapMeta, type RecMeta } from '../session/artifacts.js';
+import { assertUnderCaptureRoot, readPrivateFile, type SnapMeta, type RecMeta } from '../session/artifacts.js';
 import { getActiveSession } from '../session-context.js';
 
 // ============================================================================
@@ -47,7 +47,16 @@ export interface RecRef {
   readonly dir: string;
 }
 
-export type ArtifactRef = SnapRef | RecRef;
+export interface TraceRef {
+  readonly kind: 'trace';
+  readonly id: string;
+  /** Absolute path to `perf/traces/{id}` (or the oneshot equivalent). */
+  readonly dir: string;
+  readonly completion: 'complete' | 'partial' | 'orphaned' | 'truncated';
+  readonly reason?: string;
+}
+
+export type ArtifactRef = SnapRef | RecRef | TraceRef;
 
 /** What a pluggable URL-snap callback must return. */
 export interface SnapUrlResult {
@@ -107,12 +116,12 @@ export function isUrlRef(ref: string): boolean {
 }
 
 interface RefKindConfig {
-  readonly kind: 'snap' | 'rec';
+  readonly kind: 'snap' | 'rec' | 'trace';
   /** Path segments under a session dir an id resolves through, e.g.
    * `['measure', 'snaps']`. */
   readonly idSegments: readonly [string, string];
   readonly creatingCommand: string;
-  readonly label: 'snapshot' | 'recording';
+  readonly label: 'snapshot' | 'recording' | 'trace';
 }
 
 const SNAP_CONFIG: RefKindConfig = {
@@ -127,6 +136,13 @@ const REC_CONFIG: RefKindConfig = {
   idSegments: ['motion', 'recs'],
   creatingCommand: 'capture motion rec',
   label: 'recording',
+};
+
+const TRACE_CONFIG: RefKindConfig = {
+  kind: 'trace',
+  idSegments: ['perf', 'traces'],
+  creatingCommand: 'capture perf trace',
+  label: 'trace',
 };
 
 function stripTrailingSep(p: string): string {
@@ -223,6 +239,33 @@ export function resolveRecRef(ref: string): RecRef {
   return resolveRefFromId(ref, REC_CONFIG) as RecRef;
 }
 
+/** Resolves a finalized performance trace and verifies the host's committed-file inventory. */
+export function resolveTraceRef(ref: string): TraceRef {
+  if (isUrlRef(ref)) {
+    throw new ArtifactResolutionError(ref, [], 'a trace ref cannot be a URL — record one first with `capture perf trace <url>` or `--start`/`--stop`');
+  }
+  const resolved = (path.isAbsolute(ref) ? resolveRefFromPath(ref, TRACE_CONFIG) : (rejectRelativePath(ref), resolveRefFromId(ref, TRACE_CONFIG))) as { kind: 'trace'; id: string; dir: string };
+  let meta: Record<string, unknown>;
+  try { meta = JSON.parse(readPrivateFile(path.join(resolved.dir, 'meta.json')).toString('utf8')) as Record<string, unknown>; }
+  catch (error) { throw new ArtifactResolutionError(ref, [path.join(resolved.dir, 'meta.json')], `could not read trace metadata: ${error instanceof Error ? error.message : String(error)}`, TRACE_CONFIG.creatingCommand); }
+  const completion = meta.completion;
+  if (completion !== 'complete' && completion !== 'partial' && completion !== 'orphaned') {
+    throw new ArtifactResolutionError(ref, [path.join(resolved.dir, 'meta.json')], 'trace metadata has no valid completion state', TRACE_CONFIG.creatingCommand);
+  }
+  const inventory = meta.files;
+  const inventoryMalformed = !Array.isArray(inventory);
+  const inventoryMismatch = !inventoryMalformed && inventory.some((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return true;
+    const item = entry as Record<string, unknown>;
+    const name = item.name;
+    const bytes = item.bytes;
+    if (typeof name !== 'string' || typeof bytes !== 'number' || !Number.isSafeInteger(bytes) || bytes < 0 || name.includes(path.sep)) return true;
+    try { return fs.statSync(path.join(resolved.dir, name)).size !== bytes; } catch { return true; }
+  });
+  const truncatedReason = inventoryMalformed ? 'artifact_inventory_missing_or_malformed' : inventoryMismatch ? 'artifact_inventory_mismatch' : undefined;
+  return { ...resolved, completion: truncatedReason ? 'truncated' : completion, ...(truncatedReason ? { reason: truncatedReason } : typeof meta.reason === 'string' ? { reason: meta.reason } : {}) };
+}
+
 // ============================================================================
 // Readers
 // ============================================================================
@@ -249,6 +292,7 @@ const CREATING_COMMAND_BY_FILE: Record<string, string> = {
   'rects.jsonl': 'capture motion rec',
   'events.jsonl': 'capture motion rec',
   'markers.json': 'capture motion rec',
+  'trace.json': 'capture perf trace',
 };
 
 function creatingCommandFor(filename: string): string | undefined {
@@ -268,7 +312,7 @@ export function artifactPath(ref: ArtifactRef, filename: string, opts: { mustExi
     throw new ArtifactResolutionError(
       ref.id,
       [filePath],
-      `${filename} is not present in ${ref.kind === 'snap' ? 'snapshot' : 'recording'} ${ref.id}`,
+      `${filename} is not present in ${ref.kind === 'snap' ? 'snapshot' : ref.kind === 'rec' ? 'recording' : 'trace'} ${ref.id}`,
       creatingCommandFor(filename),
     );
   }

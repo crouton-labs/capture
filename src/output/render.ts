@@ -64,6 +64,9 @@ export const RESULT_TAGS = [
   'libs',
   'lib',
   'ax-map',
+  'trace',
+  'vitals',
+  'insights',
 ] as const;
 
 export type ResultTag = (typeof RESULT_TAGS)[number];
@@ -723,7 +726,7 @@ function resolveFactLine(fl: FactLine, mode: 'xml' | 'json'): string {
 // ---------------------------------------------------------------------------
 
 export interface Attestation {
-  readonly kind: 'snapshot' | 'recording';
+  readonly kind: 'snapshot' | 'recording' | 'trace';
   /** Snapshot or recording id, e.g. "snap-a3f2" / "rec-9f31". */
   readonly id: string;
   /** Absolute artifact directory path. */
@@ -764,6 +767,8 @@ export interface RenderableResult {
    * multi-line paragraph/preformatted block that should NOT be blank-line
    * split — e.g. a motion timeline's consecutive `t=...` rows. */
   readonly sections?: readonly FactLine[];
+  /** Semantic sections for the JSON mirror when a measurement has structured records that prose renders differently. */
+  readonly jsonSections?: unknown;
   /** A single follow_up line, built only from trusted command templates via
    * `fact`/`text`/`data` — ids/paths are always embedded as escaped data,
    * never as literal instruction text. */
@@ -816,7 +821,7 @@ function renderAttrs(attrs: ResultAttrs): string {
  * the prose and --json paths. */
 function mergeAttestationAttrs(attrs: ResultAttrs, attestation?: Attestation): ResultAttrs {
   if (!attestation) return attrs;
-  const idKey = attestation.kind === 'snapshot' ? 'snap' : 'rec';
+  const idKey = attestation.kind === 'snapshot' ? 'snap' : attestation.kind === 'recording' ? 'rec' : 'trace';
   const canonical: ResultAttrs = { path: attestation.path, [idKey]: attestation.id };
 
   for (const [key, canonicalValue] of Object.entries(canonical)) {
@@ -891,7 +896,8 @@ export function toJsonResult(result: RenderableResult): Record<string, unknown> 
   }
   if (result.summary) out.summary = resolveFactLine(result.summary, 'json');
   if (result.artifacts) out.artifacts = resolveFactLine(result.artifacts, 'json');
-  if (result.sections?.length) out.sections = result.sections.map((s) => resolveFactLine(s, 'json'));
+  if (result.jsonSections !== undefined) out.sections = result.jsonSections;
+  else if (result.sections?.length) out.sections = result.sections.map((s) => resolveFactLine(s, 'json'));
   if (result.followUp) out.followUp = resolveFactLine(result.followUp, 'json');
 
   return out;
