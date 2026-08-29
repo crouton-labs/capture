@@ -1,7 +1,6 @@
 (() => {
   "use strict";
 
-  const root = document.documentElement;
   const one = (selector) => document.querySelector(selector);
   const field = (name) => document.querySelector(`[data-field="${name}"]`);
   const propertyName = (token) => `--${token.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
@@ -22,9 +21,14 @@
     return node;
   }
 
+  // The theme lands as a constructed stylesheet rather than inline properties on <html>, so the
+  // token values live in the style engine instead of the element's style attribute.
   function applyTheme({ tokens, densityScale }) {
-    for (const [token, value] of Object.entries(tokens)) root.style.setProperty(propertyName(token), value);
-    root.style.setProperty("--density", String(densityScale));
+    const declarations = Object.entries(tokens).map(([token, value]) => `${propertyName(token)}: ${value};`);
+    declarations.push(`--density: ${densityScale};`);
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(`:root { ${declarations.join(" ")} }`);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
   }
 
   function renderPassOptions({ season, onSaleFrom, onSaleTo, intro, note, tiers }) {
