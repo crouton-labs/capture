@@ -10325,7 +10325,7 @@ function validateHarAppendBatch(value, source) {
   return { entries, incompleteLifecycles };
 }
 function captureVersion() {
-  const version = "1.4.7";
+  const version = "1.4.8";
   return typeof version === "string" && version.length > 0 ? version : "development";
 }
 function token() {
@@ -12116,7 +12116,7 @@ function wallTime(value) {
   }
 }
 function captureVersion2() {
-  const version = "1.4.7";
+  const version = "1.4.8";
   return typeof version === "string" && version.length > 0 ? version : "development";
 }
 function deepFreeze(value) {
@@ -243546,7 +243546,7 @@ precedence: explicit flag > active session > env. \`session start\` adopts only 
 explicit --target.`;
 }
 function printVersion() {
-  const declared = "1.4.7";
+  const declared = "1.4.8";
   if (declared) {
     console.log(declared);
     return;
