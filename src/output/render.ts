@@ -60,6 +60,7 @@ export const RESULT_TAGS = [
   'browser-launched',
   'browser-quit',
   'network',
+  'mock',
   'cdp-result',
   'libs',
   'lib',

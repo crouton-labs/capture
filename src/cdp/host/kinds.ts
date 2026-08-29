@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { HeapCollector, reconstructHeapSnapshot } from './collectors/heap.js';
+import { InterceptCollector, parseMockCollectorConfig } from './collectors/intercept.js';
 import { MotionCollector } from './collectors/motion.js';
 import { TraceCollector } from './collectors/trace.js';
 import type { CollectorKind, CollectorKindEntry, DrainOutcome } from './collector.js';
@@ -70,11 +71,27 @@ const unsupported = (kind: Exclude<CollectorKind, 'motion' | 'trace' | 'heap'>, 
   reconstruct(dir) { return { summary: {}, files: [] }; },
 });
 
+const intercept: CollectorKindEntry = {
+  kind: 'intercept',
+  idSegments: ['network', 'mocks'],
+  idPrefix: 'mock',
+  label: 'mock',
+  parseConfig: parseMockCollectorConfig,
+  create(config) { return new InterceptCollector(config as ReturnType<typeof parseMockCollectorConfig>); },
+  reconstruct(dir) {
+    const bytes = (name: string): number => {
+      try { return fs.statSync(path.join(dir, name)).size; } catch { return 0; }
+    };
+    const files = ['rules.json', 'interceptions.jsonl'].filter(name => fs.existsSync(path.join(dir, name))).map(name => ({ name, bytes: bytes(name) }));
+    return { summary: { state: 'orphaned-finalized' }, files };
+  },
+};
+
 export const COLLECTOR_KINDS: Record<CollectorKind, CollectorKindEntry> = {
   motion,
   trace,
   heap,
-  intercept: unsupported('intercept', ['network', 'mocks'], 'mock', 'mock'),
+  intercept,
 };
 
 export function collectorKind(kind: CollectorKind): CollectorKindEntry { return COLLECTOR_KINDS[kind]; }

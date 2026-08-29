@@ -149,12 +149,10 @@ test('page branch grammar names the leaf: `page click` is rejected at the valida
   });
 });
 
-test('every scaffold leaf is registered with its own clear non-zero scaffold', () => {
+test('every remaining scaffold leaf is registered with a clear non-zero placeholder', () => {
   withTempRoot((tempRoot) => {
     const commands = [
       ['lighthouse', 'https://example.com'],
-      ['tab', 'mock', 'start', '--rules', 'rules.json'],
-      ['tab', 'mock', 'stop'],
       ['session', 'collectors'],
     ];
     for (const command of commands) {

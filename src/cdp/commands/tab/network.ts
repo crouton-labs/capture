@@ -15,6 +15,8 @@ import { captureError } from '../../../errors.js';
 import { getActiveSession, setActiveNetworkOffline } from '../../../session-context.js';
 import { admitSessionOperation } from '../../../session/coordinator.js';
 import { sendBridgeRequest } from '../../bridge/client.js';
+import { sendHostRequest } from '../../host/client.js';
+import { scanCollectorHost } from '../../host/handle.js';
 import { type ParsedArgs } from '../../types.js';
 import {
   emitResult,
@@ -133,16 +135,13 @@ export async function cmdTabNetwork(parsed: ParsedArgs, _args: string[]): Promis
         `Network.enable failed over the session's held bridge: ${enable.error || 'unknown bridge error'}`,
       );
     }
-    const emulate = await sendBridgeRequest(socket, {
-      method: 'Network.emulateNetworkConditions',
-      params: {
-        offline,
-        latency: offline ? -1 : 0,
-        downloadThroughput: offline ? 0 : -1,
-        uploadThroughput: offline ? 0 : -1,
-      },
-      targetId,
-    });
+    const params = {
+      offline,
+      latency: offline ? -1 : 0,
+      downloadThroughput: offline ? 0 : -1,
+      uploadThroughput: offline ? 0 : -1,
+    };
+    const emulate = await sendBridgeRequest(socket, { method: 'Network.emulateNetworkConditions', params, targetId });
     if (!emulate.ok) {
       throw captureError(
         'world',
@@ -150,9 +149,19 @@ export async function cmdTabNetwork(parsed: ParsedArgs, _args: string[]): Promis
         `Network.emulateNetworkConditions failed over the session's held bridge: ${emulate.error || 'unknown bridge error'}`,
       );
     }
-    // Local-main session network retention: record the emulation on the
-    // active session so later independent command connections re-apply it
-    // (applyActiveSessionNetworkConditions in cdp/connection.ts).
+    const host = scanCollectorHost(session.dir);
+    if (host.classification === 'live' && host.handle) {
+      if (host.handle.targetId !== targetId) throw captureError('precondition', 'collector_host_target_mismatch', 'collector host is bound to a different session target; stop the session before changing tabs.');
+      const hostEnable = await sendHostRequest(host.handle.socketPath, { type: 'cdp', nonce: host.handle.nonce, method: 'Network.enable' });
+      if (!hostEnable.ok) throw captureError('world', 'collector_host_error', `Network.enable failed over the collector host: ${hostEnable.error || 'unknown bridge error'}`);
+      const hostEmulate = await sendHostRequest(host.handle.socketPath, { type: 'cdp', nonce: host.handle.nonce, method: 'Network.emulateNetworkConditions', params });
+      if (!hostEmulate.ok) throw captureError('world', 'collector_host_error', `Network.emulateNetworkConditions failed over the collector host: ${hostEmulate.error || 'unknown bridge error'}`);
+    } else if (host.classification !== 'absent') {
+      throw captureError('precondition', 'collector_host_unavailable', `session collector host is ${host.classification}.`);
+    }
+    // Local-main session network retention: record the emulation on the active
+    // session only after every live connection carrying the session condition
+    // has accepted it.
     await setActiveNetworkOffline(offline);
   } finally {
     await operation.release();

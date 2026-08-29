@@ -6,6 +6,8 @@ import { findTabByIdAcrossEndpoints } from '../targets.js';
 import { closeNdjsonSocket, installProcessCleanup, listenNdjsonSocket } from '../bridge/server.js';
 import { collectorHostSocketPath } from '../bridge/spawn.js';
 import { processPidBirthProvider, removeArtifactTree, writeJsonPrivate } from '../../session/artifacts.js';
+import { readSessionState } from '../../session-context.js';
+import { applyActiveSessionNetworkConditions } from '../connection.js';
 import { CollectorHost, type HostSnapshot } from './core.js';
 import type { CollectorKind } from './collector.js';
 
@@ -26,6 +28,9 @@ export async function runCollectorHost(options: RunCollectorHostOptions): Promis
   const nonce = crypto.randomBytes(32).toString('hex');
   const client = new CDPClient(target.tab.webSocketDebuggerUrl);
   await client.waitReady();
+  const session = readSessionState(options.sessionDir);
+  if (session.targetId !== options.targetId) throw new Error('collector host target does not match session state');
+  await applyActiveSessionNetworkConditions(client, session, options.targetId);
   let server: import('node:net').Server | undefined;
   const handlePath = path.join(options.sessionDir, '.collector-host.json');
   const publish = (snapshot: HostSnapshot): void => writeJsonPrivate(handlePath, {

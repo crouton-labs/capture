@@ -69,6 +69,8 @@ interface BundleManifest {
   snaps: Array<{ id: string; path: string; url: string | null; viewport: string | null; settled: boolean; capturedAt: string }>;
   /** `motion rec` artifacts collected from `motion/recs/{id}/meta.json`. */
   recs: Array<{ id: string; path: string; action: string | null; frames: number; durationMs: number; state: string; viewportRestored: boolean | null }>;
+  /** Finalized network mocks collected from `network/mocks/{id}/meta.json`. */
+  mocks?: Array<{ id: string; path: string; completion: string; rules: number; paused: number; matched: number; releasedUnmatched: number }>;
   /** Retry outcomes for viewport obligations retained by failed recorder starts. */
   pendingViewportRestorations: Array<{ recId: string; viewportRestored: boolean | null }>;
 }
@@ -102,6 +104,7 @@ function isBundleManifest(value: unknown): value is BundleManifest {
     && Array.isArray(record.other) && record.other.every(isNamedPathEntry)
     && Array.isArray(record.snaps) && record.snaps.every(item => !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string' && typeof (item as Record<string, unknown>).path === 'string')
     && Array.isArray(record.recs) && record.recs.every(item => !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string' && typeof (item as Record<string, unknown>).path === 'string')
+    && (record.mocks === undefined || Array.isArray(record.mocks) && record.mocks.every(item => !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string' && typeof (item as Record<string, unknown>).path === 'string' && typeof (item as Record<string, unknown>).completion === 'string'))
     && Array.isArray(record.pendingViewportRestorations);
 }
 
@@ -125,7 +128,7 @@ function readBundleManifest(bundlePath: string): BundleManifest {
 }
 
 /** The bundle-manifest section keys `session view --filter` can address. */
-type SectionKey = 'shots' | 'har' | 'logs' | 'snaps' | 'recs' | 'other';
+type SectionKey = 'shots' | 'har' | 'logs' | 'snaps' | 'recs' | 'mocks' | 'other';
 
 // The `--filter <name>` query names map onto manifest section keys. Most are
 // identical; `measure`/`motion` are the query-facing names for the `snaps`/
@@ -137,6 +140,7 @@ const VIEW_FILTERS: Record<string, SectionKey> = {
   logs: 'logs',
   measure: 'snaps',
   motion: 'recs',
+  mocks: 'mocks',
   other: 'other',
 };
 
@@ -147,6 +151,7 @@ const SECTION_LABELS: Record<SectionKey, string> = {
   logs: 'logs',
   snaps: 'measure',
   recs: 'motion',
+  mocks: 'mocks',
   other: 'other',
 };
 
@@ -233,6 +238,18 @@ function collectRecs(dir: string): BundleManifest['recs'] {
   return fs.readdirSync(recsRoot)
     .filter((name) => fs.existsSync(path.join(recsRoot, name, 'meta.json')))
     .map((name) => readRecMeta(path.join(recsRoot, name), name));
+}
+
+function collectMocks(dir: string): NonNullable<BundleManifest['mocks']> {
+  const mocksRoot = path.join(dir, 'network', 'mocks');
+  if (!fs.existsSync(mocksRoot)) return [];
+  return fs.readdirSync(mocksRoot).flatMap((name) => {
+    const mockDir = path.join(mocksRoot, name);
+    const metaPath = path.join(mockDir, 'meta.json');
+    if (!fs.existsSync(metaPath)) return [];
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as Record<string, unknown>;
+    return [{ id: typeof meta.id === 'string' ? meta.id : name, path: mockDir, completion: typeof meta.completion === 'string' ? meta.completion : 'partial', rules: typeof meta.rules === 'number' ? meta.rules : 0, paused: typeof meta.paused === 'number' ? meta.paused : 0, matched: typeof meta.matched === 'number' ? meta.matched : 0, releasedUnmatched: typeof meta.releasedUnmatched === 'number' ? meta.releasedUnmatched : 0 }];
+  });
 }
 
 function sessionMetaPath(id: string): string {
@@ -1334,6 +1351,7 @@ function bundleRows(manifest: BundleManifest): FactLine[] {
     fact`logs: ${manifest.logs.length}`,
     fact`measure snaps: ${manifest.snaps.length}`,
     fact`motion recs: ${manifest.recs.length}`,
+    fact`mocks: ${manifest.mocks?.length ?? 0}`,
     fact`other: ${manifest.other.length}`,
   ];
 }
@@ -1449,7 +1467,8 @@ async function stop(parsed: ParsedArgs): Promise<void> {
         : [];
       const snaps = collectSnaps(session.dir);
       const recs = collectRecs(session.dir);
-      const knownDirs = new Set(['shots', 'logs', 'measure', 'motion', '.har', '.stop.lock', '.operations.lock']);
+      const mocks = collectMocks(session.dir);
+      const knownDirs = new Set(['shots', 'logs', 'measure', 'motion', 'network', '.har', '.stop.lock', '.operations.lock']);
       const knownFiles = new Set(['.session.json', '.operations.json', 'har.json', 'bundle.json', 'bridge.sock']);
       const other = fs.readdirSync(session.dir)
         .filter(name => !knownDirs.has(name) && !knownFiles.has(name))
@@ -1467,6 +1486,7 @@ async function stop(parsed: ParsedArgs): Promise<void> {
         other,
         snaps,
         recs,
+        mocks,
         pendingViewportRestorations: [],
       };
 
@@ -1571,6 +1591,9 @@ function sectionRows(manifest: BundleManifest, key: SectionKey): FactLine[] {
     case 'recs':
       return manifest.recs.map((r) =>
         fact`${r.id} — ${r.action ?? '(none)'} — ${r.frames} frames, ${r.durationMs}ms, ${r.state} — ${r.path}`);
+    case 'mocks':
+      return (manifest.mocks ?? []).map((m) =>
+        fact`${m.id} — ${m.completion} — ${m.matched}/${m.paused} matched/paused, ${m.releasedUnmatched} released unmatched — ${m.path}`);
     case 'other':
       return manifest.other.map((o) => fact`${o.name} — ${o.path}`);
   }
@@ -1651,7 +1674,7 @@ function view(parsed: ParsedArgs): void {
     return;
   }
 
-  const keys: SectionKey[] = ['shots', 'har', 'logs', 'snaps', 'recs', 'other'];
+  const keys: SectionKey[] = ['shots', 'har', 'logs', 'snaps', 'recs', 'mocks', 'other'];
   const sections = keys.map((key) => {
     const rows = sectionRows(manifest, key);
     return lineList([

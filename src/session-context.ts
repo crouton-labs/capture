@@ -165,6 +165,7 @@ export function isActiveStateCandidate(value: unknown): value is ActiveSessionSt
     && validLogs
     && (record.port === undefined || record.port === null || (Number.isInteger(record.port) && (record.port as number) > 0 && (record.port as number) <= 65535))
     && nullableString(record.bridgeSocket)
+    && (record.networkOffline === undefined || typeof record.networkOffline === 'boolean')
     && nullablePid(record.bridgePid)
     && nullableString(record.activeRecId)
     && nullableString(record.stoppedAt)
@@ -202,6 +203,14 @@ function clearActiveEntry(expected: ActiveEntryIdentity | null): void {
  * preserves a stale pointer for the invocation error path. Normal command
  * consumers retain the default eager stale-index cleanup.
  */
+export function readSessionState(sessionDir: string): ActiveSessionState {
+  const canonical = assertUnderCaptureRoot(path.resolve(sessionDir));
+  const raw = readPrivateFile(sessionMetaPath(canonical)).toString('utf-8');
+  const parsed = JSON.parse(raw) as unknown;
+  if (!isActiveStateCandidate(parsed) || parsed.dir !== canonical) throw new Error(`invalid session metadata: ${sessionMetaPath(canonical)}`);
+  return parsed;
+}
+
 export function getActiveSession({ cleanStale = true }: { cleanStale?: boolean } = {}): ActiveSessionState | null {
   const pointer = readActivePointer();
   const clean = (): void => { if (cleanStale) clearActiveEntry(pointer.entry); };
@@ -223,15 +232,8 @@ export function getActiveSession({ cleanStale = true }: { cleanStale?: boolean }
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
 
-    const raw = readPrivateFile(sessionMetaPath(sessionDir)).toString('utf-8');
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isActiveStateCandidate(parsed)) {
-      clean();
-      return null;
-    }
-
-    const state = parsed as ActiveSessionState;
-    if (state.sessionId !== index.sessionId || state.dir !== sessionDir) {
+    const state = readSessionState(sessionDir);
+    if (state.sessionId !== index.sessionId) {
       clean();
       return null;
     }
