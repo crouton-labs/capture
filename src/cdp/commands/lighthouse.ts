@@ -15,11 +15,11 @@ import { stopAndReapCollectorHostAtSessionStop } from '../host/lifecycle.js';
 import { capped, emitResult, fact, formatArtifactList, line, lineList, text, type FactLine, type JsonValue, type RenderableResult } from '../../output/render.js';
 
 export const COMMAND_BLOCK = `<command name="lighthouse">
-a third-party scored report — capture runs Lighthouse against a URL and stores its report unmodified
-use when the caller wants Lighthouse's own categories, scores, and audits; capture scores nothing itself, so every number capture measures lives in \`measure\`, \`motion\`, \`perf\`, or \`heap\`
+a third-party scored diagnostic report — capture runs Lighthouse against a URL and stores its report unmodified
+use when one Lighthouse report should sweep audited accessibility, SEO, performance, or best-practices conditions alongside its own categories, scores, and audits; capture scores nothing itself, so every number capture measures lives in \`measure\`, \`motion\`, \`perf\`, or \`heap\`
 </command>`;
 
-const HELP = `capture lighthouse <url> [--categories <list>] [--preset mobile|desktop] [--limit <N>] [--out <path>] — run Lighthouse against a URL and store its report
+const HELP = `capture lighthouse <url> [--categories <list>] [--preset mobile|desktop] [--limit <N>] [--out <path>] — run Lighthouse's third-party scored diagnostic sweep against a URL and store its report
 
 input:
   <url>                 required. The URL Lighthouse navigates to. Lighthouse drives the browser destructively — it clears state and reloads — so it will not run against a tab another collector is recording

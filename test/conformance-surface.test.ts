@@ -230,22 +230,27 @@ test('root -h exposes exactly the ten settled command blocks, with no duplicates
   });
 });
 
-test('--help is an unknown command while -h is honored at root, branch, and leaf', () => {
+test('--help is the exact -h synonym at root, branch, and leaf', () => {
   withIsolatedCaptureRoot((tempRoot) => {
-    const rejected = run(['--help'], tempRoot);
-    assertExit(rejected, 1);
-    assert.equal(errorAttributes(rejected.stdout).code, 'unknown_command');
-
     const rootHelp = run(['-h'], tempRoot);
+    const rootLongHelp = run(['--help'], tempRoot);
     assertExit(rootHelp, 0);
+    assertExit(rootLongHelp, 0);
+    assert.equal(rootLongHelp.stdout, rootHelp.stdout);
     assert.ok(tagNames(rootHelp.stdout, 'command').length > 0);
 
     const branchHelp = run(['page', '-h'], tempRoot);
+    const branchLongHelp = run(['page', '--help'], tempRoot);
     assertExit(branchHelp, 0);
+    assertExit(branchLongHelp, 0);
+    assert.equal(branchLongHelp.stdout, branchHelp.stdout);
     assert.ok(tagNames(branchHelp.stdout, 'subcommand').length > 0);
 
     const leafHelp = run(['page', 'click', '-h'], tempRoot);
+    const leafLongHelp = run(['page', 'click', '--help'], tempRoot);
     assertExit(leafHelp, 0);
+    assertExit(leafLongHelp, 0);
+    assert.equal(leafLongHelp.stdout, leafHelp.stdout);
     assert.match(leafHelp.stdout, /^capture page click\b/);
     assert.match(leafHelp.stdout, /(?:^|\n)\s*input:/i);
   });

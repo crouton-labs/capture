@@ -42,9 +42,9 @@ function withTempRoot(fn: (tempRoot: string) => void): void {
   }
 }
 
-test('bare `capture` and `capture -h` print the assembled root help: ten <command> blocks + footer, exit 0, read-only', () => {
+test('bare `capture`, `capture -h`, and `capture --help` print the assembled root help: ten <command> blocks + footer, exit 0, read-only', () => {
   withTempRoot((tempRoot) => {
-    for (const args of [[], ['-h']]) {
+    for (const args of [[], ['-h'], ['--help']]) {
       const result = run(args, tempRoot);
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.stderr, '');
@@ -70,18 +70,18 @@ test('bare `capture` and `capture -h` print the assembled root help: ten <comman
   });
 });
 
-test('each branch help lists description-and-selection rows without leaf signatures', () => {
+test('each branch accepts --help and lists description-and-selection rows without leaf signatures', () => {
   const branches = [
-    { args: ['session', '-h'], name: 'session', leaves: ['start', 'stop', 'list', 'view', 'har', 'log', 'collectors'] },
-    { args: ['page', '-h'], name: 'page', leaves: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements'] },
-    { args: ['tab', '-h'], name: 'tab', leaves: ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network', 'mock'] },
-    { args: ['tab', 'mock', '-h'], name: 'mock', leaves: ['start', 'stop'] },
-    { args: ['measure', '-h'], name: 'measure', leaves: ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map'] },
-    { args: ['measure', 'map', '-h'], name: 'map', leaves: ['focus', 'scroll', 'layers', 'ax', 'paint'] },
-    { args: ['motion', '-h'], name: 'motion', leaves: ['rec', 'mask', 'timeline', 'jank', 'response'] },
-    { args: ['perf', '-h'], name: 'perf', leaves: ['trace', 'vitals', 'insights'] },
-    { args: ['heap', '-h'], name: 'heap', leaves: ['snapshot', 'census', 'objects', 'retainers', 'diff'] },
-    { args: ['lib', '-h'], name: 'lib', leaves: ['list', 'search', 'show', 'read'] },
+    { args: ['session', '--help'], name: 'session', leaves: ['start', 'stop', 'list', 'view', 'har', 'log', 'collectors'] },
+    { args: ['page', '--help'], name: 'page', leaves: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements'] },
+    { args: ['tab', '--help'], name: 'tab', leaves: ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network', 'mock'] },
+    { args: ['tab', 'mock', '--help'], name: 'mock', leaves: ['start', 'stop'] },
+    { args: ['measure', '--help'], name: 'measure', leaves: ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map'] },
+    { args: ['measure', 'map', '--help'], name: 'map', leaves: ['focus', 'scroll', 'layers', 'ax', 'paint'] },
+    { args: ['motion', '--help'], name: 'motion', leaves: ['rec', 'mask', 'timeline', 'jank', 'response'] },
+    { args: ['perf', '--help'], name: 'perf', leaves: ['trace', 'vitals', 'insights'] },
+    { args: ['heap', '--help'], name: 'heap', leaves: ['snapshot', 'census', 'objects', 'retainers', 'diff'] },
+    { args: ['lib', '--help'], name: 'lib', leaves: ['list', 'search', 'show', 'read'] },
   ];
 
   withTempRoot((tempRoot) => {
@@ -161,6 +161,17 @@ test('every remaining scaffold leaf is registered with a clear non-zero placehol
       assert.match(result.stdout, /<error code="not_implemented" kind="precondition">/, result.stdout);
       assert.match(result.stdout, /is not yet implemented\./, result.stdout);
     }
+    assert.deepEqual(readdirSync(tempRoot), []);
+  });
+});
+
+test('a leaf accepts --help as the exact -h synonym', () => {
+  withTempRoot((tempRoot) => {
+    const short = run(['page', 'shot', '-h'], tempRoot);
+    const long = run(['page', 'shot', '--help'], tempRoot);
+    assert.equal(short.status, 0, short.stderr);
+    assert.equal(long.status, 0, long.stderr);
+    assert.equal(long.stdout, short.stdout);
     assert.deepEqual(readdirSync(tempRoot), []);
   });
 });

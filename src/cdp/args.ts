@@ -407,7 +407,7 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
     else if (arg === '--rules') { parsed.rules = valueFor(arg, next); i++; }
     else if (arg === '--categories') { parsed.categories = valueFor(arg, next); i++; }
     else if (arg === '--preset') { parsed.preset = valueFor(arg, next); i++; }
-    else if (arg === '-h') parsed.help = true;
+    else if (arg === '-h' || arg === '--help') parsed.help = true;
     else if (arg.startsWith('--')) throw invalidInput(`Unknown flag: ${arg}.`, 'unknown_flag');
     else positional.push(arg);
   }

@@ -380,6 +380,32 @@ test('--crop-selector resolves exactly one target, pads its border box, and capt
   }
 });
 
+test('--crop-selector names the requested and delivered regions when the live visual viewport clips the padded target', async () => {
+  const outPath = path.join(os.tmpdir(), `u07-selector-crop-clipped-${process.pid}.png`);
+  const client = stubClient({
+    ...captureHandlers(makePng(240, 70), { pageX: 0, pageY: 400 }),
+    'DOM.enable': () => ({}),
+    'DOM.getDocument': () => ({ root: { nodeId: 1 } }),
+    'DOM.querySelectorAll': () => ({ nodeIds: [2] }),
+    'DOM.describeNode': () => ({ node: { backendNodeId: 14 } }),
+    'Accessibility.getPartialAXTree': () => ({ nodes: [{ backendDOMNodeId: 14, role: { value: 'region' }, name: { value: 'Tall tile' } }] }),
+    'DOM.scrollIntoViewIfNeeded': () => ({}),
+    'DOM.getBoxModel': () => ({ model: { border: [100, 750, 300, 750, 300, 950, 100, 950] } }),
+  });
+  const state = installDeps(client);
+  try {
+    const { stdout, exitCode } = await runCmd(() => cmdPageShot(parsedFor({ cropSelector: '.tile', pad: 20, out: outPath }), []));
+    assert.equal(exitCode, undefined);
+    const clip = client.calls.find((call) => call.method === 'Page.captureScreenshot')?.params.clip as Record<string, number>;
+    assert.deepEqual(clip, { x: 80, y: 1130, width: 240, height: 70, scale: 1 });
+    assert.match(stdout, /crop-constrained="visual-viewport"/);
+    assert.match(stdout, /Crop constraint: requested x=80 y=1130 w=240 h=240; delivered x=80 y=1130 w=240 h=70 because the requested selector crop extended outside the live visual viewport/);
+  } finally {
+    cleanup(state);
+    fs.rmSync(outPath, { force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // --viewport WxH: transient override, cleared after the capture
 // ---------------------------------------------------------------------------

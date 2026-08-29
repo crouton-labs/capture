@@ -122,6 +122,10 @@ function round6(value: number): number {
   return Math.round(value * 1e6) / 1e6;
 }
 
+function sameRect(a: ScreenshotCrop, b: CapturedRegion): boolean {
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
 export function buildScreenshotResult(f: {
   path: string;
   bytes: number;
@@ -148,6 +152,7 @@ export function buildScreenshotResult(f: {
       downscale.y === undefined ? undefined : `vertical ${downscale.y.toFixed(6)}×`,
     ].filter((axis): axis is string => axis !== undefined).join(' and ')
     : undefined;
+  const cropConstrained = f.crop?.source === 'selector' && f.cssViewport !== undefined && !sameRect(f.crop.requested, f.cssViewport);
   const sections: FactLine[] = [
     scale && f.cssViewport
       ? fact`CSS-to-image scale: ${scale.x.toFixed(6)} image px/CSS px horizontally and ${scale.y.toFixed(6)} image px/CSS px vertically (captured CSS region ${round6(f.cssViewport.width)}×${round6(f.cssViewport.height)} at page origin ${round6(f.cssViewport.x)},${round6(f.cssViewport.y)}).`
@@ -155,6 +160,9 @@ export function buildScreenshotResult(f: {
     f.crop
       ? fact`CSS crop: ${f.crop.source === 'selector' ? `selector ${f.crop.selector} (backend:${f.crop.backendNodeId}), border box plus ${f.crop.pad}px padding` : 'coordinates'} requested ${formatRect(f.crop.requested)} at zoom ${f.crop.zoom}; the captured CSS region above is its intersection with the source visual viewport.`
       : text`CSS crop: none — the captured CSS region above is the source visual viewport.`,
+    ...(cropConstrained && f.crop && f.cssViewport
+      ? [fact`Crop constraint: requested ${formatRect(f.crop.requested)}; delivered ${formatRect(f.cssViewport)} because the requested selector crop extended outside the live visual viewport, so the artifact contains its visual-viewport intersection.`]
+      : []),
     f.scrollOffset
       ? fact`scroll offset at capture: x=${round6(f.scrollOffset.x)} y=${round6(f.scrollOffset.y)} CSS px.`
       : text`scroll offset at capture unavailable: the browser did not return the visual viewport origin.`,
@@ -189,6 +197,7 @@ export function buildScreenshotResult(f: {
       'crop-selector': f.crop?.selector,
       'crop-backend-node-id': f.crop?.backendNodeId,
       'requested-zoom': f.crop?.zoom,
+      'crop-constrained': cropConstrained ? 'visual-viewport' : undefined,
       'scroll-x': f.scrollOffset === undefined ? undefined : round6(f.scrollOffset.x),
       'scroll-y': f.scrollOffset === undefined ? undefined : round6(f.scrollOffset.y),
     },

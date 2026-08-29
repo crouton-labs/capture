@@ -245,7 +245,7 @@ test('an existing single-value flag combo still parses correctly post-change', (
 });
 
 test('deleted flags are rejected as unknown', () => {
-  for (const flag of ['--role', '--har', '--har-out', '--record', '--height', '--interactive', '--nested', '--help']) {
+  for (const flag of ['--role', '--har', '--har-out', '--record', '--height', '--interactive', '--nested']) {
     const argv = ['click', 'Sign in', flag];
     // Give value-taking flags a value token so rejection is about the flag
     // itself, not a missing argument.
@@ -254,10 +254,12 @@ test('deleted flags are rejected as unknown', () => {
   }
 });
 
-test('-h sets parsed.help', () => {
-  const parsed = parseCliArgs(['click', '-h']);
+test('-h and --help are exact parser synonyms', () => {
+  const short = parseCliArgs(['click', '-h']);
+  const long = parseCliArgs(['click', '--help']);
 
-  assert.equal(parsed.help, true);
+  assert.equal(short.help, true);
+  assert.deepEqual(long, short);
 });
 
 test('--all and --session parse', () => {
