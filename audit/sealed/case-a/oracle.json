@@ -50,10 +50,9 @@
   },
   "intendedCapability": "network response mocking",
   "intendedCapabilityMatchers": [
-    ["page", "mock"],
-    ["tab", "network", "mock"]
+    ["tab", "mock"]
   ],
-  "intendedCapabilityStatus": "unshipped",
+  "intendedCapabilityStatus": "shipped",
   "escapeHatchMatchers": [
     ["cdp"],
     ["page", "exec"]

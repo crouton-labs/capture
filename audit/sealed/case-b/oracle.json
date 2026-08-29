@@ -50,8 +50,8 @@
     ]
   },
   "intendedCapability": "Core Web Vitals",
-  "intendedCapabilityMatchers": [["page", "vitals"]],
-  "intendedCapabilityStatus": "unshipped",
+  "intendedCapabilityMatchers": [["perf", "trace"], ["perf", "vitals"]],
+  "intendedCapabilityStatus": "shipped",
   "escapeHatchMatchers": [["cdp"], ["page", "exec"]],
   "environment": {
     "chromeBuild": "143.0.7499.40",

@@ -49,8 +49,8 @@
     "healthy": [{ "name": "detachedFrameDocuments", "min": 0, "max": 0 }]
   },
   "intendedCapability": "heap profiling",
-  "intendedCapabilityMatchers": [["heap"]],
-  "intendedCapabilityStatus": "unshipped",
+  "intendedCapabilityMatchers": [["heap", "snapshot"], ["heap", "diff"], ["heap", "retainers"]],
+  "intendedCapabilityStatus": "shipped",
   "escapeHatchMatchers": [["cdp"], ["page", "exec"]],
   "environment": {
     "chromeBuild": "143.0.7499.40",
