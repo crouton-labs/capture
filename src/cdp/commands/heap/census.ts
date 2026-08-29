@@ -1,5 +1,5 @@
 import { type ParsedArgs } from '../../types.js';
-import { emitResult, fact, formatArtifactList, lineList, text } from '../../../output/render.js';
+import { capped, emitResult, fact, formatArtifactList, lineList, text } from '../../../output/render.js';
 import { completionAttrs, loadHeap, resolveHeapRef, resultReference } from './common.js';
 
 const HELP = `capture heap census <snapshot> [--axis constructor|string] [--limit <N>] — what the heap is made of
@@ -7,7 +7,7 @@ const HELP = `capture heap census <snapshot> [--axis constructor|string] [--limi
 input:
   <snapshot>       heap snapshot id in the active session or an absolute snapshot path (required)
   --axis <axis>    constructor (default) groups every node by constructor name with node count and retained bytes; string groups equal-content strings with their instance count and estimated duplicate bytes
-  --limit <N>      render the top N groups by retained bytes; default 25, --json always carries every group
+  --limit <N>      return the top N groups by retained bytes; default 25, including under --json
 output: <heap-census …> — one row per group with its counts and sizes, plus the size qualification for the chosen axis; --json mirrors
 effects: read-only — reads the finalized snapshot artifact, never drives the browser`;
 
@@ -29,8 +29,8 @@ export function cmdHeapCensus(parsed: ParsedArgs): void {
       attrs: { heap: ref.id, path: ref.dir, ...completionAttrs(ref.meta), axis, groups: groups.length, displayed: displayed.length, nodes: heap.nodeCount, 'size-qualification': duplicate.sizeQualification },
       summary: text`Equal-content string instances grouped from the Chrome heap snapshot.`,
       artifacts: formatArtifactList([{ name: 'snapshot.heapsnapshot' }]),
-      sections: [fact`${duplicate.sizeQualification}`, lineList(displayed.map((group, index) => fact`${index + 1}. ${group.value} · instances=${group.count} self-bytes=${group.totalSelfBytes} wasted-bytes=${group.wastedBytes}`))],
-      jsonSections: groups.map(group => ({ string: group.value, instanceCount: group.count, selfBytes: group.totalSelfBytes, wastedBytes: group.wastedBytes, sizeQualification: duplicate.sizeQualification })),
+      sections: [fact`${duplicate.sizeQualification}`, lineList(displayed.map((group, index) => fact`${index + 1}. ${capped(group.value, 120)} · instances=${group.count} self-bytes=${group.totalSelfBytes} wasted-bytes=${group.wastedBytes}`))],
+      jsonSections: displayed.map(group => ({ string: capped(group.value, Number.MAX_SAFE_INTEGER), instanceCount: group.count, selfBytes: group.totalSelfBytes, wastedBytes: group.wastedBytes, sizeQualification: duplicate.sizeQualification })),
       followUp: fact`Use \`capture heap objects ${resultReference(ref)} --constructor <name>\` to inspect one constructor, or \`capture heap diff --before ${resultReference(ref)} --after <snapshot>\` to compare snapshots.`,
     }, { json: parsed.json });
     return;
@@ -53,8 +53,8 @@ export function cmdHeapCensus(parsed: ParsedArgs): void {
     attrs: { heap: ref.id, path: ref.dir, ...completionAttrs(ref.meta), axis, groups: groups.length, displayed: displayed.length, nodes: heap.nodeCount, 'size-qualification': dominators.sizeQualification },
     summary: text`Constructor totals from the V8 heap snapshot.`,
     artifacts: formatArtifactList([{ name: 'snapshot.heapsnapshot' }]),
-    sections: [fact`${dominators.sizeQualification}`, lineList(displayed.map((group, index) => fact`${index + 1}. ${group.constructor} · nodes=${group.nodeCount} retained-bytes=${group.retainedBytes} self-bytes=${group.selfBytes}`))],
-    jsonSections: groups.map(group => ({ constructor: group.constructor, nodeCount: group.nodeCount, retainedBytes: group.retainedBytes, selfBytes: group.selfBytes, sizeQualification: dominators.sizeQualification })),
+    sections: [fact`${dominators.sizeQualification}`, lineList(displayed.map((group, index) => fact`${index + 1}. ${capped(group.constructor, 120)} · nodes=${group.nodeCount} retained-bytes=${group.retainedBytes} self-bytes=${group.selfBytes}`))],
+    jsonSections: displayed.map(group => ({ constructor: capped(group.constructor, Number.MAX_SAFE_INTEGER), nodeCount: group.nodeCount, retainedBytes: group.retainedBytes, selfBytes: group.selfBytes, sizeQualification: dominators.sizeQualification })),
     followUp: fact`Use \`capture heap objects ${resultReference(ref)} --constructor <name>\` for Chrome snapshot object ids and \`capture heap retainers ${resultReference(ref)} --node <object-id>\` for a retaining path.`,
   }, { json: parsed.json });
 }

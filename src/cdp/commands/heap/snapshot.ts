@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { type ParsedArgs } from '../../types.js';
 import { captureError } from '../../../errors.js';
 import { detectCdpPort } from '../../detect.js';
-import { openTab } from '../../targets.js';
+import { findTabById, openTab } from '../../targets.js';
 import { collectorHostSocketPath, startCollectorHost } from '../../bridge/spawn.js';
 import { sendHostRequest } from '../../host/client.js';
 import { scanCollectorHost, type CollectorHostHandle } from '../../host/handle.js';
@@ -68,19 +68,24 @@ export async function cmdHeapSnapshot(parsed: ParsedArgs): Promise<void> {
   }
   const port = selectedPort ?? await detectCdpPort();
   let snapshotDir: string;
+  let targetId: string;
   if (url) {
     const tab = await openTab(port, url);
+    targetId = tab.id;
     const sessionDir = oneshotHeapDir();
-    snapshotDir = await collect(sessionDir, port, tab.id);
+    snapshotDir = await collect(sessionDir, port, targetId);
   } else {
-    snapshotDir = await withSessionLifecycle(active!.dir, () => collect(active!.dir, port, active!.targetId!));
+    targetId = active!.targetId!;
+    snapshotDir = await withSessionLifecycle(active!.dir, () => collect(active!.dir, port, targetId));
   }
+  const target = await findTabById(port, targetId);
+  if (!target) throw new Error(`Heap snapshot target ${targetId} disappeared before its URL could be recorded.`);
   const ref = resolveHeapRef(snapshotDir);
   const heap = loadHeap(ref);
   const bytes = fs.statSync(path.join(ref.dir, 'snapshot.heapsnapshot')).size;
   emitResult({
     tag: 'heap-snapshot',
-    attrs: { heap: ref.id, path: ref.dir, url: url ?? active?.url ?? undefined, ...completionAttrs(ref.meta), nodes: heap.nodeCount, edges: heap.edgeCount, bytes },
+    attrs: { heap: ref.id, path: ref.dir, url: target.url, ...completionAttrs(ref.meta), nodes: heap.nodeCount, edges: heap.edgeCount, bytes },
     summary: text`Chrome's own .heapsnapshot, taken after Chrome's forced pre-snapshot garbage collection. This is the V8 JavaScript heap of one renderer, not the browser process's memory.`,
     artifacts: formatArtifactList([{ name: 'snapshot.heapsnapshot', note: `${bytes} bytes` }]),
     followUp: fact`Query heap snapshot ${resultReference(ref)} with \`capture heap census ${resultReference(ref)}\`, \`capture heap objects ${resultReference(ref)} --constructor <name>\`, or \`capture heap retainers ${resultReference(ref)} --node <object-id>\`.`,

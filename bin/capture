@@ -4392,6 +4392,7 @@ ${body2}
 follow_up: ${resolveFactLine(result.followUp, "xml")}`;
 }
 function sanitizeJsonValue(value, seen = /* @__PURE__ */ new WeakSet()) {
+  if (isCapped(value)) return capLength(neutralizeControl(String(value.value)), value.maxLength);
   if (typeof value === "string") return capLength(neutralizeControl(value), DEFAULT_DATA_MAX);
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value === "boolean" || value === null) return value;
@@ -264508,6 +264509,74 @@ var init_heap_snapshot = __esm({
         }
         return { selection: "shortest-paths", rootIndex, maxPaths, truncated: pathCounts[nodeIndex] > maxPaths, paths };
       }
+      applicationRetainingPaths(nodeIndex, { maxPaths = 1 } = {}) {
+        this.assertNodeIndex(nodeIndex);
+        if (!Number.isInteger(maxPaths) || maxPaths < 1) throw new Error("maxPaths must be a positive integer.");
+        const reverse = this.getReverseEdges();
+        const distance = new Int32Array(this.nodeCount);
+        distance.fill(-1);
+        const queue = new Int32Array(this.nodeCount);
+        let head = 0;
+        let tail = 0;
+        let ownerDistance = -1;
+        const owners = [];
+        distance[nodeIndex] = 0;
+        queue[tail++] = nodeIndex;
+        while (head < tail) {
+          const current = queue[head++];
+          const currentDistance = distance[current];
+          if (ownerDistance >= 0 && currentDistance > ownerDistance) break;
+          if (current !== nodeIndex && this.isApplicationOwner(current)) {
+            ownerDistance = currentDistance;
+            owners.push(current);
+            continue;
+          }
+          if (ownerDistance >= 0) continue;
+          for (let cursor = reverse.starts[current]; cursor < reverse.starts[current + 1]; cursor += 1) {
+            const edge = reverse.edges[cursor];
+            const source = this.sourceForEdge(edge);
+            if (distance[source] >= 0) continue;
+            distance[source] = currentDistance + 1;
+            queue[tail++] = source;
+          }
+        }
+        const paths = [];
+        let truncated = false;
+        for (const owner of owners) {
+          const nodePath = [owner];
+          const edgePath = [];
+          const cursors = [this.edgeStarts[owner]];
+          while (nodePath.length > 0) {
+            const current = nodePath[nodePath.length - 1];
+            if (current === nodeIndex) {
+              if (paths.length === maxPaths) {
+                truncated = true;
+                break;
+              }
+              paths.push({ nodes: nodePath.map((index) => this.nodeAt(index)), edges: edgePath.map((index) => this.edgeAt(index)) });
+              nodePath.pop();
+              cursors.pop();
+              edgePath.pop();
+              continue;
+            }
+            const cursor = cursors[cursors.length - 1];
+            if (cursor >= this.edgeStarts[current + 1]) {
+              nodePath.pop();
+              cursors.pop();
+              edgePath.pop();
+              continue;
+            }
+            cursors[cursors.length - 1] = cursor + 1;
+            const target = this.targets[cursor];
+            if (distance[target] !== distance[current] - 1) continue;
+            nodePath.push(target);
+            edgePath.push(cursor);
+            cursors.push(this.edgeStarts[target]);
+          }
+          if (truncated) break;
+        }
+        return { selection: "nearest-application-owners", maxPaths, truncated, paths };
+      }
       computeDominators(rootIndex = 0) {
         this.assertNodeIndex(rootIndex);
         const dfsNumber = new Int32Array(this.nodeCount);
@@ -264666,6 +264735,13 @@ var init_heap_snapshot = __esm({
           retainedSizeQualification: "retained sizes are independently computed dominator-subtree sums, so constructor totals overlap and are not heap-total deltas"
         };
       }
+      isApplicationOwner(index) {
+        const type = this.nodeTypes[this.nodeTypeIndexes[index]];
+        if (type === "closure") return true;
+        if (!["object", "array"].includes(type)) return false;
+        const name = this.strings[this.nameIndexes[index]];
+        return !/^(\(|NativeContext$|system \/ Context$|Window(?: \(global\*\))?(?: \/.*)?$|global handles$|traced handles$)/.test(name);
+      }
       getReverseEdges() {
         if (this.reverseEdges) return this.reverseEdges;
         const starts = new Int32Array(this.nodeCount + 1);
@@ -264792,19 +264868,24 @@ async function cmdHeapSnapshot(parsed) {
   }
   const port = selectedPort ?? await detectCdpPort();
   let snapshotDir;
+  let targetId;
   if (url) {
     const tab = await openTab(port, url);
+    targetId = tab.id;
     const sessionDir2 = oneshotHeapDir();
-    snapshotDir = await collect(sessionDir2, port, tab.id);
+    snapshotDir = await collect(sessionDir2, port, targetId);
   } else {
-    snapshotDir = await withSessionLifecycle(active.dir, () => collect(active.dir, port, active.targetId));
+    targetId = active.targetId;
+    snapshotDir = await withSessionLifecycle(active.dir, () => collect(active.dir, port, targetId));
   }
+  const target = await findTabById(port, targetId);
+  if (!target) throw new Error(`Heap snapshot target ${targetId} disappeared before its URL could be recorded.`);
   const ref = resolveHeapRef(snapshotDir);
   const heap2 = loadHeap(ref);
   const bytes = fs37.statSync(path43.join(ref.dir, "snapshot.heapsnapshot")).size;
   emitResult({
     tag: "heap-snapshot",
-    attrs: { heap: ref.id, path: ref.dir, url: url ?? active?.url ?? void 0, ...completionAttrs(ref.meta), nodes: heap2.nodeCount, edges: heap2.edgeCount, bytes },
+    attrs: { heap: ref.id, path: ref.dir, url: target.url, ...completionAttrs(ref.meta), nodes: heap2.nodeCount, edges: heap2.edgeCount, bytes },
     summary: text`Chrome's own .heapsnapshot, taken after Chrome's forced pre-snapshot garbage collection. This is the V8 JavaScript heap of one renderer, not the browser process's memory.`,
     artifacts: formatArtifactList([{ name: "snapshot.heapsnapshot", note: `${bytes} bytes` }]),
     followUp: fact`Query heap snapshot ${resultReference(ref)} with \`capture heap census ${resultReference(ref)}\`, \`capture heap objects ${resultReference(ref)} --constructor <name>\`, or \`capture heap retainers ${resultReference(ref)} --node <object-id>\`.`
@@ -264855,8 +264936,8 @@ function cmdHeapCensus(parsed) {
       attrs: { heap: ref.id, path: ref.dir, ...completionAttrs(ref.meta), axis, groups: groups2.length, displayed: displayed2.length, nodes: heap2.nodeCount, "size-qualification": duplicate.sizeQualification },
       summary: text`Equal-content string instances grouped from the Chrome heap snapshot.`,
       artifacts: formatArtifactList([{ name: "snapshot.heapsnapshot" }]),
-      sections: [fact`${duplicate.sizeQualification}`, lineList(displayed2.map((group, index) => fact`${index + 1}. ${group.value} · instances=${group.count} self-bytes=${group.totalSelfBytes} wasted-bytes=${group.wastedBytes}`))],
-      jsonSections: groups2.map((group) => ({ string: group.value, instanceCount: group.count, selfBytes: group.totalSelfBytes, wastedBytes: group.wastedBytes, sizeQualification: duplicate.sizeQualification })),
+      sections: [fact`${duplicate.sizeQualification}`, lineList(displayed2.map((group, index) => fact`${index + 1}. ${capped(group.value, 120)} · instances=${group.count} self-bytes=${group.totalSelfBytes} wasted-bytes=${group.wastedBytes}`))],
+      jsonSections: displayed2.map((group) => ({ string: capped(group.value, Number.MAX_SAFE_INTEGER), instanceCount: group.count, selfBytes: group.totalSelfBytes, wastedBytes: group.wastedBytes, sizeQualification: duplicate.sizeQualification })),
       followUp: fact`Use \`capture heap objects ${resultReference(ref)} --constructor <name>\` to inspect one constructor, or \`capture heap diff --before ${resultReference(ref)} --after <snapshot>\` to compare snapshots.`
     }, { json: parsed.json });
     return;
@@ -264878,8 +264959,8 @@ function cmdHeapCensus(parsed) {
     attrs: { heap: ref.id, path: ref.dir, ...completionAttrs(ref.meta), axis, groups: groups.length, displayed: displayed.length, nodes: heap2.nodeCount, "size-qualification": dominators.sizeQualification },
     summary: text`Constructor totals from the V8 heap snapshot.`,
     artifacts: formatArtifactList([{ name: "snapshot.heapsnapshot" }]),
-    sections: [fact`${dominators.sizeQualification}`, lineList(displayed.map((group, index) => fact`${index + 1}. ${group.constructor} · nodes=${group.nodeCount} retained-bytes=${group.retainedBytes} self-bytes=${group.selfBytes}`))],
-    jsonSections: groups.map((group) => ({ constructor: group.constructor, nodeCount: group.nodeCount, retainedBytes: group.retainedBytes, selfBytes: group.selfBytes, sizeQualification: dominators.sizeQualification })),
+    sections: [fact`${dominators.sizeQualification}`, lineList(displayed.map((group, index) => fact`${index + 1}. ${capped(group.constructor, 120)} · nodes=${group.nodeCount} retained-bytes=${group.retainedBytes} self-bytes=${group.selfBytes}`))],
+    jsonSections: displayed.map((group) => ({ constructor: capped(group.constructor, Number.MAX_SAFE_INTEGER), nodeCount: group.nodeCount, retainedBytes: group.retainedBytes, selfBytes: group.selfBytes, sizeQualification: dominators.sizeQualification })),
     followUp: fact`Use \`capture heap objects ${resultReference(ref)} --constructor <name>\` for Chrome snapshot object ids and \`capture heap retainers ${resultReference(ref)} --node <object-id>\` for a retaining path.`
   }, { json: parsed.json });
 }
@@ -264893,7 +264974,7 @@ var init_census3 = __esm({
 input:
   <snapshot>       heap snapshot id in the active session or an absolute snapshot path (required)
   --axis <axis>    constructor (default) groups every node by constructor name with node count and retained bytes; string groups equal-content strings with their instance count and estimated duplicate bytes
-  --limit <N>      render the top N groups by retained bytes; default 25, --json always carries every group
+  --limit <N>      return the top N groups by retained bytes; default 25, including under --json
 output: <heap-census \u2026> \u2014 one row per group with its counts and sizes, plus the size qualification for the chosen axis; --json mirrors
 effects: read-only \u2014 reads the finalized snapshot artifact, never drives the browser`;
   }
@@ -264907,7 +264988,7 @@ function cmdHeapObjects(parsed) {
   }
   const ref = resolveHeapRef(parsed.positional[0]);
   const heap2 = loadHeap(ref);
-  const constructor = parsed.constructor.trim();
+  const constructor = parsed.constructor;
   const sort = parsed.sort ?? "retained";
   const dominators = heap2.computeDominators();
   const objects = [];
@@ -264959,7 +265040,7 @@ function cmdHeapRetainers(parsed) {
     break;
   }
   if (targetIndex < 0) throw new Error(`Heap snapshot ${ref.id} has no node with Chrome snapshot object id ${objectId}.`);
-  const paths = heap2.retainingPaths(targetIndex, { maxPaths: parsed.paths ?? 1 });
+  const paths = heap2.applicationRetainingPaths(targetIndex, { maxPaths: parsed.paths ?? 1 });
   const dominators = heap2.computeDominators();
   const prosePaths = paths.paths.map((path46, index) => {
     const chain = [];
@@ -264976,9 +265057,9 @@ function cmdHeapRetainers(parsed) {
   emitResult({
     tag: "retainers",
     attrs: { heap: ref.id, path: ref.dir, ...completionAttrs(ref.meta), node: objectId, paths: paths.paths.length, truncated: paths.truncated, selection: paths.selection, "size-qualification": dominators.sizeQualification },
-    summary: text`Paths are shortest edge-count paths to the snapshot root, in stable source-edge order. A shortest path is not necessarily the reference that keeps the object alive; other retaining references may exist and are not enumerated unless --paths asks for them.`,
+    summary: text`Paths start at the nearest closure, object, or array that retains the selected object, rather than at V8's synthetic roots and handle tables. Other retaining references may exist and are not enumerated unless --paths asks for them.`,
     artifacts: formatArtifactList([{ name: "snapshot.heapsnapshot" }]),
-    sections: [fact`${dominators.sizeQualification}`, ...prosePaths.length ? [lineList(prosePaths)] : [text`No path from this node to the snapshot root was found.`]],
+    sections: [fact`${dominators.sizeQualification}`, ...prosePaths.length ? [lineList(prosePaths)] : [text`No application-owned retainer was found for this node.`]],
     jsonSections: paths.paths.map((path46) => ({
       path: path46.nodes.map((node) => ({ objectId: node.id, type: node.type, name: node.name, selfBytes: node.selfSize })),
       edges: path46.edges.map((edge) => ({ type: edge.type, name: String(edge.name) })),
@@ -264998,7 +265079,7 @@ input:
   <snapshot>          heap snapshot id in the active session or an absolute snapshot path (required)
   --node <object-id>  required. Chrome snapshot object id from \`capture heap objects\`
   --paths <N>         return up to N paths; default 1
-output: <retainers \u2026> \u2014 each path from the object back to the snapshot root as an alternating node/edge chain, with each edge's kind and property name, and each node's self bytes under the same size qualification as \`census\`; --json mirrors
+output: <retainers \u2026> \u2014 each path from the nearest application-owned retainer to the selected object as an alternating node/edge chain, with each edge's kind and property name, and each node's self bytes under the same size qualification as \`census\`; V8 root plumbing is excluded from path selection; --json mirrors
 effects: read-only \u2014 reads the finalized snapshot artifact, never drives the browser`;
   }
 });
@@ -265030,9 +265111,9 @@ function cmdHeapDiff(parsed) {
     },
     summary: text`Nodes are matched by Chrome snapshot object id. “grown” reports the increase in retained size for id-matched nodes, not their current size.`,
     artifacts: formatArtifactList([{ name: `${resultReference(before)}/snapshot.heapsnapshot`, note: "before" }, { name: `${resultReference(after)}/snapshot.heapsnapshot`, note: "after" }]),
-    sections: [fact`${comparison.retainedSizeQualification}`, lineList(displayed.map((constructor, index) => fact`${index + 1}. ${constructor.constructorName} · added nodes=${constructor.added.nodeCount} retained-bytes=${constructor.added.retainedSize}; removed nodes=${constructor.removed.nodeCount} retained-bytes=${constructor.removed.retainedSize}; grown nodes=${constructor.grown.nodeCount} retained-bytes=${constructor.grown.retainedSize}`))],
+    sections: [fact`${comparison.retainedSizeQualification}`, lineList(displayed.map((constructor, index) => fact`${index + 1}. ${capped(constructor.constructorName, 120)} · added nodes=${constructor.added.nodeCount} retained-bytes=${constructor.added.retainedSize}; removed nodes=${constructor.removed.nodeCount} retained-bytes=${constructor.removed.retainedSize}; grown nodes=${constructor.grown.nodeCount} retained-bytes=${constructor.grown.retainedSize}`))],
     jsonSections: constructors.map((constructor) => ({
-      constructor: constructor.constructorName,
+      constructor: capped(constructor.constructorName, Number.MAX_SAFE_INTEGER),
       added: { nodeCount: constructor.added.nodeCount, retainedSize: constructor.added.retainedSize },
       removed: { nodeCount: constructor.removed.nodeCount, retainedSize: constructor.removed.retainedSize },
       grown: { nodeCount: constructor.grown.nodeCount, retainedSize: constructor.grown.retainedSize },
@@ -265099,7 +265180,7 @@ use for what is retaining memory in the tab's JS heap: constructor totals, retai
 <subcommand name="snapshot" description="take a V8 heap snapshot" whenToUse="Use to write the substrate every other heap leaf reads."/>
 <subcommand name="census" description="what the heap is made of" whenToUse="Use for per-constructor node counts and retained bytes, or for duplicated strings."/>
 <subcommand name="objects" description="the individual objects of one constructor" whenToUse="Use to get the snapshot object ids and sizes you need before asking what retains one."/>
-<subcommand name="retainers" description="what is keeping one object alive" whenToUse="Use with an object id from \`objects\` to get its retaining paths back to a root."/>
+<subcommand name="retainers" description="what is keeping one object alive" whenToUse="Use with an object id from \`objects\` to get the nearest application-owned retainers."/>
 <subcommand name="diff" description="what changed between two snapshots" whenToUse="Use to see which constructors added, removed, or grew across an interaction."/>
 </command>`;
   }

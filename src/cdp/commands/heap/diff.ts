@@ -1,6 +1,6 @@
 import { type ParsedArgs } from '../../types.js';
 import { HeapSnapshot } from '../../heap-snapshot.js';
-import { emitResult, fact, formatArtifactList, lineList, text } from '../../../output/render.js';
+import { capped, emitResult, fact, formatArtifactList, lineList, text } from '../../../output/render.js';
 import { completionAttrs, loadHeap, resolveHeapRef, resultReference } from './common.js';
 
 const HELP = `capture heap diff --before <snapshot> --after <snapshot> [--limit <N>] — what changed between two heap snapshots
@@ -38,9 +38,9 @@ export function cmdHeapDiff(parsed: ParsedArgs): void {
     },
     summary: text`Nodes are matched by Chrome snapshot object id. “grown” reports the increase in retained size for id-matched nodes, not their current size.`,
     artifacts: formatArtifactList([{ name: `${resultReference(before)}/snapshot.heapsnapshot`, note: 'before' }, { name: `${resultReference(after)}/snapshot.heapsnapshot`, note: 'after' }]),
-    sections: [fact`${comparison.retainedSizeQualification}`, lineList(displayed.map((constructor, index) => fact`${index + 1}. ${constructor.constructorName} · added nodes=${constructor.added.nodeCount} retained-bytes=${constructor.added.retainedSize}; removed nodes=${constructor.removed.nodeCount} retained-bytes=${constructor.removed.retainedSize}; grown nodes=${constructor.grown.nodeCount} retained-bytes=${constructor.grown.retainedSize}`))],
+    sections: [fact`${comparison.retainedSizeQualification}`, lineList(displayed.map((constructor, index) => fact`${index + 1}. ${capped(constructor.constructorName, 120)} · added nodes=${constructor.added.nodeCount} retained-bytes=${constructor.added.retainedSize}; removed nodes=${constructor.removed.nodeCount} retained-bytes=${constructor.removed.retainedSize}; grown nodes=${constructor.grown.nodeCount} retained-bytes=${constructor.grown.retainedSize}`))],
     jsonSections: constructors.map(constructor => ({
-      constructor: constructor.constructorName,
+      constructor: capped(constructor.constructorName, Number.MAX_SAFE_INTEGER),
       added: { nodeCount: constructor.added.nodeCount, retainedSize: constructor.added.retainedSize },
       removed: { nodeCount: constructor.removed.nodeCount, retainedSize: constructor.removed.retainedSize },
       grown: { nodeCount: constructor.grown.nodeCount, retainedSize: constructor.grown.retainedSize },

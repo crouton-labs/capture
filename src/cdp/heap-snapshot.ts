@@ -46,6 +46,14 @@ export interface RetainingPaths {
   paths: RetainerPath[];
 }
 
+export interface ApplicationRetainingPaths {
+  /** Paths start at the nearest application-owned object and end at the selected object. */
+  selection: 'nearest-application-owners';
+  maxPaths: number;
+  truncated: boolean;
+  paths: RetainerPath[];
+}
+
 export interface DominatorTree {
   rootIndex: number;
   /** -1 means the node is not reachable from rootIndex. */
@@ -346,6 +354,78 @@ export class HeapSnapshot {
     return { selection: 'shortest-paths', rootIndex, maxPaths, truncated: pathCounts[nodeIndex] > maxPaths, paths };
   }
 
+  applicationRetainingPaths(nodeIndex: number, { maxPaths = 1 }: { maxPaths?: number } = {}): ApplicationRetainingPaths {
+    this.assertNodeIndex(nodeIndex);
+    if (!Number.isInteger(maxPaths) || maxPaths < 1) throw new Error('maxPaths must be a positive integer.');
+
+    const reverse = this.getReverseEdges();
+    const distance = new Int32Array(this.nodeCount);
+    distance.fill(-1);
+    const queue = new Int32Array(this.nodeCount);
+    let head = 0;
+    let tail = 0;
+    let ownerDistance = -1;
+    const owners: number[] = [];
+    distance[nodeIndex] = 0;
+    queue[tail++] = nodeIndex;
+
+    while (head < tail) {
+      const current = queue[head++];
+      const currentDistance = distance[current];
+      if (ownerDistance >= 0 && currentDistance > ownerDistance) break;
+      if (current !== nodeIndex && this.isApplicationOwner(current)) {
+        ownerDistance = currentDistance;
+        owners.push(current);
+        continue;
+      }
+      if (ownerDistance >= 0) continue;
+      for (let cursor = reverse.starts[current]; cursor < reverse.starts[current + 1]; cursor += 1) {
+        const edge = reverse.edges[cursor];
+        const source = this.sourceForEdge(edge);
+        if (distance[source] >= 0) continue;
+        distance[source] = currentDistance + 1;
+        queue[tail++] = source;
+      }
+    }
+
+    const paths: RetainerPath[] = [];
+    let truncated = false;
+    for (const owner of owners) {
+      const nodePath = [owner];
+      const edgePath: number[] = [];
+      const cursors = [this.edgeStarts[owner]];
+      while (nodePath.length > 0) {
+        const current = nodePath[nodePath.length - 1];
+        if (current === nodeIndex) {
+          if (paths.length === maxPaths) {
+            truncated = true;
+            break;
+          }
+          paths.push({ nodes: nodePath.map(index => this.nodeAt(index)), edges: edgePath.map(index => this.edgeAt(index)) });
+          nodePath.pop();
+          cursors.pop();
+          edgePath.pop();
+          continue;
+        }
+        const cursor = cursors[cursors.length - 1];
+        if (cursor >= this.edgeStarts[current + 1]) {
+          nodePath.pop();
+          cursors.pop();
+          edgePath.pop();
+          continue;
+        }
+        cursors[cursors.length - 1] = cursor + 1;
+        const target = this.targets[cursor];
+        if (distance[target] !== distance[current] - 1) continue;
+        nodePath.push(target);
+        edgePath.push(cursor);
+        cursors.push(this.edgeStarts[target]);
+      }
+      if (truncated) break;
+    }
+    return { selection: 'nearest-application-owners', maxPaths, truncated, paths };
+  }
+
   computeDominators(rootIndex = 0): DominatorTree {
     this.assertNodeIndex(rootIndex);
     const dfsNumber = new Int32Array(this.nodeCount);
@@ -507,6 +587,14 @@ export class HeapSnapshot {
       constructors: [...groups.values()],
       retainedSizeQualification: 'retained sizes are independently computed dominator-subtree sums, so constructor totals overlap and are not heap-total deltas',
     };
+  }
+
+  private isApplicationOwner(index: number): boolean {
+    const type = this.nodeTypes[this.nodeTypeIndexes[index]];
+    if (type === 'closure') return true;
+    if (!['object', 'array'].includes(type)) return false;
+    const name = this.strings[this.nameIndexes[index]];
+    return !/^(\(|NativeContext$|system \/ Context$|Window(?: \(global\*\))?(?: \/.*)?$|global handles$|traced handles$)/.test(name);
   }
 
   private getReverseEdges(): ReverseEdges {

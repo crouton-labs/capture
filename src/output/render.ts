@@ -892,6 +892,7 @@ export function renderResult(result: RenderableResult): string {
 }
 
 function sanitizeJsonValue(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (isCapped(value)) return capLength(neutralizeControl(String(value.value)), value.maxLength);
   if (typeof value === 'string') return capLength(neutralizeControl(value), DEFAULT_DATA_MAX);
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (typeof value === 'boolean' || value === null) return value;

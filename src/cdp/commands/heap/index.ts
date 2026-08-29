@@ -16,7 +16,7 @@ const HELP = `<command name="heap" description="the V8 heap-snapshot substrate">
 <subcommand name="snapshot" description="take a V8 heap snapshot" whenToUse="Use to write the substrate every other heap leaf reads."/>
 <subcommand name="census" description="what the heap is made of" whenToUse="Use for per-constructor node counts and retained bytes, or for duplicated strings."/>
 <subcommand name="objects" description="the individual objects of one constructor" whenToUse="Use to get the snapshot object ids and sizes you need before asking what retains one."/>
-<subcommand name="retainers" description="what is keeping one object alive" whenToUse="Use with an object id from \`objects\` to get its retaining paths back to a root."/>
+<subcommand name="retainers" description="what is keeping one object alive" whenToUse="Use with an object id from \`objects\` to get the nearest application-owned retainers."/>
 <subcommand name="diff" description="what changed between two snapshots" whenToUse="Use to see which constructors added, removed, or grew across an interaction."/>
 </command>`;
 

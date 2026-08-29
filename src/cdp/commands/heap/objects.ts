@@ -19,7 +19,7 @@ export function cmdHeapObjects(parsed: ParsedArgs): void {
   }
   const ref = resolveHeapRef(parsed.positional[0]);
   const heap = loadHeap(ref);
-  const constructor = parsed.constructor!.trim();
+  const constructor = parsed.constructor!;
   const sort = parsed.sort ?? 'retained';
   const dominators = heap.computeDominators();
   const objects = [] as Array<{ objectId: number; type: string; name: string; selfBytes: number; retainedBytes: number }>;
