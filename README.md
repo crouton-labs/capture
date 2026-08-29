@@ -140,7 +140,7 @@ The driving verbs resolve exactly one element through a single grammar, and reje
 
 ## For agents
 
-capture ships as a Claude Code plugin with a skill and a `/validate` command — see `skills/capture/`. The CLI is designed to be read by a model: errors are structured, every error carries a `follow_up` naming the command that would fix it, and help is available at every level.
+The CLI is designed to be read by a model: errors are structured, every error carries a `follow_up` naming the command that would fix it, and help is available at every level.
 
 ## License
 
