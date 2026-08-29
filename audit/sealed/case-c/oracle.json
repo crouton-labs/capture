@@ -2,7 +2,7 @@
   "opaqueCaseId": "k9-lumen",
   "caseId": "case-c",
   "fixtureRevision": "c.2",
-  "vagueSymptom": "Every week someone phones the front desk to ask what our refund window is — including people who tell us they had the season pass page open in front of them at the time.",
+  "vagueSymptom": "Every week someone phones the front desk to ask what our refund window is. Several have told us they had the season pass page open on the rules-and-refunds panel while they were asking, and still could not tell us what it said.",
   "plantedCondition": "manifest.palette.textMuted is #6e737c instead of #4a4f57. The token passes AA on the page's white surfaces (4.77:1) and fails on the recessed rules-and-refunds panel surface #d2d6da (3.26:1), where the refund-window sentence lives. Four further defects — X-Robots-Tag: noindex on the document, a missing alt attribute on the pass-comparison graphic, a console.error-reported TypeError in the closures-notice renderer, and an h2→h4 skip in the sign-up section — are unconditional fixture furniture present under both manifests and explain nothing.",
   "requiredDiagnosisFacts": [
     { "id": "panel-text-below-threshold", "fact": "Body text in the rules-and-refunds panel renders at roughly 3.3:1 against the panel background, below the 4.5:1 contrast requirement for normal text.", "why": "This is the condition itself, stated as a measured fact rather than as a category." },
