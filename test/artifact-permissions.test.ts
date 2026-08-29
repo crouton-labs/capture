@@ -65,6 +65,10 @@ function snapshot(file: string): NodeSnapshot {
   return { type: 'dir', ...base, entries: Object.fromEntries(fs.readdirSync(file).sort().map(name => [name, snapshot(path.join(file, name))])) };
 }
 function assertUnchanged(dir: string, before: NodeSnapshot): void { assert.deepEqual(snapshot(dir), before); }
+function directoryIdentity(dir: string): { dev: number; ino: number; mode: number } {
+  const stat = fs.statSync(dir); assert.ok(stat.isDirectory(), `expected directory ${dir}`);
+  return { dev: stat.dev, ino: stat.ino, mode: stat.mode & 0o777 };
+}
 
 function privateBase(label = 'case'): string {
   const dir = path.join(CAPTURE_ROOT, `${label}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -894,7 +898,7 @@ test('F-X3 fstat/fchmod faults close the descriptor and clean the created file o
 // F-X4 — Reentrancy fails without corrupting cwd
 // ===========================================================================
 test('F-X4 a reentrant artifact operation is rejected without corrupting cwd', () => {
-  const base = privateBase('fx4'); const file = path.join(base, 'record'); const cwdBefore = snapshot(process.cwd());
+  const base = privateBase('fx4'); const file = path.join(base, 'record'); const cwdPath = process.cwd(); const cwdBefore = directoryIdentity(cwdPath);
   let nested = false; let caught: any;
   try {
     __setArtifactTestHooks(swapAt({ operation: 'traversal', phase: 'afterParentPinned', path: base }, () => { nested = true; try { writePrivateFile(path.join(base, 'other'), 'x'); } catch (e) { caught = e; } }));
@@ -903,7 +907,8 @@ test('F-X4 a reentrant artifact operation is rejected without corrupting cwd', (
     assert.ok(nested);
     assert.match(String(caught?.message), /nested private artifact cwd transaction/);
     assert.equal(fs.readFileSync(file, 'utf8'), 'ok');
-    assert.deepEqual(snapshot(process.cwd()), cwdBefore);
+    assert.equal(process.cwd(), cwdPath);
+    assert.deepEqual(directoryIdentity(process.cwd()), cwdBefore);
   } finally { cleanup(base); }
 });
 
