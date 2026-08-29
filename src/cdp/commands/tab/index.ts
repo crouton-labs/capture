@@ -24,10 +24,8 @@ browser and tab lifecycle — Capture-owned browser launch and quit, endpoint an
 use when starting a browser Capture owns, locating or changing a tab, or changing a held tab's online state
 </command>`;
 
-export const TAB_USAGE = `capture tab — browser and tab lifecycle.
-
-\`list\` with no --port performs full endpoint discovery and is the probe for whether a CDP-enabled browser is running; when nothing is running, \`launch\` starts one Capture owns — never hand-roll a detached browser, since nothing reaps that. Capture signals only browsers it launched itself (verified by process-birth identity): an endpoint you reach with --port stays untouched. \`reset\` replaces a stuck tab with a fresh one; under an active session it refuses while a recording is active, reaps dead recorder handles, and updates the session's {target, port} pair together.
-
+export const TAB_USAGE = `<command name="tab" description="browser and tab lifecycle">
+<model>\`list\` with no --port performs full endpoint discovery and is the probe for whether a CDP-enabled browser is running; when nothing is running, \`launch\` starts one Capture owns — never hand-roll a detached browser, since nothing reaps that. Capture signals only browsers it launched itself (verified by process-birth identity): an endpoint you reach with --port stays untouched. \`reset\` replaces a stuck tab with a fresh one; under an active session it refuses while a recording is active, reaps dead recorder handles, and updates the session's {target, port} pair together.</model>
 <subcommand name="launch" description="start a Capture-owned browser" whenToUse="Use when no CDP-enabled browser is running."/>
 <subcommand name="quit" description="stop a Capture-owned browser" whenToUse="Use to stop a browser that Capture launched."/>
 <subcommand name="list" description="CDP endpoints and open tabs" whenToUse="Use to find a browser endpoint or tab before targeting it."/>
@@ -35,8 +33,7 @@ export const TAB_USAGE = `capture tab — browser and tab lifecycle.
 <subcommand name="close" description="close one tab" whenToUse="Use to close an explicitly identified background tab."/>
 <subcommand name="reset" description="replace a tab" whenToUse="Use to discard a stuck tab and update the active session to a fresh one."/>
 <subcommand name="network" description="tab network emulation" whenToUse="Use to change online connectivity for a tab held by an active session."/>
-
-capture tab <leaf> -h    Full input, output, and effects contract.`;
+</command>`;
 
 export async function tabMain(parsed: ParsedArgs, args: string[]): Promise<void> {
   const leaf = parsed.positional[0];

@@ -72,20 +72,24 @@ test('bare `capture` and `capture -h` print the assembled root help: seven <comm
 
 test('each branch help lists description-and-selection rows without leaf signatures', () => {
   const branches = [
-    { args: ['session', '-h'], leaves: ['start', 'stop', 'list', 'view', 'har', 'log'] },
-    { args: ['page', '-h'], leaves: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements'] },
-    { args: ['tab', '-h'], leaves: ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network'] },
-    { args: ['measure', '-h'], leaves: ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map'] },
-    { args: ['measure', 'map', '-h'], leaves: ['focus', 'scroll', 'layers', 'ax', 'paint'] },
-    { args: ['motion', '-h'], leaves: ['rec', 'mask', 'timeline', 'jank', 'response'] },
-    { args: ['lib', '-h'], leaves: ['list', 'search', 'show', 'read'] },
+    { args: ['session', '-h'], name: 'session', leaves: ['start', 'stop', 'list', 'view', 'har', 'log'] },
+    { args: ['page', '-h'], name: 'page', leaves: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements'] },
+    { args: ['tab', '-h'], name: 'tab', leaves: ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network'] },
+    { args: ['measure', '-h'], name: 'measure', leaves: ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map'] },
+    { args: ['measure', 'map', '-h'], name: 'map', leaves: ['focus', 'scroll', 'layers', 'ax', 'paint'] },
+    { args: ['motion', '-h'], name: 'motion', leaves: ['rec', 'mask', 'timeline', 'jank', 'response'] },
+    { args: ['lib', '-h'], name: 'lib', leaves: ['list', 'search', 'show', 'read'] },
   ];
 
   withTempRoot((tempRoot) => {
-    for (const { args, leaves } of branches) {
+    for (const { args, name, leaves } of branches) {
       const result = run(args, tempRoot);
       assert.equal(result.status, 0, `${args.join(' ')}: ${result.stderr}`);
       assert.equal(result.stderr, '', `${args.join(' ')} must not write diagnostics`);
+      assert.match(result.stdout, new RegExp(`<command name="${name}" description="[^"]+">\\n<model>[^\\n]+</model>`), result.stdout);
+      assert.equal(result.stdout.match(/<command\b/g)?.length, 1, result.stdout);
+      assert.equal(result.stdout.match(/<model>/g)?.length, 1, result.stdout);
+      assert.match(result.stdout, /<\/command>\n?$/, result.stdout);
       for (const leaf of leaves) {
         assert.match(result.stdout, new RegExp(`<subcommand name="${leaf}" description="[^"]+" whenToUse="[^"]+"/>`), result.stdout);
       }

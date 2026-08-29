@@ -296,6 +296,10 @@ test('the settled branch tree is executable and every routed leaf has example-fr
       const result = run([...branch.path, '-h'], tempRoot);
       assertExit(result, 0);
       assert.equal(result.stderr, '', `${branch.path.join(' ')}\n${transcript(result)}`);
+      assert.match(result.stdout, new RegExp(`<command name="${branch.path.at(-1)}" description="[^"]+">\\n<model>[^\\n]+</model>`), branch.path.join(' '));
+      assert.equal(result.stdout.match(/<command\b/g)?.length, 1, branch.path.join(' '));
+      assert.equal(result.stdout.match(/<model>/g)?.length, 1, branch.path.join(' '));
+      assert.match(result.stdout, /<\/command>\n?$/, branch.path.join(' '));
       assert.deepEqual(tagNames(result.stdout, 'subcommand'), branch.children, branch.path.join(' '));
       assert.doesNotMatch(result.stdout, /\bexamples?\b/i, branch.path.join(' '));
       assert.doesNotMatch(result.stdout, /\busage\s*:/i, branch.path.join(' '));

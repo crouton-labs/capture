@@ -68,6 +68,7 @@ test('`measure` with no leaf prints the D6 branch help: model prose + one <subco
   const { logs, exitCode } = await withCapture(() => measureMain(parseCliArgs(['measure']), []));
 
   assert.equal(exitCode, undefined);
+  assert.match(logs, /^<command name="measure" description="[^"]+">\n<model>[^\n]+<\/model>/);
   for (const leaf of ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map']) {
     assert.match(logs, new RegExp(`<subcommand name="${leaf}"`), `missing <subcommand name="${leaf}">`);
   }
@@ -82,6 +83,7 @@ test('`measure map` with no sub-leaf prints its own D6 branch help listing focus
   const { logs, exitCode } = await withCapture(() => measureMain(parseCliArgs(['measure', 'map']), []));
 
   assert.equal(exitCode, undefined);
+  assert.match(logs, /^<command name="map" description="[^"]+">\n<model>[^\n]+<\/model>/);
   for (const leaf of ['focus', 'scroll', 'layers', 'ax']) {
     assert.match(logs, new RegExp(`<subcommand name="${leaf}"`), `missing <subcommand name="${leaf}">`);
   }
@@ -91,6 +93,7 @@ test('`motion` with no leaf prints the D6 branch help: model prose + one <subcom
   const { logs, exitCode } = await withCapture(() => motionMain(parseCliArgs(['motion']), []));
 
   assert.equal(exitCode, undefined);
+  assert.match(logs, /^<command name="motion" description="[^"]+">\n<model>[^\n]+<\/model>/);
   for (const leaf of ['rec', 'mask', 'timeline', 'jank', 'response']) {
     assert.match(logs, new RegExp(`<subcommand name="${leaf}"`), `missing <subcommand name="${leaf}">`);
   }

@@ -6,7 +6,7 @@ import type { ParsedArgs } from '../src/cdp/types.js';
 const require = createRequire(import.meta.url);
 const fs = require('node:fs') as typeof import('node:fs');
 
-const HELP_TEXT = 'capture session — the artifact container';
+const HELP_TEXT = '<command name="session" description="the artifact container: records HTTP traffic and bundles artifacts for one page">';
 const HAR_HELP_TEXT = 'capture session har [<session-id>]';
 const LOG_HELP_TEXT = 'capture session log <path>';
 

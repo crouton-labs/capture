@@ -475,18 +475,15 @@ effects:
   the identity-bearing tailer record is registered in the session metadata.`;
 
 function printSessionHelp(): void {
-  console.log(`capture session — the artifact container: records HTTP traffic and bundles artifacts for one page.
-
-An active session with a tab auto-targets it and appends recorded traffic; \`stop\` finalizes its manifest and \`view\` reads it.
-
+  console.log(`<command name="session" description="the artifact container: records HTTP traffic and bundles artifacts for one page">
+<model>An active session with a tab auto-targets it and appends recorded traffic; \`stop\` finalizes its manifest and \`view\` reads it.</model>
 <subcommand name="start" description="open or adopt a tab and start a session" whenToUse="Use when beginning scoped work against one page and collecting its artifacts."/>
 <subcommand name="stop" description="finalize a session bundle" whenToUse="Use when scoped capture is complete and its artifacts must become a bundle."/>
 <subcommand name="list" description="active and stopped sessions" whenToUse="Use to find a session to inspect or stop."/>
 <subcommand name="view" description="one stopped session's bundle" whenToUse="Use to inspect the artifacts collected by a finalized session."/>
 <subcommand name="har" description="recorded HTTP traffic" whenToUse="Use to inspect requests from a running session or a finalized bundle."/>
 <subcommand name="log" description="tail an external log into a session" whenToUse="Use to add external process output to a session's bundled artifacts."/>
-
-capture session <leaf> -h    Full input, output, and effects contract.`);
+</command>`);
 }
 
 // ============================================================================

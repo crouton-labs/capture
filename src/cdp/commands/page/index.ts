@@ -25,10 +25,8 @@ operations against the live session tab — interact with it or inspect its curr
 use when driving or inspecting the tab a session opened or adopted; use tab for browser and tab lifecycle
 </command>`;
 
-export const PAGE_USAGE = `capture page — operations against the live session tab.
-
-All verbs auto-target the active session tab; --target/--url override. Driving verbs resolve exactly one element via the unified target grammar — bare CSS selector (which takes precedence) or exact accessible name when CSS finds none, ax:<name>, axid:<id>, backend:<id> — and reject an ambiguous target with the candidate list. During a live composed recording every verb routes through the recorder.
-
+export const PAGE_USAGE = `<command name="page" description="operations against the live session tab">
+<model>All verbs auto-target the active session tab; --target/--url override. Driving verbs resolve exactly one element via the unified target grammar — bare CSS selector (which takes precedence) or exact accessible name when CSS finds none, ax:<name>, axid:<id>, backend:<id> — and reject an ambiguous target with the candidate list. During a live composed recording every verb routes through the recorder.</model>
 <subcommand name="click" description="real click on one element" whenToUse="Use to activate a control through the page's normal click handling."/>
 <subcommand name="type" description="text entry into an element" whenToUse="Use to enter text into the focused element or a resolved field."/>
 <subcommand name="scroll" description="scroll one container" whenToUse="Use to move a resolved scrollable container to a position."/>
@@ -36,8 +34,7 @@ All verbs auto-target the active session tab; --target/--url override. Driving v
 <subcommand name="exec" description="arbitrary JavaScript in the tab" whenToUse="Use when no named page command exposes the needed page operation."/>
 <subcommand name="shot" description="current-page screenshot" whenToUse="Use to inspect the rendered page without interacting with it."/>
 <subcommand name="elements" description="actionable page elements" whenToUse="Use to discover targets for page interactions."/>
-
-capture page <leaf> -h    Full input, output, and effects contract.`;
+</command>`;
 
 export async function pageMain(parsed: ParsedArgs, args: string[]): Promise<void> {
   const leaf = parsed.positional[0];

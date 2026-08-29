@@ -27,10 +27,8 @@ static facts over a settled snapshot — snapshot capture and read-only queries
 use when measuring layout, content, and targetability facts from settled rendering; use motion for facts over time
 </command>`;
 
-export const MEASURE_USAGE = `capture measure — enriched snapshot substrate and read-only queries.
-
-\`snap\` drives the page (or a base snapshot) and writes one settled artifact directory; every other leaf below reads that artifact and never re-drives the browser unless its target is a URL, which first creates a snapshot. Findings exit 0 — a report, not a failure. \`--gate\` (exit 2 on findings or changes) is accepted only by check and diff.
-
+export const MEASURE_USAGE = `<command name="measure" description="enriched snapshot substrate and read-only queries">
+<model>\`snap\` drives the page (or a base snapshot) and writes one settled artifact directory; every other leaf below reads that artifact and never re-drives the browser unless its target is a URL, which first creates a snapshot. Findings exit 0 — a report, not a failure. \`--gate\` (exit 2 on findings or changes) is accepted only by check and diff.</model>
 <subcommand name="snap" description="settled snapshot artifact" whenToUse="Use to capture the static rendered-page substrate that measure queries read."/>
 <subcommand name="check" description="snapshot threshold measurements" whenToUse="Use to measure selected layout and content thresholds from one snapshot."/>
 <subcommand name="diff" description="snapshot delta" whenToUse="Use to compare the measured facts from two snapshots."/>
@@ -38,20 +36,16 @@ export const MEASURE_USAGE = `capture measure — enriched snapshot substrate an
 <subcommand name="explain" description="element rendering explanation" whenToUse="Use to inspect cascade, stacking, clipping, size, text, or form facts for one element."/>
 <subcommand name="sweep" description="responsive environment sampling" whenToUse="Use to compare snapshot facts across values on one environment axis."/>
 <subcommand name="map" description="one snapshot facet" whenToUse="Use to read focus, scroll, layer, accessibility, or paint facts from a snapshot."/>
+</command>`;
 
-capture measure <leaf> -h    Full input, output, and effects contract.`;
-
-export const MEASURE_MAP_USAGE = `capture measure map — one facet of a snapshot's substrate.
-
-Focus, scroll, layers, and ax accept a URL target and create a snapshot first; paint requires an existing snapshot and reads it without browser driving.
-
+export const MEASURE_MAP_USAGE = `<command name="map" description="one facet of a snapshot's substrate">
+<model>Focus, scroll, layers, and ax accept a URL target and create a snapshot first; paint requires an existing snapshot and reads it without browser driving.</model>
 <subcommand name="focus" description="keyboard traversal order" whenToUse="Use to inspect focus order from a snapshot."/>
 <subcommand name="scroll" description="scroll-container topology" whenToUse="Use to inspect scroll containers and their relationships."/>
 <subcommand name="layers" description="paint and compositor layers" whenToUse="Use to inspect layer allocation and paint order."/>
 <subcommand name="ax" description="accessibility and layout map" whenToUse="Use to relate accessibility-tree nodes to layout geometry."/>
 <subcommand name="paint" description="coverage above one target" whenToUse="Use to inspect elements painted above a target and their recorded coverage."/>
-
-capture measure map <leaf> -h    Full input, output, and effects contract.`;
+</command>`;
 
 export async function measureMain(parsed: ParsedArgs, args: string[]): Promise<void> {
   const leaf = parsed.positional[0];

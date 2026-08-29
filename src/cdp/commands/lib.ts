@@ -41,16 +41,13 @@ vault library introspection for a development checkout
 use when discovering a bundled service library or reading its function schemas before invoking it in the tab
 </command>`;
 
-const LIB_USAGE = `capture lib — vault library introspection for a development checkout.
-
-Pure local reads — no CDP connection. Requires a Capture checkout with vault/ source and esbuild; the published package answers every leaf with a structured dev_only error.
-
+const LIB_USAGE = `<command name="lib" description="vault library introspection for a development checkout">
+<model>Pure local reads — no CDP connection. Requires a Capture checkout with vault/ source and esbuild; the published package answers every leaf with a structured dev_only error.</model>
 <subcommand name="list" description="available libraries" whenToUse="Use to discover libraries and their summaries."/>
 <subcommand name="search" description="functions matching a query" whenToUse="Use to find a function when its library or exact name is unknown."/>
 <subcommand name="show" description="one library's function summaries" whenToUse="Use to inspect a known library's functions before selecting one."/>
 <subcommand name="read" description="function input and output schemas" whenToUse="Use to read the full schema for functions selected from a library."/>
-
-capture lib <leaf> -h    Full input, output, and effects contract.`;
+</command>`;
 
 const LEAF_USAGE: Record<string, string> = {
   list: `capture lib list — list every vault lib: name, function count, one-line summary.
