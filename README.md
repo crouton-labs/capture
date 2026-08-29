@@ -10,6 +10,24 @@ A screenshot shows you what a page looks like. It does not show you why the butt
 npm install -g @crouton-kit/capture
 ```
 
+## Against the alternatives
+
+Compared against `@playwright/mcp` 0.0.79 and `chrome-devtools-mcp` 1.8.0 — the Chrome DevTools MCP surface Claude Code drives — read at those published versions.
+
+Both ship a JavaScript escape hatch, so nearly everything below is *reachable* in either one by writing the code yourself. The distinction is what comes back as a measured fact.
+
+| | capture | Playwright MCP | Chrome DevTools MCP |
+|---|---|---|---|
+| **What is covering this element** | `measure map paint` names the intercepting element, its z-index, and the percentage of the target's box it covers, with a crop | Surfaces only as prose inside a failed click — "intercepts pointer events". Asking up front is `elementsFromPoint` you write | No hit-test tool — `elementsFromPoint` plus your own rect math via `evaluate_script` |
+| **Which CSS rule produced this value** | `measure explain` names the winning declaration per property with selector, specificity and source location | Computed values only. Matched rules mean driving raw CDP yourself through `browser_run_code_unsafe` | No CSS tool and no raw-CDP passthrough, so `getComputedStyle` is the ceiling: the final value, never the rule that produced it |
+| **Threshold findings with coordinates and image evidence** | `measure check` returns every finding with its rect, its provenance and a PNG crop of itself; `--gate` exits nonzero | `browser_snapshot boxes:true` does return real bounding boxes. Thresholds and per-finding crops are yours to build | `lighthouse_audit` runs real Lighthouse, including contrast and target-size. It replies with category scores and a report path — per-element findings are inside that file, and none carry a crop |
+| **Before / after diff** | `measure diff` returns a per-element style, geometry and text delta carrying cascade provenance; `--pixels` adds a raster diff | No diff tool. Save two accessibility snapshots and diff the text outside the server | Only heap-snapshot comparison. Its page snapshot holds no geometry and no CSS, so it cannot express "this box moved 12px" |
+| **Responsive breakpoints** | `measure sweep` bisects a range and brackets the exact pixel pair where layout state changes; also sweeps dpr, zoom, colour-scheme and reduced-motion | `browser_resize` sets one viewport. Sampling a range is your loop, and deciding where it changed is your job | `resize_page` and `emulate` set one size. Neither accepts a range, a list or a step |
+| **Motion timing and changed regions** | `motion response` returns input → mutation → paint → settle off the recording (±1 frame); `motion mask` collapses the interaction into one image with per-region changed-pixel area and element attribution | Records, does not measure — a video file, and a Playwright trace for the Trace Viewer | Real DevTools tracing with Core Web Vitals and the insight set: LCP and INP breakdowns, layout-shift culprits, forced reflow. Page-level load and interaction analysis, not per-element animation, and no changed-region output |
+| **Where the answer comes from** | Measurements: a named algorithm, coordinates, provenance, image evidence, and a `--json` mirror of every prose block | Page state and structure; the measurement is JavaScript you write | Page state, traces and Lighthouse reports; per-element measurement is JavaScript you write |
+
+Both do things capture does not. Playwright MCP is cross-browser and can mock network responses; Chrome DevTools MCP has Core Web Vitals, Lighthouse and heap profiling. capture is Chromium-only and points at one question — what is this page actually doing, in numbers.
+
 ## See it
 
 Eight short clips. Every overlay is real: the text is extracted from the command's actual stdout, the boxes are drawn at the coordinates the command printed, and the inset images are files a command actually wrote.
