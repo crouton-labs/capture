@@ -9930,9 +9930,6 @@ function vClocks(v, source, path33) {
     if (responseMonotonic < requestMonotonic) {
       fail(source, `${path33}.responseMonotonic`, "must be >= requestMonotonic");
     }
-    if (responseMonotonic > terminalMonotonic) {
-      fail(source, `${path33}.responseMonotonic`, "must be <= terminalMonotonic");
-    }
   }
   return {
     requestWallTime: vFinite(o.requestWallTime, source, `${path33}.requestWallTime`),
@@ -10276,7 +10273,7 @@ function vStoppedDuringBody(o, source, path33) {
   const requestWallTime = vFinite(cap2.requestWallTime, source, `${path33}._capture.requestWallTime`);
   const requestMonotonic = vFiniteMin(cap2.requestMonotonic, 0, source, `${path33}._capture.requestMonotonic`);
   const responseMonotonic = vFiniteMin(cap2.responseMonotonic, requestMonotonic, source, `${path33}._capture.responseMonotonic`);
-  const terminalMonotonic = vFiniteMin(cap2.terminalMonotonic, responseMonotonic, source, `${path33}._capture.terminalMonotonic`);
+  const terminalMonotonic = vFiniteMin(cap2.terminalMonotonic, requestMonotonic, source, `${path33}._capture.terminalMonotonic`);
   const encodedDataLength = vFiniteMin(cap2.encodedDataLength, 0, source, `${path33}._capture.encodedDataLength`);
   assertStartedDateTime(startedDateTime, requestWallTime, source, `${path33}._capture.requestWallTime`, `${path33}.startedDateTime`);
   return {
@@ -12474,7 +12471,6 @@ var init_har_recorder = __esm({
         const terminal = current.terminal;
         if (responseTimestamp !== null && responseTimestamp < current.requestMonotonic) return "response_before_request";
         if (terminal.timestamp < current.requestMonotonic) return "terminal_before_request";
-        if (responseTimestamp !== null && terminal.timestamp < responseTimestamp) return "terminal_before_response";
         return null;
       }
       invalidClock(current, violation) {
@@ -15527,8 +15523,8 @@ output:
   in one chronological selection: completed entries (method, status, URL, body
   size, start time) and the incomplete lifecycle records the recorder retained
   for requests that never completed \u2014 rendered as "incomplete: <kind>" (an
-  out-of-order clock also names its violation, e.g.
-  invalid_clock_order/terminal_before_response). The path attribute is the HAR
+  out-of-order request clock also names its violation, e.g.
+  invalid_clock_order/terminal_before_request). The path attribute is the HAR
   file's absolute path \u2014 the full-fidelity pointer, which holds every record
   including the ones this list bounds away. --json mirrors the same fields.
   Credential-like query parameter values (key, token, secret, signature, auth,

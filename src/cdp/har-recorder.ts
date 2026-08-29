@@ -514,7 +514,6 @@ export class HARRecorder {
     const terminal = current.terminal!;
     if (responseTimestamp !== null && responseTimestamp < current.requestMonotonic) return 'response_before_request';
     if (terminal.timestamp < current.requestMonotonic) return 'terminal_before_request';
-    if (responseTimestamp !== null && terminal.timestamp < responseTimestamp) return 'terminal_before_response';
     return null;
   }
 

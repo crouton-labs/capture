@@ -275,11 +275,10 @@ test('preserves failure facts without body fetch, including an empty error strin
   assertValid(result);
 });
 
-test('makes clock disorder incomplete evidence without inventing redirect response clocks', async () => {
+test('makes request-clock disorder incomplete evidence without inventing redirect response clocks', async () => {
   const cases: Array<{ name: string; events(client: FakeClient): void; violation: string }> = [
     { name: 'response before request', violation: 'response_before_request', events: (client) => { client.fire('Network.requestWillBeSent', request()); client.fire('Network.responseReceived', response('r', 9)); client.fire('Network.loadingFailed', { requestId: 'r', timestamp: 12, errorText: 'x' }); } },
     { name: 'terminal before request', violation: 'terminal_before_request', events: (client) => { client.fire('Network.requestWillBeSent', request()); client.fire('Network.loadingFailed', { requestId: 'r', timestamp: 9, errorText: 'x' }); } },
-    { name: 'terminal before response', violation: 'terminal_before_response', events: (client) => { client.fire('Network.requestWillBeSent', request()); client.fire('Network.responseReceived', response('r', 13)); client.fire('Network.loadingFailed', { requestId: 'r', timestamp: 12, errorText: 'x' }); } },
   ];
   for (const item of cases) {
     const { client, recorder: har } = await recorder();
@@ -320,6 +319,28 @@ test('makes clock disorder incomplete evidence without inventing redirect respon
     malformed.incompleteLifecycles[0] = invalid;
     assert.throws(() => validateHarFile(malformed, 'invalid redirect clock'));
   }
+});
+
+test('records a completed Core response when Electron reports the finished timestamp before the observed response timestamp', async () => {
+  const { client, recorder: har } = await recorder();
+  client.fire('Network.requestWillBeSent', request('core', { timestamp: 59858.133855, wallTime: 1_787_975_652.999134 }));
+  client.fire('Network.responseReceived', {
+    requestId: 'core',
+    timestamp: 59858.168026,
+    response: { url: 'http://localhost:3368/v1/crouter/model-config', status: 200, headers: {} },
+  });
+  client.fire('Network.loadingFinished', finished('core', 59858.167947));
+  const result = await har.finish();
+  assert.equal(result.log.entries.length, 1);
+  assert.equal(result.log.entries[0].response.status, 200);
+  assert.equal(result.incompleteLifecycles.length, 0);
+  assert.deepEqual(result.log.entries[0]._capture.clocks, {
+    requestWallTime: 1_787_975_652.999134,
+    requestMonotonic: 59858.133855,
+    responseMonotonic: 59858.168026,
+    terminalMonotonic: 59858.167947,
+  });
+  assertValid(result);
 });
 
 test('both finalizers synchronously cut admission while enable is deferred', async () => {

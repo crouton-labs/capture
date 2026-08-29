@@ -439,8 +439,8 @@ output:
   in one chronological selection: completed entries (method, status, URL, body
   size, start time) and the incomplete lifecycle records the recorder retained
   for requests that never completed — rendered as "incomplete: <kind>" (an
-  out-of-order clock also names its violation, e.g.
-  invalid_clock_order/terminal_before_response). The path attribute is the HAR
+  out-of-order request clock also names its violation, e.g.
+  invalid_clock_order/terminal_before_request). The path attribute is the HAR
   file's absolute path — the full-fidelity pointer, which holds every record
   including the ones this list bounds away. --json mirrors the same fields.
   Credential-like query parameter values (key, token, secret, signature, auth,

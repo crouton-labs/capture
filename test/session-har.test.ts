@@ -166,8 +166,7 @@ function stoppedBeforeTerminal(over: {
   };
 }
 
-/** One retained `invalid_clock_order` record — Chrome reported the terminal
- * before the response, so the entry could not be modeled as completed. */
+/** A persisted schema-v1 invalid-clock record. */
 function terminalBeforeResponse(over: { url: string; wallTime: number }): IncompleteLifecycle {
   return {
     kind: 'invalid_clock_order',

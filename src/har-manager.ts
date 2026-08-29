@@ -391,9 +391,6 @@ function vClocks(v: unknown, source: string, path: string): CaptureClocks {
     if (responseMonotonic < requestMonotonic) {
       fail(source, `${path}.responseMonotonic`, 'must be >= requestMonotonic');
     }
-    if (responseMonotonic > terminalMonotonic) {
-      fail(source, `${path}.responseMonotonic`, 'must be <= terminalMonotonic');
-    }
   }
   return {
     requestWallTime: vFinite(o.requestWallTime, source, `${path}.requestWallTime`),
@@ -768,6 +765,7 @@ function vInvalidClockOrder(
   let violation: Extract<IncompleteLifecycle, { kind: 'invalid_clock_order' }>['violation'];
   if (o.violation === 'response_before_request') violation = 'response_before_request';
   else if (o.violation === 'terminal_before_request') violation = 'terminal_before_request';
+  // Schema-v1 accepts this persisted discriminator.
   else if (o.violation === 'terminal_before_response') violation = 'terminal_before_response';
   else return fail(source, `${path}.violation`, 'must be "response_before_request", "terminal_before_request", or "terminal_before_response"');
 
@@ -828,7 +826,7 @@ function vStoppedDuringBody(
   const requestWallTime = vFinite(cap.requestWallTime, source, `${path}._capture.requestWallTime`);
   const requestMonotonic = vFiniteMin(cap.requestMonotonic, 0, source, `${path}._capture.requestMonotonic`);
   const responseMonotonic = vFiniteMin(cap.responseMonotonic, requestMonotonic, source, `${path}._capture.responseMonotonic`);
-  const terminalMonotonic = vFiniteMin(cap.terminalMonotonic, responseMonotonic, source, `${path}._capture.terminalMonotonic`);
+  const terminalMonotonic = vFiniteMin(cap.terminalMonotonic, requestMonotonic, source, `${path}._capture.terminalMonotonic`);
   const encodedDataLength = vFiniteMin(cap.encodedDataLength, 0, source, `${path}._capture.encodedDataLength`);
 
   assertStartedDateTime(startedDateTime, requestWallTime, source, `${path}._capture.requestWallTime`, `${path}.startedDateTime`);
