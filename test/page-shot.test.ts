@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { PNG } from 'pngjs';
 
 // U07: `page shot` — the navigational look (design D2/D10).
 //
@@ -212,6 +213,8 @@ test('plain page shot performs zero Emulation.* calls and reports the no-emulati
     assert.match(stdout, /width="1280" height="800" css-width="1280" css-height="800" css-x="0" css-y="0" css-to-image-x="1\.000000" css-to-image-y="1\.000000"/);
     assert.ok(stdout.includes(outPath));
     assert.match(stdout, /CSS-to-image scale: 1\.000000 image px\/CSS px horizontally and 1\.000000 image px\/CSS px vertically/);
+    assert.match(stdout, /scroll-x="0" scroll-y="0"/);
+    assert.match(stdout, /scroll offset at capture: x=0 y=0 CSS px/);
     assert.match(stdout, /emulation: none — the browser's actual current viewport was captured/);
     assert.ok(fs.existsSync(outPath));
 
@@ -230,6 +233,47 @@ test('plain page shot performs zero Emulation.* calls and reports the no-emulati
 // Reporting the former produced a false scale — at page-scale 1.5 a 1000x700
 // layout viewport yields a 667x467 image whose true CSS-to-image scale is ~1,
 // not 0.667.
+test('page shot reports the live scroll offset as capture provenance', async () => {
+  const outPath = path.join(os.tmpdir(), `u07-scroll-${process.pid}.png`);
+  const client = stubClient(captureHandlers(makePng(1280, 800), { pageX: 42.5, pageY: 137.25 }));
+  const state = installDeps(client);
+  try {
+    const { stdout, exitCode } = await runCmd(() => cmdPageShot(parsedFor({ out: outPath }), []));
+    assert.equal(exitCode, undefined);
+    assert.match(stdout, /scroll-x="42\.5" scroll-y="137\.25"/);
+    assert.match(stdout, /scroll offset at capture: x=42\.5 y=137\.25 CSS px/);
+  } finally {
+    cleanup(state);
+    fs.rmSync(outPath, { force: true });
+  }
+});
+
+test('page shot reports no scroll offset when its final fallback viewport probe cannot establish one', async () => {
+  const outPath = path.join(os.tmpdir(), `u07-scroll-fallback-${process.pid}.png`);
+  let captures = 0;
+  const client = stubClient({
+    'Page.getLayoutMetrics': () => ({
+      contentSize: { width: 1280, height: 800 },
+      cssVisualViewport: { clientWidth: 1280, clientHeight: 800, pageX: 42, pageY: 137 },
+    }),
+    'Runtime.evaluate': (params) => {
+      if (String(params.expression).includes('devicePixelRatio')) return { result: { value: 1 } };
+      throw new Error('final visual viewport probe unavailable');
+    },
+    'Page.captureScreenshot': () => ({ data: captures++ < 2 ? '' : PNG.sync.write(new PNG({ width: 1, height: 1 })).toString('base64') }),
+  });
+  const state = installDeps(client);
+  try {
+    const { stdout, exitCode } = await runCmd(() => cmdPageShot(parsedFor({ out: outPath }), []));
+    assert.equal(exitCode, undefined);
+    assert.ok(!stdout.includes('scroll-x='), stdout);
+    assert.match(stdout, /scroll offset at capture unavailable/);
+  } finally {
+    cleanup(state);
+    fs.rmSync(outPath, { force: true });
+  }
+});
+
 test('a downscaled full-page image names its effective scale in result attributes and summary', () => {
   const output = renderResult(buildScreenshotResult({
     path: '/tmp/long-page.png',

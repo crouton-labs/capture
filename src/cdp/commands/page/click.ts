@@ -63,10 +63,11 @@ export async function capturePageInputScreenshot(
   action: string,
   label: string,
   noScreenshot?: boolean,
+  out?: string,
 ): Promise<PageInputScreenshot> {
   try {
     return {
-      screenshot: await deps.autoScreenshot(client, action, label, noScreenshot),
+      screenshot: await deps.autoScreenshot(client, action, label, noScreenshot, out),
       screenshotWarning: null,
     };
   } catch (error) {
@@ -173,10 +174,11 @@ input:
   <target>          resolved against the LIVE page: bare CSS selector (takes precedence) or exact accessible name when CSS finds none, ax:<name> (case-insensitive substring over accessible names), axid:<id>, backend:<id>. text: is not accepted. Exactly one match required — zero or many matches is a structured error listing candidates with backend:<id> retry keys.
   --settle <ms>     network-settle window applied after the click (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
+  --out <path>      destination for the auto-screenshot; same semantics as page shot — overrides the active session's shots/ sequence and enables the screenshot without an active session
 output:
   <clicked backend-node-id=… role=… name=…> — resolved identity, dispatched coordinates, a hit-test receiver fact when another node covers that dispatch point, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
-  scrolls the target into view, then dispatches a real mouse press/release at its center; writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
+  scrolls the target into view, then dispatches a real mouse press/release at its center; writes one screenshot into the active session's shots/ sequence unless --no-screenshot. --out writes that screenshot to the caller-chosen path instead and works without an active session`;
 
 export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
@@ -204,7 +206,7 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
       const resolved = await resolveLiveTarget(live, target);
       if (!resolved.ok) return { failure: resolved } as const;
       const dispatch = await clickResolved(live, resolved, { inspectHitTest: true });
-      const screenshotResult = await capturePageInputScreenshot(client, 'click', target, parsed.noScreenshot);
+      const screenshotResult = await capturePageInputScreenshot(client, 'click', target, parsed.noScreenshot, parsed.out);
       return { dispatch, ...screenshotResult } as const;
     },
   );

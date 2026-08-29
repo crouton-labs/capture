@@ -114,7 +114,7 @@ interface InstalledDeps {
    * 'page' branch token (U06's heads-up: 'page' would mislabel landmarks and,
    * for type, leak typed text past deriveActionLabel's type-guard). */
   commandSeen: string | undefined;
-  shots: Array<{ action: string; label: string; noScreenshot: boolean | undefined }>;
+  shots: Array<{ action: string; label: string; noScreenshot: boolean | undefined; out?: string }>;
   restore: () => void;
 }
 
@@ -141,11 +141,11 @@ function installDeps(
       return { result, settle: { requestedMs: opts.settleMs, waitedMs, completed: true } };
     }) as never,
     getActiveSession: () => (opts.session ? FAKE_SESSION : null),
-    autoScreenshot: (async (_c: unknown, action: string, label: string, noScreenshot?: boolean) => {
-      state.shots.push({ action, label, noScreenshot });
+    autoScreenshot: (async (_c: unknown, action: string, label: string, noScreenshot?: boolean, out?: string) => {
+      state.shots.push({ action, label, noScreenshot, ...(out ? { out } : {}) });
       if (noScreenshot) return null;
       if (opts.screenshotError) throw opts.screenshotError;
-      return opts.screenshotPath ?? null;
+      return out ?? opts.screenshotPath ?? null;
     }) as never,
   });
   return state;
@@ -364,6 +364,20 @@ test('page click: --no-screenshot opts out and the block carries no screenshot l
     assert.match(stdout, /<clicked /);
     assert.ok(!stdout.includes('screenshot:'));
     assert.deepEqual(deps.shots, [{ action: 'click', label: 'ax:later', noScreenshot: true }]);
+  } finally {
+    deps.restore();
+  }
+});
+
+test('page click: --out is passed to the automatic screenshot and reported as its artifact', async () => {
+  const client = stubClient({ ...axHandlers(), ...clickDispatchHandlers() });
+  const out = '/tmp/caller-artifacts/after-click.png';
+  const deps = installDeps(client);
+  try {
+    const { stdout, exitCode } = await runCmd(() => cmdPageClick(parsedFor(['ax:later'], { out }), []));
+    assert.equal(exitCode, undefined);
+    assert.match(stdout, new RegExp(`screenshot: ${out.replaceAll('/', '\\/')}`));
+    assert.deepEqual(deps.shots, [{ action: 'click', label: 'ax:later', noScreenshot: undefined, out }]);
   } finally {
     deps.restore();
   }

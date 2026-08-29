@@ -428,9 +428,7 @@ input:
                             A record with no observed response never matches.
   --filter-method <method>  HTTP method (GET, POST, …)
   --limit <n>               list at most n matching rows; default ${DEFAULT_HAR_ROWS}
-  --full                    inline per-record detail (headers, post data,
-                            response body — escaped and capped); bodies are
-                            never inlined without it
+  --full                    inline full detail (headers, post data, response body — escaped and capped); identical headers shared by every rendered record are listed once, while differing headers stay with their record; bodies are never inlined without it
 
 output:
   One <session-har id=… path=… source=live|bundle entries=… incomplete=…
@@ -1088,18 +1086,56 @@ function harHeader(prefix: 'req' | 'res', header: Header): FactLine {
   return fact`   ${prefix} ${header.name}: ${redactHeaderCredential(header.name, header.value)}`;
 }
 
-/** `--full` inline detail for one entry: headers, post data, and response
- * body — every value escaped and capped through data()/fact. */
-function harEntryDetail(e: HAREntry, index: number): FactLine {
+interface SharedHarHeaders {
+  request?: readonly Header[];
+  response?: readonly Header[];
+}
+
+function headersEqual(left: readonly Header[], right: readonly Header[]): boolean {
+  return left.length === right.length && left.every((header, index) => header.name === right[index]?.name && header.value === right[index]?.value);
+}
+
+function requestHeaders(item: HarSelection): readonly Header[] {
+  return item.kind === 'complete' ? item.entry.request.headers ?? [] : item.record.request.headers ?? [];
+}
+
+function responseHeaders(item: HarSelection): readonly Header[] | undefined {
+  if (item.kind === 'complete') return item.entry.response.headers ?? [];
+  return incompleteResponse(item.record)?.headers;
+}
+
+/** Hoist only complete identical header lists shared by every displayed row; every differing value remains next to its record. */
+function sharedHarHeaders(shown: readonly HarSelection[]): SharedHarHeaders {
+  if (shown.length < 2) return {};
+  const request = requestHeaders(shown[0]!);
+  const response = responseHeaders(shown[0]!);
+  return {
+    ...(request.length > 0 && shown.every((item) => headersEqual(request, requestHeaders(item))) ? { request } : {}),
+    ...(response && response.length > 0 && shown.every((item) => {
+      const candidate = responseHeaders(item);
+      return candidate !== undefined && headersEqual(response, candidate);
+    }) ? { response } : {}),
+  };
+}
+
+function sharedHeaderDetail(prefix: 'req' | 'res', headers: readonly Header[], shown: number): FactLine {
+  return lineList([
+    fact`shared ${prefix === 'req' ? 'request' : 'response'} headers (all ${shown} rendered records):`,
+    ...headers.map((header) => harHeader(prefix, header)),
+  ]);
+}
+
+/** `--full` inline detail for one entry: record-specific headers, post data, and response body — every value escaped and capped through data()/fact. */
+function harEntryDetail(e: HAREntry, index: number, shared: SharedHarHeaders): FactLine {
   const rows: FactLine[] = [line(fact`${index + 1}. `, harEntryRow(e))];
-  for (const h of e.request.headers ?? []) {
-    rows.push(harHeader('req', h));
+  if (!shared.request) {
+    for (const h of e.request.headers ?? []) rows.push(harHeader('req', h));
   }
   if (e.request.postData?.text !== undefined) {
     rows.push(fact`   post data: ${capped(e.request.postData.text, 2000)}`);
   }
-  for (const h of e.response.headers ?? []) {
-    rows.push(harHeader('res', h));
+  if (!shared.response) {
+    for (const h of e.response.headers ?? []) rows.push(harHeader('res', h));
   }
   const bodyText = e.response.content?.text;
   rows.push(
@@ -1110,21 +1146,19 @@ function harEntryDetail(e: HAREntry, index: number): FactLine {
   return lineList(rows);
 }
 
-/** `--full` inline detail for one incomplete lifecycle record: the same
- * headers/post data a completed entry shows, plus the provenance that explains
- * why the lifecycle never completed. */
-function harIncompleteDetail(record: IncompleteLifecycle, index: number): FactLine {
+/** `--full` inline detail for one incomplete lifecycle record: record-specific headers/post data plus the lifecycle provenance. */
+function harIncompleteDetail(record: IncompleteLifecycle, index: number, shared: SharedHarHeaders): FactLine {
   const rows: FactLine[] = [line(fact`${index + 1}. `, harIncompleteRow(record))];
   rows.push(fact`   request ${record.requestId} (generation ${record.generation})`);
-  for (const h of record.request.headers ?? []) {
-    rows.push(harHeader('req', h));
+  if (!shared.request) {
+    for (const h of record.request.headers ?? []) rows.push(harHeader('req', h));
   }
   if (record.request.postData?.text !== undefined) {
     rows.push(fact`   post data: ${capped(record.request.postData.text, 2000)}`);
   }
   const response = incompleteResponse(record);
-  for (const h of response?.headers ?? []) {
-    rows.push(harHeader('res', h));
+  if (!shared.response) {
+    for (const h of response?.headers ?? []) rows.push(harHeader('res', h));
   }
   if (record.kind === 'invalid_clock_order') {
     rows.push(fact`   terminal: ${record.terminal.kind}`);
@@ -1251,7 +1285,14 @@ async function har(parsed: ParsedArgs): Promise<void> {
   const summary = fact`${shownEntries} of ${total} complete entries and ${shownIncomplete} of ${totalIncomplete} incomplete lifecycle records listed${filterNote}.${truncationNote}`;
 
   const sections = parsed.full
-    ? shown.map((item, i) => (item.kind === 'complete' ? harEntryDetail(item.entry, i) : harIncompleteDetail(item.record, i)))
+    ? (() => {
+      const shared = sharedHarHeaders(shown);
+      return [
+        ...(shared.request ? [sharedHeaderDetail('req', shared.request, shown.length)] : []),
+        ...(shared.response ? [sharedHeaderDetail('res', shared.response, shown.length)] : []),
+        ...shown.map((item, i) => (item.kind === 'complete' ? harEntryDetail(item.entry, i, shared) : harIncompleteDetail(item.record, i, shared))),
+      ];
+    })()
     : [lineList(shown.map((item, i) => line(
       fact`${i + 1}. `,
       item.kind === 'complete' ? harEntryRow(item.entry) : harIncompleteRow(item.record),

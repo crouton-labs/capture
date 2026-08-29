@@ -302,10 +302,37 @@ test('session har escapes entry URLs and never inlines bodies by default; --full
     const full = await runSession(['har'], { full: true });
     assert.ok(full.includes(SECRET_BODY), full);
     assert.ok(full.includes(POST_BODY), full);
-    assert.ok(full.includes('req accept: application/json'), full);
-    assert.ok(full.includes('res content-type: application/json'), full);
+    assert.ok(full.includes('shared request headers (all 4 rendered records):'), full);
+    assert.ok(full.includes('shared response headers (all 4 rendered records):'), full);
+    assert.equal(full.match(/req accept: application\/json/g)?.length, 1, full);
+    assert.equal(full.match(/res content-type: application\/json/g)?.length, 1, full);
     // Escaping still applies under --full.
     assert.ok(!full.includes('<img src=x'), full);
+  } finally {
+    await runSession(['stop', id], { json: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+    clearActiveSession();
+  }
+});
+
+test('session har keeps headers beside records when they differ', async () => {
+  const { id, dir } = await startSeededSession();
+  try {
+    const active = getActiveSession();
+    assert.ok(active?.harId);
+    await appendToHarRecording(active.harId!, {
+      entries: [
+        entry({ url: 'https://api.example.com/headers/first', body: '{"first":true}', reqHeaders: [{ name: 'x-mode', value: 'first' }] }),
+        entry({ url: 'https://api.example.com/headers/second', body: '{"second":true}', reqHeaders: [{ name: 'x-mode', value: 'second' }] }),
+      ],
+      incompleteLifecycles: [],
+    });
+    const full = await runSession(['har'], { full: true, filterUrl: '/headers/' });
+    assert.ok(!full.includes('shared request headers'), full);
+    assert.ok(full.includes('req x-mode: first'), full);
+    assert.ok(full.includes('req x-mode: second'), full);
+    assert.ok(full.includes('{"first":true}'), full);
+    assert.ok(full.includes('{"second":true}'), full);
   } finally {
     await runSession(['stop', id], { json: true });
     fs.rmSync(dir, { recursive: true, force: true });

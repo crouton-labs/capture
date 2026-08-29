@@ -1,7 +1,8 @@
+import * as fs from 'fs';
 import { PNG } from 'pngjs';
 import { CDPClient } from './client.js';
 import { nextStepPath } from '../session-context.js';
-import { writeBinaryPrivate } from '../session/artifacts.js';
+import { assertUnderCaptureRoot, writeBinaryPrivate } from '../session/artifacts.js';
 import { withScopeSerialization } from './scope-lock.js';
 
 /**
@@ -14,6 +15,12 @@ export interface CapturedRegion {
   readonly y: number;
   readonly width: number;
   readonly height: number;
+}
+
+/** The visual viewport's page-coordinate origin at capture time. */
+export interface ScrollOffset {
+  readonly x: number;
+  readonly y: number;
 }
 
 /** A CSS-pixel crop request. The capture is intersected with the live visual viewport before it reaches CDP. */
@@ -31,6 +38,10 @@ function validRegion(region: CapturedRegion): CapturedRegion | undefined {
   const finite = [region.x, region.y, region.width, region.height].every((n) => typeof n === 'number' && Number.isFinite(n));
   if (!finite || region.width <= 0 || region.height <= 0) return undefined;
   return region;
+}
+
+function validScrollOffset(offset: ScrollOffset): ScrollOffset | undefined {
+  return [offset.x, offset.y].every(Number.isFinite) ? offset : undefined;
 }
 
 /** Intersects page-coordinate CSS regions without rounding their geometry. */
@@ -120,7 +131,7 @@ export async function captureScreenshotWithCssViewport(
   client: CDPClient,
   viewport?: { width: number; height: number },
   options?: ScreenshotOptions,
-): Promise<{ png: Buffer; cssViewport?: CapturedRegion }> {
+): Promise<{ png: Buffer; cssViewport?: CapturedRegion; scrollOffset?: ScrollOffset }> {
   return withScopeSerialization(client, 'viewport', 'screenshot capture', () =>
     viewportScopedCapture(client, viewport, options, true),
   );
@@ -138,7 +149,7 @@ async function viewportScopedCapture(
   viewport?: { width: number; height: number },
   options?: ScreenshotOptions,
   includeCssViewport = false,
-): Promise<{ png: Buffer; cssViewport?: CapturedRegion }> {
+): Promise<{ png: Buffer; cssViewport?: CapturedRegion; scrollOffset?: ScrollOffset }> {
   const MAX_DIM = 1600; // headroom below Anthropic's 2000px many-image limit
   let ownsDeviceMetricsOverride = false;
   let primaryFailed = false;
@@ -184,6 +195,7 @@ async function viewportScopedCapture(
     // actually sent. An unclipped capture clears it again and it is read from the
     // live visual viewport below instead.
     let capturedRegion: CapturedRegion | undefined;
+    let scrollOffset: ScrollOffset | undefined;
 
     try {
       const metrics = (await client.send('Page.getLayoutMetrics', {}, 5000)) as {
@@ -195,8 +207,11 @@ async function viewportScopedCapture(
       // are fractional with a SUCCESSFUL response carrying empty `data`.
       const vw = Math.round(metrics.cssVisualViewport?.clientWidth ?? 0);
       const vh = Math.round(metrics.cssVisualViewport?.clientHeight ?? 0);
-      const sx = Math.floor(metrics.cssVisualViewport?.pageX ?? 0);
-      const sy = Math.floor(metrics.cssVisualViewport?.pageY ?? 0);
+      const pageX = metrics.cssVisualViewport?.pageX ?? 0;
+      const pageY = metrics.cssVisualViewport?.pageY ?? 0;
+      const sx = Math.floor(pageX);
+      const sy = Math.floor(pageY);
+      scrollOffset = validScrollOffset({ x: pageX, y: pageY });
 
       const dprResult = (await client.send('Runtime.evaluate', {
         expression: 'window.devicePixelRatio',
@@ -262,8 +277,11 @@ async function viewportScopedCapture(
       if (png.length > 0) png = downscalePngToFit(png, MAX_DIM);
       // An unclipped capture covers the visual viewport itself, not the integer
       // clip that was refused — and the two failed attempts above can have taken
-      // 30 seconds, so the viewport sampled before them is no longer evidence.
-      if (png.length > 0) capturedRegion = undefined;
+      // 30 seconds, so the viewport facts sampled before them are no longer evidence.
+      if (png.length > 0) {
+        capturedRegion = undefined;
+        scrollOffset = undefined;
+      }
     }
 
     // The image was captured unclipped (no clip was ever sent, or the clipped
@@ -278,12 +296,10 @@ async function viewportScopedCapture(
         }, 5000)) as { result?: { value?: Record<string, unknown> | null } };
         const value = response.result?.value;
         if (value) {
-          capturedRegion = validRegion({
-            x: Number(value.x),
-            y: Number(value.y),
-            width: Number(value.width),
-            height: Number(value.height),
-          });
+          const x = Number(value.x);
+          const y = Number(value.y);
+          capturedRegion = validRegion({ x, y, width: Number(value.width), height: Number(value.height) });
+          scrollOffset = validScrollOffset({ x, y });
         }
       } catch {
         // The image remains usable; only its CSS-coordinate mapping is unavailable.
@@ -296,7 +312,11 @@ async function viewportScopedCapture(
       );
     }
 
-    return { png, ...(includeCssViewport && capturedRegion ? { cssViewport: capturedRegion } : {}) };
+    return {
+      png,
+      ...(includeCssViewport && capturedRegion ? { cssViewport: capturedRegion } : {}),
+      ...(includeCssViewport && scrollOffset ? { scrollOffset } : {}),
+    };
   } catch (error) {
     primaryFailed = true;
     primaryError = error;
@@ -319,22 +339,31 @@ async function viewportScopedCapture(
   }
 }
 
+export function writeScreenshot(outPath: string, png: Buffer): void {
+  try {
+    assertUnderCaptureRoot(outPath);
+  } catch {
+    fs.writeFileSync(outPath, png);
+    return;
+  }
+  writeBinaryPrivate(outPath, png);
+}
+
 export async function autoScreenshot(
   client: CDPClient,
   action: string,
   label: string,
   noScreenshot?: boolean,
+  out?: string,
 ): Promise<string | null> {
   if (noScreenshot) return null;
-  const shotPath = await nextStepPath(action, label);
+  const shotPath = out || await nextStepPath(action, label);
   if (!shotPath) return null;
 
   // Brief settle for UI to update
   await new Promise((r) => setTimeout(r, 300));
   const png = await captureScreenshot(client);
-  // Shot path always resolves under the session dir (CAPTURE_ROOT); the
-  // private writer creates the file 0600 and re-ensures shots/ is 0700.
-  writeBinaryPrivate(shotPath, png);
+  writeScreenshot(shotPath, png);
   console.error(`  [screenshot] ${shotPath}`);
   return shotPath;
 }

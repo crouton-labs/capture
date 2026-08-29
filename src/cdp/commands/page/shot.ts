@@ -15,19 +15,17 @@
  * sequence; sessionless with no `--out` → a fresh `oneshot-{id}/page` dir
  * under the capture root (never a loose /tmp file).
  */
-import * as fs from 'fs';
 import * as path from 'path';
 import { type ParsedArgs } from '../../types.js';
 import { withConnection } from '../../connection.js';
 import { type CDPClient } from '../../client.js';
-import { captureScreenshotWithCssViewport, type CapturedRegion, type ScreenshotCrop } from '../../screenshot.js';
+import { captureScreenshotWithCssViewport, writeScreenshot, type CapturedRegion, type ScreenshotCrop, type ScrollOffset } from '../../screenshot.js';
 import { parseViewport, type Viewport } from '../../viewport.js';
 import { parseColorScheme, withAppliedColorScheme, type ColorScheme } from '../../color-scheme.js';
 import { nextStepPath } from '../../../session-context.js';
 import { createOneshotSession } from '../../../session/commands.js';
 import { resolveLiveTarget, type LiveClient, type ResolutionFailure } from '../../../interact.js';
 import { emitResolutionError } from './click.js';
-import { assertUnderCaptureRoot, writeBinaryPrivate } from '../../../session/artifacts.js';
 import {
   emitResult,
   fact,
@@ -50,7 +48,7 @@ input:
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json            mirror the result as JSON
 output:
-  <screenshot path=… width=… height=… css-width=… css-height=… css-x=… css-y=… css-to-image-x=… css-to-image-y=… effective-downscale-x=… effective-downscale-y=… emulation=none|viewport|full-page color-scheme=dark|light> — saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, any effective downscale below 1 image px/CSS px, byte size, crop provenance, and any requested transient emulation
+  <screenshot path=… width=… height=… css-width=… css-height=… css-x=… css-y=… css-to-image-x=… css-to-image-y=… effective-downscale-x=… effective-downscale-y=… scroll-x=… scroll-y=… emulation=none|viewport|full-page color-scheme=dark|light> — saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, visual-viewport scroll offset at capture, any effective downscale below 1 image px/CSS px, byte size, crop provenance, and any requested transient emulation
 effects:
   no flags: none — the capture reads the viewport as-is, with zero Emulation.* calls. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture — two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; an empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
 
@@ -104,22 +102,6 @@ async function resolveOutPath(parsed: ParsedArgs): Promise<string> {
   return path.join(deps.createOneshotSession('page').artifactsDir, 'shot.png');
 }
 
-/**
- * Writes the PNG privately (0600 under a 0700 dir) when it lands under
- * CAPTURE_ROOT (auto-generated session/oneshot paths), and with a plain
- * write when the user gave an explicit `--out` outside the capture tree —
- * a user-chosen destination whose permissions are the user's to decide.
- */
-function writeScreenshot(outPath: string, png: Buffer): void {
-  try {
-    assertUnderCaptureRoot(outPath);
-  } catch {
-    fs.writeFileSync(outPath, png);
-    return;
-  }
-  writeBinaryPrivate(outPath, png);
-}
-
 // ---------------------------------------------------------------------------
 // Result assembly
 // ---------------------------------------------------------------------------
@@ -145,6 +127,7 @@ export function buildScreenshotResult(f: {
   bytes: number;
   dimensions: { width: number; height: number } | null;
   cssViewport?: CapturedRegion;
+  scrollOffset?: ScrollOffset;
   emulation: EmulationMode;
   viewport?: { width: number; height: number };
   colorScheme?: ColorScheme;
@@ -172,6 +155,9 @@ export function buildScreenshotResult(f: {
     f.crop
       ? fact`CSS crop: ${f.crop.source === 'selector' ? `selector ${f.crop.selector} (backend:${f.crop.backendNodeId}), border box plus ${f.crop.pad}px padding` : 'coordinates'} requested ${formatRect(f.crop.requested)} at zoom ${f.crop.zoom}; the captured CSS region above is its intersection with the source visual viewport.`
       : text`CSS crop: none — the captured CSS region above is the source visual viewport.`,
+    f.scrollOffset
+      ? fact`scroll offset at capture: x=${round6(f.scrollOffset.x)} y=${round6(f.scrollOffset.y)} CSS px.`
+      : text`scroll offset at capture unavailable: the browser did not return the visual viewport origin.`,
     f.emulation === 'none'
       ? text`viewport emulation: none — the browser's actual current viewport was captured.`
       : f.emulation === 'viewport'
@@ -203,6 +189,8 @@ export function buildScreenshotResult(f: {
       'crop-selector': f.crop?.selector,
       'crop-backend-node-id': f.crop?.backendNodeId,
       'requested-zoom': f.crop?.zoom,
+      'scroll-x': f.scrollOffset === undefined ? undefined : round6(f.scrollOffset.x),
+      'scroll-y': f.scrollOffset === undefined ? undefined : round6(f.scrollOffset.y),
     },
     summary: f.dimensions
       ? downscaleDescription
@@ -384,7 +372,7 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
       const screenshot = await captureScreenshotWithCssViewport(client, viewport, { fullPage: parsed.fullPage, crop: requestedCrop, zoom });
       const outPath = await resolveOutPath(parsed);
       writeScreenshot(outPath, screenshot.png);
-      return { path: outPath, bytes: screenshot.png.length, dimensions: pngDimensions(screenshot.png), cssViewport: screenshot.cssViewport, crop: cropProvenance } as const;
+      return { path: outPath, bytes: screenshot.png.length, dimensions: pngDimensions(screenshot.png), cssViewport: screenshot.cssViewport, scrollOffset: screenshot.scrollOffset, crop: cropProvenance } as const;
     }),
     { settle: 0 },
   );
