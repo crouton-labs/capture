@@ -1,7 +1,7 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CdpConnectionSchema, CommandEventSchema, OracleSchema, ReferenceRouteSchema, RunRecordSchema } from "../core/schema.mjs";
+import { AuditMetaSchema, CdpConnectionSchema, CommandEventSchema, OracleSchema, ReferenceRouteSchema, RunRecordSchema } from "../core/schema.mjs";
 import { getCase } from "../core/registry.mjs";
 
 const auditRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -214,7 +214,7 @@ function provenanceFailures(provenanceRecord, oracle, reference, requestedRunId,
   return failures;
 }
 
-function mechanicalRecord({ runId, meta, oracle, reference, events, connections, report }) {
+function mechanicalRecord({ runId, meta, oracle, reference, events, connections, report, cdpLogPresent }) {
   const runProvenance = provenance(meta, runId, oracle, events);
   const classified = classifyCommands(events, oracle);
   const parsedReport = parseReport(report);
@@ -287,7 +287,7 @@ function mechanicalRecord({ runId, meta, oracle, reference, events, connections,
       budgetBreaches,
       firstHardBudgetBreach,
       infrastructureFailure: infrastructureFailure(meta),
-      telemetryFailures: transcriptFailures(events, runId),
+      telemetryFailures: [...transcriptFailures(events, runId), ...(cdpLogPresent ? [] : ["missing cdp-connections.ndjson"])],
       provenanceFailures: provenanceFailures(runProvenance, oracle, reference, runId, meta),
     },
   };
@@ -393,17 +393,19 @@ function adjudicate(record, oracle, facts) {
 }
 
 export async function gradeRun({ runId, runDir, oraclePath, referencePath, facts = null }) {
-  const [meta, oracle, reference, report, events, connections] = await Promise.all([
-    readJson(join(runDir, "meta.json"), null, "meta.json"),
+  const cdpLogPath = join(runDir, "cdp-connections.ndjson");
+  const [meta, oracle, reference, report, events, connections, cdpLogPresent] = await Promise.all([
+    readJson(join(runDir, "meta.json"), AuditMetaSchema, "meta.json"),
     readJson(oraclePath, OracleSchema, "oracle"),
     readJson(referencePath, ReferenceRouteSchema, "reference route"),
     readFile(join(runDir, "report.md"), "utf8"),
     readNdjson(join(runDir, "transcript.ndjson"), CommandEventSchema, "transcript"),
-    readNdjson(join(runDir, "cdp-connections.ndjson"), CdpConnectionSchema, "CDP connections"),
+    readNdjson(cdpLogPath, CdpConnectionSchema, "CDP connections"),
+    access(cdpLogPath).then(() => true, () => false),
   ]);
   if (meta.caseId !== oracle.caseId) throw new Error(`Run case ${meta.caseId ?? "(missing)"} does not match oracle case ${oracle.caseId}`);
   if (reference.caseId !== oracle.caseId) throw new Error(`Reference route case ${reference.caseId} does not match oracle case ${oracle.caseId}`);
-  const mechanical = mechanicalRecord({ runId, meta, oracle, reference, events, connections, report });
+  const mechanical = mechanicalRecord({ runId, meta, oracle, reference, events, connections, report, cdpLogPresent });
   const { _mechanical, grade: _pendingGrade, ...partial } = mechanical;
   RunRecordSchema.partial().parse(partial);
   const worksheet = renderWorksheet(oracle, report, parseReport(report), mechanical);
@@ -420,7 +422,7 @@ export async function gradeRun({ runId, runDir, oraclePath, referencePath, facts
 export async function grade(args) {
   const { runId, factsPath } = parseArgs(args);
   if (basename(runId) !== runId) throw new Error("runId must name one directory under audit/runs");
-  const entry = getCase((await readJson(join(auditRoot, "runs", runId, "meta.json"), null, "meta.json")).caseId);
+  const entry = getCase((await readJson(join(auditRoot, "runs", runId, "meta.json"), AuditMetaSchema, "meta.json")).caseId);
   if (!entry.oracleDir) throw new Error(`Audit fixture ${entry.id} is not built`);
   const result = await gradeRun({
     runId,

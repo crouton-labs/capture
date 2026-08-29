@@ -4,9 +4,10 @@ import { constants } from "node:fs";
 import { list, serve, preflight, dump } from "../cli/fixture.mjs";
 import { record } from "../cli/reference.mjs";
 import { probe } from "../cli/isolation.mjs";
+import { start } from "../cli/run.mjs";
 
 const args = process.argv.slice(2);
-const usage = "Usage: audit fixture <list|serve|preflight|dump> | audit isolation probe | audit reference record | audit grade <runId>";
+const usage = "Usage: audit fixture <list|serve|preflight|dump> | audit isolation probe | audit reference record | audit run start --case <case-id> | audit grade <runId>";
 
 try {
   if (args[0] === "fixture" && args[1] === "list") await list();
@@ -15,6 +16,7 @@ try {
   else if (args[0] === "fixture" && args[1] === "dump") await dump(args.slice(2));
   else if (args[0] === "isolation" && args[1] === "probe") await probe();
   else if (args[0] === "reference" && args[1] === "record") await record(args.slice(2));
+  else if (args[0] === "run" && args[1] === "start") await start(args.slice(2));
   else if (args[0] === "grade") {
     const grader = new URL("../grader/grade.mjs", import.meta.url);
     try { await access(grader, constants.R_OK); } catch { throw new Error("grader not built yet"); }

@@ -1,10 +1,28 @@
 import { spawn } from "node:child_process";
+import { get } from "node:http";
 
 const CHROME_VERSION = "143.0.7499.40";
 const READY_TIMEOUT_MS = 30_000;
 export const TARGET_IMAGE = "capture-audit-target:143.0.7499.40";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function probeVersion(port) {
+  return new Promise((resolve, reject) => {
+    const request = get({ hostname: "127.0.0.1", port, path: "/json/version", agent: false, timeout: 500 }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.once("error", reject);
+      response.once("end", () => {
+        if (response.statusCode !== 200) return reject(new Error(`CDP endpoint returned ${response.statusCode}`));
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
+        catch (error) { reject(error); }
+      });
+    });
+    request.once("error", reject);
+    request.once("timeout", () => request.destroy(new Error("CDP endpoint probe timed out")));
+  });
+}
 
 function command(program, args, { input } = {}) {
   return new Promise((resolve, reject) => {
@@ -75,10 +93,12 @@ export async function inspectTargetFilesystem(port, sealedTerms = []) {
 }
 
 /** Launches pinned Chrome-for-Testing in an isolated linux/amd64 container and returns its host CDP port. */
-export async function launchChrome({ args = [], fixtureUrl, flavor = "headless-shell", timeoutMs = READY_TIMEOUT_MS } = {}) {
+export async function launchChrome({ args = [], fixtureUrl, flavor = "headless-shell", timeoutMs = READY_TIMEOUT_MS, handleSignals = true, onStarted } = {}) {
   requireFlavor(flavor);
   const allowedFixturePort = fixturePort(fixtureUrl);
   if (!Array.isArray(args) || !args.every((arg) => typeof arg === "string")) throw new TypeError("Chrome args must be strings");
+  if (typeof handleSignals !== "boolean") throw new TypeError("handleSignals must be a boolean");
+  if (onStarted !== undefined && typeof onStarted !== "function") throw new TypeError("onStarted must be a function");
   if (args.some((arg) => arg.startsWith("--remote-debugging-") || arg.startsWith("--user-data-dir="))) throw new Error("The audit target owns CDP and profile flags");
   let containerId;
   let startedPromise;
@@ -90,17 +110,22 @@ export async function launchChrome({ args = [], fixtureUrl, flavor = "headless-s
   const onSigterm = () => onSignal("SIGTERM");
   const stop = async () => {
     if (stopping) return stopping;
-    process.removeListener("SIGINT", onSigint);
-    process.removeListener("SIGTERM", onSigterm);
+    if (handleSignals) {
+      process.removeListener("SIGINT", onSigint);
+      process.removeListener("SIGTERM", onSigterm);
+    }
     stopping = containerId ? command("docker", ["rm", "--force", containerId]) : Promise.resolve();
     return stopping;
   };
   try {
-    process.once("SIGINT", onSigint);
-    process.once("SIGTERM", onSigterm);
+    if (handleSignals) {
+      process.once("SIGINT", onSigint);
+      process.once("SIGTERM", onSigterm);
+    }
     await (startedPromise = command("docker", ["run", "--detach", "--rm", "--platform", "linux/amd64", "--cap-drop", "ALL", "--cap-add", "NET_ADMIN", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "SETPCAP", "--publish", "127.0.0.1::9222", "--shm-size", "512m", "--label", "capture.audit.target=true", "--env", `CHROME_FLAVOR=${flavor}`, "--env", `AUDIT_FIXTURE_PORT=${allowedFixturePort}`, targetImage(), ...args]).then((result) => {
       containerId = result.stdout.trim();
       if (!/^[a-f0-9]{12,64}$/.test(containerId)) throw new Error(`Docker returned an invalid target container id: ${containerId}`);
+      onStarted?.({ stop });
       return result;
     }));
     const published = await command("docker", ["port", containerId, "9222/tcp"]);
@@ -109,13 +134,9 @@ export async function launchChrome({ args = [], fixtureUrl, flavor = "headless-s
     let lastProbeError;
     while (Date.now() < deadline) {
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(500) });
-        if (response.ok) {
-          const version = await response.json();
-          if (version.Browser !== `HeadlessChrome/${CHROME_VERSION}` && version.Browser !== `Chrome/${CHROME_VERSION}`) throw new Error(`Target Chrome version mismatch: ${version.Browser}`);
-          return { port, stop };
-        }
-        lastProbeError = new Error(`CDP endpoint returned ${response.status}`);
+        const version = await probeVersion(port);
+        if (version.Browser !== `HeadlessChrome/${CHROME_VERSION}` && version.Browser !== `Chrome/${CHROME_VERSION}`) throw new Error(`Target Chrome version mismatch: ${version.Browser}`);
+        return { port, stop };
       } catch (error) {
         // During readiness the published port is authoritative; connection refusal and fetch timeout only mean Chrome has not opened it yet.
         lastProbeError = error;

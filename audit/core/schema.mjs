@@ -39,6 +39,15 @@ export const CdpConnectionSchema = z.object({
   bytesToBrowser: z.number().int().nonnegative(), bytesToClient: z.number().int().nonnegative(), firstRequestLine: z.string(),
 });
 
+/** Coordinator-owned provenance and lifecycle state read by the grader before a run record exists. */
+export const AuditMetaSchema = z.object({
+  caseId: StringId, runId: StringId, captureBuildHash: StringId, fixtureRevision: StringId,
+  promptRevision: StringId, chromeBuild: StringId, model: StringId, hostClass: StringId, startedAt: IsoDate,
+  browserFlags: z.array(z.string()), stopReason: z.string().optional(), infrastructureFailure: z.boolean().optional(),
+  infrastructure: z.object({ failed: z.boolean() }).optional(),
+  provenance: z.object({ runId: StringId, captureBuildHash: StringId, fixtureRevision: StringId, promptRevision: StringId, chromeBuild: StringId, model: StringId, hostClass: StringId, startedAt: IsoDate, browserFlags: z.array(z.string()) }).partial().optional(),
+});
+
 export const FrictionEventSchema = z.object({
   eventId: StringId, runId: StringId, commandOrdinals: z.array(z.number().int().positive()), phase: PhaseSchema, category: FrictionCategorySchema,
   expected: z.string(), actual: z.string(), workaround: z.string(),
