@@ -1,0 +1,504 @@
+{
+  "caseId": "case-d",
+  "measuredAt": "2026-08-29T21:38:20.951Z",
+  "provisional": true,
+  "captureBuildHash": "e41ccb240dbac32d0c45369ef2736f76f7fb5dc8",
+  "chromeBuild": "unknown",
+  "hostClass": "darwin-arm64",
+  "route": [
+    {
+      "ordinal": 1,
+      "argv": [
+        "-h"
+      ],
+      "elapsedMs": 163,
+      "stdoutTokens": 583
+    },
+    {
+      "ordinal": 2,
+      "argv": [
+        "tab",
+        "-h"
+      ],
+      "elapsedMs": 166,
+      "stdoutTokens": 406
+    },
+    {
+      "ordinal": 3,
+      "argv": [
+        "tab",
+        "launch",
+        "-h"
+      ],
+      "elapsedMs": 158,
+      "stdoutTokens": 224
+    },
+    {
+      "ordinal": 4,
+      "argv": [
+        "tab",
+        "launch",
+        "--url",
+        "http://127.0.0.1:63802"
+      ],
+      "elapsedMs": 924,
+      "stdoutTokens": 114
+    },
+    {
+      "ordinal": 5,
+      "argv": [
+        "session",
+        "-h"
+      ],
+      "elapsedMs": 159,
+      "stdoutTokens": 298
+    },
+    {
+      "ordinal": 6,
+      "argv": [
+        "session",
+        "start",
+        "-h"
+      ],
+      "elapsedMs": 160,
+      "stdoutTokens": 418
+    },
+    {
+      "ordinal": 7,
+      "argv": [
+        "session",
+        "start",
+        "--url",
+        "http://127.0.0.1:63802",
+        "--port",
+        "50186"
+      ],
+      "elapsedMs": 286,
+      "stdoutTokens": 171
+    },
+    {
+      "ordinal": 8,
+      "argv": [
+        "motion",
+        "-h"
+      ],
+      "elapsedMs": 220,
+      "stdoutTokens": 294
+    },
+    {
+      "ordinal": 9,
+      "argv": [
+        "motion",
+        "rec",
+        "-h"
+      ],
+      "elapsedMs": 195,
+      "stdoutTokens": 438
+    },
+    {
+      "ordinal": 10,
+      "argv": [
+        "motion",
+        "jank",
+        "-h"
+      ],
+      "elapsedMs": 202,
+      "stdoutTokens": 166
+    },
+    {
+      "ordinal": 11,
+      "argv": [
+        "motion",
+        "rec",
+        "--do",
+        "scroll:body,to=bottom",
+        "--duration",
+        "2",
+        "--viewport",
+        "1280x720"
+      ],
+      "elapsedMs": 7551,
+      "stdoutTokens": 137
+    },
+    {
+      "ordinal": 12,
+      "argv": [
+        "motion",
+        "jank",
+        "rec-eed9"
+      ],
+      "elapsedMs": 298,
+      "stdoutTokens": 393
+    },
+    {
+      "ordinal": 13,
+      "argv": [
+        "page",
+        "-h"
+      ],
+      "elapsedMs": 177,
+      "stdoutTokens": 378
+    },
+    {
+      "ordinal": 14,
+      "argv": [
+        "page",
+        "elements",
+        "-h"
+      ],
+      "elapsedMs": 177,
+      "stdoutTokens": 204
+    },
+    {
+      "ordinal": 15,
+      "argv": [
+        "page",
+        "elements",
+        "--all",
+        "--limit",
+        "200"
+      ],
+      "elapsedMs": 542,
+      "stdoutTokens": 1844
+    },
+    {
+      "ordinal": 16,
+      "argv": [
+        "page",
+        "exec",
+        "-h"
+      ],
+      "elapsedMs": 239,
+      "stdoutTokens": 372
+    },
+    {
+      "ordinal": 17,
+      "argv": [
+        "page",
+        "exec",
+        "(() => { const arts=[...document.querySelectorAll('article')]; return {domNodes:document.querySelectorAll('*').length, articles:arts.length, visibleArticles:arts.filter(e=>{const r=e.getBoundingClientRect();return r.bottom>0&&r.top<innerHeight}).length, scrollHeight:document.documentElement.scrollHeight, viewport:innerHeight, firstArticle:{class:arts[0]?.className, contentVisibility:getComputedStyle(arts[0]).contentVisibility, contain:getComputedStyle(arts[0]).contain}, images:document.images.length, loadedImages:[...document.images].filter(i=>i.complete&&i.naturalWidth).length}; })()",
+        "--settle",
+        "0"
+      ],
+      "elapsedMs": 387,
+      "stdoutTokens": 79
+    },
+    {
+      "ordinal": 18,
+      "argv": [
+        "page",
+        "shot",
+        "-h"
+      ],
+      "elapsedMs": 193,
+      "stdoutTokens": 665
+    },
+    {
+      "ordinal": 19,
+      "argv": [
+        "page",
+        "shot",
+        "--viewport",
+        "1280x720",
+        "--out",
+        "/tmp/audit-refroute-q7-basalt-1788038988/work/grid.png"
+      ],
+      "elapsedMs": 628,
+      "stdoutTokens": 195
+    },
+    {
+      "ordinal": 20,
+      "argv": [
+        "cdp",
+        "-h"
+      ],
+      "elapsedMs": 142,
+      "stdoutTokens": 479
+    },
+    {
+      "ordinal": 21,
+      "argv": [
+        "cdp",
+        "Runtime.evaluate",
+        "--params",
+        "{\"expression\":\"window\",\"objectGroup\":\"audit\",\"returnByValue\":false}"
+      ],
+      "elapsedMs": 368,
+      "stdoutTokens": 57
+    },
+    {
+      "ordinal": 22,
+      "argv": [
+        "cdp",
+        "DOMDebugger.getEventListeners",
+        "--params",
+        "{\"objectId\":\"4026907611223261121.1.1\",\"depth\":1,\"pierce\":true}"
+      ],
+      "elapsedMs": 345,
+      "stdoutTokens": 37
+    },
+    {
+      "ordinal": 23,
+      "argv": [
+        "page",
+        "scroll",
+        "-h"
+      ],
+      "elapsedMs": 189,
+      "stdoutTokens": 292
+    },
+    {
+      "ordinal": 24,
+      "argv": [
+        "page",
+        "exec",
+        "(() => {const a=document.querySelector('article'); return {rect:a.getBoundingClientRect().toJSON(), html:a.outerHTML.slice(0,1000), descendants:a.querySelectorAll('*').length, styles:Object.fromEntries(['display','height','minHeight','position','transform','willChange','backgroundImage','boxShadow'].map(k=>[k,getComputedStyle(a)[k]]))}})()",
+        "--settle",
+        "0"
+      ],
+      "elapsedMs": 406,
+      "stdoutTokens": 171
+    },
+    {
+      "ordinal": 25,
+      "argv": [
+        "page",
+        "exec",
+        "(() => {const a=document.querySelector('article'); return [...a.children].map(e=>({tag:e.tagName,rect:e.getBoundingClientRect().toJSON(),display:getComputedStyle(e).display,position:getComputedStyle(e).position,height:getComputedStyle(e).height,overflow:getComputedStyle(e).overflow,transform:getComputedStyle(e).transform}))})()",
+        "--settle",
+        "0"
+      ],
+      "elapsedMs": 404,
+      "stdoutTokens": 208
+    },
+    {
+      "ordinal": 26,
+      "argv": [
+        "page",
+        "navigate",
+        "-h"
+      ],
+      "elapsedMs": 216,
+      "stdoutTokens": 406
+    },
+    {
+      "ordinal": 27,
+      "argv": [
+        "page",
+        "navigate",
+        "http://127.0.0.1:63802",
+        "--settle",
+        "3000"
+      ],
+      "elapsedMs": 5441,
+      "stdoutTokens": 90
+    },
+    {
+      "ordinal": 28,
+      "argv": [
+        "page",
+        "shot",
+        "--viewport",
+        "1280x720",
+        "--out",
+        "/tmp/audit-refroute-q7-basalt-1788038988/work/initial.png"
+      ],
+      "elapsedMs": 2577,
+      "stdoutTokens": 195
+    },
+    {
+      "ordinal": 29,
+      "argv": [
+        "page",
+        "exec",
+        "(() => {const g=document.querySelector('[aria-label=\"Featured products\"]'),a=document.querySelector('article'); const keys=['display','gridTemplateColumns','gridAutoRows','gap','height','overflow']; return {grid:Object.fromEntries(keys.map(k=>[k,getComputedStyle(g)[k]])),article:{gridRow:getComputedStyle(a).gridRow,gridRowEnd:getComputedStyle(a).gridRowEnd,height:getComputedStyle(a).height,overflow:getComputedStyle(a).overflow},body:{scrollHeight:document.documentElement.scrollHeight,viewport:innerHeight}}})()",
+        "--settle",
+        "0"
+      ],
+      "elapsedMs": 402,
+      "stdoutTokens": 98
+    },
+    {
+      "ordinal": 30,
+      "argv": [
+        "page",
+        "exec",
+        "(() => {const g=document.querySelector('[aria-label=\"Featured products\"]'); return {clientHeight:g.clientHeight,scrollHeight:g.scrollHeight,scrollTop:g.scrollTop,articles:g.querySelectorAll('article').length,firstRects:[...g.querySelectorAll('article')].slice(0,8).map(a=>a.getBoundingClientRect().toJSON())}})()",
+        "--settle",
+        "0"
+      ],
+      "elapsedMs": 382,
+      "stdoutTokens": 274
+    },
+    {
+      "ordinal": 31,
+      "argv": [
+        "motion",
+        "rec",
+        "--do",
+        "scroll:[aria-label=\"Featured products\"],to=bottom",
+        "--duration",
+        "2",
+        "--viewport",
+        "1280x720"
+      ],
+      "elapsedMs": 25699,
+      "stdoutTokens": 147
+    },
+    {
+      "ordinal": 32,
+      "argv": [
+        "motion",
+        "jank",
+        "rec-be07"
+      ],
+      "elapsedMs": 361,
+      "stdoutTokens": 575
+    },
+    {
+      "ordinal": 33,
+      "argv": [
+        "page",
+        "exec",
+        "(() => { window.__audit={mutations:[],scrolls:[],longtasks:[]}; const g=document.querySelector('[aria-label=\"Featured products\"]'); new MutationObserver(rs=>{window.__audit.mutations.push(...rs.map(r=>({type:r.type,target:r.target.tagName+'.'+r.target.className,attr:r.attributeName,added:r.addedNodes.length,removed:r.removedNodes.length}))) }).observe(g,{subtree:true,attributes:true,childList:true}); g.addEventListener('scroll',()=>window.__audit.scrolls.push({t:performance.now(),top:g.scrollTop}),{passive:true}); new PerformanceObserver(l=>window.__audit.longtasks.push(...l.getEntries().map(e=>({start:e.startTime,duration:e.duration})))).observe({type:'longtask',buffered:false}); return {armed:true,top:g.scrollTop}; })()",
+        "--settle",
+        "0"
+      ],
+      "elapsedMs": 432,
+      "stdoutTokens": 35
+    },
+    {
+      "ordinal": 34,
+      "argv": [
+        "page",
+        "scroll",
+        "[aria-label=\"Featured products\"]",
+        "--to",
+        "top",
+        "--settle",
+        "0",
+        "--no-screenshot"
+      ],
+      "elapsedMs": 15589,
+      "stdoutTokens": 61
+    },
+    {
+      "ordinal": 35,
+      "argv": [
+        "page",
+        "exec",
+        "(() => ({mutations:__audit.mutations.length,mutationSample:__audit.mutations.slice(0,10),scrollEvents:__audit.scrolls.length,firstScroll:__audit.scrolls[0],lastScroll:__audit.scrolls.at(-1),longtasks:__audit.longtasks}))()",
+        "--settle",
+        "0"
+      ],
+      "elapsedMs": 385,
+      "stdoutTokens": 306
+    },
+    {
+      "ordinal": 36,
+      "argv": [
+        "page",
+        "exec",
+        "(() => {const g=document.querySelector('[aria-label=\"Featured products\"]'); return {style:g.getAttribute('style'),cssText:g.style.cssText,props:[...g.style].map(k=>[k,g.style.getPropertyValue(k)])}})()",
+        "--settle",
+        "0"
+      ],
+      "elapsedMs": 372,
+      "stdoutTokens": 51
+    },
+    {
+      "ordinal": 37,
+      "argv": [
+        "page",
+        "exec",
+        "(() => {const old=document.querySelector('[aria-label=\"Featured products\"]'); const clone=old.cloneNode(true); old.replaceWith(clone); return {articles:clone.querySelectorAll('article').length,clientHeight:clone.clientHeight,scrollHeight:clone.scrollHeight,style:clone.getAttribute('style')};})()",
+        "--settle",
+        "0"
+      ],
+      "elapsedMs": 417,
+      "stdoutTokens": 49
+    },
+    {
+      "ordinal": 38,
+      "argv": [
+        "motion",
+        "rec",
+        "--do",
+        "scroll:[aria-label=\"Featured products\"],to=bottom",
+        "--duration",
+        "2",
+        "--viewport",
+        "1280x720"
+      ],
+      "elapsedMs": 13093,
+      "stdoutTokens": 147
+    },
+    {
+      "ordinal": 39,
+      "argv": [
+        "motion",
+        "jank",
+        "rec-3bbe"
+      ],
+      "elapsedMs": 401,
+      "stdoutTokens": 634
+    },
+    {
+      "ordinal": 40,
+      "argv": [
+        "page",
+        "navigate",
+        "http://127.0.0.1:63802",
+        "--settle",
+        "3000"
+      ],
+      "elapsedMs": 5415,
+      "stdoutTokens": 90
+    },
+    {
+      "ordinal": 41,
+      "argv": [
+        "page",
+        "exec",
+        "(() => {const g=document.querySelector('[aria-label=\"Featured products\"]'); const cards=new WeakSet(g.querySelectorAll('article')); window.__counts={rect:0,gridStyleSets:0,setSamples:[],longtasks:[]}; const nativeRect=Element.prototype.getBoundingClientRect; Element.prototype.getBoundingClientRect=function(){if(cards.has(this)) __counts.rect++; return nativeRect.call(this)}; const nativeSet=CSSStyleDeclaration.prototype.setProperty; CSSStyleDeclaration.prototype.setProperty=function(n,v,p){if(this===g.style){__counts.gridStyleSets++; if(__counts.setSamples.length<5)__counts.setSamples.push([n,v])} return nativeSet.call(this,n,v,p)}; new PerformanceObserver(l=>__counts.longtasks.push(...l.getEntries().map(e=>({start:e.startTime,duration:e.duration})))).observe({type:'longtask'}); return {armed:true,cards:g.querySelectorAll('article').length,top:g.scrollTop};})()",
+        "--settle",
+        "0"
+      ],
+      "elapsedMs": 388,
+      "stdoutTokens": 37
+    },
+    {
+      "ordinal": 42,
+      "argv": [
+        "page",
+        "scroll",
+        "[aria-label=\"Featured products\"]",
+        "--to",
+        "bottom",
+        "--settle",
+        "0",
+        "--no-screenshot"
+      ],
+      "elapsedMs": 15833,
+      "stdoutTokens": 65
+    },
+    {
+      "ordinal": 43,
+      "argv": [
+        "page",
+        "exec",
+        "(() => __counts)()",
+        "--settle",
+        "0"
+      ],
+      "elapsedMs": 391,
+      "stdoutTokens": 93
+    }
+  ],
+  "totals": {
+    "calls": 43,
+    "elapsedSeconds": 102.473,
+    "stdoutTokens": 11976
+  },
+  "notes": "Solved blind in 43 calls by an independent operator (run refroute-q7-basalt-1788038988) who reproduced two ~7.7s scroll long tasks with motion rec/jank, counted 1440 --mark-rail writes per scroll, and established the cause with a listener-free deep-clone counterfactual that preserved all 720 cards. Provisional because motion jank measures long-task duration but attributes nothing: every attribution call in this route is page exec instrumentation (MutationObserver, wrapped CSSStyleDeclaration.setProperty), and the recording at ordinal 32 dropped 19329 rect samples to its byte budget. Ordinal 22 exited 1: a Runtime.evaluate objectId did not survive into the next one-shot cdp invocation. The route never produced a trace insight attribution, so it does not satisfy the oracle's requiredEvidence; this denominator records the cost of reaching the answer, not of a passing run."
+}
