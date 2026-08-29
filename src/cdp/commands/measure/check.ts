@@ -1,7 +1,7 @@
 import { type ParsedArgs } from '../../types.js';
 import { resolveSnapRef, readGeometry, readMeta, type ArtifactResolutionError } from '../../../output/artifact.js';
 import { resolveSelectorInput } from '../../../output/selector.js';
-import { emitResult, fact, line, text, formatCoordinate, formatFindings, type FindingInput, type RenderableResult } from '../../../output/render.js';
+import { capped, data, emitResult, fact, line, text, formatCoordinate, formatFindings, type FactLine, type FindingInput, type RenderableResult } from '../../../output/render.js';
 import { captureMeasureSnap } from './snap.js';
 import { checkSnapshot, parseChecks, writeFindingCrop } from '../../measure/check.js';
 
@@ -51,6 +51,34 @@ function caveatLine(caveats: readonly { regionId: string; selector?: string; rea
   return fact`Nondeterminism caveat: unstable region ${caveats.map((c) => `${c.regionId}${c.selector ? ` (${c.selector})` : ''}${c.reason ? `: ${c.reason}` : ''}`).join('; ')}.`;
 }
 
+/** Contrast colors are the measurement's subject, not incidental selector text. Keep each color as its own uncapped, escaped field so a long selector cannot elide either one. */
+function contrastHeadline(detail: string): FactLine {
+  const ratioPrefix = 'contrast ratio ';
+  const divider = ' — ';
+  const foregroundMarker = ' foreground ';
+  const backgroundMarker = ' against composited background ';
+  const dividerAt = detail.indexOf(divider);
+  if (!detail.startsWith(ratioPrefix) || dividerAt < 0) return fact`${detail}`;
+  const ratio = detail.slice(ratioPrefix.length, dividerAt);
+  const subject = detail.slice(dividerAt + divider.length);
+  const foregroundAt = subject.lastIndexOf(foregroundMarker);
+  const backgroundAt = subject.indexOf(backgroundMarker, foregroundAt + foregroundMarker.length);
+  if (foregroundAt < 0 || backgroundAt < 0) return fact`${detail}`;
+  const selector = subject.slice(0, foregroundAt);
+  const foreground = subject.slice(foregroundAt + foregroundMarker.length, backgroundAt);
+  const background = subject.slice(backgroundAt + backgroundMarker.length);
+  return line(
+    text`contrast ratio `,
+    data(ratio),
+    text` — `,
+    data(selector),
+    text` foreground `,
+    data(capped(foreground, Number.MAX_SAFE_INTEGER)),
+    text` against composited background `,
+    data(capped(background, Number.MAX_SAFE_INTEGER)),
+  );
+}
+
 export async function cmdMeasureCheck(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) { console.log(USAGE); return; }
   if (parsed.positional.length > 1) {
@@ -89,7 +117,7 @@ export async function cmdMeasureCheck(parsed: ParsedArgs, _args: string[]): Prom
     const meta = readMeta<{ settled: boolean; capturedAt?: string }> (ref);
     const findingSections: FindingInput[] = withCrops.map((finding) => ({
       kind: finding.kind,
-      headline: fact`${finding.detail}`,
+      headline: finding.kind === 'contrast' ? contrastHeadline(finding.detail) : fact`${finding.detail}`,
       detail: [
         ...(finding.rect ? [line(text`Rect: `, formatCoordinate(finding.rect))] : []),
         ...(finding.backendNodeId !== undefined ? [fact`Selector input: backend:${finding.backendNodeId}`] : []),

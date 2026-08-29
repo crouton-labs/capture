@@ -112,6 +112,30 @@ test('contrast composites transparent descendants over the opaque ancestor backg
   assert.match(finding.provenance ?? '', /effective background supplied by html > body's opaque paint after compositing recorded descendant backgrounds/);
 });
 
+test('contrast command keeps both colors inline when a long selector would otherwise consume the finding cap', () => {
+  const selector = `.fineprint-${'nested-rule-'.repeat(24)}`;
+  const ref = makeSnap('snap-contrast-long-selector', {
+    geometry: { elements: [
+      { id: 'body', selector: 'html > body', domPath: 'html[0]/body[0]', tag: 'body', backendNodeId: 1, rect: { x: 0, y: 0, width: 200, height: 200 }, visibility: { visible: true, opacity: 1 } },
+      { id: 'text', selector, domPath: 'html[0]/body[0]/p[0]', tag: 'p', backendNodeId: 2, rect: { x: 10, y: 10, width: 180, height: 20 }, visibility: { visible: true, opacity: 1 } },
+    ] },
+    styles: { elements: [
+      { selector: 'body', backendNodeId: 1, computed: { 'background-color': 'rgb(210, 214, 218)' } },
+      { selector, backendNodeId: 2, computed: { color: 'rgb(110, 115, 124)', 'background-color': 'transparent' } },
+    ] },
+  });
+  const args = ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', ref.dir, '--for', 'contrast'];
+  const prose = spawnSync(process.execPath, args, { encoding: 'utf8' });
+  assert.equal(prose.status, 0, prose.stdout);
+  assert.match(prose.stdout, /foreground rgb\(110, 115, 124\) against composited background rgb\(210, 214, 218\)/);
+  assert.doesNotMatch(prose.stdout, /rgb\(210, 214, 218\)…\[\+/);
+
+  const json = spawnSync(process.execPath, [...args, '--json'], { encoding: 'utf8' });
+  assert.equal(json.status, 0, json.stdout);
+  const rendered = JSON.parse(json.stdout) as { sections: string[] };
+  assert.match(rendered.sections.join('\n'), /foreground rgb\(110, 115, 124\) against composited background rgb\(210, 214, 218\)/);
+});
+
 test('contrast applies ancestor opacity before identifying the opaque background source', () => {
   const ref = makeSnap('snap-opacity-contrast', {
     geometry: { elements: [

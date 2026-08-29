@@ -285,6 +285,27 @@ test('detail flags render raw form value, visible substring, and validity messag
   assert.ok(!/withheld|redact/i.test(result.stdout), 'no withheld-evidence or redaction claim may render');
 });
 
+test('text detail leads after target identity while full rendering context remains reachable', () => {
+  const prose = run('snap-test', '--selector', '.card', '--text');
+  assert.equal(prose.status, 0, prose.stderr);
+  const textAt = prose.stdout.indexOf('Text metrics:');
+  const cascadeAt = prose.stdout.indexOf('Style winner padding-top=12px:');
+  assert.ok(textAt > prose.stdout.indexOf('Element .card:'), prose.stdout);
+  assert.ok(textAt < cascadeAt, prose.stdout);
+  assert.match(prose.stdout, /Font metrics: family=Inter; size=16px/);
+  assert.match(prose.stdout, /truncated=false/);
+  assert.match(prose.stdout, /Clipping ancestor \.clip:/);
+
+  const json = run('snap-test', '--selector', '.card', '--text', '--json');
+  assert.equal(json.status, 0, json.stderr);
+  const rendered = JSON.parse(json.stdout) as { sections: string[] };
+  const textSection = rendered.sections.findIndex((section) => section.startsWith('Text metrics:'));
+  const cascadeSection = rendered.sections.findIndex((section) => section.startsWith('Style winner padding-top=12px:'));
+  assert.ok(textSection >= 0);
+  assert.ok(textSection < cascadeSection);
+  assert.ok(rendered.sections.some((section) => section.includes('Clipping ancestor .clip:')));
+});
+
 test('missing selector returns bounded nearest CSS recovery candidates while full identity facts remain in snapshot artifacts', () => {
   const typed = explainSnapshot(ref, '.missing');
   assert.equal(typed.kind, 'missing-selector');

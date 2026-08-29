@@ -238327,6 +238327,32 @@ function caveatLine(caveats) {
   if (!caveats.length) return void 0;
   return fact`Nondeterminism caveat: unstable region ${caveats.map((c) => `${c.regionId}${c.selector ? ` (${c.selector})` : ""}${c.reason ? `: ${c.reason}` : ""}`).join("; ")}.`;
 }
+function contrastHeadline(detail) {
+  const ratioPrefix = "contrast ratio ";
+  const divider = " \u2014 ";
+  const foregroundMarker = " foreground ";
+  const backgroundMarker = " against composited background ";
+  const dividerAt = detail.indexOf(divider);
+  if (!detail.startsWith(ratioPrefix) || dividerAt < 0) return fact`${detail}`;
+  const ratio = detail.slice(ratioPrefix.length, dividerAt);
+  const subject = detail.slice(dividerAt + divider.length);
+  const foregroundAt = subject.lastIndexOf(foregroundMarker);
+  const backgroundAt = subject.indexOf(backgroundMarker, foregroundAt + foregroundMarker.length);
+  if (foregroundAt < 0 || backgroundAt < 0) return fact`${detail}`;
+  const selector = subject.slice(0, foregroundAt);
+  const foreground = subject.slice(foregroundAt + foregroundMarker.length, backgroundAt);
+  const background = subject.slice(backgroundAt + backgroundMarker.length);
+  return line(
+    text`contrast ratio `,
+    data(ratio),
+    text` — `,
+    data(selector),
+    text` foreground `,
+    data(capped(foreground, Number.MAX_SAFE_INTEGER)),
+    text` against composited background `,
+    data(capped(background, Number.MAX_SAFE_INTEGER))
+  );
+}
 async function cmdMeasureCheck(parsed, _args) {
   if (parsed.help) {
     console.log(USAGE16);
@@ -238366,7 +238392,7 @@ async function cmdMeasureCheck(parsed, _args) {
     const meta = readMeta(ref);
     const findingSections = withCrops.map((finding2) => ({
       kind: finding2.kind,
-      headline: fact`${finding2.detail}`,
+      headline: finding2.kind === "contrast" ? contrastHeadline(finding2.detail) : fact`${finding2.detail}`,
       detail: [
         ...finding2.rect ? [line(text`Rect: `, formatCoordinate(finding2.rect))] : [],
         ...finding2.backendNodeId !== void 0 ? [fact`Selector input: backend:${finding2.backendNodeId}`] : [],
@@ -239794,6 +239820,18 @@ function invalidInput2(message) {
     followUp: text`Run capture measure explain <snap> --selector <CSS|backend:id|axid:id|ax:name|text:value>.`
   };
 }
+function requestedSectionsFirst(sections, parsed) {
+  const requested = /* @__PURE__ */ new Set([
+    ...parsed.size ? ["size"] : [],
+    ...parsed.text ? ["text"] : [],
+    ...parsed.form ? ["form"] : []
+  ]);
+  if (!requested.size) return sections;
+  const element = sections.filter((section) => section.kind === "element");
+  const detail = sections.filter((section) => requested.has(section.kind));
+  const context = sections.filter((section) => section.kind !== "element" && !requested.has(section.kind));
+  return [...element, ...detail, ...context];
+}
 async function cmdMeasureExplain(parsed, _args) {
   if (parsed.help) {
     console.log(USAGE19);
@@ -239834,7 +239872,7 @@ async function cmdMeasureExplain(parsed, _args) {
       process.exitCode = 1;
       return;
     }
-    const sections = report.sections.map((section) => lineList(section.facts.map(({ fact: item, caveats }) => {
+    const sections = requestedSectionsFirst(report.sections, parsed).map((section) => lineList(section.facts.map(({ fact: item, caveats }) => {
       const suffix = caveatSuffix(caveats);
       return suffix ? line(item.line, suffix) : item.line;
     })));
@@ -239879,10 +239917,10 @@ input:
   <snap>             snapshot id in the active session or absolute artifact path (required)
   --selector <sel>   element selector (required): CSS tag/#id/.class/[attr]/[attr="value"] compounds with descendant or child relations (or a verbatim recorded path), backend:<id>, axid:<id>, ax:<name>, or text:<text>
   --state <name>     one recorded forced state; derives border/ink and clipping comparisons from its post-force target values
-  --size             include size/layout provenance (box/flex/grid/constraints)
-  --text             include text line/baseline/font/wrap metrics
-  --form             include form value/geometry/caret/selection/autofill facts
-output: <explain selector=\u2026 matches=\u2026> \u2014 border/ink boxes with named paint contributors and rectangular overflow padding-box comparisons, each naming its base or forced-state provenance; unavailable forced-state or captured box evidence is stated explicitly; --json mirrors
+  --size             include size/layout provenance (box/flex/grid/constraints) before general rendering context
+  --text             include text line/baseline/font/wrap metrics before general rendering context
+  --form             include form value/geometry/caret/selection/autofill facts before general rendering context
+output: <explain selector=\u2026 matches=\u2026> \u2014 requested size/text/form measurements lead after target identity; full cascade, border/ink, stacking, clipping, focus, scroll, query, and state context remains in the result; --json mirrors
 effects: read-only \u2014 reads existing snapshot artifacts, never drives the browser`;
   }
 });

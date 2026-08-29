@@ -9,10 +9,10 @@ input:
   <snap>             snapshot id in the active session or absolute artifact path (required)
   --selector <sel>   element selector (required): CSS tag/#id/.class/[attr]/[attr="value"] compounds with descendant or child relations (or a verbatim recorded path), backend:<id>, axid:<id>, ax:<name>, or text:<text>
   --state <name>     one recorded forced state; derives border/ink and clipping comparisons from its post-force target values
-  --size             include size/layout provenance (box/flex/grid/constraints)
-  --text             include text line/baseline/font/wrap metrics
-  --form             include form value/geometry/caret/selection/autofill facts
-output: <explain selector=… matches=…> — border/ink boxes with named paint contributors and rectangular overflow padding-box comparisons, each naming its base or forced-state provenance; unavailable forced-state or captured box evidence is stated explicitly; --json mirrors
+  --size             include size/layout provenance (box/flex/grid/constraints) before general rendering context
+  --text             include text line/baseline/font/wrap metrics before general rendering context
+  --form             include form value/geometry/caret/selection/autofill facts before general rendering context
+output: <explain selector=… matches=…> — requested size/text/form measurements lead after target identity; full cascade, border/ink, stacking, clipping, focus, scroll, query, and state context remains in the result; --json mirrors
 effects: read-only — reads existing snapshot artifacts, never drives the browser`;
 
 function attestation(ref: { id: string; dir: string }, meta: { settled?: boolean; settleMs?: number }) {
@@ -69,6 +69,19 @@ function invalidInput(message: FactLine): RenderableResult {
   };
 }
 
+function requestedSectionsFirst<T extends { kind: string }>(sections: readonly T[], parsed: ParsedArgs): readonly T[] {
+  const requested = new Set([
+    ...(parsed.size ? ['size'] : []),
+    ...(parsed.text ? ['text'] : []),
+    ...(parsed.form ? ['form'] : []),
+  ]);
+  if (!requested.size) return sections;
+  const element = sections.filter((section) => section.kind === 'element');
+  const detail = sections.filter((section) => requested.has(section.kind));
+  const context = sections.filter((section) => section.kind !== 'element' && !requested.has(section.kind));
+  return [...element, ...detail, ...context];
+}
+
 export async function cmdMeasureExplain(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
     console.log(USAGE);
@@ -111,7 +124,7 @@ export async function cmdMeasureExplain(parsed: ParsedArgs, _args: string[]): Pr
       return;
     }
 
-    const sections = report.sections.map((section) => lineList(section.facts.map(({ fact: item, caveats }) => {
+    const sections = requestedSectionsFirst(report.sections, parsed).map((section) => lineList(section.facts.map(({ fact: item, caveats }) => {
       const suffix = caveatSuffix(caveats);
       return suffix ? line(item.line, suffix) : item.line;
     })));
