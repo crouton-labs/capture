@@ -15,7 +15,10 @@ export async function record(args) {
   const record = ReferenceRouteSchema.parse({
     caseId: entry.id, measuredAt: new Date().toISOString(), provisional: args.includes("--provisional"),
     captureBuildHash: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(), chromeBuild: "unknown", hostClass: `${process.platform}-${process.arch}`,
-    route, totals: { calls: route.length, elapsedSeconds: route.reduce((sum, event) => sum + event.elapsedMs, 0) / 1000, stdoutTokens: route.reduce((sum, event) => sum + event.stdoutTokens, 0) }, notes: "Recorded from authoritative audit transcript.",
+    route, totals: { calls: route.length, elapsedSeconds: route.reduce((sum, event) => sum + event.elapsedMs, 0) / 1000, stdoutTokens: route.reduce((sum, event) => sum + event.stdoutTokens, 0) },
+    // A provisional reference must say what was solvable and why, and disclose anything that made the
+    // operator faster than a blind agent will be. A fixed string cannot carry that.
+    notes: option(args, "--notes", "Recorded from authoritative audit transcript."),
   });
   await writeFile(join(entry.oracleDir, "reference-route.json"), `${JSON.stringify(record, null, 2)}\n`);
   console.log(join(entry.oracleDir, "reference-route.json"));

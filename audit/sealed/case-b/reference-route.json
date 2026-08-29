@@ -1,0 +1,434 @@
+{
+  "caseId": "case-b",
+  "measuredAt": "2026-08-29T17:10:05.979Z",
+  "provisional": true,
+  "captureBuildHash": "dbeeddd94131a1f4bf8a1530aec385b6e7f3dc0c",
+  "chromeBuild": "unknown",
+  "hostClass": "darwin-arm64",
+  "route": [
+    {
+      "ordinal": 1,
+      "argv": [
+        "-h"
+      ],
+      "elapsedMs": 162,
+      "stdoutTokens": 583
+    },
+    {
+      "ordinal": 2,
+      "argv": [
+        "tab",
+        "-h"
+      ],
+      "elapsedMs": 158,
+      "stdoutTokens": 406
+    },
+    {
+      "ordinal": 3,
+      "argv": [
+        "tab",
+        "launch",
+        "-h"
+      ],
+      "elapsedMs": 153,
+      "stdoutTokens": 224
+    },
+    {
+      "ordinal": 4,
+      "argv": [
+        "tab",
+        "list"
+      ],
+      "elapsedMs": 838,
+      "stdoutTokens": 983
+    },
+    {
+      "ordinal": 5,
+      "argv": [
+        "tab",
+        "launch",
+        "--url",
+        "http://127.0.0.1:52688"
+      ],
+      "elapsedMs": 635,
+      "stdoutTokens": 90
+    },
+    {
+      "ordinal": 6,
+      "argv": [
+        "session",
+        "-h"
+      ],
+      "elapsedMs": 164,
+      "stdoutTokens": 298
+    },
+    {
+      "ordinal": 7,
+      "argv": [
+        "session",
+        "start",
+        "-h"
+      ],
+      "elapsedMs": 159,
+      "stdoutTokens": 418
+    },
+    {
+      "ordinal": 8,
+      "argv": [
+        "session",
+        "start",
+        "--url",
+        "http://127.0.0.1:52688",
+        "--port",
+        "53001",
+        "--hold"
+      ],
+      "elapsedMs": 500,
+      "stdoutTokens": 178
+    },
+    {
+      "ordinal": 9,
+      "argv": [
+        "page",
+        "-h"
+      ],
+      "elapsedMs": 197,
+      "stdoutTokens": 378
+    },
+    {
+      "ordinal": 10,
+      "argv": [
+        "page",
+        "shot",
+        "-h"
+      ],
+      "elapsedMs": 199,
+      "stdoutTokens": 640
+    },
+    {
+      "ordinal": 11,
+      "argv": [
+        "motion",
+        "-h"
+      ],
+      "elapsedMs": 203,
+      "stdoutTokens": 294
+    },
+    {
+      "ordinal": 12,
+      "argv": [
+        "motion",
+        "start",
+        "-h"
+      ],
+      "elapsedMs": 156,
+      "stdoutTokens": 22
+    },
+    {
+      "ordinal": 13,
+      "argv": [
+        "motion",
+        "rec",
+        "-h"
+      ],
+      "elapsedMs": 199,
+      "stdoutTokens": 438
+    },
+    {
+      "ordinal": 14,
+      "argv": [
+        "page",
+        "shot",
+        "--viewport",
+        "1440x900",
+        "--out",
+        "/tmp/audit-refroute-n4-ember-1788023009/work/settled.png"
+      ],
+      "elapsedMs": 1055,
+      "stdoutTokens": 195
+    },
+    {
+      "ordinal": 15,
+      "argv": [
+        "session",
+        "stop",
+        "-h"
+      ],
+      "elapsedMs": 154,
+      "stdoutTokens": 134
+    },
+    {
+      "ordinal": 16,
+      "argv": [
+        "session",
+        "stop",
+        "cap-mtemsaco-rz1g"
+      ],
+      "elapsedMs": 267,
+      "stdoutTokens": 115
+    },
+    {
+      "ordinal": 17,
+      "argv": [
+        "tab",
+        "quit",
+        "-h"
+      ],
+      "elapsedMs": 159,
+      "stdoutTokens": 142
+    },
+    {
+      "ordinal": 18,
+      "argv": [
+        "tab",
+        "quit",
+        "53001"
+      ],
+      "elapsedMs": 270,
+      "stdoutTokens": 29
+    },
+    {
+      "ordinal": 19,
+      "argv": [
+        "tab",
+        "launch",
+        "--url",
+        "about:blank"
+      ],
+      "elapsedMs": 405,
+      "stdoutTokens": 90
+    },
+    {
+      "ordinal": 20,
+      "argv": [
+        "tab",
+        "list",
+        "-h"
+      ],
+      "elapsedMs": 164,
+      "stdoutTokens": 201
+    },
+    {
+      "ordinal": 21,
+      "argv": [
+        "tab",
+        "list",
+        "--port",
+        "53243"
+      ],
+      "elapsedMs": 219,
+      "stdoutTokens": 45
+    },
+    {
+      "ordinal": 22,
+      "argv": [
+        "session",
+        "start",
+        "--target",
+        "930F821E",
+        "--port",
+        "53243",
+        "--hold"
+      ],
+      "elapsedMs": 450,
+      "stdoutTokens": 173
+    },
+    {
+      "ordinal": 23,
+      "argv": [
+        "motion",
+        "rec",
+        "--start",
+        "--viewport",
+        "1440x900"
+      ],
+      "elapsedMs": 1826,
+      "stdoutTokens": 76
+    },
+    {
+      "ordinal": 24,
+      "argv": [
+        "page",
+        "navigate",
+        "-h"
+      ],
+      "elapsedMs": 195,
+      "stdoutTokens": 406
+    },
+    {
+      "ordinal": 25,
+      "argv": [
+        "page",
+        "navigate",
+        "http://127.0.0.1:52688",
+        "--settle",
+        "7000"
+      ],
+      "elapsedMs": 7234,
+      "stdoutTokens": 146
+    },
+    {
+      "ordinal": 26,
+      "argv": [
+        "motion",
+        "rec",
+        "--stop",
+        "--rec-id",
+        "rec-d6a0"
+      ],
+      "elapsedMs": 700,
+      "stdoutTokens": 134
+    },
+    {
+      "ordinal": 27,
+      "argv": [
+        "motion",
+        "mask",
+        "-h"
+      ],
+      "elapsedMs": 212,
+      "stdoutTokens": 175
+    },
+    {
+      "ordinal": 28,
+      "argv": [
+        "motion",
+        "mask",
+        "rec-d6a0",
+        "--limit",
+        "20"
+      ],
+      "elapsedMs": 1315,
+      "stdoutTokens": 985
+    },
+    {
+      "ordinal": 29,
+      "argv": [
+        "motion",
+        "timeline",
+        "-h"
+      ],
+      "elapsedMs": 225,
+      "stdoutTokens": 251
+    },
+    {
+      "ordinal": 30,
+      "argv": [
+        "motion",
+        "timeline",
+        "rec-d6a0",
+        "--element",
+        "div.hero-frame",
+        "--prop",
+        "opacity"
+      ],
+      "elapsedMs": 230,
+      "stdoutTokens": 130
+    },
+    {
+      "ordinal": 31,
+      "argv": [
+        "session",
+        "har",
+        "-h"
+      ],
+      "elapsedMs": 160,
+      "stdoutTokens": 586
+    },
+    {
+      "ordinal": 32,
+      "argv": [
+        "session",
+        "har",
+        "cap-mtemtkhe-g1hy",
+        "--limit",
+        "100"
+      ],
+      "elapsedMs": 162,
+      "stdoutTokens": 199
+    },
+    {
+      "ordinal": 33,
+      "argv": [
+        "session",
+        "har",
+        "cap-mtemtkhe-g1hy",
+        "--filter-url",
+        "landing.mjs",
+        "--full",
+        "--limit",
+        "10"
+      ],
+      "elapsedMs": 161,
+      "stdoutTokens": 395
+    },
+    {
+      "ordinal": 34,
+      "argv": [
+        "session",
+        "har",
+        "cap-mtemtkhe-g1hy",
+        "--filter-url",
+        "/profile",
+        "--full",
+        "--limit",
+        "10"
+      ],
+      "elapsedMs": 160,
+      "stdoutTokens": 250
+    },
+    {
+      "ordinal": 35,
+      "argv": [
+        "page",
+        "exec",
+        "-h"
+      ],
+      "elapsedMs": 204,
+      "stdoutTokens": 372
+    },
+    {
+      "ordinal": 36,
+      "argv": [
+        "page",
+        "exec",
+        "performance.getEntriesByType(\"resource\").map(({name,startTime,responseEnd,duration,initiatorType})=>({name,startTime,responseEnd,duration,initiatorType}))",
+        "--settle",
+        "0"
+      ],
+      "elapsedMs": 845,
+      "stdoutTokens": 178
+    },
+    {
+      "ordinal": 37,
+      "argv": [
+        "page",
+        "navigate",
+        "http://127.0.0.1:52688",
+        "--settle",
+        "500"
+      ],
+      "elapsedMs": 1356,
+      "stdoutTokens": 89
+    },
+    {
+      "ordinal": 38,
+      "argv": [
+        "page",
+        "shot",
+        "--viewport",
+        "1440x900",
+        "--out",
+        "/tmp/audit-refroute-n4-ember-1788023009/work/early.png"
+      ],
+      "elapsedMs": 1109,
+      "stdoutTokens": 194
+    }
+  ],
+  "totals": {
+    "calls": 38,
+    "elapsedSeconds": 22.96,
+    "stdoutTokens": 10642
+  },
+  "notes": "Provisional. The intended capability for this case (page vitals) is unshipped, so the operator reached the required evidence through session har chronology plus a page exec Resource Timing read - an escape hatch by the oracle's own classification. Recorded by an independent advisor operator (3zl47w7d-mtemrlxq-dbc3748b) that solved the faulty variant from built help alone and reached the planted 3.2s personalization delay; its full report, including friction and missing affordances, is at /Users/silasrhyneer/.crouter/canvas/nodes/3zl47w7d-mtemrlxq-dbc3748b/reports/20260829T170851022-67d33dca-final.md. Two disclosures that make this denominator slightly optimistic: the operator's runtime passively injected a short ambient capture summary naming the root nouns before its envelope forbade capture memory documents (it read none), and the route ran on darwin-arm64 against capture's own launched Chrome, not the pinned audit host. Re-measure on the pinned host, and replace outright once page vitals ships."
+}
