@@ -8,8 +8,9 @@ import { gradeRun } from "./grade.mjs";
 const now = "2026-01-01T00:00:00.000Z";
 const later = "2026-01-01T00:00:01.000Z";
 
-function oracle({ status = "shipped" } = {}) {
+function oracle({ status = "shipped", intendedCapabilityRequiredForPass } = {}) {
   return {
+    ...(intendedCapabilityRequiredForPass === undefined ? {} : { intendedCapabilityRequiredForPass }),
     opaqueCaseId: "opaque", caseId: "case-test", fixtureRevision: "1", vagueSymptom: "Broken", plantedCondition: "private",
     requiredDiagnosisFacts: [{ id: "cause", fact: "The concrete cause", why: "Required causal diagnosis" }],
     requiredEvidence: [{ id: "proof", evidence: "The causal measurement", why: "Rules out the alternative" }],
@@ -105,6 +106,18 @@ test("a report that does not reproduce the symptom fails despite favorable fact 
   const result = await gradeRun({ runId: "run", ...paths, facts });
   assert.equal(result.record.grade.finalClass, "fail");
   assert.match(result.record.grade.reasons.join("\n"), /does not state that the symptom was reproduced/);
+});
+
+test("a case that waives the intended capability passes on other first-class evidence but not on an escape hatch", async (t) => {
+  const waived = oracle({ intendedCapabilityRequiredForPass: false });
+  const firstClass = await fixture(t, { oracleValue: waived, events: [event(1, ["-h"]), event(2, ["page", "measure"])] });
+  const passed = await gradeRun({ runId: "run", ...firstClass, facts });
+  assert.equal(passed.record.grade.finalClass, "pass");
+  assert.equal(passed.record.routeMetrics.firstIntendedCapabilityOrdinal, null);
+
+  const escapeHatch = await fixture(t, { oracleValue: waived, events: [event(1, ["-h"]), event(2, ["cdp", "send"])] });
+  const graded = await gradeRun({ runId: "run", ...escapeHatch, facts });
+  assert.equal(graded.record.grade.finalClass, "diagnosis-only");
 });
 
 test("capability help does not count as successful intended evidence", async (t) => {

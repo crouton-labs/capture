@@ -17,8 +17,14 @@ export const OracleSchema = z.object({
   ranges: z.object({ faulty: z.array(z.object({ name: StringId, min: z.number(), max: z.number() })), healthy: z.array(z.object({ name: StringId, min: z.number(), max: z.number() })) }),
   intendedCapability: z.string(), intendedCapabilityMatchers: z.array(z.array(z.string().min(1)).min(1)),
   intendedCapabilityStatus: z.enum(["shipped", "unshipped"]).optional(),
+  // Set false only for a case graded on the evidence itself rather than on reaching it through the
+  // intended capability. Escape-hatch evidence is still rejected either way. Defaults to true.
+  intendedCapabilityRequiredForPass: z.boolean().optional(),
   escapeHatchMatchers: z.array(z.array(z.string().min(1)).min(1)),
-  environment: z.object({ chromeBuild: z.string(), flags: z.array(z.string()), coldCache: z.boolean(), repetitions: z.number().int().positive() }),
+  // Loose on purpose: environment is the per-case pin, and each case pins different things
+  // (Case C a full Chrome build, Case D a trace-engine version, Case E any required flag).
+  // A closed object silently ate those pins, so an author's pin vanished with no error.
+  environment: z.looseObject({ chromeBuild: z.string(), flags: z.array(z.string()), coldCache: z.boolean(), repetitions: z.number().int().positive() }),
   budgets: z.object({ calls: z.number().int().positive(), minutes: z.number().positive(), stdoutTokens: z.number().int().positive() }),
 });
 

@@ -331,7 +331,8 @@ function adjudicate(record, oracle, facts) {
   const evidenceOrdinals = requiredEvidence.flatMap((item) => item.verdict.present ? item.verdict.ordinals : []);
   const intendedEvidenceOrdinals = evidenceOrdinals.filter((ordinal) => classifiedByOrdinal.get(ordinal)?.intended);
   const escapeEvidenceOrdinals = evidenceOrdinals.filter((ordinal) => classifiedByOrdinal.get(ordinal)?.escapeHatch);
-  const firstClassEvidence = escapeEvidenceOrdinals.length === 0 && (oracle.caseId === "case-c" || intendedEvidenceOrdinals.length > 0);
+  const intendedCapabilityRequired = oracle.intendedCapabilityRequiredForPass !== false;
+  const firstClassEvidence = escapeEvidenceOrdinals.length === 0 && (!intendedCapabilityRequired || intendedEvidenceOrdinals.length > 0);
   const ratioFailures = [
     record.routeMetrics.callRatio === null || record.routeMetrics.callRatio > 2 ? { condition: "call ratio exceeds 2x reference", ordinal: record._mechanical.classified.at(-1)?.ordinal ?? null } : null,
     record.routeMetrics.elapsedRatio === null || record.routeMetrics.elapsedRatio > 3 ? { condition: "elapsed ratio exceeds 3x reference", ordinal: record._mechanical.classified.at(-1)?.ordinal ?? null } : null,
