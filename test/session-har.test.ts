@@ -134,6 +134,22 @@ function entry(over: {
 
 let FIXTURE_SEED = 0;
 
+function failedEntry(url: string): HAREntry {
+  const failed = entry({ url, status: 0 });
+  failed.response = { status: 0, headers: [], content: {} };
+  failed._capture.clocks.responseMonotonic = null;
+  failed._capture.terminal = {
+    kind: 'failed',
+    errorText: 'net::ERR_FAILED',
+    canceled: false,
+    blockedReason: null,
+    resourceType: null,
+  };
+  failed._capture.response = { state: 'unavailable' };
+  failed._capture.body = { state: 'not_applicable', reason: 'no_response' };
+  return failed;
+}
+
 /** One retained `stopped_before_terminal` record — a request the recorder saw
  * start (and optionally answer) but never terminate. `wallTime` is explicit so
  * a record can be placed BETWEEN two completed entries. */
@@ -217,6 +233,8 @@ test('session har reads the LIVE accumulating HAR of a running session, with fil
     assert.ok(all.includes('total="4"'), all);
     assert.ok(all.includes('GET 200'), all);
     assert.ok(all.includes('started 2026-07-12T00:00:00.000Z'), all);
+    assert.ok(all.includes('duration 30000 ms'), all);
+    assert.ok(all.includes('response ended 2026-07-12T00:00:30.000Z'), all);
     // The full-fidelity pointer is the live HAR file path under this session.
     assert.ok(all.includes(path.join(dir, '.har')), all);
 
@@ -238,6 +256,28 @@ test('session har reads the LIVE accumulating HAR of a running session, with fil
     const limited = await runSession(['har'], { limit: 2 });
     assert.ok(limited.includes('entries="2"') && limited.includes('total="4"'), limited);
     assert.ok(limited.includes('(limit=2)') || limited.includes('limit=2'), limited);
+  } finally {
+    await runSession(['stop', id], { json: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+    clearActiveSession();
+  }
+});
+
+test('session har reports failed response completion without inventing a response end', async () => {
+  await runSession(['start']);
+  const active = getActiveSession();
+  assert.ok(active?.harId);
+  const { sessionId: id, dir } = active!;
+  await appendToHarRecording(active!.harId!, {
+    entries: [failedEntry('https://api.example.com/failed')],
+    incompleteLifecycles: [],
+  });
+
+  try {
+    const rendered = await runSession(['har']);
+    assert.ok(rendered.includes('duration 30000 ms'), rendered);
+    assert.ok(rendered.includes('response incomplete: failed'), rendered);
+    assert.ok(!rendered.includes('response ended'), rendered);
   } finally {
     await runSession(['stop', id], { json: true });
     fs.rmSync(dir, { recursive: true, force: true });
@@ -326,8 +366,10 @@ test('session har lists incomplete lifecycle records beside completed entries, i
     assert.ok(all.includes('incomplete: stopped_before_terminal'), all);
     // A clock violation names the violation, not just the kind.
     assert.ok(all.includes('incomplete: invalid_clock_order/terminal_before_response'), all);
-    // A record with no observed response says so instead of inventing a status.
     assert.ok(all.includes('PUT no-response'), all);
+    const pending = await runSession(['har'], { filterUrl: 'pending' });
+    assert.ok(pending.includes('response incomplete: terminal event never observed'), pending);
+    assert.ok(!pending.includes('response ended'), pending);
 
     // Chronological merge: the 00:00:00.500 record sits between entry 1 and 2.
     const rows = all.split('\n').filter((l) => /^\d+\. /.test(l.trim()));

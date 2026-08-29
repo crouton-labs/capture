@@ -14882,6 +14882,33 @@ function buildHarSelection(har2) {
 function harUrl(url) {
   return data(redactUrlCredentials(url), 300);
 }
+function responseEndDateTime(requestWallTime, requestMonotonic, terminalMonotonic) {
+  const end = new Date((requestWallTime + terminalMonotonic - requestMonotonic) * 1e3);
+  return Number.isNaN(end.getTime()) ? null : end.toISOString();
+}
+function completedTiming(e) {
+  const { clocks, terminal } = e._capture;
+  if (terminal.kind === "failed") {
+    return fact`duration ${e.time} ms — response incomplete: failed`;
+  }
+  if (terminal.kind === "redirect" && e.response.status === 0) {
+    return fact`duration ${e.time} ms — response incomplete: redirect without HTTP response`;
+  }
+  const ended = responseEndDateTime(clocks.requestWallTime, clocks.requestMonotonic, clocks.terminalMonotonic);
+  return ended === null ? fact`duration ${e.time} ms — response end unavailable` : fact`duration ${e.time} ms — response ended ${ended}`;
+}
+function incompleteTiming(record2) {
+  if (record2.kind === "stopped_during_body") {
+    const { requestWallTime, requestMonotonic, terminalMonotonic } = record2._capture;
+    const duration = (terminalMonotonic - requestMonotonic) * 1e3;
+    const ended = responseEndDateTime(requestWallTime, requestMonotonic, terminalMonotonic);
+    return ended === null ? fact`duration ${duration} ms — response end unavailable` : fact`duration ${duration} ms — response ended ${ended}`;
+  }
+  if (record2.kind === "invalid_clock_order") {
+    return fact`timing unavailable: ${incompleteLabel(record2)}`;
+  }
+  return text`response incomplete: terminal event never observed`;
+}
 function harEntryRow(e) {
   const bodyText = e.response.content?.text;
   const sizePart = typeof bodyText === "string" ? fact`${Buffer.byteLength(bodyText, "utf-8")} bytes` : text`body not captured`;
@@ -14890,7 +14917,8 @@ function harEntryRow(e) {
     harUrl(e.request.url),
     text` — `,
     sizePart,
-    fact` — started ${e.startedDateTime}`
+    fact` — started ${e.startedDateTime} — `,
+    completedTiming(e)
   );
 }
 function harIncompleteRow(record2) {
@@ -14900,7 +14928,8 @@ function harIncompleteRow(record2) {
     harUrl(record2.request.url),
     text` — `,
     fact`incomplete: ${incompleteLabel(record2)}`,
-    fact` — started ${record2.startedDateTime}`
+    fact` — started ${record2.startedDateTime} — `,
+    incompleteTiming(record2)
   );
 }
 function harHeader(prefix, header) {
@@ -15518,9 +15547,10 @@ output:
   One <session-har id=\u2026 path=\u2026 source=live|bundle entries=\u2026 incomplete=\u2026
   total=\u2026 total-incomplete=\u2026 [truncated=true]> block listing BOTH populations
   in one chronological selection: completed entries (method, status, URL, body
-  size, start time) and the incomplete lifecycle records the recorder retained
-  for requests that never completed \u2014 rendered as "incomplete: <kind>" (an
-  out-of-order request clock also names its violation, e.g.
+  size, start time, HAR duration, response-end time) and the incomplete
+  lifecycle records the recorder retained for requests whose response never
+  completed \u2014 rendered as "incomplete: <kind>" plus their honest unavailable
+  timing state (an out-of-order request clock also names its violation, e.g.
   invalid_clock_order/terminal_before_request). The path attribute is the HAR
   file's absolute path \u2014 the full-fidelity pointer, which holds every record
   including the ones this list bounds away. --json mirrors the same fields.

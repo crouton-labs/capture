@@ -436,9 +436,10 @@ output:
   One <session-har id=… path=… source=live|bundle entries=… incomplete=…
   total=… total-incomplete=… [truncated=true]> block listing BOTH populations
   in one chronological selection: completed entries (method, status, URL, body
-  size, start time) and the incomplete lifecycle records the recorder retained
-  for requests that never completed — rendered as "incomplete: <kind>" (an
-  out-of-order request clock also names its violation, e.g.
+  size, start time, HAR duration, response-end time) and the incomplete
+  lifecycle records the recorder retained for requests whose response never
+  completed — rendered as "incomplete: <kind>" plus their honest unavailable
+  timing state (an out-of-order request clock also names its violation, e.g.
   invalid_clock_order/terminal_before_request). The path attribute is the HAR
   file's absolute path — the full-fidelity pointer, which holds every record
   including the ones this list bounds away. --json mirrors the same fields.
@@ -1020,8 +1021,44 @@ function harUrl(url: string): FactLine {
   return data(redactUrlCredentials(url), 300);
 }
 
-/** One selection-list row: method, status, URL, body size, start time. Body
- * content is NEVER inlined here (I-7) — `--full` is the only opt-in. */
+function responseEndDateTime(
+  requestWallTime: number,
+  requestMonotonic: number,
+  terminalMonotonic: number,
+): string | null {
+  const end = new Date((requestWallTime + terminalMonotonic - requestMonotonic) * 1000);
+  return Number.isNaN(end.getTime()) ? null : end.toISOString();
+}
+
+function completedTiming(e: HAREntry): FactLine {
+  const { clocks, terminal } = e._capture;
+  if (terminal.kind === 'failed') {
+    return fact`duration ${e.time} ms — response incomplete: failed`;
+  }
+  if (terminal.kind === 'redirect' && e.response.status === 0) {
+    return fact`duration ${e.time} ms — response incomplete: redirect without HTTP response`;
+  }
+  const ended = responseEndDateTime(clocks.requestWallTime, clocks.requestMonotonic, clocks.terminalMonotonic);
+  return ended === null
+    ? fact`duration ${e.time} ms — response end unavailable`
+    : fact`duration ${e.time} ms — response ended ${ended}`;
+}
+
+function incompleteTiming(record: IncompleteLifecycle): FactLine {
+  if (record.kind === 'stopped_during_body') {
+    const { requestWallTime, requestMonotonic, terminalMonotonic } = record._capture;
+    const duration = (terminalMonotonic - requestMonotonic) * 1000;
+    const ended = responseEndDateTime(requestWallTime, requestMonotonic, terminalMonotonic);
+    return ended === null
+      ? fact`duration ${duration} ms — response end unavailable`
+      : fact`duration ${duration} ms — response ended ${ended}`;
+  }
+  if (record.kind === 'invalid_clock_order') {
+    return fact`timing unavailable: ${incompleteLabel(record)}`;
+  }
+  return text`response incomplete: terminal event never observed`;
+}
+
 function harEntryRow(e: HAREntry): FactLine {
   const bodyText = e.response.content?.text;
   const sizePart = typeof bodyText === 'string'
@@ -1032,13 +1069,11 @@ function harEntryRow(e: HAREntry): FactLine {
     harUrl(e.request.url),
     text` — `,
     sizePart,
-    fact` — started ${e.startedDateTime}`,
+    fact` — started ${e.startedDateTime} — `,
+    completedTiming(e),
   );
 }
 
-/** One selection-list row for an incomplete lifecycle record: it names the
- * kind (and clock violation) in place of the body size a completed entry
- * reports, so a row is never mistaken for finished traffic. */
 function harIncompleteRow(record: IncompleteLifecycle): FactLine {
   const response = incompleteResponse(record);
   return line(
@@ -1046,7 +1081,8 @@ function harIncompleteRow(record: IncompleteLifecycle): FactLine {
     harUrl(record.request.url),
     text` — `,
     fact`incomplete: ${incompleteLabel(record)}`,
-    fact` — started ${record.startedDateTime}`,
+    fact` — started ${record.startedDateTime} — `,
+    incompleteTiming(record),
   );
 }
 
