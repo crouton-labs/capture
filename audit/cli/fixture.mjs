@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
@@ -56,6 +56,16 @@ function responseName(index, response) {
 function textResponse(response) { return /(?:javascript|json|css|html|xml|text)/i.test(response.mimeType ?? "") || /(?:javascript|json|css|html|xml|text)/i.test(response.headers?.["content-type"] ?? ""); }
 
 /** Captures the browser-visible response/console/DOM evidence required for opacity review. */
+// Every dump artifact gets one fixed timestamp. Real mtimes disclose the interval between
+// responses and DOM snapshots, which for a case whose planted condition is a response latency
+// is the answer itself — invisible in the served bytes but plain in a directory listing.
+const DUMP_TIMESTAMP = new Date("2000-01-01T00:00:00Z");
+async function normalizeTimestamps(dir) {
+  const names = await readdir(dir);
+  await Promise.all(names.map((name) => utimes(join(dir, name), DUMP_TIMESTAMP, DUMP_TIMESTAMP)));
+  await utimes(dir, DUMP_TIMESTAMP, DUMP_TIMESTAMP);
+}
+
 export async function dump(args) {
   const entry = requireCase(args); const currentVariant = variant(args);
   const output = resolve(auditRoot, "runs", `${entry.id}-dump`);
@@ -97,9 +107,14 @@ export async function dump(args) {
         else bodyRecords.push({ ...response, body: { kind: "binary", name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") } });
       } catch (error) { bodyRecords.push({ ...response, bodyError: error instanceof Error ? error.message : String(error) }); }
     }
+    const missingBodies = bodyRecords.filter((record) => record.bodyError).map((record) => record.url);
     await writeFile(join(output, "responses.json"), `${JSON.stringify(bodyRecords, null, 2)}\n`);
     await writeFile(join(output, "console.json"), `${JSON.stringify(consoleOutput, null, 2)}\n`);
-    await writeFile(join(output, "dump.json"), `${JSON.stringify({ caseId: entry.id, variant: currentVariant, url: server.url, document: doms[0]?.file, doms, responses: "responses.json", console: "console.json" }, null, 2)}\n`);
+    await writeFile(join(output, "dump.json"), `${JSON.stringify({ caseId: entry.id, variant: currentVariant, url: server.url, document: doms[0]?.file, doms, responses: "responses.json", console: "console.json", complete: missingBodies.length === 0, missingBodies }, null, 2)}\n`);
+    await normalizeTimestamps(output);
+    // A dump missing a response body makes the opacity acceptance test worthless: the reviewer
+    // would clear a fixture on bytes nobody read. Keep the artifacts, refuse the success status.
+    if (missingBodies.length) throw new Error(`dump incomplete, do not review it: ${missingBodies.length} response body/bodies unavailable (${missingBodies.join(", ")}). Artifacts written to ${output}`);
     console.log(output);
   } finally { if (dumpSessionId) await capture(["session", "stop", dumpSessionId]); await cdp.close(); await chrome.stop(); await server.stop(); }
 }
