@@ -52,17 +52,9 @@ function rootHelp(): string {
 
 ${ROOT_BLOCKS.join('\n\n')}
 
-I/O contract: flags and positionals on input; one rendered prose block on
-stdout. --json mirrors the same result as JSON, but the rendered block is
-the contract. stderr carries in-flight diagnostics only.
+I/O contract: flags and positionals on input; one rendered prose block on stdout. --json mirrors the same result as JSON, but the rendered block is the contract. stderr carries in-flight diagnostics only.
 
-A CDP-enabled browser must be running; \`capture tab list\` is the probe, and
-\`capture tab launch\` starts one capture owns and reaps when nothing is (never
-hand-roll a detached browser — nothing reaps that). Capture never signals a
-browser it did not start, so attaching to your own with --port is unchanged.
-CDP_PORT / CDP_TARGET pin the browser + tab for target-selecting commands —
-precedence: explicit flag > active session > env. \`session start\` adopts only an
-explicit --target.`;
+A CDP-enabled browser must be running; \`capture tab list\` is the probe, and \`capture tab launch\` starts one capture owns and reaps when nothing is (never hand-roll a detached browser — nothing reaps that). Capture never signals a browser it did not start, so attaching to your own with --port is unchanged. CDP_PORT / CDP_TARGET pin the browser + tab for target-selecting commands — precedence: explicit flag > active session > env. \`session start\` adopts only an explicit --target.`;
 }
 
 function printVersion(): void {

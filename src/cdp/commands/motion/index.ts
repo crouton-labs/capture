@@ -16,26 +16,21 @@ import { cmdMotionResponse } from './response.js';
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="motion">
-facts over a recording — recorder lifecycle plus read-only queries over a finalized recording
-use when recording an interaction (one-shot or composed) and reading motion facts: diffs, timelines, jank, input response
-  rec · mask · timeline · jank · response — \`capture motion -h\`
+facts over a recording — recording lifecycle and read-only queries over finalized interactions
+use when recording an interaction and reading change, timing, or input-response facts; use measure for static snapshot facts
 </command>`;
 
-export const MOTION_USAGE = `capture motion — recorder lifecycle + read-only queries over a finalized recording.
+export const MOTION_USAGE = `capture motion — recording lifecycle and read-only queries over a finalized recording.
 
-\`rec\` drives (and records) the browser, one-shot or composed across
-intervening commands; every other leaf below is a cheap read over the
-finalized recording artifact. Every leaf defaults to rendered prose; --json
-mirrors the same result. Findings exit 0 — a report, not a failure;
-input/precondition errors exit 1. No leaf accepts --gate.
+\`rec\` drives and records the browser, one-shot or composed across intervening commands; every other leaf below reads the finalized recording artifact. Findings exit 0 — a report, not a failure; input and precondition errors exit 1. No leaf accepts --gate.
 
-<subcommand name="rec" args="[url] --do <action> [--duration <seconds>] | --start | --stop" whenToUse="record an interaction — one-shot action, or composed across commands with --start/--stop (needs an active session)"/>
-<subcommand name="mask" args="<rec> [--limit <N>]" whenToUse="motion-diff composite image + per-region facts"/>
-<subcommand name="timeline" args="<rec> --element <sel> [--prop <prop>]" whenToUse="per-frame geometry/scroll/property timeline for one element"/>
-<subcommand name="jank" args="<rec>" whenToUse="long-task/layout-shift facts with change-driven screencast provenance"/>
-<subcommand name="response" args="<rec> [--action <action>] [--occurrence <n>]" whenToUse="input-to-settled response timeline"/>
+<subcommand name="rec" description="interaction recording" whenToUse="Use to record an interaction in one command or across a held session."/>
+<subcommand name="mask" description="motion-difference image and regions" whenToUse="Use to inspect where a recording changed across frames."/>
+<subcommand name="timeline" description="element timeline" whenToUse="Use to inspect one element's geometry, scroll, or property values over time."/>
+<subcommand name="jank" description="long-task and layout-shift facts" whenToUse="Use to inspect rendering interruption and layout instability in a recording."/>
+<subcommand name="response" description="input-to-settled timeline" whenToUse="Use to measure the response from one recorded input to settled rendering."/>
 
-capture motion <leaf> -h    Per-leaf usage`;
+capture motion <leaf> -h    Full input, output, and effects contract.`;
 
 export async function motionMain(parsed: ParsedArgs, args: string[]): Promise<void> {
   const leaf = parsed.positional[0];

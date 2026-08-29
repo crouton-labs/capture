@@ -21,28 +21,23 @@ import { cmdPageElements } from './elements.js';
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="page">
-verbs against the live session tab — act (click, type, scroll, navigate, exec) and look (shot, elements)
-use when driving or inspecting the tab a session opened or adopted; all verbs auto-target the active session tab, --target/--url override
-  click · type · scroll · navigate · exec · shot · elements — \`capture page -h\`
+operations against the live session tab — interact with it or inspect its current state
+use when driving or inspecting the tab a session opened or adopted; use tab for browser and tab lifecycle
 </command>`;
 
-export const PAGE_USAGE = `capture page — verbs against the live session tab: driving, looking, targeting.
+export const PAGE_USAGE = `capture page — operations against the live session tab.
 
-All verbs auto-target the active session tab; --target/--url override. The
-driving verbs (click, type, scroll) resolve exactly one element via the
-unified target grammar — bare CSS selector (which takes precedence) or exact accessible name when CSS finds none, ax:<name>, axid:<id>,
-backend:<id> — and reject an ambiguous target with the candidate list.
-During a live composed recording every verb routes through the recorder.
+All verbs auto-target the active session tab; --target/--url override. Driving verbs resolve exactly one element via the unified target grammar — bare CSS selector (which takes precedence) or exact accessible name when CSS finds none, ax:<name>, axid:<id>, backend:<id> — and reject an ambiguous target with the candidate list. During a live composed recording every verb routes through the recorder.
 
-<subcommand name="click" args="<target> [--no-screenshot] [--settle <ms>]" whenToUse="dispatch a real click on one resolved element"/>
-<subcommand name="type" args="<text> [--into <target>] [--no-screenshot] [--settle <ms>]" whenToUse="type text into the focused element or one resolved field"/>
-<subcommand name="scroll" args="<target> --to <top|bottom|px> [--no-screenshot]" whenToUse="scroll one resolved container to a position"/>
-<subcommand name="navigate" args="<url> [--settle <ms>]" whenToUse="navigate the tab and wait for load + settle"/>
-<subcommand name="exec" args="<code> | --file <path>" whenToUse="run arbitrary JS in the tab (expressions, return, await)"/>
-<subcommand name="shot" args="[--viewport <WxH>] [--full-page] [--color-scheme <dark|light>] [--crop <x,y,w,h> | --crop-selector <sel> [--pad <px>]] [--zoom <factor>] [--out <path>]" whenToUse="look at the page right now without acting"/>
-<subcommand name="elements" args="[--all] [--limit <n>]" whenToUse="list what can be acted on — role, name, backend:<id> per element"/>
+<subcommand name="click" description="real click on one element" whenToUse="Use to activate a control through the page's normal click handling."/>
+<subcommand name="type" description="text entry into an element" whenToUse="Use to enter text into the focused element or a resolved field."/>
+<subcommand name="scroll" description="scroll one container" whenToUse="Use to move a resolved scrollable container to a position."/>
+<subcommand name="navigate" description="navigate the tab" whenToUse="Use to load a URL in the current tab and wait for it to settle."/>
+<subcommand name="exec" description="arbitrary JavaScript in the tab" whenToUse="Use when no named page command exposes the needed page operation."/>
+<subcommand name="shot" description="current-page screenshot" whenToUse="Use to inspect the rendered page without interacting with it."/>
+<subcommand name="elements" description="actionable page elements" whenToUse="Use to discover targets for page interactions."/>
 
-capture page <leaf> -h    Per-leaf usage`;
+capture page <leaf> -h    Full input, output, and effects contract.`;
 
 export async function pageMain(parsed: ParsedArgs, args: string[]): Promise<void> {
   const leaf = parsed.positional[0];

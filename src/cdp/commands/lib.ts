@@ -37,25 +37,20 @@ import {
 
 /** Root-help representation of this leaf, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="lib">
-vault-lib introspection (dev checkout only) — discover the forked vault libs and their function schemas, then run them in the tab
-use when scripting against a bundled service lib: find the function, read its schema, invoke it via page exec
-  list · search · show · read — \`capture lib -h\`
+vault library introspection for a development checkout
+use when discovering a bundled service library or reading its function schemas before invoking it in the tab
 </command>`;
 
-const LIB_USAGE = `capture lib — vault-lib introspection (dev checkout only): discover the
-forked vault libs and their function schemas, then run them in the tab via
-\`capture page exec\`.
+const LIB_USAGE = `capture lib — vault library introspection for a development checkout.
 
-Pure local reads — no CDP connection. Requires a capture checkout with
-vault/ source + esbuild; the published package answers every leaf with a
-structured dev_only error.
+Pure local reads — no CDP connection. Requires a Capture checkout with vault/ source and esbuild; the published package answers every leaf with a structured dev_only error.
 
-<subcommand name="list" args="" whenToUse="list every lib — name, function count, one-line summary"/>
-<subcommand name="search" args="<query> [--limit <n>]" whenToUse="rank functions across all libs against a query (default limit 20, max 500; multi-word queries require every token to match)"/>
-<subcommand name="show" args="<name>" whenToUse="one lib's function summaries — names + one-line descriptions, no schemas"/>
-<subcommand name="read" args="<name> [fn…]" whenToUse="full input/output JSON Schemas for named functions — the full-fidelity step before exec"/>
+<subcommand name="list" description="available libraries" whenToUse="Use to discover libraries and their summaries."/>
+<subcommand name="search" description="functions matching a query" whenToUse="Use to find a function when its library or exact name is unknown."/>
+<subcommand name="show" description="one library's function summaries" whenToUse="Use to inspect a known library's functions before selecting one."/>
+<subcommand name="read" description="function input and output schemas" whenToUse="Use to read the full schema for functions selected from a library."/>
 
-capture lib <leaf> -h    Per-leaf usage`;
+capture lib <leaf> -h    Full input, output, and effects contract.`;
 
 const LEAF_USAGE: Record<string, string> = {
   list: `capture lib list — list every vault lib: name, function count, one-line summary.

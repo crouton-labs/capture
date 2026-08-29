@@ -89,7 +89,7 @@ test('lib failures throw typed to the root boundary; bare `lib` prints branch us
   const bare = run(['lib']);
   assert.equal(bare.status, 0, bare.stdout);
   assert.equal(bare.stderr, '');
-  assert.match(bare.stdout, /^capture lib — vault-lib introspection/);
+  assert.match(bare.stdout, /^capture lib — vault library introspection/);
   assert.doesNotMatch(bare.stdout, /<error\b/);
 });
 

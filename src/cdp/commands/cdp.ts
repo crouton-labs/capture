@@ -44,9 +44,8 @@ const GENEROUS_RESULT_CAP = 4000;
 
 /** Root-help representation of this leaf, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="cdp">
-raw CDP escape hatch — send any protocol method capture doesn't wrap, or wait for a protocol event
-use when no other capture command covers the protocol surface you need (Browser.*, ServiceWorker.*, Target.*, ...)
-  cdp [<Domain.method>] [--params <json>] [--browser] [--wait-event <name>] — \`capture cdp -h\`
+raw CDP escape hatch — unwrapped protocol method and event access
+use when no other Capture command covers the protocol surface you need
 </command>`;
 
 const HELP = `capture cdp — send a raw CDP protocol method and/or wait for a protocol event: the escape hatch for domains no other capture command wraps (Browser.*, ServiceWorker.*, Target.*, ...).

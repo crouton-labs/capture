@@ -20,31 +20,23 @@ import { cmdTabNetwork } from './network.js';
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="tab">
-browser and tab plumbing — starting/stopping a browser capture owns, endpoint/tab discovery, tab lifecycle, connection-level network emulation
-use when nothing is running yet (\`tab launch\` starts a browser capture owns and reaps), when finding a CDP endpoint or tab, opening/closing/replacing a tab, or toggling connectivity; \`tab list\` is the probe for a running browser
-  launch · quit · list · open · close · reset · network — \`capture tab -h\`
+browser and tab lifecycle — Capture-owned browser launch and quit, endpoint and tab discovery, tab lifecycle, and held-session connectivity
+use when starting a browser Capture owns, locating or changing a tab, or changing a held tab's online state
 </command>`;
 
-export const TAB_USAGE = `capture tab — browser and tab plumbing: browser lifecycle, discovery, tab lifecycle, network emulation.
+export const TAB_USAGE = `capture tab — browser and tab lifecycle.
 
-\`tab list\` with no --port performs full endpoint discovery and is the probe
-for whether a CDP-enabled browser is running at all; when nothing is running,
-\`tab launch\` starts one capture owns — never hand-roll a detached browser,
-since nothing reaps that. Capture signals only browsers it launched itself
-(verified by process-birth identity): an endpoint you reach with --port stays
-untouched. \`tab reset\` replaces a stuck tab with a fresh one; under an active
-session it refuses while a recording is active (stop it first), reaps dead
-recorder handles, and updates the session's {target, port} pair together.
+\`list\` with no --port performs full endpoint discovery and is the probe for whether a CDP-enabled browser is running; when nothing is running, \`launch\` starts one Capture owns — never hand-roll a detached browser, since nothing reaps that. Capture signals only browsers it launched itself (verified by process-birth identity): an endpoint you reach with --port stays untouched. \`reset\` replaces a stuck tab with a fresh one; under an active session it refuses while a recording is active, reaps dead recorder handles, and updates the session's {target, port} pair together.
 
-<subcommand name="launch" args="[--url <url>] [--port <port>] [--headed]" whenToUse="start a browser capture owns (and reaps) when none is running"/>
-<subcommand name="quit" args="[<port>] [--all]" whenToUse="stop a browser capture launched; never touches a browser capture did not start"/>
-<subcommand name="list" args="[--port <port>]" whenToUse="discover CDP endpoints and the tabs open on them"/>
-<subcommand name="open" args="<url> [--new] [--port <port>]" whenToUse="open a URL and get its tab id"/>
-<subcommand name="close" args="<target> [--port <port>]" whenToUse="close one explicitly identified background tab"/>
-<subcommand name="reset" args="<url> [--port <port>]" whenToUse="abandon a stuck tab and open a fresh one (refuses while a recording is active; reaps dead recorder handles; updates the active session's {target, port} together)"/>
-<subcommand name="network" args="<offline|online>" whenToUse="toggle connection-level network emulation for a tab"/>
+<subcommand name="launch" description="start a Capture-owned browser" whenToUse="Use when no CDP-enabled browser is running."/>
+<subcommand name="quit" description="stop a Capture-owned browser" whenToUse="Use to stop a browser that Capture launched."/>
+<subcommand name="list" description="CDP endpoints and open tabs" whenToUse="Use to find a browser endpoint or tab before targeting it."/>
+<subcommand name="open" description="open a URL in a tab" whenToUse="Use to navigate the current tab or create a tab for a URL."/>
+<subcommand name="close" description="close one tab" whenToUse="Use to close an explicitly identified background tab."/>
+<subcommand name="reset" description="replace a tab" whenToUse="Use to discard a stuck tab and update the active session to a fresh one."/>
+<subcommand name="network" description="tab network emulation" whenToUse="Use to change online connectivity for a tab held by an active session."/>
 
-capture tab <leaf> -h    Per-leaf usage`;
+capture tab <leaf> -h    Full input, output, and effects contract.`;
 
 export async function tabMain(parsed: ParsedArgs, args: string[]): Promise<void> {
   const leaf = parsed.positional[0];

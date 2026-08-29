@@ -53,7 +53,10 @@ test('bare `capture` and `capture -h` print the assembled root help: seven <comm
       assert.equal(blocks.length, 7, `expected exactly seven <command> blocks, got ${blocks.length}`);
       for (const name of ['session', 'page', 'tab', 'measure', 'motion', 'cdp', 'lib']) {
         assert.ok(result.stdout.includes(`<command name="${name}">`), `missing <command name="${name}">`);
+        const block = new RegExp(`<command name="${name}">\\n[^\\n]+\\nuse when [^\\n]+\\n</command>`).exec(result.stdout)?.[0];
+        assert.ok(block, `${name} must contribute exactly a concept line and a selection rule at root`);
       }
+      assert.ok(!result.stdout.includes(' · '), 'root help must not catalog branch leaves');
 
       // I/O contract footer + the single environment line + env pinning.
       assert.ok(result.stdout.includes('I/O contract:'));
@@ -64,6 +67,30 @@ test('bare `capture` and `capture -h` print the assembled root help: seven <comm
     }
 
     assert.deepEqual(readdirSync(tempRoot), []);
+  });
+});
+
+test('each branch help lists description-and-selection rows without leaf signatures', () => {
+  const branches = [
+    { args: ['session', '-h'], leaves: ['start', 'stop', 'list', 'view', 'har', 'log'] },
+    { args: ['page', '-h'], leaves: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements'] },
+    { args: ['tab', '-h'], leaves: ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network'] },
+    { args: ['measure', '-h'], leaves: ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map'] },
+    { args: ['measure', 'map', '-h'], leaves: ['focus', 'scroll', 'layers', 'ax', 'paint'] },
+    { args: ['motion', '-h'], leaves: ['rec', 'mask', 'timeline', 'jank', 'response'] },
+    { args: ['lib', '-h'], leaves: ['list', 'search', 'show', 'read'] },
+  ];
+
+  withTempRoot((tempRoot) => {
+    for (const { args, leaves } of branches) {
+      const result = run(args, tempRoot);
+      assert.equal(result.status, 0, `${args.join(' ')}: ${result.stderr}`);
+      assert.equal(result.stderr, '', `${args.join(' ')} must not write diagnostics`);
+      for (const leaf of leaves) {
+        assert.match(result.stdout, new RegExp(`<subcommand name="${leaf}" description="[^"]+" whenToUse="[^"]+"/>`), result.stdout);
+      }
+      assert.doesNotMatch(result.stdout, /<subcommand\b[^>]*\bargs=/, result.stdout);
+    }
   });
 });
 

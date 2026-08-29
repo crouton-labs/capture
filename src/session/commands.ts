@@ -330,9 +330,8 @@ export async function waitForPageLoad(
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="session">
-the artifact container — a session records HAR and bundles every artifact; it may open or adopt a tab; once it has one, every command auto-targets it
-use when starting scoped work against a page: start with --url or --target, then every other capture command needs no --target/--port threading
-  start · stop · list · view · har · log — \`capture session -h\`
+the artifact container — records HTTP traffic and bundles artifacts for one page
+use when starting or reading scoped work against one page and its captured artifacts
 </command>`;
 
 const START_USAGE = `capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>] — open or adopt a tab, record HAR, and set the active capture context.
@@ -475,20 +474,18 @@ effects:
   the identity-bearing tailer record is registered in the session metadata.`;
 
 function printSessionHelp(): void {
-  console.log(`capture session — the artifact container: records HAR and bundles artifacts; it may open or adopt a tab.
+  console.log(`capture session — the artifact container: records HTTP traffic and bundles artifacts for one page.
 
-An active session with a tab auto-targets it and auto-appends recorded traffic — no
---target/--har threading. \`stop\` finalizes the session and writes its bundle
-manifest; \`view\` reads that manifest back.
+An active session with a tab auto-targets it and appends recorded traffic; \`stop\` finalizes its manifest and \`view\` reads it.
 
-  <subcommand name="start" args="[--url <url> | --target <tab-id>] [--hold] [--port <n>]" whenToUse="open or adopt a tab, start HAR, and set the active capture context"/>
-  <subcommand name="stop" args="<session-id>" whenToUse="finalize the session and write its bundle manifest"/>
-  <subcommand name="list" args="" whenToUse="show active and stopped sessions"/>
-  <subcommand name="view" args="<session-id> [--filter shots|har|logs|measure|motion|other]" whenToUse="read back a stopped session's bundle manifest"/>
-  <subcommand name="har" args="[<session-id>] [--filter-url <pattern>] [--filter-status <code>] [--filter-method <method>] [--limit <n>] [--full]" whenToUse="inspect recorded traffic — completed entries and retained incomplete lifecycle records, from the live accumulating HAR of a running session or a stopped session's bundled har.json"/>
-  <subcommand name="log" args="<path> [--name <label>] [--session <id>]" whenToUse="tail an external log file into the session's logs/ dir"/>
+<subcommand name="start" description="open or adopt a tab and start a session" whenToUse="Use when beginning scoped work against one page and collecting its artifacts."/>
+<subcommand name="stop" description="finalize a session bundle" whenToUse="Use when scoped capture is complete and its artifacts must become a bundle."/>
+<subcommand name="list" description="active and stopped sessions" whenToUse="Use to find a session to inspect or stop."/>
+<subcommand name="view" description="one stopped session's bundle" whenToUse="Use to inspect the artifacts collected by a finalized session."/>
+<subcommand name="har" description="recorded HTTP traffic" whenToUse="Use to inspect requests from a running session or a finalized bundle."/>
+<subcommand name="log" description="tail an external log into a session" whenToUse="Use to add external process output to a session's bundled artifacts."/>
 
-  capture session <leaf> -h    Per-leaf usage`);
+capture session <leaf> -h    Full input, output, and effects contract.`);
 }
 
 // ============================================================================

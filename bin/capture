@@ -14544,20 +14544,18 @@ async function waitForPageLoad(client, timeoutMs, attachTimeoutMs = SESSION_TAB_
   });
 }
 function printSessionHelp() {
-  console.log(`capture session \u2014 the artifact container: records HAR and bundles artifacts; it may open or adopt a tab.
+  console.log(`capture session \u2014 the artifact container: records HTTP traffic and bundles artifacts for one page.
 
-An active session with a tab auto-targets it and auto-appends recorded traffic \u2014 no
---target/--har threading. \`stop\` finalizes the session and writes its bundle
-manifest; \`view\` reads that manifest back.
+An active session with a tab auto-targets it and appends recorded traffic; \`stop\` finalizes its manifest and \`view\` reads it.
 
-  <subcommand name="start" args="[--url <url> | --target <tab-id>] [--hold] [--port <n>]" whenToUse="open or adopt a tab, start HAR, and set the active capture context"/>
-  <subcommand name="stop" args="<session-id>" whenToUse="finalize the session and write its bundle manifest"/>
-  <subcommand name="list" args="" whenToUse="show active and stopped sessions"/>
-  <subcommand name="view" args="<session-id> [--filter shots|har|logs|measure|motion|other]" whenToUse="read back a stopped session's bundle manifest"/>
-  <subcommand name="har" args="[<session-id>] [--filter-url <pattern>] [--filter-status <code>] [--filter-method <method>] [--limit <n>] [--full]" whenToUse="inspect recorded traffic \u2014 completed entries and retained incomplete lifecycle records, from the live accumulating HAR of a running session or a stopped session's bundled har.json"/>
-  <subcommand name="log" args="<path> [--name <label>] [--session <id>]" whenToUse="tail an external log file into the session's logs/ dir"/>
+<subcommand name="start" description="open or adopt a tab and start a session" whenToUse="Use when beginning scoped work against one page and collecting its artifacts."/>
+<subcommand name="stop" description="finalize a session bundle" whenToUse="Use when scoped capture is complete and its artifacts must become a bundle."/>
+<subcommand name="list" description="active and stopped sessions" whenToUse="Use to find a session to inspect or stop."/>
+<subcommand name="view" description="one stopped session's bundle" whenToUse="Use to inspect the artifacts collected by a finalized session."/>
+<subcommand name="har" description="recorded HTTP traffic" whenToUse="Use to inspect requests from a running session or a finalized bundle."/>
+<subcommand name="log" description="tail an external log into a session" whenToUse="Use to add external process output to a session's bundled artifacts."/>
 
-  capture session <leaf> -h    Per-leaf usage`);
+capture session <leaf> -h    Full input, output, and effects contract.`);
 }
 function rejectSurplusPositionals(parsed, leaf, max, usage) {
   const count3 = parsed.positional.length;
@@ -15423,9 +15421,8 @@ var init_commands = __esm({
     };
     SESSION_TAB_ATTACH_TIMEOUT_MS = 5e3;
     COMMAND_BLOCK = `<command name="session">
-the artifact container \u2014 a session records HAR and bundles every artifact; it may open or adopt a tab; once it has one, every command auto-targets it
-use when starting scoped work against a page: start with --url or --target, then every other capture command needs no --target/--port threading
-  start \xB7 stop \xB7 list \xB7 view \xB7 har \xB7 log \u2014 \`capture session -h\`
+the artifact container \u2014 records HTTP traffic and bundles artifacts for one page
+use when starting or reading scoped work against one page and its captured artifacts
 </command>`;
     START_USAGE = `capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>] \u2014 open or adopt a tab, record HAR, and set the active capture context.
 
@@ -228490,27 +228487,22 @@ var init_page = __esm({
     init_shot();
     init_elements();
     COMMAND_BLOCK2 = `<command name="page">
-verbs against the live session tab \u2014 act (click, type, scroll, navigate, exec) and look (shot, elements)
-use when driving or inspecting the tab a session opened or adopted; all verbs auto-target the active session tab, --target/--url override
-  click \xB7 type \xB7 scroll \xB7 navigate \xB7 exec \xB7 shot \xB7 elements \u2014 \`capture page -h\`
+operations against the live session tab \u2014 interact with it or inspect its current state
+use when driving or inspecting the tab a session opened or adopted; use tab for browser and tab lifecycle
 </command>`;
-    PAGE_USAGE = `capture page \u2014 verbs against the live session tab: driving, looking, targeting.
+    PAGE_USAGE = `capture page \u2014 operations against the live session tab.
 
-All verbs auto-target the active session tab; --target/--url override. The
-driving verbs (click, type, scroll) resolve exactly one element via the
-unified target grammar \u2014 bare CSS selector (which takes precedence) or exact accessible name when CSS finds none, ax:<name>, axid:<id>,
-backend:<id> \u2014 and reject an ambiguous target with the candidate list.
-During a live composed recording every verb routes through the recorder.
+All verbs auto-target the active session tab; --target/--url override. Driving verbs resolve exactly one element via the unified target grammar \u2014 bare CSS selector (which takes precedence) or exact accessible name when CSS finds none, ax:<name>, axid:<id>, backend:<id> \u2014 and reject an ambiguous target with the candidate list. During a live composed recording every verb routes through the recorder.
 
-<subcommand name="click" args="<target> [--no-screenshot] [--settle <ms>]" whenToUse="dispatch a real click on one resolved element"/>
-<subcommand name="type" args="<text> [--into <target>] [--no-screenshot] [--settle <ms>]" whenToUse="type text into the focused element or one resolved field"/>
-<subcommand name="scroll" args="<target> --to <top|bottom|px> [--no-screenshot]" whenToUse="scroll one resolved container to a position"/>
-<subcommand name="navigate" args="<url> [--settle <ms>]" whenToUse="navigate the tab and wait for load + settle"/>
-<subcommand name="exec" args="<code> | --file <path>" whenToUse="run arbitrary JS in the tab (expressions, return, await)"/>
-<subcommand name="shot" args="[--viewport <WxH>] [--full-page] [--color-scheme <dark|light>] [--crop <x,y,w,h> | --crop-selector <sel> [--pad <px>]] [--zoom <factor>] [--out <path>]" whenToUse="look at the page right now without acting"/>
-<subcommand name="elements" args="[--all] [--limit <n>]" whenToUse="list what can be acted on \u2014 role, name, backend:<id> per element"/>
+<subcommand name="click" description="real click on one element" whenToUse="Use to activate a control through the page's normal click handling."/>
+<subcommand name="type" description="text entry into an element" whenToUse="Use to enter text into the focused element or a resolved field."/>
+<subcommand name="scroll" description="scroll one container" whenToUse="Use to move a resolved scrollable container to a position."/>
+<subcommand name="navigate" description="navigate the tab" whenToUse="Use to load a URL in the current tab and wait for it to settle."/>
+<subcommand name="exec" description="arbitrary JavaScript in the tab" whenToUse="Use when no named page command exposes the needed page operation."/>
+<subcommand name="shot" description="current-page screenshot" whenToUse="Use to inspect the rendered page without interacting with it."/>
+<subcommand name="elements" description="actionable page elements" whenToUse="Use to discover targets for page interactions."/>
 
-capture page <leaf> -h    Per-leaf usage`;
+capture page <leaf> -h    Full input, output, and effects contract.`;
   }
 });
 
@@ -229216,30 +229208,22 @@ var init_tab = __esm({
     init_reset();
     init_network();
     COMMAND_BLOCK3 = `<command name="tab">
-browser and tab plumbing \u2014 starting/stopping a browser capture owns, endpoint/tab discovery, tab lifecycle, connection-level network emulation
-use when nothing is running yet (\`tab launch\` starts a browser capture owns and reaps), when finding a CDP endpoint or tab, opening/closing/replacing a tab, or toggling connectivity; \`tab list\` is the probe for a running browser
-  launch \xB7 quit \xB7 list \xB7 open \xB7 close \xB7 reset \xB7 network \u2014 \`capture tab -h\`
+browser and tab lifecycle \u2014 Capture-owned browser launch and quit, endpoint and tab discovery, tab lifecycle, and held-session connectivity
+use when starting a browser Capture owns, locating or changing a tab, or changing a held tab's online state
 </command>`;
-    TAB_USAGE = `capture tab \u2014 browser and tab plumbing: browser lifecycle, discovery, tab lifecycle, network emulation.
+    TAB_USAGE = `capture tab \u2014 browser and tab lifecycle.
 
-\`tab list\` with no --port performs full endpoint discovery and is the probe
-for whether a CDP-enabled browser is running at all; when nothing is running,
-\`tab launch\` starts one capture owns \u2014 never hand-roll a detached browser,
-since nothing reaps that. Capture signals only browsers it launched itself
-(verified by process-birth identity): an endpoint you reach with --port stays
-untouched. \`tab reset\` replaces a stuck tab with a fresh one; under an active
-session it refuses while a recording is active (stop it first), reaps dead
-recorder handles, and updates the session's {target, port} pair together.
+\`list\` with no --port performs full endpoint discovery and is the probe for whether a CDP-enabled browser is running; when nothing is running, \`launch\` starts one Capture owns \u2014 never hand-roll a detached browser, since nothing reaps that. Capture signals only browsers it launched itself (verified by process-birth identity): an endpoint you reach with --port stays untouched. \`reset\` replaces a stuck tab with a fresh one; under an active session it refuses while a recording is active, reaps dead recorder handles, and updates the session's {target, port} pair together.
 
-<subcommand name="launch" args="[--url <url>] [--port <port>] [--headed]" whenToUse="start a browser capture owns (and reaps) when none is running"/>
-<subcommand name="quit" args="[<port>] [--all]" whenToUse="stop a browser capture launched; never touches a browser capture did not start"/>
-<subcommand name="list" args="[--port <port>]" whenToUse="discover CDP endpoints and the tabs open on them"/>
-<subcommand name="open" args="<url> [--new] [--port <port>]" whenToUse="open a URL and get its tab id"/>
-<subcommand name="close" args="<target> [--port <port>]" whenToUse="close one explicitly identified background tab"/>
-<subcommand name="reset" args="<url> [--port <port>]" whenToUse="abandon a stuck tab and open a fresh one (refuses while a recording is active; reaps dead recorder handles; updates the active session's {target, port} together)"/>
-<subcommand name="network" args="<offline|online>" whenToUse="toggle connection-level network emulation for a tab"/>
+<subcommand name="launch" description="start a Capture-owned browser" whenToUse="Use when no CDP-enabled browser is running."/>
+<subcommand name="quit" description="stop a Capture-owned browser" whenToUse="Use to stop a browser that Capture launched."/>
+<subcommand name="list" description="CDP endpoints and open tabs" whenToUse="Use to find a browser endpoint or tab before targeting it."/>
+<subcommand name="open" description="open a URL in a tab" whenToUse="Use to navigate the current tab or create a tab for a URL."/>
+<subcommand name="close" description="close one tab" whenToUse="Use to close an explicitly identified background tab."/>
+<subcommand name="reset" description="replace a tab" whenToUse="Use to discard a stuck tab and update the active session to a fresh one."/>
+<subcommand name="network" description="tab network emulation" whenToUse="Use to change online connectivity for a tab held by an active session."/>
 
-capture tab <leaf> -h    Per-leaf usage`;
+capture tab <leaf> -h    Full input, output, and effects contract.`;
   }
 });
 
@@ -229667,24 +229651,19 @@ var init_lib = __esm({
     init_paths();
     init_docs();
     COMMAND_BLOCK4 = `<command name="lib">
-vault-lib introspection (dev checkout only) \u2014 discover the forked vault libs and their function schemas, then run them in the tab
-use when scripting against a bundled service lib: find the function, read its schema, invoke it via page exec
-  list \xB7 search \xB7 show \xB7 read \u2014 \`capture lib -h\`
+vault library introspection for a development checkout
+use when discovering a bundled service library or reading its function schemas before invoking it in the tab
 </command>`;
-    LIB_USAGE = `capture lib \u2014 vault-lib introspection (dev checkout only): discover the
-forked vault libs and their function schemas, then run them in the tab via
-\`capture page exec\`.
+    LIB_USAGE = `capture lib \u2014 vault library introspection for a development checkout.
 
-Pure local reads \u2014 no CDP connection. Requires a capture checkout with
-vault/ source + esbuild; the published package answers every leaf with a
-structured dev_only error.
+Pure local reads \u2014 no CDP connection. Requires a Capture checkout with vault/ source and esbuild; the published package answers every leaf with a structured dev_only error.
 
-<subcommand name="list" args="" whenToUse="list every lib \u2014 name, function count, one-line summary"/>
-<subcommand name="search" args="<query> [--limit <n>]" whenToUse="rank functions across all libs against a query (default limit 20, max 500; multi-word queries require every token to match)"/>
-<subcommand name="show" args="<name>" whenToUse="one lib's function summaries \u2014 names + one-line descriptions, no schemas"/>
-<subcommand name="read" args="<name> [fn\u2026]" whenToUse="full input/output JSON Schemas for named functions \u2014 the full-fidelity step before exec"/>
+<subcommand name="list" description="available libraries" whenToUse="Use to discover libraries and their summaries."/>
+<subcommand name="search" description="functions matching a query" whenToUse="Use to find a function when its library or exact name is unknown."/>
+<subcommand name="show" description="one library's function summaries" whenToUse="Use to inspect a known library's functions before selecting one."/>
+<subcommand name="read" description="function input and output schemas" whenToUse="Use to read the full schema for functions selected from a library."/>
 
-capture lib <leaf> -h    Per-leaf usage`;
+capture lib <leaf> -h    Full input, output, and effects contract.`;
     LEAF_USAGE = {
       list: `capture lib list \u2014 list every vault lib: name, function count, one-line summary.
 
@@ -229925,9 +229904,8 @@ var init_cdp = __esm({
     DEFAULT_TIMEOUT_MS = 1e4;
     GENEROUS_RESULT_CAP2 = 4e3;
     COMMAND_BLOCK5 = `<command name="cdp">
-raw CDP escape hatch \u2014 send any protocol method capture doesn't wrap, or wait for a protocol event
-use when no other capture command covers the protocol surface you need (Browser.*, ServiceWorker.*, Target.*, ...)
-  cdp [<Domain.method>] [--params <json>] [--browser] [--wait-event <name>] \u2014 \`capture cdp -h\`
+raw CDP escape hatch \u2014 unwrapped protocol method and event access
+use when no other Capture command covers the protocol surface you need
 </command>`;
     HELP = `capture cdp \u2014 send a raw CDP protocol method and/or wait for a protocol event: the escape hatch for domains no other capture command wraps (Browser.*, ServiceWorker.*, Target.*, ...).
 
@@ -241553,39 +241531,33 @@ var init_measure = __esm({
     init_map_ax2();
     init_map_paint();
     COMMAND_BLOCK6 = `<command name="measure">
-static facts over a settled snapshot \u2014 \`snap\` writes the substrate, every other leaf is a read-only query over it
-use when measuring layout/content/targetability facts, diffing snapshots, or reading one facet (focus, scroll, layers, ax, paint) of the substrate
-  snap \xB7 check \xB7 diff \xB7 census \xB7 explain \xB7 sweep \xB7 map (focus|scroll|layers|ax|paint) \u2014 \`capture measure -h\`
+static facts over a settled snapshot \u2014 snapshot capture and read-only queries
+use when measuring layout, content, and targetability facts from settled rendering; use motion for facts over time
 </command>`;
-    MEASURE_USAGE = `capture measure \u2014 enriched snapshot substrate + read-only queries over it.
+    MEASURE_USAGE = `capture measure \u2014 enriched snapshot substrate and read-only queries.
 
-\`snap\` drives the page (or a base snapshot) and writes one settled artifact
-directory; every other leaf below is a cheap read over that artifact and
-never re-drives the browser unless its target is a URL (which snaps first).
-Every leaf defaults to rendered prose; --json mirrors the same result.
-Findings exit 0 \u2014 a report, not a failure.
-\`--gate\` (exit 2 on findings/changes) is accepted only by check and diff.
+\`snap\` drives the page (or a base snapshot) and writes one settled artifact directory; every other leaf below reads that artifact and never re-drives the browser unless its target is a URL, which first creates a snapshot. Findings exit 0 \u2014 a report, not a failure. \`--gate\` (exit 2 on findings or changes) is accepted only by check and diff.
 
-<subcommand name="snap" args="[url|snap] [--freeze-animations] [--settle-timeout <ms>] [--capture-unsettled] [--pixels] [--state <state[:selector]>]... [--viewport <WxH>]... [--color-scheme <dark|light>]" whenToUse="drive + write the settled snapshot substrate every other leaf reads"/>
-<subcommand name="check" args="[url|snap] [--for <checks>] [--gate]" whenToUse="read threshold/fact measurements from one snapshot"/>
-<subcommand name="diff" args="--before <snap> --after <snap> [--pixels] [--full] [--gate]" whenToUse="structured before/after delta between two snapshots"/>
-<subcommand name="census" args="[--snap <id>]... [--url <url>]... [--set-file <path>] --axis <axis>" whenToUse="value distributions across one or more snapshots"/>
-<subcommand name="explain" args="<snap> --selector <sel> [--size] [--text] [--form]" whenToUse="per-element cascade/stacking/clipping/size/text/form explanation"/>
-<subcommand name="sweep" args="[url] --axis <axis> [--from <val>] [--to <val>] [--viewport-height <val>]" whenToUse="responsive/environment sampling across an axis"/>
-<subcommand name="map" args="focus|scroll|layers|ax [url|snap] | paint <snap> --selector <target> [--state <name>]" whenToUse="read one facet of a snapshot's substrate \u2014 capture measure map -h"/>
+<subcommand name="snap" description="settled snapshot artifact" whenToUse="Use to capture the static rendered-page substrate that measure queries read."/>
+<subcommand name="check" description="snapshot threshold measurements" whenToUse="Use to measure selected layout and content thresholds from one snapshot."/>
+<subcommand name="diff" description="snapshot delta" whenToUse="Use to compare the measured facts from two snapshots."/>
+<subcommand name="census" description="snapshot value distributions" whenToUse="Use to count values across one or more snapshots."/>
+<subcommand name="explain" description="element rendering explanation" whenToUse="Use to inspect cascade, stacking, clipping, size, text, or form facts for one element."/>
+<subcommand name="sweep" description="responsive environment sampling" whenToUse="Use to compare snapshot facts across values on one environment axis."/>
+<subcommand name="map" description="one snapshot facet" whenToUse="Use to read focus, scroll, layer, accessibility, or paint facts from a snapshot."/>
 
-capture measure <leaf> -h    Per-leaf usage`;
-    MEASURE_MAP_USAGE = `capture measure map \u2014 read one facet of a snapshot's substrate (no browser re-drive).
+capture measure <leaf> -h    Full input, output, and effects contract.`;
+    MEASURE_MAP_USAGE = `capture measure map \u2014 one facet of a snapshot's substrate.
 
-Focus, scroll, layers, and ax accept a URL target and create a snap first; paint requires an existing snapshot and reads it without browser driving.
+Focus, scroll, layers, and ax accept a URL target and create a snapshot first; paint requires an existing snapshot and reads it without browser driving.
 
-<subcommand name="focus" args="[url|snap]" whenToUse="keyboard traversal order (focus.json)"/>
-<subcommand name="scroll" args="[url|snap]" whenToUse="scroll-container topology (scroll.json)"/>
-<subcommand name="layers" args="[url|snap]" whenToUse="paint/compositor layer map (layers.json)"/>
-<subcommand name="ax" args="[url|snap]" whenToUse="AX-tree \u2194 layout map (ax.json + geometry.json)"/>
-<subcommand name="paint" args="<snap> --selector <target> [--state <name>]" whenToUse="elements painted above one target and their recorded AABB coverage (geometry.json + layers.json)"/>
+<subcommand name="focus" description="keyboard traversal order" whenToUse="Use to inspect focus order from a snapshot."/>
+<subcommand name="scroll" description="scroll-container topology" whenToUse="Use to inspect scroll containers and their relationships."/>
+<subcommand name="layers" description="paint and compositor layers" whenToUse="Use to inspect layer allocation and paint order."/>
+<subcommand name="ax" description="accessibility and layout map" whenToUse="Use to relate accessibility-tree nodes to layout geometry."/>
+<subcommand name="paint" description="coverage above one target" whenToUse="Use to inspect elements painted above a target and their recorded coverage."/>
 
-capture measure map <leaf> -h    Per-leaf usage`;
+capture measure map <leaf> -h    Full input, output, and effects contract.`;
   }
 });
 
@@ -243380,25 +243352,20 @@ var init_motion = __esm({
     init_jank2();
     init_response2();
     COMMAND_BLOCK7 = `<command name="motion">
-facts over a recording \u2014 recorder lifecycle plus read-only queries over a finalized recording
-use when recording an interaction (one-shot or composed) and reading motion facts: diffs, timelines, jank, input response
-  rec \xB7 mask \xB7 timeline \xB7 jank \xB7 response \u2014 \`capture motion -h\`
+facts over a recording \u2014 recording lifecycle and read-only queries over finalized interactions
+use when recording an interaction and reading change, timing, or input-response facts; use measure for static snapshot facts
 </command>`;
-    MOTION_USAGE = `capture motion \u2014 recorder lifecycle + read-only queries over a finalized recording.
+    MOTION_USAGE = `capture motion \u2014 recording lifecycle and read-only queries over a finalized recording.
 
-\`rec\` drives (and records) the browser, one-shot or composed across
-intervening commands; every other leaf below is a cheap read over the
-finalized recording artifact. Every leaf defaults to rendered prose; --json
-mirrors the same result. Findings exit 0 \u2014 a report, not a failure;
-input/precondition errors exit 1. No leaf accepts --gate.
+\`rec\` drives and records the browser, one-shot or composed across intervening commands; every other leaf below reads the finalized recording artifact. Findings exit 0 \u2014 a report, not a failure; input and precondition errors exit 1. No leaf accepts --gate.
 
-<subcommand name="rec" args="[url] --do <action> [--duration <seconds>] | --start | --stop" whenToUse="record an interaction \u2014 one-shot action, or composed across commands with --start/--stop (needs an active session)"/>
-<subcommand name="mask" args="<rec> [--limit <N>]" whenToUse="motion-diff composite image + per-region facts"/>
-<subcommand name="timeline" args="<rec> --element <sel> [--prop <prop>]" whenToUse="per-frame geometry/scroll/property timeline for one element"/>
-<subcommand name="jank" args="<rec>" whenToUse="long-task/layout-shift facts with change-driven screencast provenance"/>
-<subcommand name="response" args="<rec> [--action <action>] [--occurrence <n>]" whenToUse="input-to-settled response timeline"/>
+<subcommand name="rec" description="interaction recording" whenToUse="Use to record an interaction in one command or across a held session."/>
+<subcommand name="mask" description="motion-difference image and regions" whenToUse="Use to inspect where a recording changed across frames."/>
+<subcommand name="timeline" description="element timeline" whenToUse="Use to inspect one element's geometry, scroll, or property values over time."/>
+<subcommand name="jank" description="long-task and layout-shift facts" whenToUse="Use to inspect rendering interruption and layout instability in a recording."/>
+<subcommand name="response" description="input-to-settled timeline" whenToUse="Use to measure the response from one recorded input to settled rendering."/>
 
-capture motion <leaf> -h    Per-leaf usage`;
+capture motion <leaf> -h    Full input, output, and effects contract.`;
   }
 });
 
@@ -243529,17 +243496,9 @@ function rootHelp() {
 
 ${ROOT_BLOCKS.join("\n\n")}
 
-I/O contract: flags and positionals on input; one rendered prose block on
-stdout. --json mirrors the same result as JSON, but the rendered block is
-the contract. stderr carries in-flight diagnostics only.
+I/O contract: flags and positionals on input; one rendered prose block on stdout. --json mirrors the same result as JSON, but the rendered block is the contract. stderr carries in-flight diagnostics only.
 
-A CDP-enabled browser must be running; \`capture tab list\` is the probe, and
-\`capture tab launch\` starts one capture owns and reaps when nothing is (never
-hand-roll a detached browser \u2014 nothing reaps that). Capture never signals a
-browser it did not start, so attaching to your own with --port is unchanged.
-CDP_PORT / CDP_TARGET pin the browser + tab for target-selecting commands \u2014
-precedence: explicit flag > active session > env. \`session start\` adopts only an
-explicit --target.`;
+A CDP-enabled browser must be running; \`capture tab list\` is the probe, and \`capture tab launch\` starts one capture owns and reaps when nothing is (never hand-roll a detached browser \u2014 nothing reaps that). Capture never signals a browser it did not start, so attaching to your own with --port is unchanged. CDP_PORT / CDP_TARGET pin the browser + tab for target-selecting commands \u2014 precedence: explicit flag > active session > env. \`session start\` adopts only an explicit --target.`;
 }
 function printVersion() {
   const declared = "1.4.9";

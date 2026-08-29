@@ -117,7 +117,7 @@ test('bare `lib` prints branch usage exit 0; an unknown lib leaf is central-disp
   // same behavior is proven against source in test/cli-error-contract.test.ts.
   const bare = run(['lib']);
   assert.equal(bare.status, 0, bare.stdout);
-  assert.ok(bare.stdout.includes('capture lib — vault-lib introspection'), bare.stdout);
+  assert.ok(bare.stdout.includes('capture lib — vault library introspection'), bare.stdout);
   assert.ok(bare.stdout.includes('<subcommand name="list"'), bare.stdout);
 
   const bogus = run(['lib', 'bogus']);

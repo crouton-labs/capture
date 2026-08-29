@@ -72,7 +72,8 @@ test('`measure` with no leaf prints the D6 branch help: model prose + one <subco
     assert.match(logs, new RegExp(`<subcommand name="${leaf}"`), `missing <subcommand name="${leaf}">`);
   }
   assert.match(logs, /whenToUse="/);
-  assert.match(logs, /focus\|scroll\|layers\|ax/);
+  assert.match(logs, /description="one snapshot facet"/);
+  assert.doesNotMatch(logs, /<subcommand\b[^>]*\bargs=/);
   // D6: branch help carries no example invocations or tutorials.
   assert.doesNotMatch(logs, /Examples?:/i);
 });
@@ -190,16 +191,12 @@ for (const { name, argv, command, main } of [...measureLeafCases, ...motionLeafC
   });
 }
 
-test('measure branch usage advertises --gate only on the check and diff rows', () => {
+test('measure branch usage scopes --gate in its model and defers every leaf schema', () => {
   const gateLines = MEASURE_USAGE.split('\n').filter((l) => l.includes('--gate'));
 
-  // Exactly the check row, the diff row, and the one summary sentence
-  // scoping --gate to those two leaves — never a per-leaf mention on any
-  // other line.
-  assert.equal(gateLines.length, 3);
-  assert.ok(gateLines.some((l) => l.includes('name="check"') && l.includes('[--gate]')));
-  assert.ok(gateLines.some((l) => l.includes('name="diff"') && l.includes('[--gate]')));
-  assert.ok(gateLines.some((l) => l.includes('only') && l.includes('check') && l.includes('diff')));
+  assert.equal(gateLines.length, 1);
+  assert.match(gateLines[0]!, /only by check and diff/);
+  assert.doesNotMatch(MEASURE_USAGE, /<subcommand\b[^>]*\bargs=/);
 });
 
 test('measure map branch usage never mentions --gate', () => {
