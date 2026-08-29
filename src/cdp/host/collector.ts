@@ -50,6 +50,8 @@ export interface Collector<Summary = unknown> {
 export interface ClaimReservation {
   token: string;
   claims: readonly CdpClaim[];
+  /** Blocks every collector admission on this host while a destructive tab operation runs. */
+  exclusive?: boolean;
   holderLabel: string;
   pid: number;
   birth: PidBirth;

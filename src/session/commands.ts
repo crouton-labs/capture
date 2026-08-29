@@ -64,6 +64,7 @@ interface BundleManifest {
   shots: Array<{ name: string; path: string }>;
   har: { id: string; path: string; entryCount: number } | null;
   logs: Array<{ name: string; path: string; lines: number }>;
+  reports: Array<{ id: string; path: string; url: string; finalUrl: string; preset: 'mobile' | 'desktop'; categories: string[]; lighthouse: string | null; axe: string | null }>;
   other: Array<{ name: string; path: string }>;
   /** `measure snap` artifacts collected from `measure/snaps/{id}/meta.json`. */
   snaps: Array<{ id: string; path: string; url: string | null; viewport: string | null; settled: boolean; capturedAt: string }>;
@@ -101,6 +102,15 @@ function isBundleManifest(value: unknown): value is BundleManifest {
     && Array.isArray(record.shots) && record.shots.every(isNamedPathEntry)
     && validHar
     && Array.isArray(record.logs) && record.logs.every(item => isNamedPathEntry(item) && typeof (item as unknown as Record<string, unknown>).lines === 'number')
+    && Array.isArray(record.reports) && record.reports.every(item => !!item && typeof item === 'object'
+      && typeof (item as Record<string, unknown>).id === 'string'
+      && typeof (item as Record<string, unknown>).path === 'string'
+      && typeof (item as Record<string, unknown>).url === 'string'
+      && typeof (item as Record<string, unknown>).finalUrl === 'string'
+      && ((item as Record<string, unknown>).preset === 'mobile' || (item as Record<string, unknown>).preset === 'desktop')
+      && Array.isArray((item as Record<string, unknown>).categories) && ((item as Record<string, unknown>).categories as unknown[]).every(category => typeof category === 'string')
+      && ((item as Record<string, unknown>).lighthouse === null || typeof (item as Record<string, unknown>).lighthouse === 'string')
+      && ((item as Record<string, unknown>).axe === null || typeof (item as Record<string, unknown>).axe === 'string'))
     && Array.isArray(record.other) && record.other.every(isNamedPathEntry)
     && Array.isArray(record.snaps) && record.snaps.every(item => !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string' && typeof (item as Record<string, unknown>).path === 'string')
     && Array.isArray(record.recs) && record.recs.every(item => !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string' && typeof (item as Record<string, unknown>).path === 'string')
@@ -128,7 +138,7 @@ function readBundleManifest(bundlePath: string): BundleManifest {
 }
 
 /** The bundle-manifest section keys `session view --filter` can address. */
-type SectionKey = 'shots' | 'har' | 'logs' | 'snaps' | 'recs' | 'mocks' | 'other';
+type SectionKey = 'shots' | 'har' | 'logs' | 'reports' | 'snaps' | 'recs' | 'mocks' | 'other';
 
 // The `--filter <name>` query names map onto manifest section keys. Most are
 // identical; `measure`/`motion` are the query-facing names for the `snaps`/
@@ -138,6 +148,7 @@ const VIEW_FILTERS: Record<string, SectionKey> = {
   shots: 'shots',
   har: 'har',
   logs: 'logs',
+  lighthouse: 'reports',
   measure: 'snaps',
   motion: 'recs',
   mocks: 'mocks',
@@ -149,6 +160,7 @@ const SECTION_LABELS: Record<SectionKey, string> = {
   shots: 'shots',
   har: 'har',
   logs: 'logs',
+  reports: 'lighthouse',
   snaps: 'measure',
   recs: 'motion',
   mocks: 'mocks',
@@ -250,6 +262,22 @@ function collectMocks(dir: string): NonNullable<BundleManifest['mocks']> {
     const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as Record<string, unknown>;
     return [{ id: typeof meta.id === 'string' ? meta.id : name, path: mockDir, completion: typeof meta.completion === 'string' ? meta.completion : 'partial', rules: typeof meta.rules === 'number' ? meta.rules : 0, paused: typeof meta.paused === 'number' ? meta.paused : 0, matched: typeof meta.matched === 'number' ? meta.matched : 0, releasedUnmatched: typeof meta.releasedUnmatched === 'number' ? meta.releasedUnmatched : 0 }];
   });
+}
+
+function readLighthouseReportMeta(reportDir: string, fallbackId: string): BundleManifest['reports'][number] {
+  const meta = JSON.parse(fs.readFileSync(path.join(reportDir, 'meta.json'), 'utf-8')) as Partial<BundleManifest['reports'][number]>;
+  if (typeof meta.url !== 'string' || typeof meta.finalUrl !== 'string' || (meta.preset !== 'mobile' && meta.preset !== 'desktop') || !Array.isArray(meta.categories) || !meta.categories.every(category => typeof category === 'string') || (meta.lighthouse !== null && typeof meta.lighthouse !== 'string') || (meta.axe !== null && typeof meta.axe !== 'string')) {
+    throw captureError('artifact', 'invalid_lighthouse_report_metadata', `Lighthouse report metadata at ${reportDir} is invalid.`);
+  }
+  return { id: typeof meta.id === 'string' ? meta.id : fallbackId, path: reportDir, url: meta.url, finalUrl: meta.finalUrl, preset: meta.preset, categories: meta.categories, lighthouse: meta.lighthouse, axe: meta.axe };
+}
+
+function collectLighthouseReports(dir: string): BundleManifest['reports'] {
+  const reportsRoot = path.join(dir, 'lighthouse', 'reports');
+  if (!fs.existsSync(reportsRoot)) return [];
+  return fs.readdirSync(reportsRoot)
+    .filter((name) => fs.existsSync(path.join(reportsRoot, name, 'meta.json')))
+    .map((name) => readLighthouseReportMeta(path.join(reportsRoot, name), name));
 }
 
 function sessionMetaPath(id: string): string {
@@ -387,7 +415,7 @@ input:
 
 Output:
   One <session-stopped id=… path=…> block: the bundle manifest path plus
-  counts (shots, HAR entries, logs, measure snaps, motion recs, other). --json
+  counts (shots, HAR entries, logs, lighthouse reports, measure snaps, motion recs, mocks, other). --json
   mirrors the same fields.
 
 effects:
@@ -414,13 +442,10 @@ const VIEW_USAGE = `capture session view <session-id> [--filter <section>] — r
 
 input:
   <session-id>        A stopped session (from \`capture session list\`).
-  --filter <section>  Show only one section: shots, har, logs, measure,
-                      motion, or other. measure -> manifest snaps, motion ->
-                      manifest recs.
+  --filter <section>  Show only one section: shots, har, logs, lighthouse, measure, motion, mocks, or other. lighthouse -> manifest reports, measure -> manifest snaps, motion -> manifest recs.
 
 Output:
-  One <session id=… path=… [filter=…]> block: the manifest sections (shots,
-  har, logs, measure snaps, motion recs, other), or a single section under
+  One <session id=… path=… [filter=…]> block: the manifest sections (shots, har, logs, lighthouse reports, measure snaps, motion recs, mocks, other), or a single section under
   --filter. --json mirrors the same fields.
 
 effects:
@@ -1349,6 +1374,7 @@ function bundleRows(manifest: BundleManifest): FactLine[] {
     fact`shots: ${manifest.shots.length}`,
     manifest.har ? fact`har: ${manifest.har.entryCount} entries — ${manifest.har.path}` : fact`har: 0 entries`,
     fact`logs: ${manifest.logs.length}`,
+    fact`lighthouse reports: ${manifest.reports.length}`,
     fact`measure snaps: ${manifest.snaps.length}`,
     fact`motion recs: ${manifest.recs.length}`,
     fact`mocks: ${manifest.mocks?.length ?? 0}`,
@@ -1468,7 +1494,8 @@ async function stop(parsed: ParsedArgs): Promise<void> {
       const snaps = collectSnaps(session.dir);
       const recs = collectRecs(session.dir);
       const mocks = collectMocks(session.dir);
-      const knownDirs = new Set(['shots', 'logs', 'measure', 'motion', 'network', '.har', '.stop.lock', '.operations.lock']);
+      const reports = collectLighthouseReports(session.dir);
+      const knownDirs = new Set(['shots', 'logs', 'lighthouse', 'measure', 'motion', 'network', '.har', '.stop.lock', '.operations.lock']);
       const knownFiles = new Set(['.session.json', '.operations.json', 'har.json', 'bundle.json', 'bridge.sock']);
       const other = fs.readdirSync(session.dir)
         .filter(name => !knownDirs.has(name) && !knownFiles.has(name))
@@ -1483,6 +1510,7 @@ async function stop(parsed: ParsedArgs): Promise<void> {
         shots,
         har,
         logs,
+        reports,
         other,
         snaps,
         recs,
@@ -1585,6 +1613,8 @@ function sectionRows(manifest: BundleManifest, key: SectionKey): FactLine[] {
         : [];
     case 'logs':
       return manifest.logs.map((l) => fact`${l.name} — ${l.lines} lines — ${l.path}`);
+    case 'reports':
+      return manifest.reports.map((r) => fact`${r.id} — url ${r.url} — final URL ${r.finalUrl} — ${r.preset} — categories ${r.categories.join(',')} — ${r.path}`);
     case 'snaps':
       return manifest.snaps.map((s) =>
         fact`${s.id} — url ${s.url ?? '(none)'} — viewport ${s.viewport ?? '(none)'} — settled ${String(s.settled)} — ${s.path}`);
@@ -1657,7 +1687,7 @@ function view(parsed: ParsedArgs): void {
       emitResult({
         tag: 'error',
         attrs: { command: 'session view', code: 'invalid_filter' },
-        summary: fact`received: --filter ${parsed.filter}; expected one of: shots, har, logs, measure, motion, other.`,
+        summary: fact`received: --filter ${parsed.filter}; expected one of: shots, har, logs, lighthouse, measure, motion, mocks, other.`,
         followUp: text`Re-run \`capture session view <id> --filter <section>\` with a valid section.`,
       }, { json: parsed.json });
       process.exitCode = 1;
@@ -1674,7 +1704,7 @@ function view(parsed: ParsedArgs): void {
     return;
   }
 
-  const keys: SectionKey[] = ['shots', 'har', 'logs', 'snaps', 'recs', 'mocks', 'other'];
+  const keys: SectionKey[] = ['shots', 'har', 'logs', 'reports', 'snaps', 'recs', 'mocks', 'other'];
   const sections = keys.map((key) => {
     const rows = sectionRows(manifest, key);
     return lineList([

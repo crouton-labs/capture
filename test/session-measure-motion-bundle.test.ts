@@ -171,13 +171,13 @@ test('session view --filter measure|motion map to manifest.snaps/manifest.recs; 
       assert.ok(out.logs.join('').startsWith('<session'), section);
     }
 
-    // Retired/invalid filter names are a structured error listing all six valid.
+    // Retired/invalid filter names are a structured error listing all seven valid.
     for (const bad of ['a11y', 'screenshots']) {
       const out = captureStdout();
       try { await sessionMain(sessionArgs(['view', id], { filter: bad }), []); } finally { out.restore(); }
       const badText = out.logs.join('');
       assert.ok(badText.includes('invalid_filter'), badText);
-      assert.ok(badText.includes('shots, har, logs, measure, motion, other'), badText);
+      assert.ok(badText.includes('shots, har, logs, lighthouse, measure, motion, mocks, other'), badText);
       process.exitCode = 0;
     }
   } finally {

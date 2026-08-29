@@ -14667,7 +14667,7 @@ function isBundleManifest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record5 = value;
   const validHar = record5.har === null || !!record5.har && typeof record5.har === "object" && !Array.isArray(record5.har) && typeof record5.har.id === "string" && typeof record5.har.path === "string" && typeof record5.har.entryCount === "number";
-  return typeof record5.id === "string" && typeof record5.startedAt === "string" && typeof record5.stoppedAt === "string" && typeof record5.duration === "number" && (record5.url === null || typeof record5.url === "string") && Array.isArray(record5.shots) && record5.shots.every(isNamedPathEntry) && validHar && Array.isArray(record5.logs) && record5.logs.every((item) => isNamedPathEntry(item) && typeof item.lines === "number") && Array.isArray(record5.other) && record5.other.every(isNamedPathEntry) && Array.isArray(record5.snaps) && record5.snaps.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string") && Array.isArray(record5.recs) && record5.recs.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string") && (record5.mocks === void 0 || Array.isArray(record5.mocks) && record5.mocks.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string" && typeof item.completion === "string")) && Array.isArray(record5.pendingViewportRestorations);
+  return typeof record5.id === "string" && typeof record5.startedAt === "string" && typeof record5.stoppedAt === "string" && typeof record5.duration === "number" && (record5.url === null || typeof record5.url === "string") && Array.isArray(record5.shots) && record5.shots.every(isNamedPathEntry) && validHar && Array.isArray(record5.logs) && record5.logs.every((item) => isNamedPathEntry(item) && typeof item.lines === "number") && Array.isArray(record5.reports) && record5.reports.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string" && typeof item.url === "string" && typeof item.finalUrl === "string" && (item.preset === "mobile" || item.preset === "desktop") && Array.isArray(item.categories) && item.categories.every((category) => typeof category === "string") && (item.lighthouse === null || typeof item.lighthouse === "string") && (item.axe === null || typeof item.axe === "string")) && Array.isArray(record5.other) && record5.other.every(isNamedPathEntry) && Array.isArray(record5.snaps) && record5.snaps.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string") && Array.isArray(record5.recs) && record5.recs.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string") && (record5.mocks === void 0 || Array.isArray(record5.mocks) && record5.mocks.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string" && typeof item.completion === "string")) && Array.isArray(record5.pendingViewportRestorations);
 }
 function readBundleManifest(bundlePath) {
   const raw = readPrivateFile(bundlePath).toString("utf-8");
@@ -14738,6 +14738,18 @@ function collectMocks(dir) {
     const meta = JSON.parse(fs12.readFileSync(metaPath, "utf8"));
     return [{ id: typeof meta.id === "string" ? meta.id : name, path: mockDir, completion: typeof meta.completion === "string" ? meta.completion : "partial", rules: typeof meta.rules === "number" ? meta.rules : 0, paused: typeof meta.paused === "number" ? meta.paused : 0, matched: typeof meta.matched === "number" ? meta.matched : 0, releasedUnmatched: typeof meta.releasedUnmatched === "number" ? meta.releasedUnmatched : 0 }];
   });
+}
+function readLighthouseReportMeta(reportDir, fallbackId) {
+  const meta = JSON.parse(fs12.readFileSync(path16.join(reportDir, "meta.json"), "utf-8"));
+  if (typeof meta.url !== "string" || typeof meta.finalUrl !== "string" || meta.preset !== "mobile" && meta.preset !== "desktop" || !Array.isArray(meta.categories) || !meta.categories.every((category) => typeof category === "string") || meta.lighthouse !== null && typeof meta.lighthouse !== "string" || meta.axe !== null && typeof meta.axe !== "string") {
+    throw captureError("artifact", "invalid_lighthouse_report_metadata", `Lighthouse report metadata at ${reportDir} is invalid.`);
+  }
+  return { id: typeof meta.id === "string" ? meta.id : fallbackId, path: reportDir, url: meta.url, finalUrl: meta.finalUrl, preset: meta.preset, categories: meta.categories, lighthouse: meta.lighthouse, axe: meta.axe };
+}
+function collectLighthouseReports(dir) {
+  const reportsRoot = path16.join(dir, "lighthouse", "reports");
+  if (!fs12.existsSync(reportsRoot)) return [];
+  return fs12.readdirSync(reportsRoot).filter((name) => fs12.existsSync(path16.join(reportsRoot, name, "meta.json"))).map((name) => readLighthouseReportMeta(path16.join(reportsRoot, name), name));
 }
 function sessionMetaPath2(id) {
   return path16.join(sessionDir(id), ".session.json");
@@ -15387,6 +15399,7 @@ function bundleRows(manifest) {
     fact`shots: ${manifest.shots.length}`,
     manifest.har ? fact`har: ${manifest.har.entryCount} entries — ${manifest.har.path}` : fact`har: 0 entries`,
     fact`logs: ${manifest.logs.length}`,
+    fact`lighthouse reports: ${manifest.reports.length}`,
     fact`measure snaps: ${manifest.snaps.length}`,
     fact`motion recs: ${manifest.recs.length}`,
     fact`mocks: ${manifest.mocks?.length ?? 0}`,
@@ -15484,7 +15497,8 @@ async function stop(parsed) {
       const snaps = collectSnaps(session.dir);
       const recs = collectRecs(session.dir);
       const mocks = collectMocks(session.dir);
-      const knownDirs = /* @__PURE__ */ new Set(["shots", "logs", "measure", "motion", "network", ".har", ".stop.lock", ".operations.lock"]);
+      const reports = collectLighthouseReports(session.dir);
+      const knownDirs = /* @__PURE__ */ new Set(["shots", "logs", "lighthouse", "measure", "motion", "network", ".har", ".stop.lock", ".operations.lock"]);
       const knownFiles = /* @__PURE__ */ new Set([".session.json", ".operations.json", "har.json", "bundle.json", "bridge.sock"]);
       const other = fs12.readdirSync(session.dir).filter((name) => !knownDirs.has(name) && !knownFiles.has(name)).map((name) => ({ name, path: path16.join(session.dir, name) }));
       const manifest = {
@@ -15496,6 +15510,7 @@ async function stop(parsed) {
         shots,
         har: har2,
         logs,
+        reports,
         other,
         snaps,
         recs,
@@ -15583,6 +15598,8 @@ function sectionRows(manifest, key) {
       return manifest.har ? [fact`har.json — ${manifest.har.entryCount} entries — ${manifest.har.path}`] : [];
     case "logs":
       return manifest.logs.map((l) => fact`${l.name} — ${l.lines} lines — ${l.path}`);
+    case "reports":
+      return manifest.reports.map((r) => fact`${r.id} — url ${r.url} — final URL ${r.finalUrl} — ${r.preset} — categories ${r.categories.join(",")} — ${r.path}`);
     case "snaps":
       return manifest.snaps.map((s) => fact`${s.id} — url ${s.url ?? "(none)"} — viewport ${s.viewport ?? "(none)"} — settled ${String(s.settled)} — ${s.path}`);
     case "recs":
@@ -15646,7 +15663,7 @@ function view(parsed) {
       emitResult({
         tag: "error",
         attrs: { command: "session view", code: "invalid_filter" },
-        summary: fact`received: --filter ${parsed.filter}; expected one of: shots, har, logs, measure, motion, other.`,
+        summary: fact`received: --filter ${parsed.filter}; expected one of: shots, har, logs, lighthouse, measure, motion, mocks, other.`,
         followUp: text`Re-run \`capture session view <id> --filter <section>\` with a valid section.`
       }, { json: parsed.json });
       process.exitCode = 1;
@@ -15661,7 +15678,7 @@ function view(parsed) {
     }, { json: parsed.json });
     return;
   }
-  const keys = ["shots", "har", "logs", "snaps", "recs", "mocks", "other"];
+  const keys = ["shots", "har", "logs", "reports", "snaps", "recs", "mocks", "other"];
   const sections = keys.map((key) => {
     const rows = sectionRows(manifest, key);
     return lineList([
@@ -15726,6 +15743,7 @@ var init_commands = __esm({
       shots: "shots",
       har: "har",
       logs: "logs",
+      lighthouse: "reports",
       measure: "snaps",
       motion: "recs",
       mocks: "mocks",
@@ -15735,6 +15753,7 @@ var init_commands = __esm({
       shots: "shots",
       har: "har",
       logs: "logs",
+      reports: "lighthouse",
       snaps: "measure",
       recs: "motion",
       mocks: "mocks",
@@ -15780,7 +15799,7 @@ input:
 
 Output:
   One <session-stopped id=\u2026 path=\u2026> block: the bundle manifest path plus
-  counts (shots, HAR entries, logs, measure snaps, motion recs, other). --json
+  counts (shots, HAR entries, logs, lighthouse reports, measure snaps, motion recs, mocks, other). --json
   mirrors the same fields.
 
 effects:
@@ -15805,13 +15824,10 @@ effects:
 
 input:
   <session-id>        A stopped session (from \`capture session list\`).
-  --filter <section>  Show only one section: shots, har, logs, measure,
-                      motion, or other. measure -> manifest snaps, motion ->
-                      manifest recs.
+  --filter <section>  Show only one section: shots, har, logs, lighthouse, measure, motion, mocks, or other. lighthouse -> manifest reports, measure -> manifest snaps, motion -> manifest recs.
 
 Output:
-  One <session id=\u2026 path=\u2026 [filter=\u2026]> block: the manifest sections (shots,
-  har, logs, measure snaps, motion recs, other), or a single section under
+  One <session id=\u2026 path=\u2026 [filter=\u2026]> block: the manifest sections (shots, har, logs, lighthouse reports, measure snaps, motion recs, mocks, other), or a single section under
   --filter. --json mirrors the same fields.
 
 effects:
@@ -230552,8 +230568,18 @@ var init_core = __esm({
           if (observed.status === "absent" || observed.status === "found" && !sameBirth(observed.identity, reservation.birth)) this.reservations.delete(token2);
         }
       }
-      refuseClaims(claims) {
+      refuseClaims(claims, exclusive = false) {
         this.releaseDeadReservations();
+        const exclusiveReservation = [...this.reservations.values()].find((reservation) => reservation.exclusive);
+        if (exclusiveReservation) throw new Error(`Target is held exclusively by reservation ${exclusiveReservation.holderLabel}.`);
+        if (exclusive) {
+          const collector = this.live.values().next().value;
+          if (collector) throw new Error(`Target has live collector ${collector.row.id}.`);
+          const reservation = this.reservations.values().next().value;
+          if (reservation) throw new Error(`Target has reservation ${reservation.holderLabel}.`);
+          const starting = this.starting.keys().next().value;
+          if (starting) throw new Error(`Target has starting collector ${starting}.`);
+        }
         for (const claim of claims) {
           const collector = [...this.live.values()].find((value) => value.row.claims.includes(claim));
           if (collector) throw new Error(`Claim "${claim}" is held by collector ${collector.row.id}.`);
@@ -230563,9 +230589,9 @@ var init_core = __esm({
           if (starting) throw new Error(`Claim "${claim}" is held by collector ${starting[0]}.`);
         }
       }
-      reserve(claims, holderLabel, pid, birth) {
-        this.refuseClaims(claims);
-        const reservation = { token: crypto9.randomBytes(18).toString("hex"), claims: [...new Set(claims)], holderLabel, pid, birth, reservedAt: (/* @__PURE__ */ new Date()).toISOString() };
+      reserve(claims, holderLabel, pid, birth, exclusive = false) {
+        this.refuseClaims(claims, exclusive);
+        const reservation = { token: crypto9.randomBytes(18).toString("hex"), claims: [...new Set(claims)], ...exclusive ? { exclusive: true } : {}, holderLabel, pid, birth, reservedAt: (/* @__PURE__ */ new Date()).toISOString() };
         this.reservations.set(reservation.token, reservation);
         this.changed();
         return reservation;
@@ -230785,7 +230811,7 @@ async function runCollectorHost(options) {
           return;
         case "claim-reserve": {
           const claims = Array.isArray(request.claims) ? request.claims : [];
-          const reservation = host.reserve(claims, String(request.holderLabel ?? "external command"), Number(request.pid), request.birth);
+          const reservation = host.reserve(claims, String(request.holderLabel ?? "external command"), Number(request.pid), request.birth, request.exclusive === true);
           answer({ ok: true, reservation });
           return;
         }
@@ -265107,9 +265133,10 @@ function categoriesFrom(report) {
   return Object.entries(report.categories ?? {}).map(([categoryId, category]) => {
     const refs = category.auditRefs ?? [];
     const categoryAudits = refs.map((ref) => audits[ref.id ?? ""]).filter((audit) => audit !== void 0);
-    const failingAudits = categoryAudits.filter((audit) => audit.score === 0).map((audit) => ({
+    const failingAudits = categoryAudits.filter((audit) => typeof audit.score === "number" && audit.score < 1).map((audit) => ({
       id: audit.id ?? "",
       title: audit.title ?? "",
+      score: audit.score,
       items: (audit.details?.items ?? []).map(nodeItem).filter((item) => item !== void 0)
     }));
     return {
@@ -265149,10 +265176,6 @@ async function reserveTracing(port) {
     if (scanned.handle.targetId !== session.targetId) {
       throw captureError("precondition", "collector_host_target_mismatch", "A collector host is bound to a different session target. Stop the session before running Lighthouse.");
     }
-    const collector = scanned.handle.collectors[0];
-    if (collector) {
-      claimFailure(`Lighthouse: tracing is held by ${collector.kind} collector ${collector.id} on target tab ${session.targetId}.`);
-    }
     const birth = processPidBirthProvider.read(process.pid);
     if (birth.status !== "found") {
       throw captureError("precondition", "collector_host_unavailable", "Lighthouse could not establish its process identity to reserve the tracing claim.");
@@ -265161,25 +265184,51 @@ async function reserveTracing(port) {
       type: "claim-reserve",
       nonce: scanned.handle.nonce,
       claims: ["tracing"],
+      exclusive: true,
       holderLabel: "lighthouse",
       pid: process.pid,
       birth: birth.identity
     });
     if (!response.ok) {
       const message = response.error ?? "collector host refused the tracing reservation.";
-      if (message.startsWith("Claim ")) claimFailure(`Lighthouse could not reserve the browser-global tracing claim: ${message}`);
-      throw captureError("precondition", "collector_host_reservation_failed", `Lighthouse could not reserve the browser-global tracing claim: ${message}`);
+      if (message.startsWith("Claim ") || message.startsWith("Target ")) claimFailure(`Lighthouse could not reserve the target tab and browser-global tracing claim: ${message}`);
+      throw captureError("precondition", "collector_host_reservation_failed", `Lighthouse could not reserve the target tab and browser-global tracing claim: ${message}`);
     }
     const reservation = response.reservation;
     if (!reservation || typeof reservation.token !== "string") {
       throw captureError("internal", "collector_host_reservation_malformed", "Collector host returned a malformed tracing reservation.");
     }
-    return { socketPath: scanned.handle.socketPath, nonce: scanned.handle.nonce, token: reservation.token };
+    return { socketPath: scanned.handle.socketPath, nonce: scanned.handle.nonce, token: reservation.token, targetId: session.targetId };
   });
 }
 async function releaseTracing(reservation) {
   const response = await sendHostRequest(reservation.socketPath, { type: "claim-release", nonce: reservation.nonce, token: reservation.token });
   if (!response.ok) throw captureError("cleanup", "tracing_claim_release_failed", `Lighthouse finished but its tracing reservation could not be released: ${response.error ?? "collector host refused the release."}`);
+}
+async function pageForSessionTarget(port, targetId) {
+  const lighthouseRequire = (0, import_node_module.createRequire)(require.resolve("lighthouse"));
+  const puppeteer = lighthouseRequire("puppeteer-core");
+  const browser = await puppeteer.connect({ browserURL: `http://localhost:${port}`, defaultViewport: null });
+  try {
+    for (const page of await browser.pages()) {
+      const session = await page.target().createCDPSession();
+      try {
+        const result = await session.send("Target.getTargetInfo");
+        if (result.targetInfo?.targetId === targetId) return { browser, page };
+      } finally {
+        await session.detach();
+      }
+    }
+  } catch (error3) {
+    try {
+      await browser.disconnect();
+    } catch (disconnectError) {
+      throw new AggregateError([error3, disconnectError], "Lighthouse could not resolve the active session target or disconnect its browser client.");
+    }
+    throw error3;
+  }
+  await browser.disconnect();
+  throw captureError("precondition", "lighthouse_target_unavailable", `Lighthouse could not find the active session target ${targetId} on CDP port ${port}.`);
 }
 function reportDirectory() {
   const id = `report-${Date.now().toString(36)}-${crypto14.randomBytes(6).toString("hex")}`;
@@ -265216,7 +265265,7 @@ function categoryJson(category) {
     failingAudits: category.failingAudits.map((audit) => ({
       id: audit.id,
       title: audit.title,
-      score: 0,
+      score: audit.score,
       items: audit.items.map((item) => ({
         path: full(item.path),
         selector: full(item.selector),
@@ -265230,7 +265279,7 @@ function categoryJson(category) {
 function categoryProse(category, limit) {
   const rows = [fact`${category.id}: score ${category.score ?? "not-scored"}; ${category.auditsPassed} passed audit(s), ${category.auditsFailed} failed audit(s).`];
   for (const audit of category.failingAudits) {
-    rows.push(line(text`  `, fact`${audit.id} — ${audit.title}`));
+    rows.push(line(text`  `, fact`${audit.id} — ${audit.title}; score ${audit.score}`));
     const displayed = audit.items.slice(0, limit);
     for (const item of displayed) {
       rows.push(line(text`    path: `, fact`${full(item.path)}`));
@@ -265290,34 +265339,52 @@ async function cmdLighthouse(parsed, _args) {
   const port = parsed.port ?? await detectCdpPort();
   const reservation = await reserveTracing(port);
   let run;
+  let browser;
   let primary;
   try {
+    const target = reservation && await pageForSessionTarget(port, reservation.targetId);
+    browser = target?.browser;
     run = await lighthouseModule.default(url, {
       port,
       output: ["json", "html"],
       onlyCategories: categories,
       logLevel: "error"
-    }, preset === "desktop" ? lighthouseModule.desktopConfig : void 0);
+    }, preset === "desktop" ? lighthouseModule.desktopConfig : void 0, target?.page);
   } catch (error3) {
     primary = captureError("world", "lighthouse_failed", `Lighthouse could not run: ${error3 instanceof Error ? error3.message : String(error3)}`, error3);
   }
-  let releaseFailure;
+  const cleanupFailures = [];
+  if (browser) {
+    try {
+      await browser.disconnect();
+    } catch (error3) {
+      cleanupFailures.push(captureError("cleanup", "lighthouse_browser_disconnect_failed", `Lighthouse finished but its browser client could not be disconnected: ${error3 instanceof Error ? error3.message : String(error3)}`, error3));
+    }
+  }
   if (reservation) {
     try {
       await releaseTracing(reservation);
     } catch (error3) {
-      releaseFailure = error3;
+      cleanupFailures.push(error3);
     }
   }
-  if (primary && releaseFailure) throw new AggregateError([primary, releaseFailure], "Lighthouse failed and its tracing reservation could not be released.");
+  if (primary && cleanupFailures.length > 0) throw new AggregateError([primary, ...cleanupFailures], "Lighthouse failed and cleanup could not complete.");
   if (primary) throw primary;
-  if (releaseFailure) throw releaseFailure;
+  if (cleanupFailures.length === 1) throw cleanupFailures[0];
+  if (cleanupFailures.length > 1) throw new AggregateError(cleanupFailures, "Lighthouse completed but cleanup could not complete.");
   if (!run) throw captureError("world", "lighthouse_no_report", "Lighthouse completed without a report.");
   const reports = reportStrings(run.report);
   const artifact = reportDirectory();
-  if (parsed.out) writeHtml(parsed.out, reports.html);
-  writePrivateFile(path44.join(artifact.dir, "report.json"), reports.json);
-  if (parsed.out) writePrivateFile(path44.join(artifact.dir, "report.html"), reports.html);
+  const reportPath = path44.join(artifact.dir, "report.json");
+  writePrivateFile(reportPath, reports.json);
+  if (parsed.out) {
+    writePrivateFile(path44.join(artifact.dir, "report.html"), reports.html);
+    try {
+      writeHtml(parsed.out, reports.html);
+    } catch (error3) {
+      throw captureError("world", "lighthouse_html_write_failed", `Lighthouse report JSON was stored at ${reportPath}, but its HTML could not be written to ${parsed.out}: ${error3 instanceof Error ? error3.message : String(error3)}`, error3);
+    }
+  }
   const report = run.lhr;
   writeJsonPrivate(path44.join(artifact.dir, "meta.json"), {
     id: artifact.id,
@@ -265339,12 +265406,13 @@ async function cmdLighthouse(parsed, _args) {
     limit: parsed.limit ?? 25
   }), { json: parsed.json });
 }
-var crypto14, fs38, path44, COMMAND_BLOCK10, HELP14, FULL_DATA_MAX;
+var crypto14, fs38, path44, import_node_module, COMMAND_BLOCK10, HELP14, FULL_DATA_MAX;
 var init_lighthouse = __esm({
   "src/cdp/commands/lighthouse.ts"() {
     crypto14 = __toESM(require("node:crypto"));
     fs38 = __toESM(require("node:fs"));
     path44 = __toESM(require("node:path"));
+    import_node_module = require("node:module");
     init_detect();
     init_errors();
     init_artifacts();

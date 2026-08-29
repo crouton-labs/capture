@@ -1,6 +1,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createRequire } from 'node:module';
 import { detectCdpPort } from '../detect.js';
 import { captureError } from '../../errors.js';
 import { type ParsedArgs } from '../types.js';
@@ -40,6 +41,7 @@ type NodeItem = {
 type FailingAudit = {
   readonly id: string;
   readonly title: string;
+  readonly score: number;
   readonly items: readonly NodeItem[];
 };
 
@@ -104,10 +106,11 @@ function categoriesFrom(report: LighthouseReport): readonly Category[] {
     const refs = category.auditRefs ?? [];
     const categoryAudits = refs.map(ref => audits[ref.id ?? '']).filter((audit): audit is NonNullable<typeof audit> => audit !== undefined);
     const failingAudits = categoryAudits
-      .filter(audit => audit.score === 0)
+      .filter((audit): audit is typeof audit & { score: number } => typeof audit.score === 'number' && audit.score < 1)
       .map(audit => ({
         id: audit.id ?? '',
         title: audit.title ?? '',
+        score: audit.score,
         items: (audit.details?.items ?? []).map(nodeItem).filter((item): item is NodeItem => item !== undefined),
       }));
     return {
@@ -120,7 +123,14 @@ function categoriesFrom(report: LighthouseReport): readonly Category[] {
   });
 }
 
-type TracingReservation = { socketPath: string; nonce: string; token: string };
+type TracingReservation = { socketPath: string; nonce: string; token: string; targetId: string };
+
+type LighthousePage = NonNullable<Parameters<typeof import('lighthouse').default>[3]>;
+
+type PuppeteerSession = { send(method: string, params?: Record<string, unknown>): Promise<unknown>; detach(): Promise<void> };
+type PuppeteerPage = { target(): { createCDPSession(): Promise<PuppeteerSession> } };
+type PuppeteerBrowser = { pages(): Promise<PuppeteerPage[]>; disconnect(): Promise<void> };
+type PuppeteerModule = { connect(options: { browserURL: string; defaultViewport: null }): Promise<PuppeteerBrowser> };
 
 function claimFailure(message: string): never {
   throw captureError('precondition', 'claim_held', `${message} Run \`capture session collectors\` to see live collectors, stop the holder, then re-issue.`);
@@ -151,33 +161,55 @@ async function reserveTracing(port: number): Promise<TracingReservation | undefi
     if (scanned.handle.targetId !== session.targetId) {
       throw captureError('precondition', 'collector_host_target_mismatch', 'A collector host is bound to a different session target. Stop the session before running Lighthouse.');
     }
-    const collector = scanned.handle.collectors[0];
-    if (collector) {
-      claimFailure(`Lighthouse: tracing is held by ${collector.kind} collector ${collector.id} on target tab ${session.targetId}.`);
-    }
     const birth = processPidBirthProvider.read(process.pid);
     if (birth.status !== 'found') {
       throw captureError('precondition', 'collector_host_unavailable', 'Lighthouse could not establish its process identity to reserve the tracing claim.');
     }
     const response = await sendHostRequest(scanned.handle.socketPath, {
-      type: 'claim-reserve', nonce: scanned.handle.nonce, claims: ['tracing'], holderLabel: 'lighthouse', pid: process.pid, birth: birth.identity,
+      type: 'claim-reserve', nonce: scanned.handle.nonce, claims: ['tracing'], exclusive: true, holderLabel: 'lighthouse', pid: process.pid, birth: birth.identity,
     });
     if (!response.ok) {
       const message = response.error ?? 'collector host refused the tracing reservation.';
-      if (message.startsWith('Claim ')) claimFailure(`Lighthouse could not reserve the browser-global tracing claim: ${message}`);
-      throw captureError('precondition', 'collector_host_reservation_failed', `Lighthouse could not reserve the browser-global tracing claim: ${message}`);
+      if (message.startsWith('Claim ') || message.startsWith('Target ')) claimFailure(`Lighthouse could not reserve the target tab and browser-global tracing claim: ${message}`);
+      throw captureError('precondition', 'collector_host_reservation_failed', `Lighthouse could not reserve the target tab and browser-global tracing claim: ${message}`);
     }
     const reservation = response.reservation as { token?: unknown } | undefined;
     if (!reservation || typeof reservation.token !== 'string') {
       throw captureError('internal', 'collector_host_reservation_malformed', 'Collector host returned a malformed tracing reservation.');
     }
-    return { socketPath: scanned.handle.socketPath, nonce: scanned.handle.nonce, token: reservation.token };
+    return { socketPath: scanned.handle.socketPath, nonce: scanned.handle.nonce, token: reservation.token, targetId: session.targetId };
   });
 }
 
 async function releaseTracing(reservation: TracingReservation): Promise<void> {
   const response = await sendHostRequest(reservation.socketPath, { type: 'claim-release', nonce: reservation.nonce, token: reservation.token });
   if (!response.ok) throw captureError('cleanup', 'tracing_claim_release_failed', `Lighthouse finished but its tracing reservation could not be released: ${response.error ?? 'collector host refused the release.'}`);
+}
+
+async function pageForSessionTarget(port: number, targetId: string): Promise<{ browser: PuppeteerBrowser; page: LighthousePage }> {
+  const lighthouseRequire = createRequire(require.resolve('lighthouse'));
+  const puppeteer = lighthouseRequire('puppeteer-core') as PuppeteerModule;
+  const browser = await puppeteer.connect({ browserURL: `http://localhost:${port}`, defaultViewport: null });
+  try {
+    for (const page of await browser.pages()) {
+      const session = await page.target().createCDPSession();
+      try {
+        const result = await session.send('Target.getTargetInfo') as { targetInfo?: { targetId?: unknown } };
+        if (result.targetInfo?.targetId === targetId) return { browser, page: page as LighthousePage };
+      } finally {
+        await session.detach();
+      }
+    }
+  } catch (error) {
+    try {
+      await browser.disconnect();
+    } catch (disconnectError) {
+      throw new AggregateError([error, disconnectError], 'Lighthouse could not resolve the active session target or disconnect its browser client.');
+    }
+    throw error;
+  }
+  await browser.disconnect();
+  throw captureError('precondition', 'lighthouse_target_unavailable', `Lighthouse could not find the active session target ${targetId} on CDP port ${port}.`);
 }
 
 function reportDirectory(): { id: string; dir: string } {
@@ -221,7 +253,7 @@ function categoryJson(category: Category): JsonValue {
     failingAudits: category.failingAudits.map(audit => ({
       id: audit.id,
       title: audit.title,
-      score: 0,
+      score: audit.score,
       items: audit.items.map(item => ({
         path: full(item.path),
         selector: full(item.selector),
@@ -236,7 +268,7 @@ function categoryJson(category: Category): JsonValue {
 function categoryProse(category: Category, limit: number): FactLine {
   const rows: FactLine[] = [fact`${category.id}: score ${category.score ?? 'not-scored'}; ${category.auditsPassed} passed audit(s), ${category.auditsFailed} failed audit(s).`];
   for (const audit of category.failingAudits) {
-    rows.push(line(text`  `, fact`${audit.id} — ${audit.title}`));
+    rows.push(line(text`  `, fact`${audit.id} — ${audit.title}; score ${audit.score}`));
     const displayed = audit.items.slice(0, limit);
     for (const item of displayed) {
       rows.push(line(text`    path: `, fact`${full(item.path)}`));
@@ -309,31 +341,53 @@ export async function cmdLighthouse(parsed: ParsedArgs, _args: string[]): Promis
   const port = parsed.port ?? await detectCdpPort();
   const reservation = await reserveTracing(port);
   let run: Awaited<ReturnType<typeof lighthouseModule.default>> | undefined;
+  let browser: PuppeteerBrowser | undefined;
   let primary: unknown;
   try {
+    const target = reservation && await pageForSessionTarget(port, reservation.targetId);
+    browser = target?.browser;
     run = await lighthouseModule.default(url, {
       port,
       output: ['json', 'html'],
       onlyCategories: categories,
       logLevel: 'error',
-    }, preset === 'desktop' ? lighthouseModule.desktopConfig : undefined);
+    }, preset === 'desktop' ? lighthouseModule.desktopConfig : undefined, target?.page);
   } catch (error) {
     primary = captureError('world', 'lighthouse_failed', `Lighthouse could not run: ${error instanceof Error ? error.message : String(error)}`, error);
   }
-  let releaseFailure: unknown;
-  if (reservation) {
-    try { await releaseTracing(reservation); } catch (error) { releaseFailure = error; }
+  const cleanupFailures: unknown[] = [];
+  if (browser) {
+    try {
+      await browser.disconnect();
+    } catch (error) {
+      cleanupFailures.push(captureError('cleanup', 'lighthouse_browser_disconnect_failed', `Lighthouse finished but its browser client could not be disconnected: ${error instanceof Error ? error.message : String(error)}`, error));
+    }
   }
-  if (primary && releaseFailure) throw new AggregateError([primary, releaseFailure], 'Lighthouse failed and its tracing reservation could not be released.');
+  if (reservation) {
+    try {
+      await releaseTracing(reservation);
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+  }
+  if (primary && cleanupFailures.length > 0) throw new AggregateError([primary, ...cleanupFailures], 'Lighthouse failed and cleanup could not complete.');
   if (primary) throw primary;
-  if (releaseFailure) throw releaseFailure;
+  if (cleanupFailures.length === 1) throw cleanupFailures[0];
+  if (cleanupFailures.length > 1) throw new AggregateError(cleanupFailures, 'Lighthouse completed but cleanup could not complete.');
   if (!run) throw captureError('world', 'lighthouse_no_report', 'Lighthouse completed without a report.');
 
   const reports = reportStrings(run.report);
   const artifact = reportDirectory();
-  if (parsed.out) writeHtml(parsed.out, reports.html);
-  writePrivateFile(path.join(artifact.dir, 'report.json'), reports.json);
-  if (parsed.out) writePrivateFile(path.join(artifact.dir, 'report.html'), reports.html);
+  const reportPath = path.join(artifact.dir, 'report.json');
+  writePrivateFile(reportPath, reports.json);
+  if (parsed.out) {
+    writePrivateFile(path.join(artifact.dir, 'report.html'), reports.html);
+    try {
+      writeHtml(parsed.out, reports.html);
+    } catch (error) {
+      throw captureError('world', 'lighthouse_html_write_failed', `Lighthouse report JSON was stored at ${reportPath}, but its HTML could not be written to ${parsed.out}: ${error instanceof Error ? error.message : String(error)}`, error);
+    }
+  }
   const report = run.lhr as unknown as LighthouseReport;
   writeJsonPrivate(path.join(artifact.dir, 'meta.json'), {
     id: artifact.id,

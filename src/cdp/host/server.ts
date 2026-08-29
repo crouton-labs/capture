@@ -57,7 +57,7 @@ export async function runCollectorHost(options: RunCollectorHostOptions): Promis
         case 'host-status': answer({ ok: true, ...host.snapshot() }); return;
         case 'claim-reserve': {
           const claims = Array.isArray(request.claims) ? request.claims as never : [];
-          const reservation = host.reserve(claims, String(request.holderLabel ?? 'external command'), Number(request.pid), request.birth as never);
+          const reservation = host.reserve(claims, String(request.holderLabel ?? 'external command'), Number(request.pid), request.birth as never, request.exclusive === true);
           answer({ ok: true, reservation }); return;
         }
         case 'claim-release': host.releaseReservation(String(request.token ?? '')); answer({ ok: true }); return;

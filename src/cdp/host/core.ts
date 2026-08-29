@@ -42,8 +42,18 @@ export class CollectorHost {
     }
   }
 
-  private refuseClaims(claims: readonly CdpClaim[]): void {
+  private refuseClaims(claims: readonly CdpClaim[], exclusive = false): void {
     this.releaseDeadReservations();
+    const exclusiveReservation = [...this.reservations.values()].find(reservation => reservation.exclusive);
+    if (exclusiveReservation) throw new Error(`Target is held exclusively by reservation ${exclusiveReservation.holderLabel}.`);
+    if (exclusive) {
+      const collector = this.live.values().next().value as LiveCollector | undefined;
+      if (collector) throw new Error(`Target has live collector ${collector.row.id}.`);
+      const reservation = this.reservations.values().next().value as ClaimReservation | undefined;
+      if (reservation) throw new Error(`Target has reservation ${reservation.holderLabel}.`);
+      const starting = this.starting.keys().next().value as string | undefined;
+      if (starting) throw new Error(`Target has starting collector ${starting}.`);
+    }
     for (const claim of claims) {
       const collector = [...this.live.values()].find(value => value.row.claims.includes(claim));
       if (collector) throw new Error(`Claim "${claim}" is held by collector ${collector.row.id}.`);
@@ -54,9 +64,9 @@ export class CollectorHost {
     }
   }
 
-  reserve(claims: readonly CdpClaim[], holderLabel: string, pid: number, birth: PidBirth): ClaimReservation {
-    this.refuseClaims(claims);
-    const reservation: ClaimReservation = { token: crypto.randomBytes(18).toString('hex'), claims: [...new Set(claims)], holderLabel, pid, birth, reservedAt: new Date().toISOString() };
+  reserve(claims: readonly CdpClaim[], holderLabel: string, pid: number, birth: PidBirth, exclusive = false): ClaimReservation {
+    this.refuseClaims(claims, exclusive);
+    const reservation: ClaimReservation = { token: crypto.randomBytes(18).toString('hex'), claims: [...new Set(claims)], ...(exclusive ? { exclusive: true } : {}), holderLabel, pid, birth, reservedAt: new Date().toISOString() };
     this.reservations.set(reservation.token, reservation);
     this.changed();
     return reservation;
