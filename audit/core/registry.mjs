@@ -7,7 +7,7 @@ function paths(id) { return { fixtureDir: join(auditRoot, "fixtures", id), oracl
 export const CASES = [
   { id: "case-a", opaqueId: "r7-atlas", revision: "a.1", status: "built", ...paths("case-a") },
   { id: "case-b", opaqueId: "n4-ember", revision: "b.1", status: "built", ...paths("case-b") },
-  { id: "case-c", opaqueId: "k9-lumen", revision: "c.2", status: "built", ...paths("case-c") },
+  { id: "case-c", opaqueId: "k9-lumen", revision: "c.3", status: "built", ...paths("case-c") },
   { id: "case-d", opaqueId: "v2-harbor", revision: "d.1", status: "built", ...paths("case-d") },
   { id: "case-e", opaqueId: "m6-orbit", revision: "e.1", status: "built", ...paths("case-e") },
 ];
