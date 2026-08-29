@@ -2,7 +2,7 @@ import { performance } from 'node:perf_hooks';
 import type { CDPClient } from '../../client.js';
 import type { Collector, CollectorContext, DrainCause, DrainOutcome } from '../collector.js';
 
-const TRACE_CATEGORIES = 'devtools.timeline,disabled-by-default-devtools.timeline,disabled-by-default-devtools.timeline.frame,loading,blink.user_timing';
+const TRACE_CATEGORIES = 'devtools.timeline,disabled-by-default-devtools.timeline,disabled-by-default-devtools.timeline.frame,disabled-by-default-devtools.timeline.stack,loading,blink.user_timing';
 
 interface TraceEventParams { value?: unknown; }
 

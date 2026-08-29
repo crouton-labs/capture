@@ -14192,7 +14192,7 @@ var import_node_perf_hooks, TRACE_CATEGORIES2, TraceCollector;
 var init_trace = __esm({
   "src/cdp/host/collectors/trace.ts"() {
     import_node_perf_hooks = require("node:perf_hooks");
-    TRACE_CATEGORIES2 = "devtools.timeline,disabled-by-default-devtools.timeline,disabled-by-default-devtools.timeline.frame,loading,blink.user_timing";
+    TRACE_CATEGORIES2 = "devtools.timeline,disabled-by-default-devtools.timeline,disabled-by-default-devtools.timeline.frame,disabled-by-default-devtools.timeline.stack,loading,blink.user_timing";
     TraceCollector = class {
       kind = "trace";
       claims = ["tracing"];
