@@ -205,7 +205,7 @@ function resultFor(input: {
     attrs: {
       report: input.id,
       path: input.dir,
-      'report-path': path.join(input.dir, 'report.json'),
+      'report-path': full(path.join(input.dir, 'report.json')),
       url: input.url,
       'final-url': finalUrl,
       preset: input.preset,

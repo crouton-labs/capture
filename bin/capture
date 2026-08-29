@@ -4328,12 +4328,13 @@ function resolveFactLine(fl, mode) {
   return out;
 }
 function renderAttrValue(raw) {
+  if (isCapped(raw)) return escapeXmlAttr(capLength(neutralizeControl(String(raw.value)), raw.maxLength));
   if (typeof raw === "number") return sanitizeNumber(raw);
   if (typeof raw === "boolean") return String(raw);
-  const cleaned = neutralizeControl(raw);
-  return escapeXmlAttr(capLength(cleaned, DEFAULT_ATTR_MAX));
+  return escapeXmlAttr(capLength(neutralizeControl(raw), DEFAULT_ATTR_MAX));
 }
 function jsonAttrValue(raw) {
+  if (isCapped(raw)) return capLength(neutralizeControl(String(raw.value)), raw.maxLength);
   if (typeof raw !== "string") return raw;
   return capLength(neutralizeControl(raw), DEFAULT_ATTR_MAX);
 }
@@ -265193,7 +265194,7 @@ function resultFor(input) {
     attrs: {
       report: input.id,
       path: input.dir,
-      "report-path": path44.join(input.dir, "report.json"),
+      "report-path": full(path44.join(input.dir, "report.json")),
       url: input.url,
       "final-url": finalUrl,
       preset: input.preset,

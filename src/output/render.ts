@@ -748,7 +748,7 @@ export interface Attestation {
 // hands to renderResult()/emitResult().
 // ---------------------------------------------------------------------------
 
-export type ResultAttrs = Record<string, string | number | boolean | undefined>;
+export type ResultAttrs = Record<string, string | number | boolean | Capped | undefined>;
 
 export type JsonValue = string | number | boolean | null | Capped | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 
@@ -788,14 +788,15 @@ export interface RenderableResult {
   readonly followUp?: FactLine;
 }
 
-function renderAttrValue(raw: string | number | boolean): string {
+function renderAttrValue(raw: string | number | boolean | Capped): string {
+  if (isCapped(raw)) return escapeXmlAttr(capLength(neutralizeControl(String(raw.value)), raw.maxLength));
   if (typeof raw === 'number') return sanitizeNumber(raw);
   if (typeof raw === 'boolean') return String(raw);
-  const cleaned = neutralizeControl(raw);
-  return escapeXmlAttr(capLength(cleaned, DEFAULT_ATTR_MAX));
+  return escapeXmlAttr(capLength(neutralizeControl(raw), DEFAULT_ATTR_MAX));
 }
 
-function jsonAttrValue(raw: string | number | boolean): string | number | boolean {
+function jsonAttrValue(raw: string | number | boolean | Capped): string | number | boolean {
+  if (isCapped(raw)) return capLength(neutralizeControl(String(raw.value)), raw.maxLength);
   if (typeof raw !== 'string') return raw;
   return capLength(neutralizeControl(raw), DEFAULT_ATTR_MAX);
 }
@@ -916,7 +917,7 @@ export function toJsonResult(result: RenderableResult): Record<string, unknown> 
       .filter(([, v]) => v !== undefined)
       .map(([k, v]) => {
         assertValidAttrKey(k);
-        return [k, jsonAttrValue(v as string | number | boolean)];
+        return [k, jsonAttrValue(v as string | number | boolean | Capped)];
       }),
   );
 
