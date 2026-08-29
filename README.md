@@ -99,7 +99,9 @@ Record a real interaction, then read its timeline off the recording rather than 
 
 <video src="https://github.com/user-attachments/assets/001e21ff-bfed-4cd9-9b2e-350562c751f6" controls muted playsinline></video>
 
-A whole animated interaction collapsed into a single image where colour encodes *when* each pixel changed — blue is early, red is late, and the entire route of the payload is one picture. Underneath it, the changed regions ranked largest first with the window each one moved in.
+A model cannot watch a video. Hand it a screen recording and you are really handing it dozens of separate frames to reason across one at a time — expensive, and still hopeless, because the thing you care about is the motion *between* frames and no single frame contains it.
+
+`motion mask` collapses the whole interaction into one image, which is the format a model reads well. Colour encodes *when* each pixel changed — blue is early, red is late — so the entire route of the payload is legible at a glance. Underneath it, the changed regions ranked largest first with the window each one moved in. The agent gets to see the animation.
 
 `capture motion mask <rec> --limit 4` · [full clip, 22s](demo/7-motion-mask.mp4)
 
