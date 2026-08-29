@@ -750,7 +750,7 @@ export interface Attestation {
 
 export type ResultAttrs = Record<string, string | number | boolean | undefined>;
 
-export type JsonValue = string | number | boolean | null | readonly JsonValue[] | { readonly [key: string]: JsonValue };
+export type JsonValue = string | number | boolean | null | Capped | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 
 export interface RenderableResult {
   /** Trusted block tag — must be one of RESULT_TAGS. */
@@ -858,6 +858,7 @@ function mergeAttestationAttrs(attrs: ResultAttrs, attestation?: Attestation): R
 }
 
 function jsonValue(value: JsonValue): JsonValue {
+  if (isCapped(value)) return capLength(neutralizeControl(String(value.value)), value.maxLength);
   if (typeof value === 'string') return capLength(neutralizeControl(value), DEFAULT_DATA_MAX);
   if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
   if (Array.isArray(value)) return value.map(jsonValue);

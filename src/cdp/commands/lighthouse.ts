@@ -6,7 +6,7 @@ import { captureError } from '../../errors.js';
 import { type ParsedArgs } from '../types.js';
 import { CAPTURE_ROOT, ensurePrivateDir, writeJsonPrivate, writePrivateFile } from '../../session/artifacts.js';
 import { getActiveSession } from '../../session-context.js';
-import { emitResult, fact, formatArtifactList, line, lineList, text, type FactLine, type JsonValue, type RenderableResult } from '../../output/render.js';
+import { capped, emitResult, fact, formatArtifactList, line, lineList, text, type FactLine, type JsonValue, type RenderableResult } from '../../output/render.js';
 
 export const COMMAND_BLOCK = `<command name="lighthouse">
 a third-party scored report — capture runs Lighthouse against a URL and stores its report unmodified
@@ -141,6 +141,12 @@ function reportStrings(report: string | readonly string[]): { json: string; html
   return { json, html };
 }
 
+const FULL_DATA_MAX = Number.MAX_SAFE_INTEGER;
+
+function full(value: string) {
+  return capped(value, FULL_DATA_MAX);
+}
+
 function categoryJson(category: Category): JsonValue {
   return {
     category: category.id,
@@ -152,11 +158,11 @@ function categoryJson(category: Category): JsonValue {
       title: audit.title,
       score: 0,
       items: audit.items.map(item => ({
-        path: item.path,
-        selector: item.selector,
-        snippet: item.snippet,
-        explanation: item.explanation,
-        ...(item.nodeLabel === undefined ? {} : { nodeLabel: item.nodeLabel }),
+        path: full(item.path),
+        selector: full(item.selector),
+        snippet: full(item.snippet),
+        explanation: full(item.explanation),
+        ...(item.nodeLabel === undefined ? {} : { nodeLabel: full(item.nodeLabel) }),
       })),
     })),
   };
@@ -168,11 +174,11 @@ function categoryProse(category: Category, limit: number): FactLine {
     rows.push(line(text`  `, fact`${audit.id} — ${audit.title}`));
     const displayed = audit.items.slice(0, limit);
     for (const item of displayed) {
-      rows.push(line(text`    path: `, fact`${item.path}`));
-      rows.push(line(text`    selector: `, fact`${item.selector}`));
-      rows.push(line(text`    snippet: `, fact`${item.snippet}`));
-      rows.push(line(text`    Lighthouse explanation: `, fact`${item.explanation}`));
-      if (item.nodeLabel !== undefined) rows.push(line(text`    node label: `, fact`${item.nodeLabel}`));
+      rows.push(line(text`    path: `, fact`${full(item.path)}`));
+      rows.push(line(text`    selector: `, fact`${full(item.selector)}`));
+      rows.push(line(text`    snippet: `, fact`${full(item.snippet)}`));
+      rows.push(line(text`    Lighthouse explanation: `, fact`${full(item.explanation)}`));
+      if (item.nodeLabel !== undefined) rows.push(line(text`    node label: `, fact`${full(item.nodeLabel)}`));
     }
     if (audit.items.length === 0) rows.push(text`    No failing nodes were attached to this audit by Lighthouse.`);
     if (audit.items.length > displayed.length) rows.push(fact`    ${displayed.length} of ${audit.items.length} failing node(s) rendered (--limit ${limit}).`);
@@ -199,6 +205,7 @@ function resultFor(input: {
     attrs: {
       report: input.id,
       path: input.dir,
+      'report-path': path.join(input.dir, 'report.json'),
       url: input.url,
       'final-url': finalUrl,
       preset: input.preset,
