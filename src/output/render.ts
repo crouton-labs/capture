@@ -67,6 +67,11 @@ export const RESULT_TAGS = [
   'trace',
   'vitals',
   'insights',
+  'heap-snapshot',
+  'heap-census',
+  'heap-objects',
+  'retainers',
+  'heap-diff',
 ] as const;
 
 export type ResultTag = (typeof RESULT_TAGS)[number];
@@ -767,7 +772,7 @@ export interface RenderableResult {
    * multi-line paragraph/preformatted block that should NOT be blank-line
    * split — e.g. a motion timeline's consecutive `t=...` rows. */
   readonly sections?: readonly FactLine[];
-  /** Semantic sections for the JSON mirror when a measurement has structured records that prose renders differently. */
+  /** Structured JSON mirror of sections when rows are records rather than prose. All strings are recursively sanitized by the renderer. */
   readonly jsonSections?: unknown;
   /** A single follow_up line, built only from trusted command templates via
    * `fact`/`text`/`data` — ids/paths are always embedded as escaped data,
@@ -869,6 +874,21 @@ export function renderResult(result: RenderableResult): string {
   return `${block}\nfollow_up: ${resolveFactLine(result.followUp, 'xml')}`;
 }
 
+function sanitizeJsonValue(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === 'string') return capLength(neutralizeControl(value), DEFAULT_DATA_MAX);
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'boolean' || value === null) return value;
+  if (Array.isArray(value)) return value.map(item => sanitizeJsonValue(item, seen));
+  if (typeof value === 'object') {
+    if (seen.has(value)) throw new Error('render.ts: structured JSON sections cannot contain cycles');
+    seen.add(value);
+    const record = Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [capLength(neutralizeControl(key), DEFAULT_ATTR_MAX), sanitizeJsonValue(item, seen)]));
+    seen.delete(value);
+    return record;
+  }
+  return null;
+}
+
 /** Build the plain-object JSON mirror of a result, applying the same
  * length-cap / control-char redaction as the prose renderer (minus XML
  * entity escaping, which JSON.stringify already makes unnecessary). */
@@ -896,7 +916,7 @@ export function toJsonResult(result: RenderableResult): Record<string, unknown> 
   }
   if (result.summary) out.summary = resolveFactLine(result.summary, 'json');
   if (result.artifacts) out.artifacts = resolveFactLine(result.artifacts, 'json');
-  if (result.jsonSections !== undefined) out.sections = result.jsonSections;
+  if (result.jsonSections !== undefined) out.sections = sanitizeJsonValue(result.jsonSections);
   else if (result.sections?.length) out.sections = result.sections.map((s) => resolveFactLine(s, 'json'));
   if (result.followUp) out.followUp = resolveFactLine(result.followUp, 'json');
 

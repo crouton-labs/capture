@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { HeapCollector, reconstructHeapSnapshot } from './collectors/heap.js';
 import { MotionCollector } from './collectors/motion.js';
 import { TraceCollector } from './collectors/trace.js';
 import type { CollectorKind, CollectorKindEntry, DrainOutcome } from './collector.js';
@@ -46,7 +47,20 @@ const trace: CollectorKindEntry = {
   },
 };
 
-const unsupported = (kind: Exclude<CollectorKind, 'motion' | 'trace'>, idSegments: string[], idPrefix: string, label: string): CollectorKindEntry => ({
+const heap: CollectorKindEntry = {
+  kind: 'heap',
+  idSegments: ['heap', 'snapshots'],
+  idPrefix: 'heap',
+  label: 'heap snapshot',
+  parseConfig(raw) {
+    if (raw !== undefined && (raw === null || typeof raw !== 'object' || Array.isArray(raw))) throw new Error('heap snapshot config must be an object');
+    return raw ?? {};
+  },
+  create() { return new HeapCollector(); },
+  reconstruct: reconstructHeapSnapshot,
+};
+
+const unsupported = (kind: Exclude<CollectorKind, 'motion' | 'trace' | 'heap'>, idSegments: string[], idPrefix: string, label: string): CollectorKindEntry => ({
   kind,
   idSegments,
   idPrefix,
@@ -59,7 +73,7 @@ const unsupported = (kind: Exclude<CollectorKind, 'motion' | 'trace'>, idSegment
 export const COLLECTOR_KINDS: Record<CollectorKind, CollectorKindEntry> = {
   motion,
   trace,
-  heap: unsupported('heap', ['heap', 'snapshots'], 'heap', 'heap snapshot'),
+  heap,
   intercept: unsupported('intercept', ['network', 'mocks'], 'mock', 'mock'),
 };
 

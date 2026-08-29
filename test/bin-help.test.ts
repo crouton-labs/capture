@@ -149,14 +149,9 @@ test('page branch grammar names the leaf: `page click` is rejected at the valida
   });
 });
 
-test('every new leaf is registered with its own clear non-zero scaffold', () => {
+test('every scaffold leaf is registered with its own clear non-zero scaffold', () => {
   withTempRoot((tempRoot) => {
     const commands = [
-      ['heap', 'snapshot'],
-      ['heap', 'census', 'heap-1'],
-      ['heap', 'objects', 'heap-1', '--constructor', 'Object'],
-      ['heap', 'retainers', 'heap-1', '--node', '1'],
-      ['heap', 'diff', '--before', 'before', '--after', 'after'],
       ['lighthouse', 'https://example.com'],
       ['tab', 'mock', 'start', '--rules', 'rules.json'],
       ['tab', 'mock', 'stop'],

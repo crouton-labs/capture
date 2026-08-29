@@ -96,6 +96,7 @@ export class CollectorHost {
     } catch (error) {
       this.starting.delete(id);
       if (!(error instanceof RetainedCollectorStartFailure)) removeArtifactTree(dir);
+      this.changed();
       throw error;
     }
   }
