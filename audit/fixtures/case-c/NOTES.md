@@ -27,3 +27,13 @@ The design reasons from Lighthouse 13.4.1 / axe 4.12.1; this evidence is 12.8.2 
 One finding the design did not anticipate: **axe minimizes the failing selector to `div.panel`, dropping the `--sunken` modifier.** The recessed panel is identifiable from the DOM path, not from the selector string, so an agent reading only selectors gets a weaker attribution signal than the oracle's `localized-not-global` fact assumes. A Lighthouse surface in capture must expose node paths, not selectors alone.
 
 None of this changes the oracle: `intendedCapabilityStatus` stays `unshipped` and `intendedCapabilityRequiredForPass` stays `false`, because those describe *capture's* Lighthouse leaf, which does not exist. `bin/capture -h` exposes only `session`, `page`, `tab`, `measure`, `motion`, `cdp`, and `lib`, and the repo has no Lighthouse dependency. Preflight remains CDP-only and never invokes Lighthouse.
+
+## First blind reference-route attempt — not a solve
+
+An independent operator ran Case C blind on 2026-08-29 under the reference-route envelope: 31 capture calls, 57.4s, 19.9k stdout tokens, inside the 40-call budget, with zero escape hatches (no `cdp`, no `page exec`, verified from the transcript). It stopped on its own confidence, not on exhaustion, and **did not solve the case** — it met none of the oracle's four `requiredDiagnosisFacts`.
+
+Two consequences. First, the design's standing question is answered: a non-Lighthouse route did not solve Case C, so the case's capability verdict stands and its defect set does not widen. Second, no `reference-route.json` was written — the reference is the denominator for every Case C route ratio, and provisional exists for "solved by another route", not for "nobody solved it". Case C stays ungradeable until a route solves it or capture ships a Lighthouse leaf.
+
+The operator did reach 3.26:1 and then dismissed it, reasoning that the same `.fineprint` treatment applies to every policy in the panel, so it does not explain why the *refund* answer specifically is hard to find. The oracle's `refund-sentence-affected` fact discriminates more weakly than the design assumes.
+
+Its actual answer was a rival explanation the fixture did not plant and cannot refute: the refund policy sits at y=2825px desktop / y=3346px mobile, behind the whole request form, with no Refunds link in the navigation. All of that is true of the page. The `vagueSymptom`'s "had the page open in front of them" excludes findability but not scroll depth, so a Case C failure is ambiguous between the missing capability and this confound. Pending Silas's ruling on page `3zl47w7d-mteo09rb-be116ab8`; full account in `/Users/silasrhyneer/.crouter/canvas/nodes/3zl47w7d-mtduup4r-099a7530/context/case-c-reference-attempt.md`.
