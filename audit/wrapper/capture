@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+import { runWrapper } from './wrapper.mjs';
+
+process.exitCode = await runWrapper();
