@@ -50,7 +50,7 @@ input:
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json            mirror the result as JSON
 output:
-  <screenshot path=… width=… height=… css-width=… css-height=… css-x=… css-y=… css-to-image-x=… css-to-image-y=… emulation=none|viewport|full-page color-scheme=dark|light> — saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, byte size, crop provenance, and any requested transient emulation
+  <screenshot path=… width=… height=… css-width=… css-height=… css-x=… css-y=… css-to-image-x=… css-to-image-y=… effective-downscale-x=… effective-downscale-y=… emulation=none|viewport|full-page color-scheme=dark|light> — saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, any effective downscale below 1 image px/CSS px, byte size, crop provenance, and any requested transient emulation
 effects:
   no flags: none — the capture reads the viewport as-is, with zero Emulation.* calls. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture — two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; an empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
 
@@ -156,6 +156,15 @@ export function buildScreenshotResult(f: {
   const scale = f.dimensions && f.cssViewport
     ? { x: f.dimensions.width / f.cssViewport.width, y: f.dimensions.height / f.cssViewport.height }
     : undefined;
+  const downscale = scale && (scale.x < 1 || scale.y < 1)
+    ? { x: scale.x < 1 ? scale.x : undefined, y: scale.y < 1 ? scale.y : undefined }
+    : undefined;
+  const downscaleDescription = downscale
+    ? [
+      downscale.x === undefined ? undefined : `horizontal ${downscale.x.toFixed(6)}×`,
+      downscale.y === undefined ? undefined : `vertical ${downscale.y.toFixed(6)}×`,
+    ].filter((axis): axis is string => axis !== undefined).join(' and ')
+    : undefined;
   const sections: FactLine[] = [
     scale && f.cssViewport
       ? fact`CSS-to-image scale: ${scale.x.toFixed(6)} image px/CSS px horizontally and ${scale.y.toFixed(6)} image px/CSS px vertically (captured CSS region ${round6(f.cssViewport.width)}×${round6(f.cssViewport.height)} at page origin ${round6(f.cssViewport.x)},${round6(f.cssViewport.y)}).`
@@ -186,6 +195,8 @@ export function buildScreenshotResult(f: {
       'css-y': f.cssViewport === undefined ? undefined : round6(f.cssViewport.y),
       'css-to-image-x': scale?.x.toFixed(6),
       'css-to-image-y': scale?.y.toFixed(6),
+      'effective-downscale-x': downscale?.x?.toFixed(6),
+      'effective-downscale-y': downscale?.y?.toFixed(6),
       emulation: f.emulation,
       'color-scheme': f.colorScheme,
       'crop-source': f.crop?.source,
@@ -194,7 +205,9 @@ export function buildScreenshotResult(f: {
       'requested-zoom': f.crop?.zoom,
     },
     summary: f.dimensions
-      ? fact`saved ${f.path} — ${f.dimensions.width}x${f.dimensions.height}px, ${f.bytes} bytes.`
+      ? downscaleDescription
+        ? fact`saved ${f.path} — ${f.dimensions.width}x${f.dimensions.height}px, ${f.bytes} bytes; effective downscale: ${downscaleDescription} (image px/CSS px).`
+        : fact`saved ${f.path} — ${f.dimensions.width}x${f.dimensions.height}px, ${f.bytes} bytes.`
       : fact`saved ${f.path} — ${f.bytes} bytes.`,
     sections,
   };

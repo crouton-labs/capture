@@ -17,12 +17,14 @@ import * as path from 'node:path';
 import {
   cmdPageShot,
   __setPageShotDepsForTest,
+  buildScreenshotResult,
   pngDimensions,
 } from '../src/cdp/commands/page/shot.js';
 import { captureScreenshot } from '../src/cdp/screenshot.js';
 import { createOneshotSession } from '../src/session/commands.js';
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
 import type { ParsedArgs, CDPTarget } from '../src/cdp/types.js';
+import { renderResult } from '../src/output/render.js';
 
 interface RecordedCall {
   method: string;
@@ -228,6 +230,20 @@ test('plain page shot performs zero Emulation.* calls and reports the no-emulati
 // Reporting the former produced a false scale — at page-scale 1.5 a 1000x700
 // layout viewport yields a 667x467 image whose true CSS-to-image scale is ~1,
 // not 0.667.
+test('a downscaled full-page image names its effective scale in result attributes and summary', () => {
+  const output = renderResult(buildScreenshotResult({
+    path: '/tmp/long-page.png',
+    bytes: 1234,
+    dimensions: { width: 301, height: 1600 },
+    cssViewport: { x: 0, y: 0, width: 800, height: 4253 },
+    emulation: 'full-page',
+  }));
+
+  assert.match(output, /effective-downscale-x="0\.376250" effective-downscale-y="0\.376205"/);
+  assert.match(output, /effective downscale: horizontal 0\.376250× and vertical 0\.376205× \(image px\/CSS px\)/);
+  assert.match(output, /CSS-to-image scale: 0\.376250 image px\/CSS px horizontally and 0\.376205 image px\/CSS px vertically/);
+});
+
 test('under page zoom the scale is measured against the captured clip, not the layout viewport', async () => {
   const outPath = path.join(os.tmpdir(), `u07-zoom-${process.pid}.png`);
   const client = stubClient({

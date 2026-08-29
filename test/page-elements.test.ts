@@ -181,22 +181,22 @@ test('--all returns the full exposed tree, including non-interactive and non-DOM
   assert.ok(!output.includes('group "Toolbar group (no DOM node)" backend:'));
 });
 
-test('--all omits StaticText and InlineTextBox rows only when their parent has identical text', async () => {
+test('--all attaches an unnamed parent’s StaticText to that parent and omits the now-redundant text rows', async () => {
   const nodes = [
     { nodeId: '1', backendDOMNodeId: 1, role: { value: 'RootWebArea' }, name: { value: '' }, childIds: ['2', '4'] },
     { nodeId: '2', backendDOMNodeId: 2, role: { value: 'heading' }, name: { value: 'Title' }, childIds: ['3'] },
     { nodeId: '3', backendDOMNodeId: 3, role: { value: 'StaticText' }, name: { value: 'Title' } },
-    { nodeId: '4', backendDOMNodeId: 4, role: { value: 'paragraph' }, name: { value: '' }, childIds: ['5'] },
-    { nodeId: '5', backendDOMNodeId: 5, role: { value: 'StaticText' }, name: { value: 'Body' }, childIds: ['6'] },
-    { nodeId: '6', role: { value: 'InlineTextBox' }, name: { value: 'Body' } },
+    { nodeId: '4', backendDOMNodeId: 4, role: { value: 'paragraph' }, name: { value: '' }, childIds: ['5', '7'] },
+    { nodeId: '5', backendDOMNodeId: 5, role: { value: 'StaticText' }, name: { value: 'First sentence.' }, childIds: ['6'] },
+    { nodeId: '6', role: { value: 'InlineTextBox' }, name: { value: 'First sentence.' } },
+    { nodeId: '7', backendDOMNodeId: 7, role: { value: 'StaticText' }, name: { value: 'Second sentence.' } },
   ];
   const records = await collectElements(stubClient(axHandlers(nodes)), { all: true });
 
   assert.deepEqual(records.map((record) => [record.role, record.name]), [
     ['RootWebArea', ''],
     ['heading', 'Title'],
-    ['paragraph', ''],
-    ['StaticText', 'Body'],
+    ['paragraph', 'First sentence. Second sentence.'],
   ]);
 });
 
@@ -218,6 +218,23 @@ test('a capped list emits the elements-truncated fact carrying the total count',
   const rows = output.split('\n').filter((l) => l.startsWith('button "Button '));
   assert.equal(rows.length, DEFAULT_LIMIT);
   assert.ok(output.includes(`elements-truncated: listing capped at ${DEFAULT_LIMIT} of 150 elements`));
+});
+
+test('--all keeps an unnamed paragraph’s prose when the list cap lands before its StaticText child', async () => {
+  const nodes = [
+    { nodeId: 'root', role: { value: 'RootWebArea' }, name: { value: '' } },
+    ...Array.from({ length: 98 }, (_, index) => ({ nodeId: `before-${index}`, role: { value: 'generic' }, name: { value: `Before ${index}` } })),
+    { nodeId: 'policy', role: { value: 'paragraph' }, name: { value: '' }, childIds: ['policy-text'] },
+    { nodeId: 'policy-text', role: { value: 'StaticText' }, name: { value: 'The policy sentence remains associated with its paragraph.' } },
+    ...Array.from({ length: 65 }, (_, index) => ({ nodeId: `after-${index}`, role: { value: 'generic' }, name: { value: `After ${index}` } })),
+  ];
+  const records = await collectElements(stubClient(axHandlers(nodes)), { all: true });
+  const output = renderResult(buildElementsResult(records, { all: true, limit: DEFAULT_LIMIT }));
+
+  assert.equal(records.length, 165);
+  assert.match(output, /paragraph "The policy sentence remains associated with its paragraph\."/);
+  assert.ok(!output.includes('StaticText "The policy sentence remains associated with its paragraph\."'));
+  assert.ok(output.includes('elements-truncated: listing capped at 100 of 165 elements'));
 });
 
 test('a list under the limit emits no truncation fact', () => {

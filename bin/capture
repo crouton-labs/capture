@@ -228188,6 +228188,11 @@ function round6(value) {
 }
 function buildScreenshotResult(f) {
   const scale = f.dimensions && f.cssViewport ? { x: f.dimensions.width / f.cssViewport.width, y: f.dimensions.height / f.cssViewport.height } : void 0;
+  const downscale = scale && (scale.x < 1 || scale.y < 1) ? { x: scale.x < 1 ? scale.x : void 0, y: scale.y < 1 ? scale.y : void 0 } : void 0;
+  const downscaleDescription = downscale ? [
+    downscale.x === void 0 ? void 0 : `horizontal ${downscale.x.toFixed(6)}\xD7`,
+    downscale.y === void 0 ? void 0 : `vertical ${downscale.y.toFixed(6)}\xD7`
+  ].filter((axis) => axis !== void 0).join(" and ") : void 0;
   const sections = [
     scale && f.cssViewport ? fact`CSS-to-image scale: ${scale.x.toFixed(6)} image px/CSS px horizontally and ${scale.y.toFixed(6)} image px/CSS px vertically (captured CSS region ${round6(f.cssViewport.width)}×${round6(f.cssViewport.height)} at page origin ${round6(f.cssViewport.x)},${round6(f.cssViewport.y)}).` : text`CSS-to-image scale unavailable: the browser did not return the CSS region this capture covers.`,
     f.crop ? fact`CSS crop: ${f.crop.source === "selector" ? `selector ${f.crop.selector} (backend:${f.crop.backendNodeId}), border box plus ${f.crop.pad}px padding` : "coordinates"} requested ${formatRect(f.crop.requested)} at zoom ${f.crop.zoom}; the captured CSS region above is its intersection with the source visual viewport.` : text`CSS crop: none — the captured CSS region above is the source visual viewport.`,
@@ -228206,6 +228211,8 @@ function buildScreenshotResult(f) {
       "css-y": f.cssViewport === void 0 ? void 0 : round6(f.cssViewport.y),
       "css-to-image-x": scale?.x.toFixed(6),
       "css-to-image-y": scale?.y.toFixed(6),
+      "effective-downscale-x": downscale?.x?.toFixed(6),
+      "effective-downscale-y": downscale?.y?.toFixed(6),
       emulation: f.emulation,
       "color-scheme": f.colorScheme,
       "crop-source": f.crop?.source,
@@ -228213,7 +228220,7 @@ function buildScreenshotResult(f) {
       "crop-backend-node-id": f.crop?.backendNodeId,
       "requested-zoom": f.crop?.zoom
     },
-    summary: f.dimensions ? fact`saved ${f.path} — ${f.dimensions.width}x${f.dimensions.height}px, ${f.bytes} bytes.` : fact`saved ${f.path} — ${f.bytes} bytes.`,
+    summary: f.dimensions ? downscaleDescription ? fact`saved ${f.path} — ${f.dimensions.width}x${f.dimensions.height}px, ${f.bytes} bytes; effective downscale: ${downscaleDescription} (image px/CSS px).` : fact`saved ${f.path} — ${f.dimensions.width}x${f.dimensions.height}px, ${f.bytes} bytes.` : fact`saved ${f.path} — ${f.bytes} bytes.`,
     sections
   };
 }
@@ -228402,7 +228409,7 @@ input:
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json            mirror the result as JSON
 output:
-  <screenshot path=\u2026 width=\u2026 height=\u2026 css-width=\u2026 css-height=\u2026 css-x=\u2026 css-y=\u2026 css-to-image-x=\u2026 css-to-image-y=\u2026 emulation=none|viewport|full-page color-scheme=dark|light> \u2014 saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, byte size, crop provenance, and any requested transient emulation
+  <screenshot path=\u2026 width=\u2026 height=\u2026 css-width=\u2026 css-height=\u2026 css-x=\u2026 css-y=\u2026 css-to-image-x=\u2026 css-to-image-y=\u2026 effective-downscale-x=\u2026 effective-downscale-y=\u2026 emulation=none|viewport|full-page color-scheme=dark|light> \u2014 saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, any effective downscale below 1 image px/CSS px, byte size, crop provenance, and any requested transient emulation
 effects:
   no flags: none \u2014 the capture reads the viewport as-is, with zero Emulation.* calls. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture \u2014 two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; an empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
     deps4 = { withConnection, nextStepPath, createOneshotSession };
@@ -228413,10 +228420,16 @@ effects:
 // src/cdp/commands/page/elements.ts
 async function collectElements(client, opts = {}) {
   const nodes = await readFullAXTree(client);
+  const nodesById = new Map(nodes.map((node) => [node.nodeId, node]));
   const parents = /* @__PURE__ */ new Map();
   for (const node of nodes) {
     for (const childId of node.childIds ?? []) parents.set(childId, node);
   }
+  const nameOf = (node) => {
+    const ownName = node.name?.value ?? "";
+    if (ownName) return ownName;
+    return (node.childIds ?? []).map((childId) => nodesById.get(childId)).filter((child) => child?.role?.value === "StaticText").map((child) => child.name?.value ?? "").filter(Boolean).join(" ");
+  };
   const records = [];
   for (const node of nodes) {
     if (node.ignored) continue;
@@ -228425,12 +228438,16 @@ async function collectElements(client, opts = {}) {
     if (!opts.all) {
       if (!INTERACTIVE_ROLES.has(role)) continue;
       if (node.backendDOMNodeId === void 0) continue;
-    } else if ((role === "StaticText" || role === "InlineTextBox") && typeof node.name?.value === "string" && node.name.value.length > 0 && node.name.value === parents.get(node.nodeId)?.name?.value) {
-      continue;
+    } else {
+      const parent = parents.get(node.nodeId);
+      const duplicateParentText = parent !== void 0 && (node.name?.value === parent.name?.value || role === "StaticText" && !parent.name?.value);
+      if ((role === "StaticText" || role === "InlineTextBox") && typeof node.name?.value === "string" && node.name.value.length > 0 && duplicateParentText) {
+        continue;
+      }
     }
     records.push({
       role,
-      name: node.name?.value ?? "",
+      name: nameOf(node),
       backendNodeId: node.backendDOMNodeId ?? null
     });
   }

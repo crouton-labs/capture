@@ -72,10 +72,21 @@ export async function collectElements(
   opts: { all?: boolean } = {},
 ): Promise<ElementRecord[]> {
   const nodes = await readFullAXTree(client);
+  const nodesById = new Map(nodes.map((node) => [node.nodeId, node]));
   const parents = new Map<string, (typeof nodes)[number]>();
   for (const node of nodes) {
     for (const childId of node.childIds ?? []) parents.set(childId, node);
   }
+  const nameOf = (node: (typeof nodes)[number]): string => {
+    const ownName = node.name?.value ?? '';
+    if (ownName) return ownName;
+    return (node.childIds ?? [])
+      .map((childId) => nodesById.get(childId))
+      .filter((child): child is (typeof nodes)[number] => child?.role?.value === 'StaticText')
+      .map((child) => child.name?.value ?? '')
+      .filter(Boolean)
+      .join(' ');
+  };
 
   const records: ElementRecord[] = [];
   for (const node of nodes) {
@@ -85,17 +96,23 @@ export async function collectElements(
     if (!opts.all) {
       if (!INTERACTIVE_ROLES.has(role)) continue;
       if (node.backendDOMNodeId === undefined) continue;
-    } else if (
-      (role === 'StaticText' || role === 'InlineTextBox') &&
-      typeof node.name?.value === 'string' &&
-      node.name.value.length > 0 &&
-      node.name.value === parents.get(node.nodeId)?.name?.value
-    ) {
-      continue;
+    } else {
+      const parent = parents.get(node.nodeId);
+      const duplicateParentText =
+        parent !== undefined &&
+        (node.name?.value === parent.name?.value || (role === 'StaticText' && !parent.name?.value));
+      if (
+        (role === 'StaticText' || role === 'InlineTextBox') &&
+        typeof node.name?.value === 'string' &&
+        node.name.value.length > 0 &&
+        duplicateParentText
+      ) {
+        continue;
+      }
     }
     records.push({
       role,
-      name: node.name?.value ?? '',
+      name: nameOf(node),
       backendNodeId: node.backendDOMNodeId ?? null,
     });
   }
