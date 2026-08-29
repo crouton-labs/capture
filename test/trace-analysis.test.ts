@@ -18,12 +18,41 @@ test('trace analysis maps the real Chrome vitals fixture and preserves DevTools 
   assert.equal(analysis.insightSets.length, 1);
 
   const set = analysis.insightSets[0];
-  assert.deepEqual(set.insightNames, [
+  assert.deepEqual(set.insights.map((insight) => insight.name), [
     'INPBreakdown', 'LCPBreakdown', 'LCPDiscovery', 'CLSCulprits', 'RenderBlocking',
     'NetworkDependencyTree', 'ImageDelivery', 'DocumentLatency', 'FontDisplay', 'Viewport',
     'DOMSize', 'ThirdParties', 'DuplicatedJavaScript', 'SlowCSSSelector', 'ForcedReflow',
     'Cache', 'CharacterSet', 'ModernHTTP', 'LegacyJavaScript',
   ]);
+  const renderBlocking = set.insights.find((insight) => insight.name === 'RenderBlocking');
+  assert.ok(renderBlocking);
+  assert.deepEqual(renderBlocking.fields.renderBlockingRequests, []);
+  assert.equal('metricSavings' in renderBlocking.fields, false);
+  assert.equal('requestIdToWastedMs' in renderBlocking.fields, false);
+  assert.equal('state' in renderBlocking.fields, false);
+  assert.equal('description' in renderBlocking.fields, false);
+  const lcpDiscovery = set.insights.find((insight) => insight.name === 'LCPDiscovery');
+  assert.ok(lcpDiscovery);
+  assert.deepEqual(lcpDiscovery.fields.lcpEvent, {
+    args: { data: { candidateIndex: 2, imageDiscoveryTime: 7.100000001490116, imageLoadEnd: 309.8999999985099, imageLoadStart: 7.600000001490116, isMainFrame: true, isOutermostMainFrame: true, loadingAttr: '', navigationId: '3AFBDC0DE780763F8EF94E67AC6AE62D', nodeId: 5, nodeName: "IMG id='hero'", performanceTimelineNavigationId: 3852, size: 137280, type: 'image' }, frame: 'E6C9C7DFBEEA3A830AB72DD6D467FE83' },
+    cat: 'loading,rail,devtools.timeline',
+    name: 'largestContentfulPaint::Candidate',
+    ph: 'R',
+    pid: 75371,
+    s: 't',
+    tid: 35370235,
+    ts: 60519149412,
+  });
+  const networkDependencyTree = set.insights.find((insight) => insight.name === 'NetworkDependencyTree');
+  assert.ok(networkDependencyTree);
+  assert.equal('preconnectCandidates' in networkDependencyTree.fields, false);
+  const relatedEvents = networkDependencyTree.fields.relatedEvents as { entries: unknown[] };
+  assert.equal(Array.isArray(relatedEvents.entries), true);
+  assert.equal(relatedEvents.entries.length, 1);
+  const insightsJson = JSON.stringify(set.insights);
+  for (const field of ['metricSavings', 'requestIdToWastedMs', 'byteSavings', 'estimatedSavings', 'estimatedByteSavings', 'wastedTime', 'scoreWindows']) {
+    assert.equal(insightsJson.includes(`\"${field}\"`), false);
+  }
 
   assert.equal(set.metrics.lcp.status, 'observed');
   if (set.metrics.lcp.status === 'observed') {
@@ -66,6 +95,25 @@ test('trace analysis maps the real Chrome vitals fixture and preserves DevTools 
   }]);
   assert.equal(set.metrics.inp.provenance.origin, 'lab');
   assert.ok(set.metrics.inp.provenance.limitations.some((limit) => limit.includes('No recorded interaction')));
+});
+
+test('trace analysis reports no CLS observation when the trace has no layout-shift clusters', async () => {
+  const trace = fixture('vitals-no-interaction.json') as Array<{ name?: unknown }>;
+  const analysis = await analyzeChromeTrace(trace.filter((event) => event.name !== 'LayoutShift'));
+
+  assert.deepEqual(analysis.insightSets[0].metrics.cls, {
+    status: 'not-observed',
+    reason: 'not-present-in-recording',
+    provenance: {
+      origin: 'lab',
+      producer: 'Chrome performance trace analyzed by DevTools Trace Engine',
+      scope: 'recording-window',
+      limitations: [
+        'Only layout shifts observed during this trace contribute to this value.',
+        'This is not a real-user field percentile.',
+      ],
+    },
+  });
 });
 
 test('trace analysis reports no INP observation for a real trace with no interaction', async () => {

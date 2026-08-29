@@ -70,16 +70,25 @@ export interface CumulativeLayoutShift {
   readonly clusters: readonly LayoutShiftCluster[];
 }
 
+export type TraceInsightField = string | number | boolean | null | readonly TraceInsightField[] | Readonly<Record<string, TraceInsightField>>;
+
+export interface TraceInsight {
+  /** The engine's insight key. */
+  readonly name: string;
+  /** Factual engine fields, made JSON-safe without adding capture judgments. */
+  readonly fields: Readonly<Record<string, TraceInsightField>>;
+}
+
 export interface TraceInsightSet {
   /** DevTools' navigation or no-navigation insight-set identifier. */
   readonly id: string;
   readonly url: string;
-  /** Names computed by the engine. The adapter deliberately does not turn insight states into judgments. */
-  readonly insightNames: readonly string[];
+  /** Engine-computed records. The adapter deliberately does not turn insight states into judgments. */
+  readonly insights: readonly TraceInsight[];
   readonly metrics: {
     readonly lcp: ObservedMetric<LargestContentfulPaint, LargestContentfulPaintAttribution> | UnobservedMetric;
     readonly inp: ObservedMetric<InteractionToNextPaint, InteractionAttribution> | UnobservedMetric;
-    readonly cls: ObservedMetric<CumulativeLayoutShift>;
+    readonly cls: ObservedMetric<CumulativeLayoutShift> | UnobservedMetric;
   };
 }
 
@@ -209,6 +218,7 @@ function culpritFrom(value: unknown): LayoutShiftCulprit {
 function clsFrom(model: UnknownRecord): TraceInsightSet['metrics']['cls'] {
   const insight = record(model.CLSCulprits);
   const clusters = Array.isArray(insight?.clusters) ? insight.clusters : [];
+  if (clusters.length === 0) return unobserved(clsProvenance());
   const culpritsByCluster = insight?.topCulpritsByCluster instanceof Map ? insight.topCulpritsByCluster : new Map();
   const values: LayoutShiftCluster[] = clusters.map((cluster) => {
     const item = record(cluster);
@@ -221,9 +231,71 @@ function clsFrom(model: UnknownRecord): TraceInsightSet['metrics']['cls'] {
   });
   return {
     status: 'observed',
-    value: { value: Math.max(0, ...values.map((cluster) => cluster.value)), clusters: values },
+    value: { value: Math.max(...values.map((cluster) => cluster.value)), clusters: values },
     provenance: clsProvenance(),
   };
+}
+
+const PRESENTATION_FIELDS = new Set([
+  'insightKey', 'strings', 'title', 'description', 'docs', 'category', 'state', 'fail', 'warnings', 'createOverlays', 'label', 'preconnectCandidates', 'checklist',
+]);
+
+function presentationField(name: string): boolean {
+  return PRESENTATION_FIELDS.has(name) || /saving|wasted|score/i.test(name);
+}
+
+function reportableField(value: unknown, ancestors = new Set<object>()): TraceInsightField | undefined {
+  const text = string(value);
+  if (text !== undefined) return text;
+  const number = finite(value);
+  if (number !== undefined) return number;
+  if (typeof value === 'boolean' || value === null) return value;
+  if (Array.isArray(value)) return value.flatMap((item) => {
+    const field = reportableField(item, ancestors);
+    return field === undefined ? [] : [field];
+  });
+  if (value instanceof Map) {
+    if (ancestors.has(value)) return undefined;
+    ancestors.add(value);
+    const entries = [...value].flatMap(([key, item]) => {
+      const reportableKey = reportableField(key, ancestors);
+      const reportableValue = reportableField(item, ancestors);
+      return reportableKey === undefined || reportableValue === undefined ? [] : [{ key: reportableKey, value: reportableValue }];
+    });
+    ancestors.delete(value);
+    return { entries };
+  }
+  if (value instanceof Set) {
+    if (ancestors.has(value)) return undefined;
+    ancestors.add(value);
+    const values = [...value].flatMap((item) => {
+      const field = reportableField(item, ancestors);
+      return field === undefined ? [] : [field];
+    });
+    ancestors.delete(value);
+    return { values };
+  }
+  const fields = record(value);
+  if (fields === null || ancestors.has(fields)) return undefined;
+  ancestors.add(fields);
+  const result: Record<string, TraceInsightField> = {};
+  for (const [key, item] of Object.entries(fields)) {
+    if (presentationField(key)) continue;
+    const field = reportableField(item, ancestors);
+    if (field !== undefined) result[key] = field;
+  }
+  ancestors.delete(fields);
+  return result;
+}
+
+function insightsFrom(model: UnknownRecord): readonly TraceInsight[] {
+  return Object.values(model).flatMap((value) => {
+    const fields = record(value);
+    const name = string(fields?.insightKey);
+    if (name === undefined) return [];
+    const details = reportableField(fields);
+    return details === undefined || Array.isArray(details) ? [] : [{ name, fields: details }];
+  });
 }
 
 /** Parses an in-memory Chrome performance trace without reading files, controlling Chrome, or assigning quality verdicts. */
@@ -240,7 +312,7 @@ export async function analyzeChromeTrace(trace: RawChromeTrace): Promise<TraceAn
       return {
         id: String(set.id),
         url: set.url.toString(),
-        insightNames: Object.keys(model),
+        insights: insightsFrom(model),
         metrics: { lcp: lcpFrom(model), inp: inpFrom(model), cls: clsFrom(model) },
       };
     }),
