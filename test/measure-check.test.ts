@@ -93,6 +93,75 @@ function makeSnap(id: string, opts: { geometry: unknown; styles: unknown; layers
   return { kind: 'snap', id, dir: d };
 }
 
+test('contrast composites transparent descendants over the opaque ancestor background and names that source', () => {
+  const ref = makeSnap('snap-composited-contrast', {
+    geometry: { elements: [
+      { id: 'body', selector: 'html > body', domPath: 'html[0]/body[0]', tag: 'body', backendNodeId: 1, rect: { x: 0, y: 0, width: 200, height: 200 }, visibility: { visible: true, opacity: 1 } },
+      { id: 'panel', selector: '.panel--sunken', domPath: 'html[0]/body[0]/div[0]', tag: 'div', backendNodeId: 2, rect: { x: 0, y: 0, width: 200, height: 100 }, visibility: { visible: true, opacity: 1 } },
+      { id: 'refund', selector: '.fineprint', domPath: 'html[0]/body[0]/div[0]/p[0]', tag: 'p', backendNodeId: 3, rect: { x: 10, y: 10, width: 180, height: 20 }, visibility: { visible: true, opacity: 1 } },
+    ] },
+    styles: { elements: [
+      { selector: 'body', backendNodeId: 1, computed: { color: 'rgb(0, 0, 0)', 'background-color': 'rgb(250, 250, 250)' } },
+      { selector: '.panel--sunken', backendNodeId: 2, computed: { color: 'rgb(0, 0, 0)', 'background-color': 'rgba(170, 178, 186, 0.5)' } },
+      { selector: '.fineprint', backendNodeId: 3, computed: { color: 'rgb(110, 115, 124)', 'background-color': 'rgba(0, 0, 0, 0)' } },
+    ] },
+  });
+  const finding = checkSnapshot(ref, ['contrast']).findings.find((item) => item.selector === '.fineprint');
+  assert.ok(finding);
+  assert.match(finding.detail, /contrast ratio 3\.26:1 — .*composited background rgb\(210, 214, 218\)/);
+  assert.match(finding.provenance ?? '', /effective background supplied by html > body's opaque paint after compositing recorded descendant backgrounds/);
+});
+
+test('contrast applies ancestor opacity before identifying the opaque background source', () => {
+  const ref = makeSnap('snap-opacity-contrast', {
+    geometry: { elements: [
+      { id: 'body', selector: 'html > body', domPath: 'html[0]/body[0]', tag: 'body', backendNodeId: 1, rect: { x: 0, y: 0, width: 200, height: 200 }, visibility: { visible: true, opacity: 1 } },
+      { id: 'panel', selector: '.panel', domPath: 'html[0]/body[0]/div[0]', tag: 'div', backendNodeId: 2, rect: { x: 0, y: 0, width: 200, height: 100 }, visibility: { visible: true, opacity: 0.5 } },
+      { id: 'text', selector: '.fineprint', domPath: 'html[0]/body[0]/div[0]/p[0]', tag: 'p', backendNodeId: 3, rect: { x: 10, y: 10, width: 180, height: 20 }, visibility: { visible: true, opacity: 1 } },
+    ] },
+    styles: { elements: [
+      { selector: 'body', backendNodeId: 1, computed: { 'background-color': 'rgb(255, 255, 255)' } },
+      { selector: '.panel', backendNodeId: 2, computed: { 'background-color': 'rgb(0, 0, 0)' } },
+      { selector: '.fineprint', backendNodeId: 3, computed: { color: 'rgb(119, 119, 119)', 'background-color': 'transparent' } },
+    ] },
+  });
+  const finding = checkSnapshot(ref, ['contrast']).findings.find((item) => item.selector === '.fineprint');
+  assert.ok(finding);
+  assert.match(finding.detail, /contrast ratio 2\.06:1.*composited background rgb\(128, 128, 128\)/);
+  assert.match(finding.provenance ?? '', /effective background supplied by html > body's opaque paint/);
+});
+
+test('contrast resolves an opaque oklch ancestor background', () => {
+  const ref = makeSnap('snap-oklch-contrast', {
+    geometry: { elements: [
+      { id: 'panel', selector: '.panel', domPath: 'body[0]/div[0]', tag: 'div', backendNodeId: 1, rect: { x: 0, y: 0, width: 200, height: 100 }, visibility: { visible: true, opacity: 1 } },
+      { id: 'text', selector: '.fineprint', domPath: 'body[0]/div[0]/p[0]', tag: 'p', backendNodeId: 2, rect: { x: 10, y: 10, width: 180, height: 20 }, visibility: { visible: true, opacity: 1 } },
+    ] },
+    styles: { elements: [
+      { selector: '.panel', backendNodeId: 1, computed: { 'background-color': 'oklch(0.7 0 0)' } },
+      { selector: '.fineprint', backendNodeId: 2, computed: { color: 'oklch(0.6 0 0)', 'background-color': 'transparent' } },
+    ] },
+  });
+  const finding = checkSnapshot(ref, ['contrast']).findings.find((item) => item.selector === '.fineprint');
+  assert.ok(finding);
+  assert.match(finding.provenance ?? '', /effective background supplied by \.panel's opaque paint/);
+});
+
+test('backend selector scope does not include a second element with the same selector', () => {
+  const ref = makeSnap('snap-duplicate-selector', {
+    geometry: { elements: [
+      { id: 'first', selector: '.repeated', domPath: 'body[0]/iframe[0]/div[0]', tag: 'div', backendNodeId: 1, rect: { x: 250, y: 0, width: 10, height: 10 }, visibility: { visible: true, opacity: 1 } },
+      { id: 'second', selector: '.repeated', domPath: 'body[0]/iframe[1]/div[0]', tag: 'div', backendNodeId: 2, rect: { x: 250, y: 20, width: 10, height: 10 }, visibility: { visible: true, opacity: 1 } },
+    ] },
+    styles: { elements: [] },
+  });
+  const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', ref.dir, '--for', 'offscreen', '--selector', 'backend:1', '--json'], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stdout);
+  const parsed = JSON.parse(result.stdout) as { attrs: { findings: number }; sections: string[] };
+  assert.equal(parsed.attrs.findings, 1);
+  assert.match(parsed.sections.join('\n'), /\.repeated has 0×10px inside viewport/);
+});
+
 test('overlap recognizes modern oklab alpha as transparent (no false occlusion when the top painter is see-through)', () => {
   // Two direct siblings; the top painter (.over) has an oklab background with
   // 0.3 alpha — a semi-transparent overlay that does NOT occlude. A parser
@@ -249,4 +318,8 @@ test('command renders a bounded cross-kind sample with a factual rollup, while J
   const clean = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'contrast', '--gate'], { encoding: 'utf8' });
   assert.equal(clean.status, 0);
   assert.match(clean.stdout, /result="clean"/);
+
+  const scoped = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--selector', '.a'], { encoding: 'utf8' });
+  assert.equal(scoped.status, 0);
+  assert.match(scoped.stdout, /<checks [^>]*elements="1"[^>]*findings="7"[^>]*selector="\.a"/);
 });

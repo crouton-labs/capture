@@ -223,10 +223,115 @@ function isSelfOrDescendant(target: GeometryElement, receiver: GeometryElement):
   return target.domPath !== undefined && receiver.domPath !== undefined && receiver.domPath.startsWith(`${target.domPath}/`);
 }
 
-function rgb(value: string | null | undefined): [number, number, number] | undefined {
-  const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(value ?? '');
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
+interface Rgba { readonly red: number; readonly green: number; readonly blue: number; readonly alpha: number }
+interface StyleElement { readonly selector?: string; readonly backendNodeId?: number | null; readonly computed?: Record<string, string | null> }
+
+function bounded(value: number): number { return Math.min(1, Math.max(0, value)); }
+
+function rgbChannel(token: string): number {
+  const value = token.trim();
+  return value.endsWith('%') ? Number(value.slice(0, -1)) * 2.55 : Number(value);
 }
+
+function fromOklab(lightness: number, a: number, b: number, alpha: number): Rgba | undefined {
+  if (![lightness, a, b, alpha].every(Number.isFinite) || alpha < 0 || alpha > 1) return undefined;
+  const l = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (lightness - 0.0894841775 * a - 1.2914855480 * b) ** 3;
+  const linear = [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s];
+  const channel = (value: number): number => 255 * (value <= 0.0031308 ? 12.92 * bounded(value) : 1.055 * bounded(value) ** (1 / 2.4) - 0.055);
+  return { red: channel(linear[0]!), green: channel(linear[1]!), blue: channel(linear[2]!), alpha };
+}
+
+function rgba(value: string | null | undefined): Rgba | undefined {
+  const input = value?.trim().toLowerCase();
+  if (!input) return undefined;
+  if (input === 'transparent') return { red: 0, green: 0, blue: 0, alpha: 0 };
+  const hex = /^#([\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i.exec(input);
+  if (hex) {
+    const digits = hex[1]!.length <= 4 ? hex[1]!.split('').map((digit) => digit + digit).join('') : hex[1]!;
+    return { red: parseInt(digits.slice(0, 2), 16), green: parseInt(digits.slice(2, 4), 16), blue: parseInt(digits.slice(4, 6), 16), alpha: digits.length === 8 ? parseInt(digits.slice(6, 8), 16) / 255 : 1 };
+  }
+  const rgb = /^rgba?\(\s*([^,\s]+)(?:\s*,\s*|\s+)([^,\s]+)(?:\s*,\s*|\s+)([^,\s]+)(?:\s*(?:,|\/)\s*([^\s)]+))?\s*\)$/i.exec(input);
+  if (rgb) {
+    const channels = [rgbChannel(rgb[1]!), rgbChannel(rgb[2]!), rgbChannel(rgb[3]!)];
+    const alpha = rgb[4] === undefined ? 1 : parseAlphaToken(rgb[4]);
+    return channels.some((channel) => !Number.isFinite(channel) || channel < 0 || channel > 255) || !Number.isFinite(alpha) || alpha < 0 || alpha > 1 ? undefined : { red: channels[0]!, green: channels[1]!, blue: channels[2]!, alpha };
+  }
+  const oklab = /^oklab\(\s*([\d.]+)(?:\s*,\s*|\s+)([-\d.]+)(?:\s*,\s*|\s+)([-\d.]+)(?:\s*(?:,|\/)\s*([^\s)]+))?\s*\)$/i.exec(input);
+  if (oklab) return fromOklab(Number(oklab[1]), Number(oklab[2]), Number(oklab[3]), oklab[4] === undefined ? 1 : parseAlphaToken(oklab[4]));
+  const oklch = /^oklch\(\s*([\d.]+)(?:\s*,\s*|\s+)([\d.]+)(?:\s*,\s*|\s+)([-\d.]+)(?:\s*(?:,|\/)\s*([^\s)]+))?\s*\)$/i.exec(input);
+  if (oklch) {
+    const chroma = Number(oklch[2]);
+    const hue = Number(oklch[3]) * Math.PI / 180;
+    return fromOklab(Number(oklch[1]), chroma * Math.cos(hue), chroma * Math.sin(hue), oklch[4] === undefined ? 1 : parseAlphaToken(oklch[4]));
+  }
+  return undefined;
+}
+
+function composite(over: Rgba, under: Rgba): Rgba {
+  const alpha = over.alpha + under.alpha * (1 - over.alpha);
+  if (alpha === 0) return { red: 0, green: 0, blue: 0, alpha: 0 };
+  return {
+    red: (over.red * over.alpha + under.red * under.alpha * (1 - over.alpha)) / alpha,
+    green: (over.green * over.alpha + under.green * under.alpha * (1 - over.alpha)) / alpha,
+    blue: (over.blue * over.alpha + under.blue * under.alpha * (1 - over.alpha)) / alpha,
+    alpha,
+  };
+}
+
+function applyOpacity(paint: Rgba, opacity: number): Rgba {
+  return { ...paint, alpha: paint.alpha * opacity };
+}
+
+function styleFor(element: GeometryElement, stylesByNode: Map<number, StyleElement>, stylesBySelector: Map<string, StyleElement>): StyleElement | undefined {
+  return (element.backendNodeId === null || element.backendNodeId === undefined ? undefined : stylesByNode.get(element.backendNodeId)) ?? (element.selector === undefined ? undefined : stylesBySelector.get(element.selector)) ?? (element.tag === undefined ? undefined : stylesBySelector.get(element.tag));
+}
+
+function remainingOpacityIsOne(element: GeometryElement, byPath: Map<string, GeometryElement>): boolean {
+  let ancestor = element.domPath === undefined ? undefined : byPath.get(parentPath(element.domPath) ?? '');
+  while (ancestor) {
+    if ((ancestor.visibility?.opacity ?? 1) !== 1) return false;
+    ancestor = ancestor.domPath === undefined ? undefined : byPath.get(parentPath(ancestor.domPath) ?? '');
+  }
+  return true;
+}
+
+function effectiveBackground(target: GeometryElement, byPath: Map<string, GeometryElement>, stylesByNode: Map<number, StyleElement>, stylesBySelector: Map<string, StyleElement>): { readonly color: [number, number, number]; readonly source: GeometryElement } | undefined {
+  let element: GeometryElement | undefined = target;
+  let background: Rgba = { red: 0, green: 0, blue: 0, alpha: 0 };
+  let source: GeometryElement | undefined;
+  while (element) {
+    const style = styleFor(element, stylesByNode, stylesBySelector);
+    const paint = rgba(style?.computed?.backgroundColor ?? style?.computed?.['background-color']);
+    if (!paint) return undefined;
+    const wasOpaque = background.alpha === 1;
+    background = applyOpacity(composite(background, paint), element.visibility?.opacity ?? 1);
+    if (!wasOpaque && background.alpha === 1) source = element;
+    else if (background.alpha < 1) source = undefined;
+    if (background.alpha === 1 && source && remainingOpacityIsOne(element, byPath)) return { color: [Math.round(background.red), Math.round(background.green), Math.round(background.blue)], source };
+    element = element.domPath === undefined ? undefined : byPath.get(parentPath(element.domPath) ?? '');
+  }
+  return undefined;
+}
+
+function effectiveForeground(foreground: Rgba, target: GeometryElement, byPath: Map<string, GeometryElement>, stylesByNode: Map<number, StyleElement>, stylesBySelector: Map<string, StyleElement>): [number, number, number] | undefined {
+  let element: GeometryElement | undefined = target;
+  let background: Rgba = { red: 0, green: 0, blue: 0, alpha: 0 };
+  let rendered = foreground;
+  while (element) {
+    const style = styleFor(element, stylesByNode, stylesBySelector);
+    const paint = rgba(style?.computed?.backgroundColor ?? style?.computed?.['background-color']);
+    if (!paint) return undefined;
+    const opacity = element.visibility?.opacity ?? 1;
+    background = applyOpacity(composite(background, paint), opacity);
+    rendered = applyOpacity(composite(rendered, paint), opacity);
+    if (background.alpha === 1 && remainingOpacityIsOne(element, byPath)) return [Math.round(rendered.red), Math.round(rendered.green), Math.round(rendered.blue)];
+    element = element.domPath === undefined ? undefined : byPath.get(parentPath(element.domPath) ?? '');
+  }
+  return undefined;
+}
+
 function contrastRatio(foreground: [number, number, number], background: [number, number, number]): number {
   const lum = (channels: [number, number, number]) => channels.reduce((sum, channel, index) => { const v = channel / 255; return sum + (v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4) * [0.2126, 0.7152, 0.0722][index]; }, 0);
   const a = lum(foreground), b = lum(background);
@@ -276,15 +381,26 @@ export function checkSnapshot(ref: SnapRef, requested: readonly CheckName[]): { 
   if (selected.has('tap-targets')) for (const e of visible) if (/^(button|a|input|select|textarea)$/i.test((e as { tag?: string }).tag ?? '') && (e.rect.width < 44 || e.rect.height < 44)) findings.push(finding('tap-targets', e, `${label(e)} measures ${e.rect.width}×${e.rect.height}px; threshold is 44×44px`));
 
   if (selected.has('contrast')) {
-    const styles = readRequired<{ elements?: Array<{ selector?: string; backendNodeId?: number | null; computed?: Record<string, string | null> }> }>(ref, 'styles.json');
-    for (const style of styles.elements ?? []) {
-      const foreground = rgb(style.computed?.color);
-      const background = rgb(style.computed?.backgroundColor ?? style.computed?.['background-color']);
-      if (!foreground || !background) continue;
-      const ratio = contrastRatio(foreground, background);
+    const styles = readRequired<{ elements?: StyleElement[] }>(ref, 'styles.json').elements ?? [];
+    const stylesByNode = new Map<number, StyleElement>();
+    const stylesBySelector = new Map<string, StyleElement>();
+    const byPath = new Map<string, GeometryElement>();
+    for (const element of elements) if (element.domPath) byPath.set(element.domPath, element);
+    for (const style of styles) {
+      if (style.backendNodeId != null) stylesByNode.set(style.backendNodeId, style);
+      if (style.selector) stylesBySelector.set(style.selector, style);
+    }
+    for (const style of styles) {
+      const foreground = rgba(style.computed?.color);
+      const element = elements.find((candidate) => (style.backendNodeId != null && candidate.backendNodeId === style.backendNodeId) || candidate.selector === style.selector);
+      if (!foreground || !element) continue;
+      const background = effectiveBackground(element, byPath, stylesByNode, stylesBySelector);
+      const renderedForeground = effectiveForeground(foreground, element, byPath, stylesByNode, stylesBySelector);
+      if (!background || !renderedForeground) continue;
+      const ratio = contrastRatio(renderedForeground, background.color);
       if (ratio < 4.5) {
-        const e = elements.find((x) => (style.backendNodeId != null && x.backendNodeId === style.backendNodeId) || x.selector === style.selector);
-        findings.push(finding('contrast', e, `${style.selector ?? label(e ?? {})} foreground ${style.computed?.color} against background ${style.computed?.backgroundColor ?? style.computed?.['background-color']} has contrast ratio ${ratio.toFixed(2)}:1`, 'computed color and background-color'));
+        const source = label(background.source);
+        findings.push(finding('contrast', element, `contrast ratio ${ratio.toFixed(2)}:1 — ${style.selector ?? label(element)} foreground ${style.computed?.color} against composited background rgb(${background.color.join(', ')})`, `computed color; effective background supplied by ${source}'s opaque paint after compositing recorded descendant backgrounds`));
       }
     }
   }

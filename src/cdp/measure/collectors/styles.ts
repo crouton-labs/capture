@@ -123,10 +123,9 @@ export type StylesUnavailableReason = 'styles-evaluate-returned-no-value' | 'sty
 // In-page script — cssPath + computed style facts, no DOM domain calls
 // ============================================================================
 
-// `html`/`body` are excluded: `cssPathFromBody` is rooted AT `document.body`, so it produces `''` for
-// the body element itself and `body > html` for the (out-of-subtree) html element — neither is a valid
-// `body > ...` selector for `resolveNodeIds` to query. Both are structural roots, not measurable subjects.
-const EXCLUDED_TAGS = ['html', 'body', 'script', 'style', 'head', 'meta', 'link', 'title', 'template', 'noscript', 'br', 'wbr'];
+// `html` is excluded because `cssPathFromBody` is rooted at `document.body`, so it would produce
+// an out-of-subtree selector. `body` remains: it supplies the canvas background behind transparent descendants.
+const EXCLUDED_TAGS = ['html', 'script', 'style', 'head', 'meta', 'link', 'title', 'template', 'noscript', 'br', 'wbr'];
 
 interface StylesFact {
   cssPath: string;
@@ -149,6 +148,7 @@ const STYLES_SCRIPT = `/* __captureStylesInventory */
   for (var e = 0; e < EXCLUDED.length; e++) excludedSet[EXCLUDED[e]] = true;
 
   function cssPathFromBody(el) {
+    if (el === document.body) return 'body';
     var parts = [];
     var node = el;
     var depth = 0;

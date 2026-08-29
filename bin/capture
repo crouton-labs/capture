@@ -7199,38 +7199,38 @@ var require_bitpacker = __commonJS({
       }
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
-          let rgba = getRGBA(data2, inIndex);
+          let rgba2 = getRGBA(data2, inIndex);
           switch (options.colorType) {
             case constants3.COLORTYPE_COLOR_ALPHA:
             case constants3.COLORTYPE_COLOR:
               if (options.bitDepth === 8) {
-                outData[outIndex] = rgba.red;
-                outData[outIndex + 1] = rgba.green;
-                outData[outIndex + 2] = rgba.blue;
+                outData[outIndex] = rgba2.red;
+                outData[outIndex + 1] = rgba2.green;
+                outData[outIndex + 2] = rgba2.blue;
                 if (outHasAlpha) {
-                  outData[outIndex + 3] = rgba.alpha;
+                  outData[outIndex + 3] = rgba2.alpha;
                 }
               } else {
-                outData.writeUInt16BE(rgba.red, outIndex);
-                outData.writeUInt16BE(rgba.green, outIndex + 2);
-                outData.writeUInt16BE(rgba.blue, outIndex + 4);
+                outData.writeUInt16BE(rgba2.red, outIndex);
+                outData.writeUInt16BE(rgba2.green, outIndex + 2);
+                outData.writeUInt16BE(rgba2.blue, outIndex + 4);
                 if (outHasAlpha) {
-                  outData.writeUInt16BE(rgba.alpha, outIndex + 6);
+                  outData.writeUInt16BE(rgba2.alpha, outIndex + 6);
                 }
               }
               break;
             case constants3.COLORTYPE_ALPHA:
             case constants3.COLORTYPE_GRAYSCALE: {
-              let grayscale = (rgba.red + rgba.green + rgba.blue) / 3;
+              let grayscale = (rgba2.red + rgba2.green + rgba2.blue) / 3;
               if (options.bitDepth === 8) {
                 outData[outIndex] = grayscale;
                 if (outHasAlpha) {
-                  outData[outIndex + 1] = rgba.alpha;
+                  outData[outIndex + 1] = rgba2.alpha;
                 }
               } else {
                 outData.writeUInt16BE(grayscale, outIndex);
                 if (outHasAlpha) {
-                  outData.writeUInt16BE(rgba.alpha, outIndex + 2);
+                  outData.writeUInt16BE(rgba2.alpha, outIndex + 2);
                 }
               }
               break;
@@ -231751,7 +231751,7 @@ var init_styles = __esm({
       "display",
       "position"
     ];
-    EXCLUDED_TAGS = ["html", "body", "script", "style", "head", "meta", "link", "title", "template", "noscript", "br", "wbr"];
+    EXCLUDED_TAGS = ["html", "script", "style", "head", "meta", "link", "title", "template", "noscript", "br", "wbr"];
     STYLES_SCRIPT = `/* __captureStylesInventory */
 (function() {
   var EXCLUDED = ${JSON.stringify(EXCLUDED_TAGS)};
@@ -231760,6 +231760,7 @@ var init_styles = __esm({
   for (var e = 0; e < EXCLUDED.length; e++) excludedSet[EXCLUDED[e]] = true;
 
   function cssPathFromBody(el) {
+    if (el === document.body) return 'body';
     var parts = [];
     var node = el;
     var depth = 0;
@@ -236938,8 +236939,8 @@ function makeCollectorWriter(writer) {
   };
 }
 function boundedClient(client, phase, partialPath, onTimeout) {
-  const bounded = Object.create(client);
-  bounded.send = (method, params = {}, timeout = 6e4, sessionId) => {
+  const bounded2 = Object.create(client);
+  bounded2.send = (method, params = {}, timeout = 6e4, sessionId) => {
     const timeoutMs = Math.min(timeout, SNAPSHOT_REQUEST_TIMEOUT_MS);
     let timer;
     let timedOut = false;
@@ -236968,7 +236969,7 @@ function boundedClient(client, phase, partialPath, onTimeout) {
       if (timer) clearTimeout(timer);
     });
   };
-  return bounded;
+  return bounded2;
 }
 async function captureSnapshotSubstrate(options) {
   const client = options.target.client;
@@ -238043,9 +238044,103 @@ function isSelfOrDescendant(target, receiver) {
   if (target.backendNodeId != null && target.backendNodeId === receiver.backendNodeId) return true;
   return target.domPath !== void 0 && receiver.domPath !== void 0 && receiver.domPath.startsWith(`${target.domPath}/`);
 }
-function rgb(value) {
-  const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(value ?? "");
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : void 0;
+function bounded(value) {
+  return Math.min(1, Math.max(0, value));
+}
+function rgbChannel(token2) {
+  const value = token2.trim();
+  return value.endsWith("%") ? Number(value.slice(0, -1)) * 2.55 : Number(value);
+}
+function fromOklab(lightness, a, b, alpha) {
+  if (![lightness, a, b, alpha].every(Number.isFinite) || alpha < 0 || alpha > 1) return void 0;
+  const l = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (lightness - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  const linear = [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s];
+  const channel = (value) => 255 * (value <= 31308e-7 ? 12.92 * bounded(value) : 1.055 * bounded(value) ** (1 / 2.4) - 0.055);
+  return { red: channel(linear[0]), green: channel(linear[1]), blue: channel(linear[2]), alpha };
+}
+function rgba(value) {
+  const input = value?.trim().toLowerCase();
+  if (!input) return void 0;
+  if (input === "transparent") return { red: 0, green: 0, blue: 0, alpha: 0 };
+  const hex = /^#([\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i.exec(input);
+  if (hex) {
+    const digits = hex[1].length <= 4 ? hex[1].split("").map((digit) => digit + digit).join("") : hex[1];
+    return { red: parseInt(digits.slice(0, 2), 16), green: parseInt(digits.slice(2, 4), 16), blue: parseInt(digits.slice(4, 6), 16), alpha: digits.length === 8 ? parseInt(digits.slice(6, 8), 16) / 255 : 1 };
+  }
+  const rgb = /^rgba?\(\s*([^,\s]+)(?:\s*,\s*|\s+)([^,\s]+)(?:\s*,\s*|\s+)([^,\s]+)(?:\s*(?:,|\/)\s*([^\s)]+))?\s*\)$/i.exec(input);
+  if (rgb) {
+    const channels = [rgbChannel(rgb[1]), rgbChannel(rgb[2]), rgbChannel(rgb[3])];
+    const alpha = rgb[4] === void 0 ? 1 : parseAlphaToken(rgb[4]);
+    return channels.some((channel) => !Number.isFinite(channel) || channel < 0 || channel > 255) || !Number.isFinite(alpha) || alpha < 0 || alpha > 1 ? void 0 : { red: channels[0], green: channels[1], blue: channels[2], alpha };
+  }
+  const oklab = /^oklab\(\s*([\d.]+)(?:\s*,\s*|\s+)([-\d.]+)(?:\s*,\s*|\s+)([-\d.]+)(?:\s*(?:,|\/)\s*([^\s)]+))?\s*\)$/i.exec(input);
+  if (oklab) return fromOklab(Number(oklab[1]), Number(oklab[2]), Number(oklab[3]), oklab[4] === void 0 ? 1 : parseAlphaToken(oklab[4]));
+  const oklch = /^oklch\(\s*([\d.]+)(?:\s*,\s*|\s+)([\d.]+)(?:\s*,\s*|\s+)([-\d.]+)(?:\s*(?:,|\/)\s*([^\s)]+))?\s*\)$/i.exec(input);
+  if (oklch) {
+    const chroma = Number(oklch[2]);
+    const hue = Number(oklch[3]) * Math.PI / 180;
+    return fromOklab(Number(oklch[1]), chroma * Math.cos(hue), chroma * Math.sin(hue), oklch[4] === void 0 ? 1 : parseAlphaToken(oklch[4]));
+  }
+  return void 0;
+}
+function composite(over, under) {
+  const alpha = over.alpha + under.alpha * (1 - over.alpha);
+  if (alpha === 0) return { red: 0, green: 0, blue: 0, alpha: 0 };
+  return {
+    red: (over.red * over.alpha + under.red * under.alpha * (1 - over.alpha)) / alpha,
+    green: (over.green * over.alpha + under.green * under.alpha * (1 - over.alpha)) / alpha,
+    blue: (over.blue * over.alpha + under.blue * under.alpha * (1 - over.alpha)) / alpha,
+    alpha
+  };
+}
+function applyOpacity(paint, opacity) {
+  return { ...paint, alpha: paint.alpha * opacity };
+}
+function styleFor(element, stylesByNode, stylesBySelector) {
+  return (element.backendNodeId === null || element.backendNodeId === void 0 ? void 0 : stylesByNode.get(element.backendNodeId)) ?? (element.selector === void 0 ? void 0 : stylesBySelector.get(element.selector)) ?? (element.tag === void 0 ? void 0 : stylesBySelector.get(element.tag));
+}
+function remainingOpacityIsOne(element, byPath) {
+  let ancestor = element.domPath === void 0 ? void 0 : byPath.get(parentPath(element.domPath) ?? "");
+  while (ancestor) {
+    if ((ancestor.visibility?.opacity ?? 1) !== 1) return false;
+    ancestor = ancestor.domPath === void 0 ? void 0 : byPath.get(parentPath(ancestor.domPath) ?? "");
+  }
+  return true;
+}
+function effectiveBackground(target, byPath, stylesByNode, stylesBySelector) {
+  let element = target;
+  let background = { red: 0, green: 0, blue: 0, alpha: 0 };
+  let source;
+  while (element) {
+    const style = styleFor(element, stylesByNode, stylesBySelector);
+    const paint = rgba(style?.computed?.backgroundColor ?? style?.computed?.["background-color"]);
+    if (!paint) return void 0;
+    const wasOpaque = background.alpha === 1;
+    background = applyOpacity(composite(background, paint), element.visibility?.opacity ?? 1);
+    if (!wasOpaque && background.alpha === 1) source = element;
+    else if (background.alpha < 1) source = void 0;
+    if (background.alpha === 1 && source && remainingOpacityIsOne(element, byPath)) return { color: [Math.round(background.red), Math.round(background.green), Math.round(background.blue)], source };
+    element = element.domPath === void 0 ? void 0 : byPath.get(parentPath(element.domPath) ?? "");
+  }
+  return void 0;
+}
+function effectiveForeground(foreground, target, byPath, stylesByNode, stylesBySelector) {
+  let element = target;
+  let background = { red: 0, green: 0, blue: 0, alpha: 0 };
+  let rendered = foreground;
+  while (element) {
+    const style = styleFor(element, stylesByNode, stylesBySelector);
+    const paint = rgba(style?.computed?.backgroundColor ?? style?.computed?.["background-color"]);
+    if (!paint) return void 0;
+    const opacity = element.visibility?.opacity ?? 1;
+    background = applyOpacity(composite(background, paint), opacity);
+    rendered = applyOpacity(composite(rendered, paint), opacity);
+    if (background.alpha === 1 && remainingOpacityIsOne(element, byPath)) return [Math.round(rendered.red), Math.round(rendered.green), Math.round(rendered.blue)];
+    element = element.domPath === void 0 ? void 0 : byPath.get(parentPath(element.domPath) ?? "");
+  }
+  return void 0;
 }
 function contrastRatio(foreground, background) {
   const lum = (channels) => channels.reduce((sum, channel, index) => {
@@ -238102,15 +238197,26 @@ function checkSnapshot(ref, requested) {
     for (const e of visible) if (/^(button|a|input|select|textarea)$/i.test(e.tag ?? "") && (e.rect.width < 44 || e.rect.height < 44)) findings.push(finding("tap-targets", e, `${label(e)} measures ${e.rect.width}\xD7${e.rect.height}px; threshold is 44\xD744px`));
   }
   if (selected.has("contrast")) {
-    const styles = readRequired(ref, "styles.json");
-    for (const style of styles.elements ?? []) {
-      const foreground = rgb(style.computed?.color);
-      const background = rgb(style.computed?.backgroundColor ?? style.computed?.["background-color"]);
-      if (!foreground || !background) continue;
-      const ratio = contrastRatio(foreground, background);
+    const styles = readRequired(ref, "styles.json").elements ?? [];
+    const stylesByNode = /* @__PURE__ */ new Map();
+    const stylesBySelector = /* @__PURE__ */ new Map();
+    const byPath = /* @__PURE__ */ new Map();
+    for (const element of elements) if (element.domPath) byPath.set(element.domPath, element);
+    for (const style of styles) {
+      if (style.backendNodeId != null) stylesByNode.set(style.backendNodeId, style);
+      if (style.selector) stylesBySelector.set(style.selector, style);
+    }
+    for (const style of styles) {
+      const foreground = rgba(style.computed?.color);
+      const element = elements.find((candidate) => style.backendNodeId != null && candidate.backendNodeId === style.backendNodeId || candidate.selector === style.selector);
+      if (!foreground || !element) continue;
+      const background = effectiveBackground(element, byPath, stylesByNode, stylesBySelector);
+      const renderedForeground = effectiveForeground(foreground, element, byPath, stylesByNode, stylesBySelector);
+      if (!background || !renderedForeground) continue;
+      const ratio = contrastRatio(renderedForeground, background.color);
       if (ratio < 4.5) {
-        const e = elements.find((x) => style.backendNodeId != null && x.backendNodeId === style.backendNodeId || x.selector === style.selector);
-        findings.push(finding("contrast", e, `${style.selector ?? label(e ?? {})} foreground ${style.computed?.color} against background ${style.computed?.backgroundColor ?? style.computed?.["background-color"]} has contrast ratio ${ratio.toFixed(2)}:1`, "computed color and background-color"));
+        const source = label(background.source);
+        findings.push(finding("contrast", element, `contrast ratio ${ratio.toFixed(2)}:1 \u2014 ${style.selector ?? label(element)} foreground ${style.computed?.color} against composited background rgb(${background.color.join(", ")})`, `computed color; effective background supplied by ${source}'s opaque paint after compositing recorded descendant backgrounds`));
       }
     }
   }
@@ -238220,8 +238326,25 @@ async function cmdMeasureCheck(parsed, _args) {
     const checks = parseChecks(parsed.for);
     const ref = await resolveSnapRef(target, { onUrl: async (url) => captureMeasureSnap({ ...parsed, positional: [url] }, url) });
     const report = checkSnapshot(ref, checks);
-    const proseFindings = representativeFindings(report.findings, parsed.limit ?? DEFAULT_FINDING_LIMIT);
-    const findingsForOutput = parsed.json ? report.findings : proseFindings;
+    const scopedElements = parsed.selector ? resolveSelectorInput(readGeometry(ref).elements ?? [], parsed.selector) : void 0;
+    if (scopedElements && !scopedElements.length) {
+      emitResult({
+        tag: "error",
+        attrs: { command: "measure check", status: "missing_selector", selector: parsed.selector },
+        summary: fact`No geometry record matched selector input ${parsed.selector}.`,
+        followUp: text`Use a recorded selector or backend:<id> from geometry.json.`
+      }, { json: parsed.json });
+      process.exitCode = 1;
+      return;
+    }
+    const scopedIds = scopedElements ? new Set(scopedElements.map((element) => element.id)) : void 0;
+    const scopedBackendNodeIds = scopedElements ? new Set(scopedElements.map((element) => element.backendNodeId).filter((backendNodeId2) => backendNodeId2 !== null && backendNodeId2 !== void 0)) : void 0;
+    const selectorCounts = /* @__PURE__ */ new Map();
+    for (const element of readGeometry(ref).elements ?? []) if (element.selector !== void 0) selectorCounts.set(element.selector, (selectorCounts.get(element.selector) ?? 0) + 1);
+    const scopedSelectors = scopedElements ? new Set(scopedElements.map((element) => element.selector).filter((selector) => selector !== void 0 && selectorCounts.get(selector) === 1)) : void 0;
+    const findings = scopedIds ? report.findings.filter((finding2) => finding2.elementId !== void 0 && scopedIds.has(finding2.elementId) || finding2.backendNodeId !== void 0 && scopedBackendNodeIds.has(finding2.backendNodeId) || finding2.selector !== void 0 && scopedSelectors.has(finding2.selector)) : report.findings;
+    const proseFindings = representativeFindings(findings, parsed.limit ?? DEFAULT_FINDING_LIMIT);
+    const findingsForOutput = parsed.json ? findings : proseFindings;
     const withCrops = findingsForOutput.map((finding2, index) => ({ ...finding2, crop: writeFindingCrop(ref, finding2, index) }));
     const meta = readMeta(ref);
     const findingSections = withCrops.map((finding2) => ({
@@ -238243,16 +238366,16 @@ async function cmdMeasureCheck(parsed, _args) {
         path: ref.dir,
         note: meta.settled ? text`Measurements read from a settled snapshot.` : text`Measurements read from a queryable unsettled snapshot; affected facts carry per-region nondeterminism caveats.`
       },
-      attrs: { result: report.findings.length ? "findings" : "clean", checks: checks.join(","), elements: report.elementCount, findings: report.findings.length, displayed: withCrops.length, settled: report.settled },
-      summary: report.findings.length ? fact`${report.findings.length} measured fact(s) matched the selected thresholds in viewport ${report.viewport.width}×${report.viewport.height}; ${withCrops.length} representative record(s) rendered.` : fact`No selected measurement threshold was crossed among ${report.elementCount} recorded elements in viewport ${report.viewport.width}×${report.viewport.height}.`,
+      attrs: { result: findings.length ? "findings" : "clean", checks: checks.join(","), elements: scopedElements?.length ?? report.elementCount, findings: findings.length, displayed: withCrops.length, settled: report.settled, ...parsed.selector ? { selector: parsed.selector } : {} },
+      summary: findings.length ? fact`${findings.length} measured fact(s) matched the selected thresholds in viewport ${report.viewport.width}×${report.viewport.height}; ${withCrops.length} representative record(s) rendered.` : fact`No selected measurement threshold was crossed among ${scopedElements?.length ?? report.elementCount} recorded elements in viewport ${report.viewport.width}×${report.viewport.height}.`,
       sections: [
-        ...report.findings.length ? [line(text`Finding counts: `, rollup(report.findings))] : [],
+        ...findings.length ? [line(text`Finding counts: `, rollup(findings))] : [],
         ...formatFindings(findingSections)
       ],
-      followUp: parsed.json ? fact`All ${report.findings.length} measured finding record(s) are included in this JSON result.` : fact`Use --json to read all ${report.findings.length} measured finding record(s) from this snapshot.`
+      followUp: parsed.json ? fact`All ${findings.length} measured finding record(s) are included in this JSON result.` : fact`Use --json to read all ${findings.length} measured finding record(s) from this snapshot.`
     };
     emitResult(result, { json: parsed.json });
-    if (parsed.gate && report.findings.length) process.exitCode = 2;
+    if (parsed.gate && findings.length) process.exitCode = 2;
   } catch (err) {
     const resolution = err;
     const detail = err instanceof Error ? err.message : "unknown artifact read failure";
@@ -238269,6 +238392,7 @@ var USAGE16, DEFAULT_FINDING_LIMIT;
 var init_check2 = __esm({
   "src/cdp/commands/measure/check.ts"() {
     init_artifact();
+    init_selector();
     init_render();
     init_snap();
     init_check();
@@ -238278,6 +238402,7 @@ input:
   [url|snap]      a URL creates one one-shot snapshot first; a snap id or absolute path is read without re-driving the browser
   --for <checks>  geometry|content|targetability|forms|animation|all, or comma-separated overlap,offscreen,overflow,tap-targets,contrast,hit-test,truncation,forms,media,animation
   --limit <n>     render at most n representative findings in prose (default: 20; --json retains all findings)
+  --selector <s>  limit measurements to recorded CSS/text/AX selector input or backend:<id>
   --gate          exit 2 when the report contains findings (default: exit 0)
 output: <checks result=\u2026 findings=\u2026> \u2014 findings with coordinates and collection provenance; measurements, not a pass/fail judgment; --json mirrors
 effects: read-only over an existing snapshot artifact; a URL target writes one one-shot snapshot first`;
@@ -238772,8 +238897,8 @@ function hexRgb(value) {
     const s = hex[1].length === 3 ? hex[1].split("").map((c) => c + c).join("") : hex[1];
     return [Number.parseInt(s.slice(0, 2), 16), Number.parseInt(s.slice(2, 4), 16), Number.parseInt(s.slice(4, 6), 16)];
   }
-  const rgb2 = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/i.exec(value.trim());
-  return rgb2 ? [Number(rgb2[1]), Number(rgb2[2]), Number(rgb2[3])] : void 0;
+  const rgb = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/i.exec(value.trim());
+  return rgb ? [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])] : void 0;
 }
 function colorDistance(a, b) {
   const aa = hexRgb(a);
@@ -239762,9 +239887,9 @@ function gridTrackCount(value) {
 }
 function colorCategory(value) {
   if (!value) return void 0;
-  const rgb2 = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/.exec(value);
-  if (!rgb2) return "other";
-  const [red, green, blue, alpha] = rgb2.slice(1).map(Number);
+  const rgb = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/.exec(value);
+  if (!rgb) return "other";
+  const [red, green, blue, alpha] = rgb.slice(1).map(Number);
   if (alpha !== void 0 && alpha === 0) return "transparent";
   const maximum = Math.max(red, green, blue);
   const dominant = `${red === maximum ? "r" : ""}${green === maximum ? "g" : ""}${blue === maximum ? "b" : ""}`;
@@ -242123,7 +242248,7 @@ function createMotionMask(ref) {
   try {
     let width = 0;
     let height = 0;
-    let composite;
+    let composite2;
     const samples = [];
     for (let pair = 0; pair < frameFiles.length - 1; pair++) {
       const before = path30.join(framesDir, frameFiles[pair]);
@@ -242133,10 +242258,10 @@ function createMotionMask(ref) {
       if (!outcome.ok) {
         throw new Error(`Frame dimensions differ between ${frameFiles[pair]} (${outcome.before.width}x${outcome.before.height}) and ${frameFiles[pair + 1]} (${outcome.after.width}x${outcome.after.height}); a motion composite requires one viewport size.`);
       }
-      if (!composite) {
+      if (!composite2) {
         width = outcome.width;
         height = outcome.height;
-        composite = new import_pngjs7.PNG({ width, height, fill: true });
+        composite2 = new import_pngjs7.PNG({ width, height, fill: true });
       }
       const diff = import_pngjs7.PNG.sync.read(fs29.readFileSync(diffPath));
       const pixels = [];
@@ -242146,17 +242271,17 @@ function createMotionMask(ref) {
           if (diff.data[offset + 3] === 0) continue;
           pixels.push({ x, y });
           const [r, g, b] = hueForPair(pair, frameFiles.length - 2);
-          composite.data[offset] = r;
-          composite.data[offset + 1] = g;
-          composite.data[offset + 2] = b;
-          composite.data[offset + 3] = 255;
+          composite2.data[offset] = r;
+          composite2.data[offset + 1] = g;
+          composite2.data[offset + 2] = b;
+          composite2.data[offset + 3] = 255;
         }
       }
       samples.push({ pair, pixels });
     }
-    if (!composite) throw new Error(`Recording ${ref.id} had no readable frame pairs.`);
-    writeBinaryPrivate(outputPath, import_pngjs7.PNG.sync.write(composite));
-    const { components, labels } = connectedComponents(composite, width, height);
+    if (!composite2) throw new Error(`Recording ${ref.id} had no readable frame pairs.`);
+    writeBinaryPrivate(outputPath, import_pngjs7.PNG.sync.write(composite2));
+    const { components, labels } = connectedComponents(composite2, width, height);
     const stats = computeComponentStats(components, labels, width, height, samples, recordsByFile);
     const durationMs2 = finiteNumber(meta.durationMs) ?? 0;
     const regions = components.map((component, index) => regionForComponent(
@@ -242206,11 +242331,11 @@ function recordingArtifactPath(ref, filename) {
     throw new Error(`${detail} \u2014 create a finalized recording with \`capture motion rec\`.`);
   }
 }
-function connectedComponents(composite, width, height) {
+function connectedComponents(composite2, width, height) {
   const seen = new Uint8Array(width * height);
   const components = [];
   for (let start2 = 0; start2 < seen.length; start2++) {
-    if (seen[start2] || composite.data[start2 * 4 + 3] === 0) continue;
+    if (seen[start2] || composite2.data[start2 * 4 + 3] === 0) continue;
     const pixels = [];
     const queue = [start2];
     seen[start2] = 1;
@@ -242223,7 +242348,7 @@ function connectedComponents(composite, width, height) {
         const nx = x + dx;
         const ny = y + dy;
         const next = ny * width + nx;
-        if (nx < 0 || ny < 0 || nx >= width || ny >= height || seen[next] || composite.data[next * 4 + 3] === 0) continue;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height || seen[next] || composite2.data[next * 4 + 3] === 0) continue;
         seen[next] = 1;
         queue.push(next);
       }
