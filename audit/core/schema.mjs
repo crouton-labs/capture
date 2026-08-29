@@ -43,7 +43,7 @@ export const CdpConnectionSchema = z.object({
 export const AuditMetaSchema = z.object({
   caseId: StringId, runId: StringId, captureBuildHash: StringId, fixtureRevision: StringId,
   promptRevision: StringId, chromeBuild: StringId, model: StringId, hostClass: StringId, startedAt: IsoDate,
-  browserFlags: z.array(z.string()), stopReason: z.string().optional(), infrastructureFailure: z.boolean().optional(),
+  browserFlags: z.array(z.string()), cdpProxyPort: z.number().int().min(1).max(65_535).optional(), stopReason: z.string().optional(), infrastructureFailure: z.boolean().optional(),
   infrastructure: z.object({ failed: z.boolean() }).optional(),
   provenance: z.object({ runId: StringId, captureBuildHash: StringId, fixtureRevision: StringId, promptRevision: StringId, chromeBuild: StringId, model: StringId, hostClass: StringId, startedAt: IsoDate, browserFlags: z.array(z.string()) }).partial().optional(),
 });

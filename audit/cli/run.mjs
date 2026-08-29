@@ -204,6 +204,7 @@ export async function start(args) {
     const fixture = await fixtureModule(entry);
     chrome = await launchChrome({ fixtureUrl: fixtureServer.url, flavor: fixture.chromeFlavor, args: input.browserFlags, handleSignals: false, onStarted: (resource) => { chrome = resource; } });
     proxy = await startProxyOutside(preflightPorts, chrome.port, paths.connections);
+    meta.cdpProxyPort = proxy.port;
     const fixtureUrl = targetUrl(fixtureServer.url);
     const prompt = renderPrompt(template, {
       opaque_run_id: runId,

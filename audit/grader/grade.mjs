@@ -7,6 +7,12 @@ import { getCase } from "../core/registry.mjs";
 const auditRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const CDP_GRACE_MS = 2_000;
 const CDP_ACCOUNTING_RULE = "A CDP connection is accounted when its accepted-to-closed window overlaps a wrapped invocation window extended by 2 seconds at each end.";
+const TARGET_ESTABLISHING_COMMANDS = new Map([
+  ["session start", "session start"],
+  ["tab launch", "tab launch"],
+  ["tab open", "tab open"],
+  ["tab reset", "tab reset"],
+]);
 const PLAUSIBLE_WRONG_ANSWER_FACT_ID = "plausibleWrongAnswer";
 const SYMPTOM_REPRODUCED_FACT_ID = "symptomReproduced";
 const ABSOLUTE_CEILINGS = { calls: 40, elapsedSeconds: 25 * 60, stdoutTokens: 40_000 };
@@ -59,6 +65,44 @@ function startsWith(argv, prefix) {
 
 function isHelp(argv) {
   return argv.includes("-h") || argv.includes("--help");
+}
+
+function optionValue(argv, option) {
+  let value;
+  for (const [index, argument] of argv.entries()) {
+    if (argument === option) value = argv[index + 1] ?? null;
+    else if (argument.startsWith(`${option}=`)) value = argument.slice(option.length + 1);
+  }
+  return value;
+}
+
+function targetEstablishingCommand(event) {
+  const { argv } = event;
+  if (event.exitCode !== 0 || event.signal !== null || isHelp(argv)) return null;
+  const command = TARGET_ESTABLISHING_COMMANDS.get(argv.slice(0, 2).join(" ")) ?? null;
+  if (command !== "session start") return command;
+  return optionValue(argv, "--url") !== undefined || optionValue(argv, "--target") !== undefined ? command : null;
+}
+
+function contaminationFailures(events, cdpProxyPort) {
+  const failures = [];
+  for (const event of events) {
+    if (event.argv.some((argument) => argument.toLowerCase().includes("file://"))) {
+      failures.push(`file:// URL in wrapped invocation (transcript ordinal ${event.ordinal})`);
+    }
+    const command = targetEstablishingCommand(event);
+    if (command === null) continue;
+    if (command === "tab launch") {
+      failures.push(`target-establishing tab launch starts a host browser instead of using the sanctioned CDP proxy (transcript ordinal ${event.ordinal})`);
+      continue;
+    }
+    if (cdpProxyPort === undefined) continue;
+    const port = optionValue(event.argv, "--port");
+    if (port !== undefined && Number(port) !== cdpProxyPort) {
+      failures.push(`target-establishing ${command} used CDP port ${port} instead of sanctioned proxy port ${cdpProxyPort} (transcript ordinal ${event.ordinal})`);
+    }
+  }
+  return failures;
 }
 
 function classifyCommands(events, oracle) {
@@ -149,6 +193,7 @@ function renderWorksheet(oracle, report, parsedReport, record) {
     `- First intended-capability ordinal: ${record.routeMetrics.firstIntendedCapabilityOrdinal ?? "none"}; capability use: ${record.grade.firstClassCapability}.`,
     `- Reference ratios — calls: ${record.routeMetrics.callRatio ?? "undefined"}; elapsed: ${record.routeMetrics.elapsedRatio ?? "undefined"}; stdout: ${record.routeMetrics.stdoutTokenRatio ?? "undefined"}${record.referenceProvisional ? " (reference provisional)" : ""}.`,
     `- CDP accounting: ${record.grade.cdpAccounting.unaccounted} unaccounted connection(s), using: ${record.grade.cdpAccounting.rule}`,
+    `- Isolation contamination: ${record._mechanical.contaminationFailures.length ? record._mechanical.contaminationFailures.join("; ") : "none detected"}.`,
     ...record._mechanical.budgetBreaches.map((breach) => `- Budget breach: ${breach.condition} at transcript ordinal ${breach.ordinal ?? "none"}.`),
     "",
     "## Required diagnosis facts",
@@ -289,6 +334,7 @@ function mechanicalRecord({ runId, meta, oracle, reference, events, connections,
       infrastructureFailure: infrastructureFailure(meta),
       telemetryFailures: [...transcriptFailures(events, runId), ...(cdpLogPresent ? [] : ["missing cdp-connections.ndjson"])],
       provenanceFailures: provenanceFailures(runProvenance, oracle, reference, runId, meta),
+      contaminationFailures: contaminationFailures(events, meta.cdpProxyPort),
     },
   };
 }
@@ -357,13 +403,14 @@ function adjudicate(record, oracle, facts) {
   ].filter(Boolean);
   let finalClass;
   let reasons;
-  if (record._mechanical.unaccounted.length > 0 || record._mechanical.infrastructureFailure || record._mechanical.telemetryFailures.length > 0 || record._mechanical.provenanceFailures.length > 0) {
+  if (record._mechanical.unaccounted.length > 0 || record._mechanical.infrastructureFailure || record._mechanical.telemetryFailures.length > 0 || record._mechanical.provenanceFailures.length > 0 || record._mechanical.contaminationFailures.length > 0) {
     finalClass = "invalid";
     reasons = [
       ...record._mechanical.unaccounted.map((connection) => `unaccounted CDP connection ${connection.connId}`),
       ...(record._mechanical.infrastructureFailure ? ["meta.json flags an infrastructure failure"] : []),
       ...record._mechanical.telemetryFailures,
       ...record._mechanical.provenanceFailures,
+      ...record._mechanical.contaminationFailures,
     ];
   } else if (failureReasons.length > 0) {
     finalClass = "fail";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -60,7 +60,7 @@ async function fixture(t, { events = [event(1, ["-h"]), event(2, ["page", "inspe
     (async () => {
       await (await import("node:fs/promises")).mkdir(runDir);
       await Promise.all([
-        writeFile(join(runDir, "meta.json"), `${JSON.stringify({ caseId: "case-test", runId: "run", captureBuildHash: "build", fixtureRevision: "1", promptRevision: "v1", chromeBuild: "chrome", model: "model", hostClass: "host", startedAt: now, browserFlags: [], ...meta })}\n`),
+        writeFile(join(runDir, "meta.json"), `${JSON.stringify({ caseId: "case-test", runId: "run", captureBuildHash: "build", fixtureRevision: "1", promptRevision: "v1", chromeBuild: "chrome", model: "model", hostClass: "host", startedAt: now, browserFlags: [], cdpProxyPort: 50066, ...meta })}\n`),
         writeFile(join(runDir, "transcript.ndjson"), `${events.map((item) => JSON.stringify(item)).join("\n")}\n`),
         writeFile(join(runDir, "cdp-connections.ndjson"), `${connections.map((item) => JSON.stringify(item)).join("\n")}${connections.length ? "\n" : ""}`),
         writeFile(join(runDir, "report.md"), reportValue),
@@ -99,6 +99,51 @@ test("an unaccounted CDP connection invalidates an otherwise correct run", async
   const result = await gradeRun({ runId: "run", ...paths, facts });
   assert.equal(result.record.grade.finalClass, "invalid");
   assert.equal(result.record.grade.cdpAccounting.unaccounted, 1);
+});
+
+test("a file URL in a wrapped invocation invalidates the run and appears in the worksheet", async (t) => {
+  const paths = await fixture(t, { events: [event(1, ["-h"]), event(2, ["page", "exec", "file:///sealed/oracle.json"])] });
+  const result = await gradeRun({ runId: "run", ...paths, facts });
+  assert.equal(result.record.grade.finalClass, "invalid");
+  assert.match(result.record.grade.reasons.join("\n"), /file:\/\/ URL in wrapped invocation \(transcript ordinal 2\)/);
+  assert.match(await readFile(join(paths.runDir, "grading-worksheet.md"), "utf8"), /Isolation contamination: file:\/\/ URL in wrapped invocation \(transcript ordinal 2\)/);
+});
+
+test("a target-establishing command using an explicit foreign port invalidates the run", async (t) => {
+  for (const argv of [
+    ["session", "start", "--url", "http://fixture.test", "--port=50067"],
+    ["session", "start", "--url", "http://fixture.test", "--port", "50066", "--port", "50067"],
+  ]) {
+    const paths = await fixture(t, { events: [event(1, ["-h"]), event(2, argv)] });
+    const result = await gradeRun({ runId: "run", ...paths, facts });
+    assert.equal(result.record.grade.finalClass, "invalid");
+    assert.match(result.record.grade.reasons.join("\n"), /target-establishing session start used CDP port 50067 instead of sanctioned proxy port 50066/);
+  }
+});
+
+test("proxy-targeted and ambient-proxy session starts are not contamination", async (t) => {
+  for (const argv of [
+    ["session", "start", "--url", "http://host.docker.internal:50011", "--port", "50066"],
+    ["session", "start", "--url", "http://fixture.test", "--port=50066"],
+    ["session", "start", "--url", "http://fixture.test"],
+  ]) {
+    const paths = await fixture(t, { events: [event(1, ["-h"]), event(2, argv)] });
+    const result = await gradeRun({ runId: "run", ...paths, facts });
+    assert.notEqual(result.record.grade.finalClass, "invalid");
+    assert.doesNotMatch(result.record.grade.reasons.join("\n"), /Isolation contamination|target-establishing/);
+  }
+});
+
+test("targetless and failed setup commands are not contamination", async (t) => {
+  for (const setupEvent of [
+    event(2, ["session", "start"]),
+    event(2, ["tab", "open"], { exitCode: 1 }),
+  ]) {
+    const paths = await fixture(t, { events: [event(1, ["-h"]), setupEvent] });
+    const result = await gradeRun({ runId: "run", ...paths, facts });
+    assert.notEqual(result.record.grade.finalClass, "invalid");
+    assert.doesNotMatch(result.record.grade.reasons.join("\n"), /Isolation contamination|target-establishing/);
+  }
 });
 
 test("a report that does not reproduce the symptom fails despite favorable fact verdicts", async (t) => {
