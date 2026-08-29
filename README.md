@@ -10,28 +10,6 @@ A screenshot shows you what a page looks like. It does not show you why the butt
 npm install -g @crouton-kit/capture
 ```
 
-Needs Node and a Chrome. `capture tab launch` starts a headless browser that capture owns and reaps — it looks for `$CAPTURE_BROWSER`, then a `~/.cache/puppeteer` Chrome, then a system Chrome. If a CDP-enabled browser is already running, capture can attach to that instead.
-
-## Quick start
-
-```bash
-capture tab launch                                    # start a browser capture owns
-capture session start --url https://example.com       # open a tab, begin recording traffic
-capture measure snap                                  # → snap-mtdpfnkr-08fbabdd
-capture measure check snap-mtdpfnkr-08fbabdd --for contrast,tap-targets
-capture session stop <session-id>                     # write the bundle manifest
-```
-
-`measure check` reports real measurements, not opinions:
-
-```
-1. tap-targets — html > body > div > p:nth-of-type(2) > a measures 82×18px; threshold is 44×44px
-   Rect: x=160 y=186.078125 w=82 h=18
-   crop: snap-mtdpfnkr-08fbabdd/findings/1-tap-targets.png
-```
-
-Add `--gate` to `check` or `diff` and it exits nonzero on findings, so the same command works in CI.
-
 ## See it
 
 Eight short clips. Every overlay is real: the text is extracted from the command's actual stdout, the boxes are drawn at the coordinates the command printed, and the inset images are files a command actually wrote.
@@ -103,6 +81,28 @@ A whole animated interaction collapsed into a single image where colour encodes 
 No storage-state dance and no separate automation profile. Attach over `--port`, adopt the tab already in front of you, drive it, and finish with one bundle: the recording, the HAR, the shots and the measurements together. The network panel is drawn from the captured HAR — every field read from that entry, nothing inferred, and credential headers withheld with their length marked in place.
 
 `capture session start --target <tab-id> --port 9860` · [full clip, 30s](demo/8-live-session.mp4)
+
+## Quick start
+
+Needs Node and a Chrome. `capture tab launch` starts a headless browser that capture owns and reaps — it looks for `$CAPTURE_BROWSER`, then a `~/.cache/puppeteer` Chrome, then a system Chrome. If a CDP-enabled browser is already running, capture can attach to that instead.
+
+```bash
+capture tab launch                                    # start a browser capture owns
+capture session start --url https://example.com       # open a tab, begin recording traffic
+capture measure snap                                  # → snap-mtdpfnkr-08fbabdd
+capture measure check snap-mtdpfnkr-08fbabdd --for contrast,tap-targets
+capture session stop <session-id>                     # write the bundle manifest
+```
+
+`measure check` reports real measurements, not opinions:
+
+```
+1. tap-targets — html > body > div > p:nth-of-type(2) > a measures 82×18px; threshold is 44×44px
+   Rect: x=160 y=186.078125 w=82 h=18
+   crop: snap-mtdpfnkr-08fbabdd/findings/1-tap-targets.png
+```
+
+Add `--gate` to `check` or `diff` and it exits nonzero on findings, so the same command works in CI.
 
 ## The command surface
 
