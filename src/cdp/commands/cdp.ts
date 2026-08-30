@@ -147,8 +147,15 @@ const TAB_SCOPE_RECOVERY =
   'Many CDP domains (Storage.*, Page.*, DOM.*, Emulation.*, ...) are tab-scoped, not connection-scoped — re-run with --target <tabId> (`capture tab list` shows available tabs).';
 
 /** Appends the tab-scope recovery hint when the failed call was target-less. */
-function cdpFailed(message: string, flagTarget: string | undefined, cause?: unknown): CaptureError {
-  return captureError('world', 'cdp_failed', flagTarget ? message : `${message} ${TAB_SCOPE_RECOVERY}`, cause);
+function timeoutGuidance(message: string, timeoutMs: number): string {
+  return /\b(?:timed out|timeout)\b/i.test(message)
+    ? `${message} The request limit was ${timeoutMs}ms; re-run with \`--timeout <ms>\` to extend it.`
+    : message;
+}
+
+function cdpFailed(message: string, flagTarget: string | undefined, timeoutMs: number, cause?: unknown): CaptureError {
+  const detailed = timeoutGuidance(message, timeoutMs);
+  return captureError('world', 'cdp_failed', flagTarget ? detailed : `${detailed} ${TAB_SCOPE_RECOVERY}`, cause);
 }
 
 export async function cmdCdp(parsed: ParsedArgs, _args: string[]): Promise<void> {
@@ -195,7 +202,7 @@ export async function cmdCdp(parsed: ParsedArgs, _args: string[]): Promise<void>
     throw captureError(
       'world',
       'cdp_failed',
-      `\`${invocationLabel(method, parsed.waitEvent)}\` failed on the page connection: ${err instanceof Error ? err.message : String(err)}`,
+      timeoutGuidance(`\`${invocationLabel(method, parsed.waitEvent)}\` failed on the page connection: ${err instanceof Error ? err.message : String(err)}`, timeoutMs),
       err,
     );
   }
@@ -226,17 +233,29 @@ export async function runBrowserScope(
   const bridgeSocket = session?.bridgeSocket;
   const heldBridgeActive = Boolean(bridgeSocket && fs.existsSync(bridgeSocket));
   if (parsed.portSource !== 'flag' && bridgeSocket && heldBridgeActive) {
-    const resp = await deps.sendBridgeRequest(bridgeSocket, {
-      method,
-      params,
-      targetId: flagTarget,
-      waitEvent: parsed.waitEvent,
-      timeoutMs,
-    });
+    let resp;
+    try {
+      resp = await deps.sendBridgeRequest(bridgeSocket, {
+        method,
+        params,
+        targetId: flagTarget,
+        waitEvent: parsed.waitEvent,
+        timeoutMs,
+      });
+    } catch (err) {
+      if (err instanceof CaptureError) throw err;
+      throw cdpFailed(
+        `\`${invocationLabel(method, parsed.waitEvent)}\` failed over the held connection: ${err instanceof Error ? err.message : String(err)}`,
+        flagTarget,
+        timeoutMs,
+        err,
+      );
+    }
     if (!resp.ok) {
       throw cdpFailed(
         `\`${invocationLabel(method, parsed.waitEvent)}\` failed over the held connection: ${resp.error ?? 'unknown bridge error'}`,
         flagTarget,
+        timeoutMs,
       );
     }
     emitCdpResult({
@@ -301,6 +320,7 @@ export async function runBrowserScope(
     throw cdpFailed(
       `\`${invocationLabel(method, parsed.waitEvent)}\` failed on the one-shot browser connection: ${err instanceof Error ? err.message : String(err)}`,
       flagTarget,
+      timeoutMs,
       err,
     );
   } finally {

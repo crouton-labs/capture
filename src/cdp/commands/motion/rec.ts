@@ -83,6 +83,7 @@ input:
 
 output:
   <recording> block — frames, fps, duration, state, event-records, video status, artifact list; --json mirrors.
+  Caveat: screencast frames are change-driven, not a dropped-frame measurement; use \`capture perf trace\` for frame-timing questions.
 
 effects:
   One-shot on a URL opens a new tab and writes a private one-shot artifact dir; with <url> omitted it records the active session tab and writes under the session. Composed writes under the active session. Scripted actions dispatch real input, marked as labeled landmarks in events.jsonl. Video encodes via ffmpeg when available.`;

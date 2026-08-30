@@ -109,12 +109,23 @@ function assertSchemaUrl(value: string, command: string, field: string): void {
   }
 }
 
+function cdpMember(value: string): boolean {
+  return /^[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*$/.test(value);
+}
+
 /** Pure branch/leaf validation. It must stay before session and environment resolution. */
 export function validateCliInvocation(parsed: ParsedArgs): void {
   validateKnownLeaf(parsed.command, parsed.positional);
-  if (parsed.help) return;
+  if (parsed.help && parsed.command !== 'cdp') return;
   if (parsed.command === 'cdp') {
     requireCount(parsed.positional, 0, 1, 'cdp');
+    if (parsed.positional[0] !== undefined && !cdpMember(parsed.positional[0])) {
+      throw invalidInput(`No such cdp leaf: ${parsed.positional[0]}. \`cdp\` is invoked directly as \`capture cdp <Domain.method>\` or with \`--wait-event <Domain.event>\`.`, 'unknown_command');
+    }
+    if (parsed.waitEvent !== undefined && !cdpMember(parsed.waitEvent)) {
+      throw invalidInput(`Invalid --wait-event: ${parsed.waitEvent}. Expected \`<Domain.event>\`; \`cdp\` is invoked directly.`, 'unknown_command');
+    }
+    if (parsed.help) return;
     if (parsed.positional.length === 0 && !parsed.waitEvent) throw invalidInput('cdp requires a method or --wait-event.');
     if (parsed.params !== undefined) {
       try {
@@ -249,6 +260,7 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
       }
     } else {
       requireSchemaCount(values, 1, 1, `perf ${leaf}`, '<trace>');
+      if (leaf === 'insights' && parsed.full && !parsed.name) throw schemaInput('perf insights', '(missing --name)', 'one engine insight name before --full event detail', '--name');
     }
     return;
   }

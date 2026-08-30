@@ -99,7 +99,7 @@ export interface ParsedArgs {
   before?: string;
   /** `diff --after <snap>` */
   after?: string;
-  /** `diff --full` — expand to the complete state-matrix/per-element diff. */
+  /** `diff --full` expands the complete state-matrix/per-element diff; `perf insights --name <insight> --full` renders that insight's related events. */
   full?: boolean;
   /** `check|diff --gate` — exit 2 on findings/changes instead of 0. */
   gate?: boolean;

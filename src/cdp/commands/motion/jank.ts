@@ -7,7 +7,7 @@ const USAGE = `capture motion jank <rec> — long-task-record and layout-shift f
 
 input:
   <rec>   recording id in the active session or an absolute recording path (required; the recording must be finalized)
-output: <jank …> — long-task-record and layout-shift facts; Page.screencastFrame is change-driven, so retained frame intervals are not page dropped-frame measurements; observer and screencast timing is recorder-relative performance.now(), trace timing recorder-relative only when an explicit trace/performance baseline was retained; --json mirrors
+output: <jank …> — long-task-record and layout-shift facts; screencast frames are change-driven, not a dropped-frame measurement; use \`capture perf trace\` for frame-timing questions. Observer and screencast timing is recorder-relative performance.now(), trace timing recorder-relative only when an explicit trace/performance baseline was retained; --json mirrors
 effects: read-only — reads the finalized recording artifact, never drives the browser`;
 
 export async function cmdMotionJank(parsed: ParsedArgs, _args: string[]): Promise<void> {

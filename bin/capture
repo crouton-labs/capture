@@ -9122,11 +9122,21 @@ function assertSchemaUrl(value, command, field) {
     throw schemaInput(command, value, "an absolute parseable URL", field);
   }
 }
+function cdpMember(value) {
+  return /^[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*$/.test(value);
+}
 function validateCliInvocation(parsed) {
   validateKnownLeaf(parsed.command, parsed.positional);
-  if (parsed.help) return;
+  if (parsed.help && parsed.command !== "cdp") return;
   if (parsed.command === "cdp") {
     requireCount(parsed.positional, 0, 1, "cdp");
+    if (parsed.positional[0] !== void 0 && !cdpMember(parsed.positional[0])) {
+      throw invalidInput(`No such cdp leaf: ${parsed.positional[0]}. \`cdp\` is invoked directly as \`capture cdp <Domain.method>\` or with \`--wait-event <Domain.event>\`.`, "unknown_command");
+    }
+    if (parsed.waitEvent !== void 0 && !cdpMember(parsed.waitEvent)) {
+      throw invalidInput(`Invalid --wait-event: ${parsed.waitEvent}. Expected \`<Domain.event>\`; \`cdp\` is invoked directly.`, "unknown_command");
+    }
+    if (parsed.help) return;
     if (parsed.positional.length === 0 && !parsed.waitEvent) throw invalidInput("cdp requires a method or --wait-event.");
     if (parsed.params !== void 0) {
       try {
@@ -9260,6 +9270,7 @@ function validateCliInvocation(parsed) {
       }
     } else {
       requireSchemaCount(values, 1, 1, `perf ${leaf}`, "<trace>");
+      if (leaf === "insights" && parsed.full && !parsed.name) throw schemaInput("perf insights", "(missing --name)", "one engine insight name before --full event detail", "--name");
     }
     return;
   }
@@ -164092,9 +164103,9 @@ ${lanes.join("\n")}
             }
           }
         }
-        function reportStatisticalValue(s, aggregate) {
+        function reportStatisticalValue(s, aggregate2) {
           statistics.push(s);
-          if (aggregate) solutionPerformance == null ? void 0 : solutionPerformance.addAggregateStatistic(s);
+          if (aggregate2) solutionPerformance == null ? void 0 : solutionPerformance.addAggregateStatistic(s);
         }
         function reportCountStatistic(name, count3) {
           reportStatisticalValue(
@@ -164108,13 +164119,13 @@ ${lanes.join("\n")}
             true
           );
         }
-        function reportTimeStatistic(name, time, aggregate) {
+        function reportTimeStatistic(name, time, aggregate2) {
           reportStatisticalValue({
             name,
             value: time,
             type: 0
             /* time */
-          }, aggregate);
+          }, aggregate2);
         }
       }
       function reportAllStatistics(sys2, statistics) {
@@ -230327,8 +230338,12 @@ function emitCdpResult(opts) {
     { json: opts.json }
   );
 }
-function cdpFailed(message, flagTarget, cause) {
-  return captureError("world", "cdp_failed", flagTarget ? message : `${message} ${TAB_SCOPE_RECOVERY}`, cause);
+function timeoutGuidance(message, timeoutMs) {
+  return /\b(?:timed out|timeout)\b/i.test(message) ? `${message} The request limit was ${timeoutMs}ms; re-run with \`--timeout <ms>\` to extend it.` : message;
+}
+function cdpFailed(message, flagTarget, timeoutMs, cause) {
+  const detailed = timeoutGuidance(message, timeoutMs);
+  return captureError("world", "cdp_failed", flagTarget ? detailed : `${detailed} ${TAB_SCOPE_RECOVERY}`, cause);
 }
 async function cmdCdp(parsed, _args) {
   if (parsed.help) {
@@ -230365,7 +230380,7 @@ async function cmdCdp(parsed, _args) {
     throw captureError(
       "world",
       "cdp_failed",
-      `\`${invocationLabel(method, parsed.waitEvent)}\` failed on the page connection: ${err instanceof Error ? err.message : String(err)}`,
+      timeoutGuidance(`\`${invocationLabel(method, parsed.waitEvent)}\` failed on the page connection: ${err instanceof Error ? err.message : String(err)}`, timeoutMs),
       err
     );
   }
@@ -230379,17 +230394,29 @@ async function runBrowserScope(method, params, parsed, timeoutMs, deps23 = DEFAU
   const bridgeSocket = session?.bridgeSocket;
   const heldBridgeActive = Boolean(bridgeSocket && fs20.existsSync(bridgeSocket));
   if (parsed.portSource !== "flag" && bridgeSocket && heldBridgeActive) {
-    const resp = await deps23.sendBridgeRequest(bridgeSocket, {
-      method,
-      params,
-      targetId: flagTarget,
-      waitEvent: parsed.waitEvent,
-      timeoutMs
-    });
+    let resp;
+    try {
+      resp = await deps23.sendBridgeRequest(bridgeSocket, {
+        method,
+        params,
+        targetId: flagTarget,
+        waitEvent: parsed.waitEvent,
+        timeoutMs
+      });
+    } catch (err) {
+      if (err instanceof CaptureError) throw err;
+      throw cdpFailed(
+        `\`${invocationLabel(method, parsed.waitEvent)}\` failed over the held connection: ${err instanceof Error ? err.message : String(err)}`,
+        flagTarget,
+        timeoutMs,
+        err
+      );
+    }
     if (!resp.ok) {
       throw cdpFailed(
         `\`${invocationLabel(method, parsed.waitEvent)}\` failed over the held connection: ${resp.error ?? "unknown bridge error"}`,
-        flagTarget
+        flagTarget,
+        timeoutMs
       );
     }
     emitCdpResult({
@@ -230443,6 +230470,7 @@ async function runBrowserScope(method, params, parsed, timeoutMs, deps23 = DEFAU
     throw cdpFailed(
       `\`${invocationLabel(method, parsed.waitEvent)}\` failed on the one-shot browser connection: ${err instanceof Error ? err.message : String(err)}`,
       flagTarget,
+      timeoutMs,
       err
     );
   } finally {
@@ -243307,6 +243335,7 @@ input:
 
 output:
   <recording> block \u2014 frames, fps, duration, state, event-records, video status, artifact list; --json mirrors.
+  Caveat: screencast frames are change-driven, not a dropped-frame measurement; use \`capture perf trace\` for frame-timing questions.
 
 effects:
   One-shot on a URL opens a new tab and writes a private one-shot artifact dir; with <url> omitted it records the active session tab and writes under the session. Composed writes under the active session. Scripted actions dispatch real input, marked as labeled landmarks in events.jsonl. Video encodes via ffmpeg when available.`;
@@ -244291,7 +244320,7 @@ var init_jank2 = __esm({
 
 input:
   <rec>   recording id in the active session or an absolute recording path (required; the recording must be finalized)
-output: <jank \u2026> \u2014 long-task-record and layout-shift facts; Page.screencastFrame is change-driven, so retained frame intervals are not page dropped-frame measurements; observer and screencast timing is recorder-relative performance.now(), trace timing recorder-relative only when an explicit trace/performance baseline was retained; --json mirrors
+output: <jank \u2026> \u2014 long-task-record and layout-shift facts; screencast frames are change-driven, not a dropped-frame measurement; use \`capture perf trace\` for frame-timing questions. Observer and screencast timing is recorder-relative performance.now(), trace timing recorder-relative only when an explicit trace/performance baseline was retained; --json mirrors
 effects: read-only \u2014 reads the finalized recording artifact, never drives the browser`;
   }
 });
@@ -264203,11 +264232,37 @@ function error2(parsed, status, message) {
   emitResult({ tag: "error", attrs: { command: "perf insights", status }, summary: fact`${message}` }, { json: parsed.json });
   process.exitCode = 1;
 }
-function recordLine2(insight) {
-  return fact`${insight.name}: ${capped(JSON.stringify(insight.fields), 12e3)}`;
+function relatedEventCount(fields) {
+  const related = fields.relatedEvents;
+  if (Array.isArray(related)) return related.length;
+  if (related !== null && typeof related === "object" && !Array.isArray(related)) {
+    const entries = related.entries;
+    if (Array.isArray(entries)) return entries.length;
+  }
+  return 0;
 }
-function section2(set, insights) {
-  return lineList([fact`Insight set ${set.id} for ${set.url}`, ...insights.length ? insights.map(recordLine2) : [text`No engine records matched the requested insight name.`]]);
+function scalarMetrics(fields) {
+  return Object.fromEntries(Object.entries(fields).flatMap(([name, value]) => typeof value === "number" || typeof value === "boolean" ? [[name, value]] : []));
+}
+function aggregate(insight) {
+  return { name: insight.name, relatedEventCount: relatedEventCount(insight.fields), scalarMetrics: scalarMetrics(insight.fields) };
+}
+function aggregateLine(insight) {
+  const summary = aggregate(insight);
+  const metrics = Object.entries(summary.scalarMetrics).map(([name, value]) => `${name}=${value}`);
+  return fact`${summary.name}: ${summary.relatedEventCount} related event(s); scalar metrics: ${metrics.length ? metrics.join(", ") : "none"}.`;
+}
+function fullRecordLine(insight) {
+  const serialized = JSON.stringify(insight.fields);
+  return line(fact`${insight.name}: `, data(capped(serialized, serialized.length)));
+}
+function section2(set, insights, full2) {
+  const records = insights.length ? insights.map(full2 ? fullRecordLine : aggregateLine) : [text`No engine records matched the requested insight name.`];
+  return lineList([fact`Insight set ${set.id} for ${set.url}`, ...records]);
+}
+function noInsightSet(events) {
+  const navigations = events.filter((event) => event.name === "navigationStart").length;
+  return navigations === 0 ? { section: text`No DevTools insight set was produced: this trace contains no navigation, and the engine produced no no-navigation insight set (including ForcedReflow), so this recording cannot yield DevTools insights.`, json: { status: "no-insight-set", navigations, reason: "no-navigation-engine-produced-no-no-navigation-insight-set-including-ForcedReflow" } } : { section: text`No DevTools insight set was produced for the ${navigations} recorded navigation(s), so this recording cannot yield DevTools insights.`, json: { status: "no-insight-set", navigations, reason: "engine-produced-no-insight-set" } };
 }
 async function cmdPerfInsights(parsed) {
   if (parsed.help) {
@@ -264222,13 +264277,14 @@ async function cmdPerfInsights(parsed) {
     if (!Array.isArray(raw.traceEvents)) throw new Error("trace.json is not a Chrome trace with a traceEvents array");
     const analysis = await analyzeChromeTrace({ traceEvents: raw.traceEvents });
     const selected = analysis.insightSets.map((set) => ({ ...set, insights: parsed.name === void 0 ? set.insights : set.insights.filter((insight) => insight.name === parsed.name) }));
+    const noSet = selected.length === 0 ? noInsightSet(raw.traceEvents) : void 0;
     const result = {
       tag: "insights",
       attestation: { kind: "trace", id: trace2.id, path: trace2.dir },
-      attrs: { completion: trace2.completion, ...trace2.reason ? { reason: trace2.reason } : {}, engine: analysis.source.engine, "insight-sets": selected.length, insights: selected.reduce((count3, set) => count3 + set.insights.length, 0), ...parsed.name ? { name: parsed.name } : {} },
-      summary: fact`Insight names and their fields are computed by the DevTools trace engine (${analysis.source.engine}, an unstable upstream API pinned by capture). Field shapes are the engine's and are reported unnormalized.`,
-      sections: selected.length ? selected.map((set) => section2(set, set.insights)) : [text`No DevTools insight set was produced for this trace.`],
-      jsonSections: selected.map((set) => ({ set: set.id, url: set.url, insights: set.insights }))
+      attrs: { completion: trace2.completion, ...trace2.reason ? { reason: trace2.reason } : {}, engine: analysis.source.engine, "insight-sets": selected.length, insights: selected.reduce((count3, set) => count3 + set.insights.length, 0), ...parsed.name ? { name: parsed.name } : {}, ...parsed.full ? { detail: "full" } : { detail: "aggregation" } },
+      summary: parsed.full ? fact`Full engine fields and related events are rendered only for the selected insight.` : fact`Insight names, scalar metrics, and related-event counts are computed by the DevTools trace engine (${analysis.source.engine}, an unstable upstream API pinned by capture). Use \`--name <insight> --full\` to render one insight's complete engine fields and related events.`,
+      sections: selected.length ? selected.map((set) => section2(set, set.insights, parsed.full === true)) : [noSet.section],
+      jsonSections: selected.length ? selected.map((set) => ({ set: set.id, url: set.url, insights: parsed.full ? set.insights : set.insights.map(aggregate) })) : [noSet.json]
     };
     emitResult(result, { json: parsed.json });
   } catch (cause) {
@@ -264243,12 +264299,13 @@ var init_insights2 = __esm({
     init_trace_analysis();
     init_artifact();
     init_render();
-    HELP6 = `capture perf insights <trace> [--name <insight>] \u2014 the DevTools insight set computed from a recorded trace
+    HELP6 = `capture perf insights <trace> [--name <insight> --full] \u2014 the DevTools insight set computed from a recorded trace
 
 input:
   <trace>          trace id in the active session or an absolute trace path (required; the trace must be finalized)
-  --name <insight> render only this insight's records, by the engine's own insight name (see the names in the unfiltered output)
-output: <insights \u2026> \u2014 one record per insight the engine computed for each navigation, with the engine's own name and the attribution fields it attached (request URLs, node ids, durations); capture reports these records and does not convert an insight's presence into an assessment of the page; --json mirrors
+  --name <insight> select one engine insight by name from the default aggregation
+  --full            with --name, render that insight's full engine fields and related-event corpus
+output: <insights \u2026> \u2014 default output is a bounded aggregation of engine insight names, scalar metrics, and related-event counts; --name narrows that aggregation, and --name with --full exposes the selected insight's complete engine fields; capture reports engine facts without converting an insight's presence into an assessment of the page; --json mirrors
 effects: read-only \u2014 reads the finalized trace artifact, never drives the browser`;
   }
 });
