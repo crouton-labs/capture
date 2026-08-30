@@ -40,6 +40,8 @@ export interface ParsedArgs {
   viewport?: string;
   /** `page shot|measure snap --color-scheme dark|light` — transient media override. */
   colorScheme?: string;
+  /** `page scroll --behavior instant|smooth` — dispatch behavior. */
+  behavior?: 'instant' | 'smooth';
   fullPage?: boolean;
   help?: boolean;
   /** `--all` — boolean scope-widener (per-leaf semantics). */

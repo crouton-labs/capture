@@ -24,12 +24,13 @@ const USAGE = `capture page scroll <target> --to <top|bottom|px> — scroll one 
 input:
   <target>          resolved against the LIVE page: bare CSS selector (takes precedence) or exact accessible name when CSS finds none, ax:<name> (case-insensitive substring), axid:<id>, backend:<id>; text: is not accepted; exactly one match required — zero or many matches is a structured error listing candidates
   --to <dest>       required destination: top, bottom, or a pixel offset (scrollTop value)
+  --behavior <instant|smooth> dispatch behavior; instant is the default, smooth waits at most 5000ms for scrollend before reporting the measured offset
   --settle <ms>     network-settle window applied after the scroll (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
   <scrolled backend-node-id=… role=… name=…> — resolved identity, destination, the container's resulting scrollTop, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
-  drives the container's native smooth scroll in-page (may trigger lazy-load network); writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
+  drives the container's in-page scroll (instant by default; may trigger lazy-load network); writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
 
 export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
@@ -74,7 +75,7 @@ export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promis
       if (!resolved.ok) return { failure: resolved } as const;
       // Same landmark shape `motion rec --do scroll:` records; carried by
       // the one mutating call when the transport records landmarks.
-      const dispatch = await scrollResolved(live, resolved, to, { mark: `scroll:${target},to=${to}` });
+      const dispatch = await scrollResolved(live, resolved, to, { mark: `scroll:${target},to=${to}`, behavior: parsed.behavior ?? 'instant' });
       const screenshotResult = await capturePageInputScreenshot(client, 'scroll', target, parsed.noScreenshot);
       return { dispatch, ...screenshotResult } as const;
     },

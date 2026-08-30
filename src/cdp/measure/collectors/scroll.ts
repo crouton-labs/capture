@@ -121,7 +121,12 @@ const SCROLL_TOPOLOGY_SCRIPT = `/* __captureScrollTopology */
     }
     return { items: out, truncated: i < kids.length };
   }
-  function visibleChildren(el) {
+  function visibleChildrenAt(el, requestedTop) {
+    // A projected rect is wrong for sticky/fixed and scroll-reactive content.
+    // Measure the actual layout at each offset; the outer finally restores
+    // every original offset before this one evaluation returns.
+    el.scrollTop = requestedTop;
+    var actualTop = el.scrollTop;
     var band = el.getBoundingClientRect();
     var out = [];
     var kids = el.children;
@@ -129,9 +134,9 @@ const SCROLL_TOPOLOGY_SCRIPT = `/* __captureScrollTopology */
     for (i = 0; i < kids.length && out.length < 30; i++) {
       var r = kids[i].getBoundingClientRect();
       var intersects = r.bottom > band.top && r.top < band.bottom && r.right > band.left && r.left < band.right;
-      if (intersects) out.push({ scrollId: tagId(kids[i]), selector: selectorOf(kids[i]), rect: rectOf(kids[i]) });
+      if (intersects) out.push({ scrollId: tagId(kids[i]), selector: selectorOf(kids[i]), rect: { x: r.x, y: r.y, width: r.width, height: r.height } });
     }
-    return { items: out, truncated: i < kids.length };
+    return { offsetTop: actualTop, items: out, truncated: i < kids.length };
   }
 
   var root = document.scrollingElement || document.documentElement;
@@ -186,10 +191,13 @@ const SCROLL_TOPOLOGY_SCRIPT = `/* __captureScrollTopology */
       [originalTop, 0, maxTop].forEach(function(v) { if (!(v in seen)) { seen[v] = true; offsetsToSample.push(v); } });
       for (var s = 0; s < offsetsToSample.length; s++) {
         var top = offsetsToSample[s];
-        el.scrollTop = top;
-        var vc = isRoot ? { items: [], truncated: false } : visibleChildren(el);
-        samples.push({ offsetTop: top, visibleChildren: vc.items, visibleChildrenTruncated: vc.truncated });
+        var vc = isRoot ? { offsetTop: top, items: [], truncated: false } : visibleChildrenAt(el, top);
+        samples.push({ offsetTop: vc.offsetTop, visibleChildren: vc.items, visibleChildrenTruncated: vc.truncated });
       }
+      // Sampling above leaves el scrolled to its last sampled offset;
+      // restore before measuring sticky/fixed/snap descendants so their
+      // rects reflect the container's real (unscrolled) position, not
+      // whichever sample offset was visited last.
       el.scrollTop = originalTop;
       el.scrollLeft = originalLeft;
 

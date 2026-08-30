@@ -149,22 +149,6 @@ test('page branch grammar names the leaf: `page click` is rejected at the valida
   });
 });
 
-test('every remaining scaffold leaf is registered with a clear non-zero placeholder', () => {
-  withTempRoot((tempRoot) => {
-    const commands = [
-      ['session', 'collectors'],
-    ];
-    for (const command of commands) {
-      const result = run([...command, '--port', '1'], tempRoot);
-      assert.equal(result.status, 1, `${command.join(' ')}: ${result.stdout}`);
-      assert.equal(result.stderr, '', `${command.join(' ')}: ${result.stderr}`);
-      assert.match(result.stdout, /<error code="not_implemented" kind="precondition">/, result.stdout);
-      assert.match(result.stdout, /is not yet implemented\./, result.stdout);
-    }
-    assert.deepEqual(readdirSync(tempRoot), []);
-  });
-});
-
 test('a leaf accepts --help as the exact -h synonym', () => {
   withTempRoot((tempRoot) => {
     const short = run(['page', 'shot', '-h'], tempRoot);

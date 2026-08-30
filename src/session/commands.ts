@@ -760,9 +760,11 @@ async function start(parsed: ParsedArgs): Promise<void> {
     const rows: FactLine[] = [fact`bundle dir: ${dir}`];
     if (target) rows.push(url ? fact`tab ${target.id} opened at ${url}` : fact`tab ${target.id} adopted at ${target.url}`);
     if (cdpPort !== null) rows.push(
-      parsed.port !== undefined
-        ? fact`CDP endpoint on port ${cdpPort} selected by explicit --port; --port overrides endpoint selection and --target overrides tab selection.`
-        : fact`${selectedBrowser ?? 'CDP endpoint'} on port ${cdpPort} auto-selected because it ${endpointSelectionReason ?? 'was selected by automatic endpoint detection'}; capture-launched browser recency does not affect selection. --port overrides endpoint selection and --target overrides tab selection.`,
+      parsed.portSource === 'env'
+        ? fact`CDP endpoint on port ${cdpPort} selected from ambient CDP_PORT; --port overrides endpoint selection and --target overrides tab selection.`
+        : parsed.port !== undefined
+          ? fact`CDP endpoint on port ${cdpPort} selected by explicit --port; --port overrides endpoint selection and --target overrides tab selection.`
+          : fact`${selectedBrowser ?? 'CDP endpoint'} on port ${cdpPort} auto-selected because it ${endpointSelectionReason ?? 'was selected by automatic endpoint detection'}; capture-launched browser recency does not affect selection. --port overrides endpoint selection and --target overrides tab selection.`,
     );
     if (pageLoadTimedOut) rows.push(fact`page load timed out after 10000ms; the session stays attached to target ${target?.id ?? ''}`);
     if (harId) rows.push(fact`HAR recording ${harId} — traffic auto-appends while the session is active`);

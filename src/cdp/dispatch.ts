@@ -54,10 +54,20 @@ async function withActiveSessionAdmission(parsed: ParsedArgs, run: () => Promise
   const active = getActiveSession();
   if (!active) return run();
   const operation = await admitSessionOperation(active.dir);
+  let completed = false;
   try {
-    return await run();
+    await run();
+    completed = true;
   } finally {
-    await operation.release();
+    try {
+      await operation.release();
+    } catch (error) {
+      if (!completed) throw error;
+      // The command's browser effect and rendered measurement already
+      // completed. A failed auxiliary lock-owner lookup cannot recast that
+      // completed observation as a failed navigation/page command.
+      process.stderr.write(`capture: session-operation release unavailable after completed command: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
   }
 }
 

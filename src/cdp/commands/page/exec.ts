@@ -43,6 +43,8 @@ import {
 const GENEROUS_RESULT_CAP = 4000;
 
 const DEFAULT_SETTLE_MS = 3000;
+const DEFAULT_EVALUATION_TIMEOUT_MS = 10_000;
+const TERMINATE_TIMEOUT_MS = 2_000;
 
 const USAGE = `capture page exec <code> | --file <path> — run arbitrary JavaScript in the tab: a bare expression evaluates directly; a statement body may use top-level return/await (wrapped in an async IIFE); leading static imports bundle the forked vault libs (dev checkout only)
 
@@ -50,6 +52,7 @@ input:
   <code>           JS source as one argument (exactly one of <code> / --file)
   --file <path>    read the JS source from a file instead of inline
   --settle <ms>    network-settle window after execution so an active session's HAR captures the requests the code triggers (default: ${DEFAULT_SETTLE_MS}; 0 disables); the block reports the measured requested/waited settle
+  --timeout <ms>   evaluation deadline (default: ${DEFAULT_EVALUATION_TIMEOUT_MS}); on expiry Capture requests Runtime.terminateExecution and reports whether cancellation completed or the renderer remains blocked
   --target <id>    target a tab explicitly (default: the active session tab, else exactly one available page tab; multiple page tabs require --target or --url)
   --url <pattern>  target the first tab whose URL matches <pattern>
 output:
@@ -110,7 +113,19 @@ interface EvalResult {
  * subset of `CDPClient` both a direct connection and the recorder-held
  * adapter satisfy. */
 interface ExecClient {
-  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  send(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
+}
+
+class ExecDeadlineError extends Error {
+  constructor(readonly cancellation: 'completed' | 'blocked', timeoutMs: number, detail: string) {
+    super(detail || (cancellation === 'completed'
+      ? `Evaluation exceeded ${timeoutMs}ms and Runtime.terminateExecution completed.`
+      : `Evaluation exceeded ${timeoutMs}ms and Runtime.terminateExecution did not complete.`));
+  }
+}
+
+function isRequestTimeout(error: unknown): boolean {
+  return error instanceof Error && /CDP request timeout \(\d+ms\): Runtime\.evaluate|collector-host CDP call "Runtime\.evaluate" failed: CDP request timeout/.test(error.message);
 }
 
 /**
@@ -121,7 +136,7 @@ interface ExecClient {
  * failure prevents success: alone it throws a typed cleanup failure; paired
  * with a primary failure it throws an `AggregateError` preserving both.
  */
-async function focusScopedEvaluate(client: ExecClient, expression: string): Promise<EvalResult> {
+async function focusScopedEvaluate(client: ExecClient, expression: string, evaluationTimeoutMs: number): Promise<EvalResult> {
   let ownsFocusOverride = false;
   let primaryFailed = false;
   let primaryError: unknown;
@@ -130,11 +145,22 @@ async function focusScopedEvaluate(client: ExecClient, expression: string): Prom
     // by the browser, without foregrounding the tab.
     ownsFocusOverride = true;
     await client.send('Emulation.setFocusEmulationEnabled', { enabled: true });
-    return (await client.send('Runtime.evaluate', {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-    })) as EvalResult;
+    try {
+      return (await client.send('Runtime.evaluate', {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      }, evaluationTimeoutMs)) as EvalResult;
+    } catch (error) {
+      if (!isRequestTimeout(error)) throw error;
+      try {
+        await client.send('Runtime.terminateExecution', {}, TERMINATE_TIMEOUT_MS);
+        throw new ExecDeadlineError('completed', evaluationTimeoutMs, `Evaluation exceeded ${evaluationTimeoutMs}ms; Runtime.terminateExecution completed.`);
+      } catch (terminationError) {
+        if (terminationError instanceof ExecDeadlineError) throw terminationError;
+        throw new ExecDeadlineError('blocked', evaluationTimeoutMs, `Evaluation exceeded ${evaluationTimeoutMs}ms; Runtime.terminateExecution did not complete within ${TERMINATE_TIMEOUT_MS}ms, so the renderer remains blocked until this target navigates or closes.`);
+      }
+    }
   } catch (error) {
     primaryFailed = true;
     primaryError = error;
@@ -175,12 +201,12 @@ async function focusScopedEvaluate(client: ExecClient, expression: string): Prom
  * needs no lock — its emulation state is scoped to its own websocket
  * session, which closes with the command.
  */
-async function evaluateWithFocusEmulation(client: ExecClient, expression: string): Promise<EvalResult> {
+async function evaluateWithFocusEmulation(client: ExecClient, expression: string, evaluationTimeoutMs: number): Promise<EvalResult> {
   return withScopeSerialization(
     client,
     'focus',
     'page exec',
-    () => focusScopedEvaluate(client, expression),
+    () => focusScopedEvaluate(client, expression, evaluationTimeoutMs),
     { isMotionHeldClient: deps.isMotionHeldClient, getActiveSession: deps.getActiveSession },
   );
 }
@@ -237,6 +263,7 @@ export async function cmdPageExec(parsed: ParsedArgs, _args: string[]): Promise<
   }
 
   const settle = parsed.settle ?? DEFAULT_SETTLE_MS;
+  const evaluationTimeoutMs = parsed.timeoutMs ?? DEFAULT_EVALUATION_TIMEOUT_MS;
 
   // A prebuilt bundle is already a complete IIFE returning the user's
   // promise; otherwise buildExecExpression wraps statement bodies. Pure
@@ -253,11 +280,18 @@ export async function cmdPageExec(parsed: ParsedArgs, _args: string[]): Promise<
     const outcome = await deps.withPageAction(
       { ...parsed, command: 'exec' },
       { settleMs: settle },
-      (client) => evaluateWithFocusEmulation(client, expression),
+      (client) => evaluateWithFocusEmulation(client, expression, evaluationTimeoutMs),
     );
     evalResult = outcome.result;
     settleFacts = outcome.settle;
   } catch (err) {
+    if (err instanceof ExecDeadlineError) {
+      return emitExecError(
+        parsed,
+        err.cancellation === 'completed' ? 'exec_timeout_cancelled' : 'target_wedged',
+        fact`${err.message}`,
+      );
+    }
     // A typed failure (e.g. `recorder_unavailable` from strict A2 routing,
     // `har_missing`, or a lone `focus_cleanup_failed`) crosses the boundary
     // unrelabeled — only a genuinely untyped error is the exec-specific

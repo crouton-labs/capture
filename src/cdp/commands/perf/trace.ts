@@ -21,7 +21,7 @@ input:
   --do <action>          trace across one action on the current page (same action grammar as \`motion rec --do\`), for an interaction trace INP can be read from
   --duration <seconds>   stop tracing this long after the action; default 3
   --start                open a trace window and return; requires an active session, and the trace stays live across intervening commands until --stop
-  --stop                 close the live trace window and finalize its artifact; the session's one live trace is selected without an id
+  --stop                 close the live trace window and finalize its artifact; the session's one live trace is selected without an id. If a one-shot trace process is interrupted after it starts, the session collector host keeps this trace live; use --stop to finalize it (or session collectors to read its id/state)
 output: <trace …> — the finalized trace artifact, its recorded window, event count, and completion state; --json mirrors
 effects: drives the browser and records; spawns or joins the session's collector host, which holds the tab connection until the trace is stopped. Claims \`tracing\`, which is browser-global: refused while \`motion rec\` or another trace is live anywhere in the browser, and the refusal names the claim and the collector holding it.`;
 
@@ -204,10 +204,23 @@ async function handleOneShot(parsed: ParsedArgs): Promise<void> {
     const artifact = active ? await withSessionLifecycle(sessionDir, run) : await run();
     emitTrace(parsed, artifact);
   } catch (error) {
-    if (host && started) {
-      try { await stopTrace(host, started.id, started.dir); } catch {}
+    const detail = error instanceof Error ? error.message : String(error);
+    // An active session owns the host durably, so a later --stop can observe
+    // and finalize its trace. A sessionless one-shot has no such recovery
+    // surface; stop its trace before reporting the failed command.
+    if (host && started && !active) {
+      try {
+        await stopTrace(host, started.id, started.dir);
+      } catch (cleanupError) {
+        const cleanupDetail = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        commandError(parsed, 'trace_failed', `${detail}. Trace cleanup also failed: ${cleanupDetail}`);
+        return;
+      }
     }
-    commandError(parsed, 'trace_failed', error instanceof Error ? error.message : String(error));
+    const recovery = host && started && active
+      ? `${detail}. Trace ${started.id} remains live at ${started.dir}; finalize it with \`capture perf trace --stop\` (or inspect \`capture session collectors\`).`
+      : detail;
+    commandError(parsed, 'trace_failed', recovery);
   }
 }
 

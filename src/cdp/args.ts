@@ -15,7 +15,7 @@ export function expandEqualsFlags(argv: string[]): string[] {
 }
 
 const VALUE_FLAGS = new Set([
-  '--port', '--out', '--duration', '--settle', '--file', '--target', '--url', '--into', '--viewport', '--color-scheme', '--session',
+  '--port', '--out', '--duration', '--settle', '--file', '--target', '--url', '--into', '--viewport', '--color-scheme', '--behavior', '--session',
   '--filter', '--name', '--filter-url', '--filter-status', '--filter-method', '--limit', '--params', '--wait-event',
   '--timeout', '--socket', '--settle-timeout', '--state', '--for', '--before', '--after', '--snap', '--set-file',
   '--axis', '--from', '--to', '--viewport-height', '--rec-id', '--selector', '--do', '--element', '--prop', '--action', '--occurrence',
@@ -362,6 +362,12 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
     else if (arg === '--no-screenshot') parsed.noScreenshot = true;
     else if (arg === '--viewport') { const value = valueFor(arg, next); parsed.viewport = value; (parsed.viewports ??= []).push(value); i++; }
     else if (arg === '--color-scheme') { parsed.colorScheme = valueFor(arg, next); i++; }
+    else if (arg === '--behavior') {
+      const behavior = valueFor(arg, next);
+      if (behavior !== 'instant' && behavior !== 'smooth') throw invalidInput(`Invalid --behavior: ${behavior}. Expected instant or smooth.`);
+      parsed.behavior = behavior;
+      i++;
+    }
     else if (arg === '--full-page') parsed.fullPage = true;
     else if (arg === '--all') parsed.all = true;
     else if (arg === '--session') { parsed.session = valueFor(arg, next); i++; }

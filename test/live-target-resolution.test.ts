@@ -736,7 +736,7 @@ test('scrollResolved: resolves the node to an object and drives scrollTop with t
   assert.equal(scrollCall.params.objectId, 'obj-1');
   assert.equal(scrollCall.params.returnByValue, true);
   // The destination travels as an argument (data), never concatenated into code.
-  assert.deepEqual(scrollCall.params.arguments, [{ value: 'bottom' }]);
+  assert.deepEqual(scrollCall.params.arguments, [{ value: 'bottom' }, { value: 'instant' }]);
   assert.ok(String(scrollCall.params.functionDeclaration).includes('scrollTop'));
 });
 
@@ -746,7 +746,7 @@ test('scrollResolved: accepts a pixel offset destination', async () => {
   assert.equal(dispatch.scrollTop, 250);
   assert.equal(dispatch.to, '250');
   const scrollCall = client.calls.find((c) => c.method === 'Runtime.callFunctionOn');
-  assert.deepEqual(scrollCall?.params.arguments, [{ value: '250' }]);
+  assert.deepEqual(scrollCall?.params.arguments, [{ value: '250' }, { value: 'instant' }]);
 });
 
 test('scrollResolved: an invalid destination throws before any CDP call', async () => {

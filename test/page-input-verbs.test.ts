@@ -514,10 +514,9 @@ test('page scroll: --to bottom moves the container and auto-screenshots', async 
     assert.match(stdout, /screenshot: \/tmp\/sess\/shots\/04-scroll\.png/);
     const scrollCall = client.calls.find((c) => c.method === 'Runtime.callFunctionOn');
     assert.ok(scrollCall, 'the scroll must drive the container in-page');
-    assert.match(String(scrollCall.params.functionDeclaration), /scrollTo\(\{ top, behavior: "smooth" \}\)/, 'scrolling uses the native smooth animation so a recorder receives repaint frames');
-    assert.match(String(scrollCall.params.functionDeclaration), /root \? document : this/, 'root scrolling must wait for document scrollend, not the html element event');
-    assert.equal(scrollCall.params.awaitPromise, true, 'the command reports the final offset only after the smooth scroll ends');
-    assert.deepEqual(scrollCall.params.arguments, [{ value: 'bottom' }]);
+    assert.match(String(scrollCall.params.functionDeclaration), /scrollTo\(\{ top, behavior: "instant" \}\)/, 'the default scroll dispatch is instant');
+    assert.equal(scrollCall.params.awaitPromise, true);
+    assert.deepEqual(scrollCall.params.arguments, [{ value: 'bottom' }, { value: 'instant' }]);
     assert.deepEqual(deps.shots, [{ action: 'scroll', label: '.feed', noScreenshot: undefined }]);
     // The connection is opened as the VERB so a routed scroll's
     // connection-level label derives as `scroll:<target>`.

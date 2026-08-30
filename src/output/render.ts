@@ -45,6 +45,7 @@ export const RESULT_TAGS = [
   'session-stopped',
   'sessions',
   'session-har',
+  'collectors',
   'log-tail',
   'clicked',
   'typed',

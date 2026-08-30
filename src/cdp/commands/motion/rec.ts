@@ -34,6 +34,8 @@ import {
   type ResolutionFailure,
 } from '../../../interact.js';
 import { CaptureError } from '../../../errors.js';
+import { sendHostRequest } from '../../host/client.js';
+import { scanCollectorHost } from '../../host/handle.js';
 
 interface RecCommandDeps {
   detectCdpPort: typeof detectCdpPort;
@@ -86,7 +88,7 @@ output:
   Caveat: screencast frames are change-driven, not a dropped-frame measurement; use \`capture perf trace\` for frame-timing questions.
 
 effects:
-  One-shot on a URL opens a new tab and writes a private one-shot artifact dir; with <url> omitted it records the active session tab and writes under the session. Composed writes under the active session. Scripted actions dispatch real input, marked as labeled landmarks in events.jsonl. Video encodes via ffmpeg when available.`;
+  One-shot on a URL opens a new tab and writes a private one-shot artifact dir; with <url> omitted it records the active session tab through the session collector host and writes under the session. If that active-session one-shot process is interrupted after recording starts, the collector remains live and \`capture motion rec --stop\` finalizes it. Composed writes under the active session. Scripted actions dispatch real input, marked as labeled landmarks in events.jsonl. Video encodes via ffmpeg when available.`;
 
 export async function cmdMotionRec(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
@@ -132,6 +134,11 @@ async function handleOneShot(parsed: ParsedArgs, viewport: Viewport | undefined)
       return emitCommandError(parsed, 'invalid_url', `Invalid recording URL: ${url}`);
     }
   }
+
+  // The active-session form uses the detached collector host so an external
+  // timeout cannot take its only recorder down with the CLI process. The
+  // host row is then discoverable through session collectors and --stop.
+  if (active && !parsedUrl && active.harId) return handleHostedSessionOneShot(parsed, active, viewport);
 
   const oneshot = active ? undefined : deps.createOneshotSession('motion');
   const destination = active ? path.join(active.dir, 'motion', 'recs') : oneshot!.artifactsDir;
@@ -191,6 +198,43 @@ async function handleOneShot(parsed: ParsedArgs, viewport: Viewport | undefined)
       // artifact for inspection, but never invent a finalized meta.json.
       emitCommandError(parsed, failureStatus, failure, restored === null ? undefined : { 'viewport-restored': restored });
     }
+  }
+}
+
+async function handleHostedSessionOneShot(parsed: ParsedArgs, session: NonNullable<ReturnType<typeof getActiveSession>>, viewport: Viewport | undefined): Promise<void> {
+  let started: StartRecorderResult | undefined;
+  try {
+    started = await deps.startComposedRecorder({ sessionDir: session.dir, viewport });
+    const scanned = scanCollectorHost(session.dir);
+    if (scanned.classification !== 'live' || !scanned.handle) throw new Error(`collector host is ${scanned.classification} after recording start`);
+    const host = scanned.handle;
+    await driveOneShotAction({
+      async handleCdp(request) {
+        const response = await sendHostRequest(host.socketPath, {
+          type: 'cdp', nonce: host.nonce, method: request.method, params: request.params ?? {}, ...(request.mark ? { annotation: request.mark } : {}),
+        }, 30_000);
+        if (!response.ok) throw new Error(response.error ?? `collector host rejected ${request.method}`);
+        return response as { result: unknown };
+      },
+    }, parsed.do!);
+    if (parsed.duration) await sleep(parsed.duration);
+    const stopped = await deps.stopComposedRecorder({ sessionDir: session.dir, recId: started.recId });
+    ensureFinalizedInventory(stopped.recDir);
+    const video = deps.encodeVideo(stopped.recDir, stopped.durationMs);
+    const metaPath = path.join(stopped.recDir, 'meta.json');
+    if (fs.existsSync(metaPath)) {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as Record<string, unknown>;
+      writeJsonPrivate(metaPath, { ...meta, video });
+    }
+    (stopped as FinalizedRecording & { video?: VideoEncoding }).video = video;
+    emitFinalizedResult(parsed, stopped);
+  } catch (err) {
+    const status = err instanceof DoActionError ? err.status : 'oneshot_failed';
+    const message = err instanceof Error ? err.message : String(err);
+    const recovery = started
+      ? `${message}. Recording ${started.recId} remains live at ${started.recDir}; finalize it with \`capture motion rec --stop\` (or inspect \`capture session collectors\`).`
+      : message;
+    emitCommandError(parsed, status, recovery);
   }
 }
 

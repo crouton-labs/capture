@@ -444,7 +444,7 @@ export async function focusAndType(
 
 /**
  * Scrolls a resolved container to `top`, `bottom`, or a pixel offset through
- * its native smooth-scroll animation — `DOM.resolveNode` +
+ * an instant or native smooth-scroll dispatch — `DOM.resolveNode` +
  * `Runtime.callFunctionOn` with the destination passed as data, never
  * concatenated as code. The call resolves only at `scrollend`, returning the
  * actual final offset. When the caller supplies `opts.mark` and the transport
@@ -456,7 +456,7 @@ export async function scrollResolved(
   client: LiveClient,
   resolved: ResolvedTarget,
   to: string,
-  opts: { mark?: string } = {},
+  opts: { mark?: string; behavior?: 'instant' | 'smooth' } = {},
 ): Promise<ScrollDispatch> {
   if (!isScrollDestination(to)) {
     throw captureError(
@@ -489,8 +489,8 @@ export async function scrollResolved(
     const params: Record<string, unknown> = {
       objectId,
       functionDeclaration:
-        'function(to) { const root = this === document.documentElement || this === document.body; const container = root ? document.scrollingElement : this; const n = to === "top" ? 0 : to === "bottom" ? container.scrollHeight : Number(to); const top = Math.max(0, Math.min(n, container.scrollHeight - container.clientHeight)); if (container.scrollTop === top) return top; return new Promise((resolve) => { const eventTarget = root ? document : this; eventTarget.addEventListener("scrollend", () => resolve(container.scrollTop), { once: true }); if (root) window.scrollTo({ top, behavior: "smooth" }); else this.scrollTo({ top, behavior: "smooth" }); }); }',
-      arguments: [{ value: to }],
+        'function(to, behavior) { const root = this === document.documentElement || this === document.body; const container = root ? document.scrollingElement : this; const n = to === "top" ? 0 : to === "bottom" ? container.scrollHeight : Number(to); const top = Math.max(0, Math.min(n, container.scrollHeight - container.clientHeight)); if (container.scrollTop === top || behavior === "instant") { if (root) window.scrollTo({ top, behavior: "instant" }); else this.scrollTo({ top, behavior: "instant" }); return container.scrollTop; } return new Promise((resolve) => { const eventTarget = root ? document : this; let done = false; const finish = () => { if (done) return; done = true; clearTimeout(timeout); resolve(container.scrollTop); }; const timeout = setTimeout(finish, 5000); eventTarget.addEventListener("scrollend", finish, { once: true }); if (root) window.scrollTo({ top, behavior: "smooth" }); else this.scrollTo({ top, behavior: "smooth" }); }); }',
+      arguments: [{ value: to }, { value: opts.behavior ?? 'instant' }],
       awaitPromise: true,
       returnByValue: true,
     };
