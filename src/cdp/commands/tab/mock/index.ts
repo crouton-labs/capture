@@ -4,7 +4,7 @@ import { cmdTabMockStart } from './start.js';
 import { cmdTabMockStop } from './stop.js';
 
 export const MOCK_USAGE = `<command name="mock" description="network response mocking">
-<model>Mocking is a condition on the tab, like \`tab network offline\`: it changes what the tab's requests do and records what it did, and it is not a measurement. Rules are an ordered document, first match wins, replaced only by stopping and starting again.</model>
+<model>Mocking changes what the tab's requests do and records what it did; it is not a measurement. Rules are an ordered document, first match wins, replaced only by stopping and starting again.</model>
 <subcommand name="start" description="install a mock rule document on the tab" whenToUse="Use before the navigation or interaction whose requests you want answered from rules."/>
 <subcommand name="stop" description="remove the mock rules and finalize their record" whenToUse="Use to return the tab to real network behavior and get the record of what was mocked."/>
 </command>`;

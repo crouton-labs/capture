@@ -25,7 +25,7 @@ import { cmdMeasureMapPaint } from './map-paint.js';
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="measure">
 the settled-snapshot substrate — static facts at one moment; \`snap\` writes the substrate, every other leaf is a read-only query over it
-use for facts that hold while nothing is moving: layout, content, cascade provenance, targetability, snapshot diffs; use \`motion\` for what changes across frames, \`perf\` for load and interaction timing, \`heap\` for memory
+use for static rendered-page facts from a settled snapshot: layout, content, cascade provenance, targetability, and snapshot diffs
 </command>`;
 
 export const MEASURE_USAGE = `<command name="measure" description="enriched snapshot substrate and read-only queries">

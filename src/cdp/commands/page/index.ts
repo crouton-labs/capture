@@ -24,7 +24,7 @@ import { cmdPageRepeat } from './repeat.js';
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="page">
 verbs against the live session tab — act on it (click, type, scroll, navigate, exec, repeat) and inspect its current state (shot, elements, inspect)
-use when driving or inspecting the tab a session opened or adopted; nothing here records an artifact you query later — \`measure snap\`, \`motion rec\`, \`perf trace\`, and \`heap snapshot\` do that
+use when driving or inspecting the current live tab
 </command>`;
 
 export const PAGE_USAGE = `<command name="page" description="operations against the live session tab">

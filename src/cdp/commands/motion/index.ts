@@ -17,7 +17,7 @@ import { cmdMotionResponse } from './response.js';
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="motion">
 the screencast-recording substrate — what changed on screen across frames; \`rec\` writes the recording, every other leaf is a read-only query over it
-use for per-element frame geometry, changed regions, and input-to-settle timing, all frame-derived at ±1 frame; use \`perf\` for Core Web Vitals and trace-event timing, \`measure\` for one settled moment
+use for per-element frame geometry, changed regions, and input-to-settle timing; use \`perf\` instead for trace-event timing
 </command>`;
 
 export const MOTION_USAGE = `<command name="motion" description="recording lifecycle and read-only queries over a finalized recording">

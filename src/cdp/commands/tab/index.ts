@@ -22,11 +22,11 @@ import { tabMockMain } from './mock/index.js';
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="tab">
 browser and tab plumbing — the existence of a browser capture owns, endpoint/tab discovery, tab lifecycle, and the conditions the tab's network runs under (connectivity, mocked responses)
-use when nothing is running yet, when finding or changing a tab, or when changing what the tab's requests do; \`tab\` never reads traffic — \`session har\` does — and never measures anything
+use when starting, finding, opening, closing, or resetting a browser tab, or changing its network conditions
 </command>`;
 
 export const TAB_USAGE = `<command name="tab" description="browser and tab lifecycle">
-<model>\`list\` with no --port performs full endpoint discovery and is the probe for whether a CDP-enabled browser is running; when nothing is running, \`launch\` starts one Capture owns — never hand-roll a detached browser, since nothing reaps that. Capture signals only browsers it launched itself (verified by process-birth identity): an endpoint you reach with --port stays untouched. \`reset\` replaces a stuck tab with a fresh one; under an active session it refuses while a recording is active, clears the dangling recording pointer, and updates the session's {target, port} pair together.</model>
+<model>Browser discovery and lifecycle, tab lifecycle, and network conditions divide these children. Capture owns and reaps only browsers it started itself; endpoints selected with --port stay untouched.</model>
 <subcommand name="launch" description="start a Capture-owned browser" whenToUse="Use when no CDP-enabled browser is running."/>
 <subcommand name="quit" description="stop a Capture-owned browser" whenToUse="Use to stop a browser that Capture launched."/>
 <subcommand name="list" description="CDP endpoints and open tabs" whenToUse="Use to find a browser endpoint or tab before targeting it."/>

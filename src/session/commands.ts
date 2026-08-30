@@ -384,7 +384,7 @@ export async function waitForPageLoad(
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="session">
 the artifact container — a session records HAR and bundles every artifact; it may open or adopt a tab, and once it has one, every command auto-targets it
-use when starting scoped work against a page, reading the traffic or logs it recorded, or asking what is collecting right now; use \`tab\` for the browser itself and the conditions its network runs under, and \`measure\`/\`motion\`/\`perf\`/\`heap\` for the artifacts a session contains
+use when collecting or reading the traffic, logs, and artifacts of scoped work against one page
 </command>`;
 
 const START_USAGE = `capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>] [--artifact-dir <path>] — open or adopt a tab, record HAR, and set the active capture context.
@@ -536,7 +536,7 @@ effects:
 
 function printSessionHelp(): void {
   console.log(`<command name="session" description="the artifact container: records HTTP traffic and bundles artifacts for one page">
-<model>An active session with a tab auto-targets it and appends recorded traffic; \`stop\` finalizes its manifest and \`view\` reads it.</model>
+<model>An active session with a tab auto-targets it and appends recorded traffic; its finalized bundle remains available for readback.</model>
 <subcommand name="start" description="open or adopt a tab and start a session" whenToUse="Use when beginning scoped work against one page and collecting its artifacts."/>
 <subcommand name="stop" description="finalize a session bundle" whenToUse="Use when scoped capture is complete and its artifacts must become a bundle."/>
 <subcommand name="list" description="active and stopped sessions" whenToUse="Use to find a session to inspect or stop."/>

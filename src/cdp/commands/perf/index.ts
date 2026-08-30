@@ -6,7 +6,7 @@ import { cmdPerfInsights } from './insights.js';
 
 export const COMMAND_BLOCK = `<command name="perf">
 the Chrome performance-trace substrate — \`trace\` records one, \`vitals\` and \`insights\` are read-only queries over it
-use for Core Web Vitals and the DevTools insight set over a page load or one interaction, timed from trace events; use \`motion\` for per-element frame-by-frame geometry and changed regions, \`heap\` for memory, \`lighthouse\` for a scored third-party report
+use for Core Web Vitals and DevTools insights over a page load or one interaction, timed from trace events
 </command>`;
 
 const HELP = `<command name="perf" description="the Chrome performance-trace substrate">

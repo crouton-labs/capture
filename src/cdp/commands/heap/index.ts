@@ -8,7 +8,7 @@ import { cmdHeapDiff } from './diff.js';
 
 export const COMMAND_BLOCK = `<command name="heap">
 the tab's JavaScript heap — \`snapshot\` records the heap as a V8 snapshot, every other leaf is a read-only graph query over it
-use for what is retaining memory in the tab's JS heap: constructor totals, retained sizes, retaining paths, duplicate strings, before/after comparison; this is the JS heap and not process memory, and \`perf\` owns time
+use for JavaScript-heap retention: constructor totals, retained sizes, retaining paths, duplicate strings, and before/after comparison
 </command>`;
 
 const HELP = `<command name="heap" description="the V8 heap-snapshot substrate">

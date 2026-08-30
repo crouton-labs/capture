@@ -61,7 +61,7 @@ function rootHelp(): string {
 
 ${ROOT_BLOCKS.join('\n\n')}
 
-Selecting a noun: session/tab/page own live things and conditions on them; measure/motion/perf/heap each own one recorded substrate and the read-only queries over it; lighthouse captures Lighthouse's third-party scored diagnostic sweep, while cdp/lib wrap something capture did not compute. If the facts you want come from an artifact a substrate noun already owns, the command is a leaf of that noun.
+Selecting a noun: session, page, and tab address the live browser context; measure, motion, perf, and heap each own a distinct recorded substrate; lighthouse, cdp, and lib are respectively third-party audit, raw protocol, and local-library surfaces. Use a substrate noun when its recorded artifact is the source of the facts you need.
 
 I/O contract: flags and positionals on input; one rendered prose block on stdout. --json mirrors the same result as JSON, but the rendered block is the contract. stderr carries in-flight diagnostics only. --artifact-dir <path> selects the root for a session bundle (\`session start\`) or a sessionless artifact-producing leaf's one-shot bundle; leaf help states when it writes one. --out always names one caller-owned file, never a bundle directory.
 

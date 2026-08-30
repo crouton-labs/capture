@@ -38,7 +38,7 @@ import {
 /** Root-help representation of this leaf, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="lib">
 vault-lib introspection (dev checkout only) — discover the forked vault libs and their function schemas
-use when scripting against a bundled service lib: find the function, read its schema; nothing here touches a page — \`page exec\` is what runs the lib
+use when scripting against a bundled service library and need to find a function or read its schema
 </command>`;
 
 const LIB_USAGE = `<command name="lib" description="vault library introspection for a development checkout">

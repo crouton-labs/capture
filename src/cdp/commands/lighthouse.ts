@@ -17,7 +17,7 @@ import { capped, emitResult, fact, formatArtifactList, line, lineList, text, typ
 
 export const COMMAND_BLOCK = `<command name="lighthouse">
 a third-party scored diagnostic report — capture runs Lighthouse against a URL and stores its report unmodified
-use when one Lighthouse report should sweep audited accessibility, SEO, performance, or best-practices conditions alongside its own categories, scores, and audits; capture scores nothing itself, so every number capture measures lives in \`measure\`, \`motion\`, \`perf\`, or \`heap\`
+use for one Lighthouse report's audited accessibility, SEO, performance, or best-practices conditions, categories, scores, and audits
 </command>`;
 
 const HELP = `capture lighthouse <url> [--categories <list>] [--preset mobile|desktop] [--limit <N>] [--out <path>] — run Lighthouse's third-party scored diagnostic sweep against a URL and store its report
