@@ -72,7 +72,7 @@ function validateKnownLeaf(command: string, positional: readonly string[]): void
     session: ['start', 'stop', 'list', 'view', 'har', 'log', 'collectors'],
     page: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements', 'inspect', 'repeat'],
     tab: ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network', 'mock'],
-    measure: ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map'],
+    measure: ['snap', 'check', 'diff', 'census', 'explain', 'text', 'sweep', 'map'],
     motion: ['rec', 'mask', 'timeline', 'jank', 'response'],
     perf: ['trace', 'vitals', 'insights'],
     heap: ['snapshot', 'census', 'objects', 'retainers', 'diff'],
@@ -290,6 +290,10 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
       requireCount(values, 1, 1, 'measure explain');
       if (!parsed.selector?.trim()) throw schemaInput('measure explain', '(missing)', 'a recorded selector input', '--selector');
     }
+    if (leaf === 'text') {
+      requireCount(values, 1, 1, 'measure text');
+      if (!parsed.selector?.trim()) throw schemaInput('measure text', '(missing)', 'a recorded selector input', '--selector');
+    }
     if (leaf === 'sweep') {
       if (!['width', 'dpr', 'zoom', 'color-scheme', 'reduced-motion'].includes(parsed.axis ?? '')) {
         throw schemaInput('measure sweep', parsed.axis ?? '(missing)', 'width, dpr, zoom, color-scheme, or reduced-motion', '--axis');
@@ -417,7 +421,7 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
     const next = rest[i + 1];
-    if (VALUE_FLAGS.has(arg)) valueFor(arg, next);
+    if (VALUE_FLAGS.has(arg) && !(arg === '--crop' && commandPath === 'measure text')) valueFor(arg, next);
 
     if (arg === '--port') { parsed.port = integer(valueFor(arg, next), '--port', 1, 65535); parsed.portSource = 'flag'; i++; }
     else if (arg === '--out') { parsed.out = valueFor(arg, next); i++; }
@@ -463,6 +467,7 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
     else if (arg === '--state') { (parsed.state ??= []).push(valueFor(arg, next)); i++; }
     else if (arg === '--state-padding') { parsed.statePadding = integer(valueFor(arg, next), '--state-padding', 0, 16_384); i++; }
     else if (arg === '--list-crops') parsed.listCrops = true;
+    else if (arg === '--crop' && commandPath === 'measure text') parsed.textCrop = true;
     else if (arg === '--crop') { parsed.crop = valueFor(arg, next); i++; }
     else if (arg === '--crop-selector') { parsed.cropSelector = valueFor(arg, next); i++; }
     else if (arg === '--pad') { parsed.pad = integer(valueFor(arg, next), '--pad', 0, 16_384); i++; }

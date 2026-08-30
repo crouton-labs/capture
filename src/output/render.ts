@@ -30,6 +30,7 @@ export const RESULT_TAGS = [
   'diff',
   'census',
   'explain',
+  'text',
   'sweep',
   'focus-map',
   'scroll-map',

@@ -90,6 +90,8 @@ export interface ParsedArgs {
   /** `shot --crop <x,y,w,h>` — crop region in CSS px; composite grammar is
    * validated by the owning leaf, which documents it. */
   crop?: string;
+  /** `measure text --crop` — write the selected target's measured PNG crop. */
+  textCrop?: boolean;
   /** `shot --crop-selector <selector>` — crop to this element's live box. */
   cropSelector?: string;
   /** `shot --pad <px>` — CSS-px padding added around a resolved crop rect. */

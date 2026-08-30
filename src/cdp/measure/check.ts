@@ -338,6 +338,43 @@ function contrastRatio(foreground: [number, number, number], background: [number
   return (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
 }
 
+export type ElementContrastMeasurement =
+  | { readonly available: true; readonly foreground: readonly [number, number, number]; readonly background: readonly [number, number, number]; readonly ratio: number; readonly backgroundSource: string; readonly backgroundSourceElementId: string; readonly provenance: string }
+  | { readonly available: false; readonly uncertainty: string };
+
+/** Computes one selected element's effective rendered color pair from the snapshot's recorded styles and ancestor paint. */
+export function measureElementContrast(ref: SnapRef, elementId: string): ElementContrastMeasurement {
+  const elements = readGeometry<{ elements?: GeometryElement[] }>(ref).elements ?? [];
+  const element = elements.find((candidate) => candidate.id === elementId);
+  if (!element) return { available: false, uncertainty: 'the selected geometry record is not present in geometry.json' };
+  const styles = readRequired<{ elements?: StyleElement[] }>(ref, 'styles.json').elements ?? [];
+  const stylesByNode = new Map<number, StyleElement>();
+  const stylesBySelector = new Map<string, StyleElement>();
+  const byPath = new Map<string, GeometryElement>();
+  for (const candidate of elements) if (candidate.domPath) byPath.set(candidate.domPath, candidate);
+  for (const style of styles) {
+    if (style.backendNodeId != null) stylesByNode.set(style.backendNodeId, style);
+    if (style.selector) stylesBySelector.set(style.selector, style);
+  }
+  const style = styleFor(element, stylesByNode, stylesBySelector);
+  const foreground = rgba(style?.computed?.color);
+  if (!foreground) return { available: false, uncertainty: 'the selected element has no parseable recorded computed color' };
+  const background = effectiveBackground(element, byPath, stylesByNode, stylesBySelector);
+  if (!background) return { available: false, uncertainty: 'an opaque effective background could not be resolved from recorded ancestor paint and opacity' };
+  const renderedForeground = effectiveForeground(foreground, element, byPath, stylesByNode, stylesBySelector);
+  if (!renderedForeground) return { available: false, uncertainty: 'the effective foreground could not be resolved through recorded ancestor paint and opacity' };
+  const backgroundSource = label(background.source);
+  return {
+    available: true,
+    foreground: renderedForeground,
+    background: background.color,
+    ratio: contrastRatio(renderedForeground, background.color),
+    backgroundSource,
+    backgroundSourceElementId: background.source.id,
+    provenance: `computed color; effective background supplied by ${backgroundSource}'s opaque paint after compositing recorded descendant backgrounds`,
+  };
+}
+
 /** Read-only analysis over a completed snapshot. Browser driving belongs solely to measure snap. */
 export function checkSnapshot(ref: SnapRef, requested: readonly CheckName[]): { findings: CheckFinding[]; elementCount: number; settled: boolean; viewport: { width: number; height: number } } {
   const geometry = readGeometry<{ elements: GeometryElement[] }>(ref);

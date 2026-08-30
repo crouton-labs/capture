@@ -14,6 +14,7 @@ import { cmdMeasureCheck } from './check.js';
 import { cmdMeasureDiff } from './diff.js';
 import { cmdMeasureCensus } from './census.js';
 import { cmdMeasureExplain } from './explain.js';
+import { cmdMeasureText } from './text.js';
 import { cmdMeasureSweep } from './sweep.js';
 import { cmdMeasureMapFocus } from './map-focus.js';
 import { cmdMeasureMapScroll } from './map-scroll.js';
@@ -34,6 +35,7 @@ export const MEASURE_USAGE = `<command name="measure" description="enriched snap
 <subcommand name="diff" description="snapshot delta" whenToUse="Use to compare the measured facts from two snapshots."/>
 <subcommand name="census" description="snapshot value distributions" whenToUse="Use to count values across one or more snapshots."/>
 <subcommand name="explain" description="element rendering explanation" whenToUse="Use to inspect cascade, stacking, clipping, size, text, or form facts for one element."/>
+<subcommand name="text" description="targeted DOM-content text measurement" whenToUse="Use to read one element's direct DOM content text, font, recorded color-model values, contrast ratio, and provenance from a snapshot."/>
 <subcommand name="sweep" description="responsive environment sampling" whenToUse="Use to compare snapshot facts across values on one environment axis."/>
 <subcommand name="map" description="one snapshot facet" whenToUse="Use to read focus, scroll, layer, accessibility, or paint facts from a snapshot."/>
 </command>`;
@@ -62,6 +64,8 @@ export async function measureMain(parsed: ParsedArgs, args: string[]): Promise<v
       return cmdMeasureCensus(rest, args);
     case 'explain':
       return cmdMeasureExplain(rest, args);
+    case 'text':
+      return cmdMeasureText(rest, args);
     case 'sweep':
       return cmdMeasureSweep(rest, args);
     case 'map':
