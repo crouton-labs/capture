@@ -9,7 +9,7 @@ import { emitResult, fact, lineList, type FactLine } from '../../../output/rende
 const DEFAULT_LIMIT = 100;
 
 const INSPECT_USAGE = `<command name="inspect" description="factual live-tab inventories">
-<model>Each leaf reads the current selected tab without a page-observable write. List leaves filter before --limit and mirror only their bounded final records.</model>
+<model>Each leaf reads the current selected tab without a page-observable write. List leaves filter before --limit and mirror only their bounded final records. This branch does not enumerate scroll containers; \`capture measure map scroll\` owns that measured topology.</model>
 <subcommand name="listeners" description="registered event listeners" whenToUse="Use to read listeners on window, document, or one live-resolved target."/>
 <subcommand name="cardinality" description="DOM and document counts" whenToUse="Use to read Chrome's current DOM/document cardinality counters."/>
 <subcommand name="frames" description="attached and observed-detached frame identities" whenToUse="Use to read the current frame tree and frame lifecycle events observed during a bounded window."/>
