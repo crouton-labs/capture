@@ -16831,6 +16831,7 @@ async function cmdPageClick(parsed, _args) {
       fact`received: ${parsed.positional.length} positional arguments; expected exactly one target (CSS selector or exact accessible name, ax:<name>, axid:<id>, or backend:<id>).`
     );
   }
+  const settleDefaultSource = parsed.settle === void 0 ? deps2.getActiveSession() === null ? "standalone default" : "active-session default" : void 0;
   const settle = effectiveSettle(parsed, { standalone: 1e3, session: 2500 });
   const { result: outcome, settle: settleFacts } = await deps2.withPageAction(
     { ...parsed, command: "click" },
@@ -16851,7 +16852,8 @@ async function cmdPageClick(parsed, _args) {
   const rows = [
     fact`clicked ${dispatch.role ?? "unknown"} "${dispatch.name ?? ""}" (backend:${dispatch.backendNodeId}) at x=${dispatch.x} y=${dispatch.y}`,
     ...dispatch.hitTestReceiverBackendNodeId === void 0 ? [] : [fact`dispatch hit test at x=${dispatch.x} y=${dispatch.y} resolved to backend:${dispatch.hitTestReceiverBackendNodeId}, not target backend:${dispatch.backendNodeId}`],
-    fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`
+    fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`,
+    ...settleDefaultSource === void 0 ? [] : [fact`settle source: ${settleDefaultSource}; no --settle flag was passed.`]
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
   if (screenshotWarning) rows.push(fact`screenshot-warning: ${screenshotWarning}`);
@@ -228532,13 +228534,15 @@ function buildScreenshotResult(f) {
     downscale.y === void 0 ? void 0 : `vertical ${downscale.y.toFixed(6)}\xD7`
   ].filter((axis) => axis !== void 0).join(" and ") : void 0;
   const cropConstrained = f.crop?.source === "selector" && f.cssViewport !== void 0 && !sameRect(f.crop.requested, f.cssViewport);
+  const legibilityConstrained = scale !== void 0 && Math.min(scale.x, scale.y) < LEGIBILITY_SCALE_THRESHOLD && Math.min(scale.x, scale.y) < (f.crop?.zoom ?? 1);
   const sections = [
     scale && f.cssViewport ? fact`CSS-to-image scale: ${scale.x.toFixed(6)} image px/CSS px horizontally and ${scale.y.toFixed(6)} image px/CSS px vertically (captured CSS region ${round6(f.cssViewport.width)}×${round6(f.cssViewport.height)} at page origin ${round6(f.cssViewport.x)},${round6(f.cssViewport.y)}).` : text`CSS-to-image scale unavailable: the browser did not return the CSS region this capture covers.`,
     f.crop ? fact`CSS crop: ${f.crop.source === "selector" ? `selector ${f.crop.selector} (backend:${f.crop.backendNodeId}), border box plus ${f.crop.pad}px padding` : "coordinates"} requested ${formatRect(f.crop.requested)} at zoom ${f.crop.zoom}; the captured CSS region above is its intersection with the source visual viewport.` : text`CSS crop: none — the captured CSS region above is the source visual viewport.`,
-    ...cropConstrained && f.crop && f.cssViewport ? [fact`Crop constraint: requested ${formatRect(f.crop.requested)}; delivered ${formatRect(f.cssViewport)} because the requested selector crop extended outside the live visual viewport, so the artifact contains its visual-viewport intersection.`] : [],
+    ...cropConstrained && f.crop && f.cssViewport ? [fact`Crop constraint: requested ${formatRect(f.crop.requested)}; delivered ${formatRect(f.cssViewport)} because the requested selector crop extended outside the ${f.emulation === "viewport" ? "effective live visual viewport after its transient device-metrics override" : "live visual viewport"}, so the artifact contains its visual-viewport intersection.`] : [],
     f.scrollOffset ? fact`scroll offset at capture: x=${round6(f.scrollOffset.x)} y=${round6(f.scrollOffset.y)} CSS px.` : text`scroll offset at capture unavailable: the browser did not return the visual viewport origin.`,
     f.emulation === "none" ? text`viewport emulation: none — the browser's actual current viewport was captured.` : f.emulation === "viewport" ? fact`emulation: transient ${f.viewport.width}x${f.viewport.height} device-metrics override applied for the capture and cleared after — two page-observable resizes.` : f.viewport ? fact`emulation: transient full-page device-metrics override (from ${f.viewport.width}x${f.viewport.height}) applied for the capture and cleared after — two page-observable resizes.` : text`emulation: transient full-page device-metrics override applied for the capture and cleared after — two page-observable resizes.`,
-    f.colorScheme ? fact`color scheme: transient prefers-color-scheme=${f.colorScheme} override applied for the capture and cleared after.` : text`color scheme: browser default — no Emulation.setEmulatedMedia call was made.`
+    f.colorScheme ? fact`color scheme: transient prefers-color-scheme=${f.colorScheme} override applied for the capture and cleared after.` : text`color scheme: browser default — no Emulation.setEmulatedMedia call was made.`,
+    ...legibilityConstrained ? [fact`Image constraint: the 1600px image-side cap reduced this artifact below ${LEGIBILITY_SCALE_THRESHOLD} image px per CSS px.`] : []
   ];
   return {
     tag: "screenshot",
@@ -228565,7 +228569,8 @@ function buildScreenshotResult(f) {
       "scroll-y": f.scrollOffset === void 0 ? void 0 : round6(f.scrollOffset.y)
     },
     summary: f.dimensions ? downscaleDescription ? fact`saved ${f.path} — ${f.dimensions.width}x${f.dimensions.height}px, ${f.bytes} bytes; effective downscale: ${downscaleDescription} (image px/CSS px).` : fact`saved ${f.path} — ${f.dimensions.width}x${f.dimensions.height}px, ${f.bytes} bytes.` : fact`saved ${f.path} — ${f.bytes} bytes.`,
-    sections
+    sections,
+    followUp: legibilityConstrained ? text`A selector crop with --zoom 1 captures a bounded region at 1 image px/CSS px when each captured CSS side is at most 1600px.` : void 0
   };
 }
 function formatRect(rect3) {
@@ -228693,7 +228698,6 @@ async function cmdPageShot(parsed, _args) {
     process.exitCode = 1;
     return;
   }
-  const emulation = parsed.fullPage ? "full-page" : viewport2 ? "viewport" : "none";
   const result = await deps4.withConnection(
     { ...parsed, command: "shot" },
     async (client) => withAppliedColorScheme(client, colorScheme, async () => {
@@ -228722,9 +228726,9 @@ async function cmdPageShot(parsed, _args) {
     emitResolutionError(parsed, "page shot", result.failure);
     return;
   }
-  emitResult(buildScreenshotResult({ ...result, emulation, viewport: viewport2, colorScheme }), { json: parsed.json });
+  emitResult(buildScreenshotResult({ ...result, emulation: parsed.fullPage ? "full-page" : viewport2 ? "viewport" : "none", viewport: viewport2, colorScheme }), { json: parsed.json });
 }
-var path20, USAGE6, deps4, PNG_SIGNATURE;
+var path20, USAGE6, deps4, PNG_SIGNATURE, LEGIBILITY_SCALE_THRESHOLD;
 var init_shot = __esm({
   "src/cdp/commands/page/shot.ts"() {
     path20 = __toESM(require("path"));
@@ -228753,9 +228757,10 @@ input:
 output:
   <screenshot path=\u2026 width=\u2026 height=\u2026 css-width=\u2026 css-height=\u2026 css-x=\u2026 css-y=\u2026 css-to-image-x=\u2026 css-to-image-y=\u2026 effective-downscale-x=\u2026 effective-downscale-y=\u2026 scroll-x=\u2026 scroll-y=\u2026 emulation=none|viewport|full-page color-scheme=dark|light> \u2014 saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, visual-viewport scroll offset at capture, any effective downscale below 1 image px/CSS px, byte size, crop provenance, and any requested transient emulation
 effects:
-  no flags: none \u2014 the capture reads the viewport as-is, with zero Emulation.* calls. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture \u2014 two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; an empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
+  no flags: none \u2014 the capture reads the viewport as-is, with zero Emulation.* calls. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture \u2014 two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; a selector crop reports its requested and delivered regions when its padded box cannot fit. An empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
     deps4 = { withConnection, nextStepPath, createOneshotSession };
     PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    LEGIBILITY_SCALE_THRESHOLD = 0.5;
   }
 });
 
@@ -228793,7 +228798,7 @@ async function collectElements(client, opts = {}) {
       backendNodeId: node.backendDOMNodeId ?? null
     });
   }
-  return records;
+  return opts.name === void 0 ? records : records.filter((record5) => record5.name.toLowerCase().includes(opts.name.toLowerCase()));
 }
 function buildElementsResult(records, opts) {
   const total = records.length;
@@ -228808,8 +228813,8 @@ function buildElementsResult(records, opts) {
   }
   return {
     tag: "elements",
-    attrs: { scope: opts.all ? "all" : "interactive", count: total },
-    summary: opts.all ? fact`${total} elements in the exposed accessibility tree` : fact`${total} interactive elements`,
+    attrs: { scope: opts.all ? "all" : "interactive", count: total, "name-filter": opts.name },
+    summary: opts.all ? opts.name === void 0 ? fact`${total} elements in the exposed accessibility tree` : fact`${total} elements in the exposed accessibility tree with accessible name containing ${opts.name}` : opts.name === void 0 ? fact`${total} interactive elements` : fact`${total} interactive elements with accessible name containing ${opts.name}`,
     sections,
     followUp: text`capture page click <target> · capture measure map ax <url|snap>`
   };
@@ -228825,10 +228830,10 @@ async function cmdPageElements(parsed, _args) {
   }
   const records = await withConnection(
     parsed,
-    (client) => collectElements(client, { all: parsed.all }),
+    (client) => collectElements(client, { all: parsed.all, name: parsed.name }),
     { settle: 0 }
   );
-  emitResult(buildElementsResult(records, { all: Boolean(parsed.all), limit }), {
+  emitResult(buildElementsResult(records, { all: Boolean(parsed.all), limit, name: parsed.name }), {
     json: parsed.json
   });
 }
@@ -228844,6 +228849,7 @@ var init_elements = __esm({
 
 Input:
   --all               full exposed accessibility tree instead of interactive elements only
+  --name <text>       case-insensitive substring filter over each exposed accessibility name; applies before --limit
   --limit <n>         max elements listed (positive integer, default ${DEFAULT_LIMIT}; a capped list states the total as an elements-truncated fact)
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json              mirror the result as JSON
@@ -240742,6 +240748,9 @@ function explainSnapshot(ref, selector, detailOpts = {}) {
   if (!matches2.length) {
     return { kind: "missing-selector", ref, selector, meta, available: recoveryForms(selectable, selector) };
   }
+  if (matches2.length > 1) {
+    return { kind: "ambiguous-selector", ref, selector, meta, matchCount: matches2.length, candidates: matches2.slice(0, RECOVERY_CANDIDATE_LIMIT) };
+  }
   const selectedId = matches2[0].id;
   const target = geometry.find((element) => element.id === selectedId);
   const focus = readOptional(ref, "focus.json", readFocus, { available: false, unavailableReason: "focus.json not present", forward: [], reverse: [], candidateCount: 0 });
@@ -240812,6 +240821,13 @@ function recoverySections(missing) {
     text`All recorded selector and identity facts remain in this snapshot's geometry.json, ax.json, and text.json artifacts.`
   ];
 }
+function ambiguitySections(ambiguous) {
+  const rows = ambiguous.candidates.map((candidate, index) => fact`${index + 1}. ${candidate.selector ?? candidate.id}${typeof candidate.backendNodeId === "number" ? ` \u2014 backend:${candidate.backendNodeId}` : ""}${candidate.axId ? ` \u2014 axid:${candidate.axId}` : ""}${candidate.axName ? ` \u2014 ax:${candidate.axName}` : ""}`);
+  return [lineList([
+    ...ambiguous.matchCount > ambiguous.candidates.length ? [fact`candidates (first ${ambiguous.candidates.length} of ${ambiguous.matchCount}):`] : [text`candidates:`],
+    ...rows
+  ])];
+}
 function invalidInput2(message) {
   return {
     tag: "error",
@@ -240868,6 +240884,18 @@ async function cmdMeasureExplain(parsed, _args) {
         summary: fact`No geometry element matched selector input ${report.selector}. Bounded recovery candidates from this snapshot follow.`,
         sections: recoverySections(report),
         followUp: text`The selector input also accepts CSS, backend:, axid:, ax:, and text: forms.`
+      }, { json: parsed.json });
+      process.exitCode = 1;
+      return;
+    }
+    if (report.kind === "ambiguous-selector") {
+      emitResult({
+        tag: "error",
+        attestation: attestation(report.ref, report.meta),
+        attrs: { command: "measure explain", status: "ambiguous_selector", selector: report.selector, matches: report.matchCount, displayed: report.candidates.length },
+        summary: fact`Selector input ${report.selector} matched ${report.matchCount} recorded elements; no element was selected.`,
+        sections: ambiguitySections(report),
+        followUp: text`Retry with an exact CSS selector, axid, or numeric backend id from the candidate identity facts.`
       }, { json: parsed.json });
       process.exitCode = 1;
       return;
@@ -265330,13 +265358,21 @@ function cmdHeapDiff(parsed) {
   }
   const before = resolveHeapRef(parsed.before);
   const after = resolveHeapRef(parsed.after);
-  const comparison = HeapSnapshot.compare(loadHeap(before), loadHeap(after));
+  const beforeHeap = loadHeap(before);
+  const afterHeap = loadHeap(after);
+  const comparison = HeapSnapshot.compare(beforeHeap, afterHeap);
+  const snapshotBytes = (ref) => ref.meta.files.find((file) => file.name === "snapshot.heapsnapshot")?.bytes;
+  const totals = {
+    before: { nodes: beforeHeap.nodeCount, bytes: snapshotBytes(before) },
+    after: { nodes: afterHeap.nodeCount, bytes: snapshotBytes(after) }
+  };
   const constructors = [...comparison.constructors].sort((a, b) => b.added.retainedSize - a.added.retainedSize || b.grown.retainedSize - a.grown.retainedSize || b.removed.retainedSize - a.removed.retainedSize || a.constructorName.localeCompare(b.constructorName));
   const limit = parsed.limit ?? 25;
   const displayed = constructors.slice(0, limit);
   const detached = comparison.afterDetachedNodes.slice(0, limit);
   const detachedSection = detached.length ? lineList(detached.map((node, index) => fact`${index + 1}. object-id=${node.objectId} constructor=${capped(node.constructorName, 120)} type=${node.type} detachedness=${node.detachedness}`)) : text`No after-snapshot nodes are marked detached by Chrome.`;
   const jsonSections = [
+    { before: totals.before, after: totals.after },
     ...constructors.map((constructor) => ({
       constructor: capped(constructor.constructorName, Number.MAX_SAFE_INTEGER),
       added: { nodeCount: constructor.added.nodeCount, detachedNodeCount: constructor.added.detachedNodeCount, retainedSize: constructor.added.retainedSize },
@@ -265371,11 +265407,16 @@ function cmdHeapDiff(parsed) {
       displayed: displayed.length,
       "after-detached-nodes": comparison.afterDetachedNodes.length,
       "detached-displayed": detached.length,
-      "retained-size-qualification": comparison.retainedSizeQualification
+      "retained-size-qualification": comparison.retainedSizeQualification,
+      "before-nodes": totals.before.nodes,
+      "before-bytes": totals.before.bytes,
+      "after-nodes": totals.after.nodes,
+      "after-bytes": totals.after.bytes
     },
     summary: text`Nodes are matched by Chrome snapshot object id. “grown” reports the increase in retained size for id-matched nodes, not their current size.`,
     artifacts: formatArtifactList([{ name: `${resultReference(before)}/snapshot.heapsnapshot`, note: "before" }, { name: `${resultReference(after)}/snapshot.heapsnapshot`, note: "after" }]),
     sections: [
+      fact`Snapshot totals: before nodes=${totals.before.nodes} serialized-bytes=${totals.before.bytes ?? "unavailable"}; after nodes=${totals.after.nodes} serialized-bytes=${totals.after.bytes ?? "unavailable"}.`,
       fact`${comparison.retainedSizeQualification}`,
       lineList(displayed.map((constructor, index) => fact`${index + 1}. ${capped(constructor.constructorName, 120)} · added nodes=${constructor.added.nodeCount} detached-nodes=${constructor.added.detachedNodeCount} retained-bytes=${constructor.added.retainedSize}; removed nodes=${constructor.removed.nodeCount} detached-nodes=${constructor.removed.detachedNodeCount} retained-bytes=${constructor.removed.retainedSize}; grown nodes=${constructor.grown.nodeCount} detached-nodes=${constructor.grown.detachedNodeCount} retained-bytes=${constructor.grown.retainedSize}`)),
       fact`After-snapshot nodes marked detached by Chrome (object-id is the heap retainers --node input):`,
@@ -265397,7 +265438,7 @@ input:
   --before <snapshot>   required. Heap snapshot id in the active session or an absolute snapshot path
   --after <snapshot>    required. Heap snapshot id in the active session or an absolute snapshot path
   --limit <N>           render the top N constructors by added retained bytes and top N after-snapshot nodes Chrome marks detached; default 25, --json always carries every constructor
-output: <heap-diff \u2026> \u2014 per constructor, the nodes added, removed, and grown between the two snapshots, with retained-byte and detached-node totals for each; after-snapshot nodes Chrome marks detached are listed with their object ids; --json mirrors
+output: <heap-diff \u2026> \u2014 before/after snapshot node and serialized-byte totals, then per constructor nodes added, removed, and grown with retained-byte and detached-node totals; after-snapshot nodes Chrome marks detached are listed with their object ids; --json mirrors
 effects: read-only \u2014 reads both finalized snapshot artifacts, never drives the browser`;
   }
 });

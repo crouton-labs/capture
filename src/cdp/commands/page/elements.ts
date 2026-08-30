@@ -37,6 +37,7 @@ const USAGE = `capture page elements — list what can be acted on in the live t
 
 Input:
   --all               full exposed accessibility tree instead of interactive elements only
+  --name <text>       case-insensitive substring filter over each exposed accessibility name; applies before --limit
   --limit <n>         max elements listed (positive integer, default ${DEFAULT_LIMIT}; a capped list states the total as an elements-truncated fact)
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json              mirror the result as JSON
@@ -69,7 +70,7 @@ export interface ElementRecord {
  */
 export async function collectElements(
   client: ElementsClient,
-  opts: { all?: boolean } = {},
+  opts: { all?: boolean; name?: string } = {},
 ): Promise<ElementRecord[]> {
   const nodes = await readFullAXTree(client);
   const nodesById = new Map(nodes.map((node) => [node.nodeId, node]));
@@ -116,7 +117,9 @@ export async function collectElements(
       backendNodeId: node.backendDOMNodeId ?? null,
     });
   }
-  return records;
+  return opts.name === undefined
+    ? records
+    : records.filter((record) => record.name.toLowerCase().includes(opts.name!.toLowerCase()));
 }
 
 /**
@@ -127,7 +130,7 @@ export async function collectElements(
  */
 export function buildElementsResult(
   records: readonly ElementRecord[],
-  opts: { all: boolean; limit: number },
+  opts: { all: boolean; limit: number; name?: string },
 ): RenderableResult {
   const total = records.length;
   const shown = records.slice(0, opts.limit);
@@ -146,10 +149,10 @@ export function buildElementsResult(
 
   return {
     tag: 'elements',
-    attrs: { scope: opts.all ? 'all' : 'interactive', count: total },
+    attrs: { scope: opts.all ? 'all' : 'interactive', count: total, 'name-filter': opts.name },
     summary: opts.all
-      ? fact`${total} elements in the exposed accessibility tree`
-      : fact`${total} interactive elements`,
+      ? opts.name === undefined ? fact`${total} elements in the exposed accessibility tree` : fact`${total} elements in the exposed accessibility tree with accessible name containing ${opts.name}`
+      : opts.name === undefined ? fact`${total} interactive elements` : fact`${total} interactive elements with accessible name containing ${opts.name}`,
     sections,
     followUp: text`capture page click <target> · capture measure map ax <url|snap>`,
   };
@@ -172,11 +175,11 @@ export async function cmdPageElements(parsed: ParsedArgs, _args: string[]): Prom
 
   const records = await withConnection(
     parsed,
-    (client) => collectElements(client, { all: parsed.all }),
+    (client) => collectElements(client, { all: parsed.all, name: parsed.name }),
     { settle: 0 },
   );
 
-  emitResult(buildElementsResult(records, { all: Boolean(parsed.all), limit }), {
+  emitResult(buildElementsResult(records, { all: Boolean(parsed.all), limit, name: parsed.name }), {
     json: parsed.json,
   });
 }

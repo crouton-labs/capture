@@ -1,5 +1,5 @@
 import { type ParsedArgs } from '../../types.js';
-import { explainSnapshot, type ExplainMissingSelector } from '../../measure/explain.js';
+import { explainSnapshot, type ExplainAmbiguousSelector, type ExplainMissingSelector } from '../../measure/explain.js';
 import { ArtifactResolutionError, resolveSnapRef } from '../../../output/artifact.js';
 import { data, emitResult, fact, line, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
 
@@ -58,6 +58,14 @@ function recoverySections(missing: ExplainMissingSelector): FactLine[] {
     lineList(rows),
     text`All recorded selector and identity facts remain in this snapshot's geometry.json, ax.json, and text.json artifacts.`,
   ];
+}
+
+function ambiguitySections(ambiguous: ExplainAmbiguousSelector): FactLine[] {
+  const rows = ambiguous.candidates.map((candidate, index) => fact`${index + 1}. ${candidate.selector ?? candidate.id}${typeof candidate.backendNodeId === 'number' ? ` — backend:${candidate.backendNodeId}` : ''}${candidate.axId ? ` — axid:${candidate.axId}` : ''}${candidate.axName ? ` — ax:${candidate.axName}` : ''}`);
+  return [lineList([
+    ...(ambiguous.matchCount > ambiguous.candidates.length ? [fact`candidates (first ${ambiguous.candidates.length} of ${ambiguous.matchCount}):`] : [text`candidates:`]),
+    ...rows,
+  ])];
 }
 
 function invalidInput(message: FactLine): RenderableResult {
@@ -119,6 +127,18 @@ export async function cmdMeasureExplain(parsed: ParsedArgs, _args: string[]): Pr
         summary: fact`No geometry element matched selector input ${report.selector}. Bounded recovery candidates from this snapshot follow.`,
         sections: recoverySections(report),
         followUp: text`The selector input also accepts CSS, backend:, axid:, ax:, and text: forms.`,
+      }, { json: parsed.json });
+      process.exitCode = 1;
+      return;
+    }
+    if (report.kind === 'ambiguous-selector') {
+      emitResult({
+        tag: 'error',
+        attestation: attestation(report.ref, report.meta),
+        attrs: { command: 'measure explain', status: 'ambiguous_selector', selector: report.selector, matches: report.matchCount, displayed: report.candidates.length },
+        summary: fact`Selector input ${report.selector} matched ${report.matchCount} recorded elements; no element was selected.`,
+        sections: ambiguitySections(report),
+        followUp: text`Retry with an exact CSS selector, axid, or numeric backend id from the candidate identity facts.`,
       }, { json: parsed.json });
       process.exitCode = 1;
       return;

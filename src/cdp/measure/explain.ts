@@ -116,7 +116,16 @@ export interface ExplainMissingSelector {
   readonly available: MissingSelectorRecovery;
 }
 
-export type ExplainSnapshotResult = ExplainSuccess | ExplainMissingSelector;
+export interface ExplainAmbiguousSelector {
+  readonly kind: 'ambiguous-selector';
+  readonly ref: SnapRef;
+  readonly selector: string;
+  readonly meta: { readonly settled?: boolean; readonly settleMs?: number };
+  readonly matchCount: number;
+  readonly candidates: readonly ElementRecord[];
+}
+
+export type ExplainSnapshotResult = ExplainSuccess | ExplainMissingSelector | ExplainAmbiguousSelector;
 
 type RawSection = { kind: ExplainSection['kind']; facts: ExplainFact[] };
 
@@ -566,6 +575,9 @@ export function explainSnapshot(ref: SnapRef, selector: string, detailOpts: Expl
   }
   if (!matches.length) {
     return { kind: 'missing-selector', ref, selector, meta, available: recoveryForms(selectable, selector) };
+  }
+  if (matches.length > 1) {
+    return { kind: 'ambiguous-selector', ref, selector, meta, matchCount: matches.length, candidates: matches.slice(0, RECOVERY_CANDIDATE_LIMIT) };
   }
 
   const selectedId = matches[0]!.id;

@@ -9,7 +9,7 @@ input:
   --before <snapshot>   required. Heap snapshot id in the active session or an absolute snapshot path
   --after <snapshot>    required. Heap snapshot id in the active session or an absolute snapshot path
   --limit <N>           render the top N constructors by added retained bytes and top N after-snapshot nodes Chrome marks detached; default 25, --json always carries every constructor
-output: <heap-diff …> — per constructor, the nodes added, removed, and grown between the two snapshots, with retained-byte and detached-node totals for each; after-snapshot nodes Chrome marks detached are listed with their object ids; --json mirrors
+output: <heap-diff …> — before/after snapshot node and serialized-byte totals, then per constructor nodes added, removed, and grown with retained-byte and detached-node totals; after-snapshot nodes Chrome marks detached are listed with their object ids; --json mirrors
 effects: read-only — reads both finalized snapshot artifacts, never drives the browser`;
 
 export function cmdHeapDiff(parsed: ParsedArgs): void {
@@ -19,7 +19,14 @@ export function cmdHeapDiff(parsed: ParsedArgs): void {
   }
   const before = resolveHeapRef(parsed.before!);
   const after = resolveHeapRef(parsed.after!);
-  const comparison = HeapSnapshot.compare(loadHeap(before), loadHeap(after));
+  const beforeHeap = loadHeap(before);
+  const afterHeap = loadHeap(after);
+  const comparison = HeapSnapshot.compare(beforeHeap, afterHeap);
+  const snapshotBytes = (ref: typeof before) => ref.meta.files.find((file) => file.name === 'snapshot.heapsnapshot')?.bytes;
+  const totals = {
+    before: { nodes: beforeHeap.nodeCount, bytes: snapshotBytes(before) },
+    after: { nodes: afterHeap.nodeCount, bytes: snapshotBytes(after) },
+  };
   const constructors = [...comparison.constructors].sort((a, b) => b.added.retainedSize - a.added.retainedSize || b.grown.retainedSize - a.grown.retainedSize || b.removed.retainedSize - a.removed.retainedSize || a.constructorName.localeCompare(b.constructorName));
   const limit = parsed.limit ?? 25;
   const displayed = constructors.slice(0, limit);
@@ -28,6 +35,7 @@ export function cmdHeapDiff(parsed: ParsedArgs): void {
     ? lineList(detached.map((node, index) => fact`${index + 1}. object-id=${node.objectId} constructor=${capped(node.constructorName, 120)} type=${node.type} detachedness=${node.detachedness}`))
     : text`No after-snapshot nodes are marked detached by Chrome.`;
   const jsonSections = [
+    { before: totals.before, after: totals.after },
     ...constructors.map(constructor => ({
       constructor: capped(constructor.constructorName, Number.MAX_SAFE_INTEGER),
       added: { nodeCount: constructor.added.nodeCount, detachedNodeCount: constructor.added.detachedNodeCount, retainedSize: constructor.added.retainedSize },
@@ -63,10 +71,15 @@ export function cmdHeapDiff(parsed: ParsedArgs): void {
       'after-detached-nodes': comparison.afterDetachedNodes.length,
       'detached-displayed': detached.length,
       'retained-size-qualification': comparison.retainedSizeQualification,
+      'before-nodes': totals.before.nodes,
+      'before-bytes': totals.before.bytes,
+      'after-nodes': totals.after.nodes,
+      'after-bytes': totals.after.bytes,
     },
     summary: text`Nodes are matched by Chrome snapshot object id. “grown” reports the increase in retained size for id-matched nodes, not their current size.`,
     artifacts: formatArtifactList([{ name: `${resultReference(before)}/snapshot.heapsnapshot`, note: 'before' }, { name: `${resultReference(after)}/snapshot.heapsnapshot`, note: 'after' }]),
     sections: [
+      fact`Snapshot totals: before nodes=${totals.before.nodes} serialized-bytes=${totals.before.bytes ?? 'unavailable'}; after nodes=${totals.after.nodes} serialized-bytes=${totals.after.bytes ?? 'unavailable'}.`,
       fact`${comparison.retainedSizeQualification}`,
       lineList(displayed.map((constructor, index) => fact`${index + 1}. ${capped(constructor.constructorName, 120)} · added nodes=${constructor.added.nodeCount} detached-nodes=${constructor.added.detachedNodeCount} retained-bytes=${constructor.added.retainedSize}; removed nodes=${constructor.removed.nodeCount} detached-nodes=${constructor.removed.detachedNodeCount} retained-bytes=${constructor.removed.retainedSize}; grown nodes=${constructor.grown.nodeCount} detached-nodes=${constructor.grown.detachedNodeCount} retained-bytes=${constructor.grown.retainedSize}`)),
       fact`After-snapshot nodes marked detached by Chrome (object-id is the heap retainers --node input):`,

@@ -50,7 +50,7 @@ input:
 output:
   <screenshot path=… width=… height=… css-width=… css-height=… css-x=… css-y=… css-to-image-x=… css-to-image-y=… effective-downscale-x=… effective-downscale-y=… scroll-x=… scroll-y=… emulation=none|viewport|full-page color-scheme=dark|light> — saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, visual-viewport scroll offset at capture, any effective downscale below 1 image px/CSS px, byte size, crop provenance, and any requested transient emulation
 effects:
-  no flags: none — the capture reads the viewport as-is, with zero Emulation.* calls. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture — two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; an empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
+  no flags: none — the capture reads the viewport as-is, with zero Emulation.* calls. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture — two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; a selector crop reports its requested and delivered regions when its padded box cannot fit. An empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
 
 // ---------------------------------------------------------------------------
 // Test-injectable dependency seam (the CDP-stub test pattern; the capture
@@ -108,6 +108,8 @@ async function resolveOutPath(parsed: ParsedArgs): Promise<string> {
 
 export type EmulationMode = 'none' | 'viewport' | 'full-page';
 
+const LEGIBILITY_SCALE_THRESHOLD = 0.5;
+
 interface CropProvenance {
   readonly source: 'coordinates' | 'selector';
   readonly requested: ScreenshotCrop;
@@ -153,6 +155,7 @@ export function buildScreenshotResult(f: {
     ].filter((axis): axis is string => axis !== undefined).join(' and ')
     : undefined;
   const cropConstrained = f.crop?.source === 'selector' && f.cssViewport !== undefined && !sameRect(f.crop.requested, f.cssViewport);
+  const legibilityConstrained = scale !== undefined && Math.min(scale.x, scale.y) < LEGIBILITY_SCALE_THRESHOLD && Math.min(scale.x, scale.y) < (f.crop?.zoom ?? 1);
   const sections: FactLine[] = [
     scale && f.cssViewport
       ? fact`CSS-to-image scale: ${scale.x.toFixed(6)} image px/CSS px horizontally and ${scale.y.toFixed(6)} image px/CSS px vertically (captured CSS region ${round6(f.cssViewport.width)}×${round6(f.cssViewport.height)} at page origin ${round6(f.cssViewport.x)},${round6(f.cssViewport.y)}).`
@@ -161,7 +164,7 @@ export function buildScreenshotResult(f: {
       ? fact`CSS crop: ${f.crop.source === 'selector' ? `selector ${f.crop.selector} (backend:${f.crop.backendNodeId}), border box plus ${f.crop.pad}px padding` : 'coordinates'} requested ${formatRect(f.crop.requested)} at zoom ${f.crop.zoom}; the captured CSS region above is its intersection with the source visual viewport.`
       : text`CSS crop: none — the captured CSS region above is the source visual viewport.`,
     ...(cropConstrained && f.crop && f.cssViewport
-      ? [fact`Crop constraint: requested ${formatRect(f.crop.requested)}; delivered ${formatRect(f.cssViewport)} because the requested selector crop extended outside the live visual viewport, so the artifact contains its visual-viewport intersection.`]
+      ? [fact`Crop constraint: requested ${formatRect(f.crop.requested)}; delivered ${formatRect(f.cssViewport)} because the requested selector crop extended outside the ${f.emulation === 'viewport' ? 'effective live visual viewport after its transient device-metrics override' : 'live visual viewport'}, so the artifact contains its visual-viewport intersection.`]
       : []),
     f.scrollOffset
       ? fact`scroll offset at capture: x=${round6(f.scrollOffset.x)} y=${round6(f.scrollOffset.y)} CSS px.`
@@ -176,6 +179,7 @@ export function buildScreenshotResult(f: {
     f.colorScheme
       ? fact`color scheme: transient prefers-color-scheme=${f.colorScheme} override applied for the capture and cleared after.`
       : text`color scheme: browser default — no Emulation.setEmulatedMedia call was made.`,
+    ...(legibilityConstrained ? [fact`Image constraint: the 1600px image-side cap reduced this artifact below ${LEGIBILITY_SCALE_THRESHOLD} image px per CSS px.`] : []),
   ];
   return {
     tag: 'screenshot',
@@ -207,6 +211,9 @@ export function buildScreenshotResult(f: {
         : fact`saved ${f.path} — ${f.dimensions.width}x${f.dimensions.height}px, ${f.bytes} bytes.`
       : fact`saved ${f.path} — ${f.bytes} bytes.`,
     sections,
+    followUp: legibilityConstrained
+      ? text`A selector crop with --zoom 1 captures a bounded region at 1 image px/CSS px when each captured CSS side is at most 1600px.`
+      : undefined,
   };
 }
 
@@ -251,7 +258,7 @@ async function pageBorderRect(client: CDPClient, backendNodeId: number): Promise
   // use page coordinates, so account for the scroll DOM.scrollIntoViewIfNeeded
   // just performed for a selector crop.
   const metrics = (await client.send('Page.getLayoutMetrics')) as {
-    cssVisualViewport?: { pageX?: unknown; pageY?: unknown };
+    cssVisualViewport?: { pageX?: unknown; pageY?: unknown; clientWidth?: unknown; clientHeight?: unknown };
   };
   const pageX = metrics.cssVisualViewport?.pageX;
   const pageY = metrics.cssVisualViewport?.pageY;
@@ -356,8 +363,6 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
     return;
   }
 
-  const emulation: EmulationMode = parsed.fullPage ? 'full-page' : viewport ? 'viewport' : 'none';
-
   // connection.ts derives the recorder-routed action label from
   // parsed.command, which the router leaves as the branch token 'page' —
   // restore the verb so stderr diagnostics identify this leaf.
@@ -390,5 +395,5 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
     emitResolutionError(parsed, 'page shot', result.failure as ResolutionFailure);
     return;
   }
-  emitResult(buildScreenshotResult({ ...result, emulation, viewport, colorScheme }), { json: parsed.json });
+  emitResult(buildScreenshotResult({ ...result, emulation: parsed.fullPage ? 'full-page' : viewport ? 'viewport' : 'none', viewport, colorScheme }), { json: parsed.json });
 }

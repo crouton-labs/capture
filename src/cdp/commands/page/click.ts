@@ -194,6 +194,9 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
     );
   }
 
+  const settleDefaultSource = parsed.settle === undefined
+    ? deps.getActiveSession() === null ? 'standalone default' : 'active-session default'
+    : undefined;
   const settle = effectiveSettle(parsed, { standalone: 1000, session: 2500 });
   // connection.ts derives the recorder landmark label from parsed.command,
   // which the router leaves as the branch token 'page' — restore the verb so
@@ -222,6 +225,7 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
       ? []
       : [fact`dispatch hit test at x=${dispatch.x} y=${dispatch.y} resolved to backend:${dispatch.hitTestReceiverBackendNodeId}, not target backend:${dispatch.backendNodeId}`]),
     fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`,
+    ...(settleDefaultSource === undefined ? [] : [fact`settle source: ${settleDefaultSource}; no --settle flag was passed.`]),
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
   if (screenshotWarning) rows.push(fact`screenshot-warning: ${screenshotWarning}`);
