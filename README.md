@@ -46,7 +46,7 @@ Both still do things capture does not. Playwright MCP is cross-browser — the s
 
 ## See it
 
-Eight short clips. Every overlay is real: the text is extracted from the command's actual stdout, the boxes are drawn at the coordinates the command printed, and the inset images are files a command actually wrote.
+Eleven short clips. Every overlay is real: the text is extracted from the command's actual stdout, the boxes are drawn at the coordinates the command printed, and the inset images are files a command actually wrote.
 
 Each player below contains the full clip. Use its controls to play, pause, scrub, or fullscreen.
 
@@ -117,6 +117,30 @@ A model cannot watch a video. Hand it a screen recording and you are really hand
 No storage-state dance and no separate automation profile. Attach over `--port`, adopt the tab already in front of you, drive it, and finish with one bundle: the recording, the HAR, the shots and the measurements together. The network panel is drawn from the captured HAR — every field read from that entry, nothing inferred, and credential headers withheld with their length marked in place.
 
 `capture session start --target <tab-id> --port 9860` · [full clip, 30s](demo/8-live-session.mp4)
+
+### 9. The cards paint first. Then one image moves them 400 pixels.
+
+<video src="https://github.com/user-attachments/assets/3257f961-a9b4-4e20-b23e-4da86622ae31" controls muted playsinline></video>
+
+Record the load once, then ask it different questions. `perf vitals` reads the largest paint off the trace — nearly all of it one image's load, named by element and URL — and lists the shifts that image caused. `perf insights` returns the element each shift moved, with the rectangle it was in before and after: `old_rect [28,99,1224,174]` → `new_rect [28,499,1224,174]`. Then `measure explain` measures that same element on the settled page and prints `x=28 y=499.75 w=1224 h=172.64`. The trace engine and the DOM agree on where the KPI row ended up.
+
+`capture perf insights <trace> --name CLSCulprits --full` · [full clip, 24s](demo/9-perf-vitals.mp4)
+
+### 10. The panels are closed. The browser is still holding all five.
+
+<video src="https://github.com/user-attachments/assets/20cccb4d-9715-4dfc-a5ec-60772b2e26e9" controls muted playsinline></video>
+
+A console opens and closes five session panels. The deck ends empty and the page reports zero open — but two heap snapshots disagree. `heap diff` lists ten detached nodes still reachable and names each one by the constructor that built it: `<div class="panel" id="session-1">`. `heap census` puts 1,049,008 retained bytes behind one of them, and `heap retainers` walks the edge keeping it alive — a `ClosedSession` object holding the panel on its `element` property.
+
+`capture heap retainers <snap> --node <node-id>` · [full clip, 24s](demo/10-heap-detached.mp4)
+
+### 11. The API never answered. The dashboard didn't change by one pixel.
+
+<video src="https://github.com/user-attachments/assets/bb29c58d-c9bb-4640-8756-d649925499d3" controls muted playsinline></video>
+
+The agent reads `$518.40` off a revenue dashboard, installs one rule document that fails the metrics API, and reloads. The skeletons shimmer, the cards fill, and the page shows `$518.40` again. `measure diff --pixels` reports **0 changed pixels across 1280×800**, while the HAR for that one URL carries both loads side by side: `200 · 56 bytes`, then `response incomplete: failed`. Mocking the route is the setup. The measurement is what shows the failure left nothing on screen to see.
+
+`capture tab mock start --rules <rules.json>` · [full clip, 26s](demo/11-mock-silent-failure.mp4)
 
 ## Quick start
 
