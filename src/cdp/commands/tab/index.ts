@@ -21,7 +21,7 @@ import { tabMockMain } from './mock/index.js';
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="tab">
-browser and tab plumbing — the existence of a browser capture owns, endpoint/tab discovery, tab lifecycle, and the conditions the tab's network runs under (connectivity, mocked responses)
+browser and tab plumbing — launch or quit a browser capture owns, discover endpoints and tabs, open/close/reset tabs, and set the tab's network conditions (throttling, offline, mocked responses)
 use when starting, finding, opening, closing, or resetting a browser tab, or changing its network conditions
 </command>`;
 

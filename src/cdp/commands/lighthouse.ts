@@ -16,7 +16,7 @@ import { stopAndReapCollectorHostAtSessionStop } from '../host/lifecycle.js';
 import { capped, emitResult, fact, formatArtifactList, line, lineList, text, type FactLine, type JsonValue, type RenderableResult } from '../../output/render.js';
 
 export const COMMAND_BLOCK = `<command name="lighthouse">
-a third-party scored diagnostic report — capture runs Lighthouse against a URL and stores its report unmodified
+Google Lighthouse audits — capture runs Lighthouse against a URL and stores its scored report unmodified
 use for one Lighthouse report's audited accessibility, SEO, performance, or best-practices conditions, categories, scores, and audits
 </command>`;
 

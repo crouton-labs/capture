@@ -16,8 +16,8 @@ import { cmdMotionResponse } from './response.js';
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="motion">
-the screencast-recording substrate — what changed on screen across frames; \`rec\` writes the recording, every other leaf is a read-only query over it
-use for per-element frame geometry, changed regions, and input-to-settle timing; use \`perf\` instead for trace-event timing
+screen recording — \`rec\` screencasts the tab through an interaction; every other leaf answers what moved, where, and how long it took from that recording's frames
+use when a claim depends on change over time: element motion across frames, which screen regions changed, layout shifts and long tasks, or the time from an input to a settled screen; for trace-event timing use \`perf\` instead
 </command>`;
 
 export const MOTION_USAGE = `<command name="motion" description="recording lifecycle and read-only queries over a finalized recording">

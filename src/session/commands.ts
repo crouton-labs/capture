@@ -383,7 +383,7 @@ export async function waitForPageLoad(
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="session">
-the artifact container — a session records HAR and bundles every artifact; it may open or adopt a tab, and once it has one, every command auto-targets it
+the work's evidence bundle — \`start\` opens or adopts a tab, records its network traffic (HAR) and external logs, and collects every artifact into one directory; while running, every command auto-targets its tab
 use when collecting or reading the traffic, logs, and artifacts of scoped work against one page
 </command>`;
 

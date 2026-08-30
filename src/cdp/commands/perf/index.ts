@@ -5,8 +5,8 @@ import { cmdPerfVitals } from './vitals.js';
 import { cmdPerfInsights } from './insights.js';
 
 export const COMMAND_BLOCK = `<command name="perf">
-the Chrome performance-trace substrate — \`trace\` records one, \`vitals\` and \`insights\` are read-only queries over it
-use for Core Web Vitals and DevTools insights over a page load or one interaction, timed from trace events
+Chrome performance tracing — \`trace\` records a DevTools performance trace over a page load or an interaction; \`vitals\` and \`insights\` read it back without re-running anything
+use when a claim depends on runtime performance: LCP, INP, and CLS with attribution, or DevTools' computed insights such as render-blocking requests, forced reflow, and layout-shift culprits
 </command>`;
 
 const HELP = `<command name="perf" description="the Chrome performance-trace substrate">

@@ -7,8 +7,8 @@ import { cmdHeapRetainers } from './retainers.js';
 import { cmdHeapDiff } from './diff.js';
 
 export const COMMAND_BLOCK = `<command name="heap">
-the tab's JavaScript heap — \`snapshot\` records the heap as a V8 snapshot, every other leaf is a read-only graph query over it
-use for JavaScript-heap retention: constructor totals, retained sizes, retaining paths, duplicate strings, and before/after comparison
+JavaScript memory — \`snapshot\` writes the tab's V8 heap snapshot; every other leaf queries that object graph without touching the browser
+use when a claim depends on memory: what the heap holds per constructor, which objects exist, what keeps one alive, duplicated strings, or what grew between two snapshots when hunting a leak
 </command>`;
 
 const HELP = `<command name="heap" description="the V8 heap-snapshot substrate">
