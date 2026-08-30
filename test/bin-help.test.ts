@@ -73,7 +73,8 @@ test('bare `capture`, `capture -h`, and `capture --help` print the assembled roo
 test('each branch accepts --help and lists description-and-selection rows without leaf signatures', () => {
   const branches = [
     { args: ['session', '--help'], name: 'session', leaves: ['start', 'stop', 'list', 'view', 'har', 'log', 'collectors'] },
-    { args: ['page', '--help'], name: 'page', leaves: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements'] },
+    { args: ['page', '--help'], name: 'page', leaves: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements', 'inspect', 'repeat'] },
+    { args: ['page', 'inspect', '--help'], name: 'inspect', leaves: ['listeners', 'cardinality', 'frames', 'resources'] },
     { args: ['tab', '--help'], name: 'tab', leaves: ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network', 'mock'] },
     { args: ['tab', 'mock', '--help'], name: 'mock', leaves: ['start', 'stop'] },
     { args: ['measure', '--help'], name: 'measure', leaves: ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map'] },

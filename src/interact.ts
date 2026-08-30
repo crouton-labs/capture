@@ -111,7 +111,7 @@ export interface ClickDispatch {
   readonly name: string | null;
   readonly x: number;
   readonly y: number;
-  /** Present only when the browser's hit test at the dispatch point resolved to another node. */
+  /** Present when the browser's hit test resolves to another node, or when the caller requests the receiver identity even when it equals the target. */
   readonly hitTestReceiverBackendNodeId?: number;
 }
 
@@ -363,7 +363,7 @@ async function axIdentityFor(
 export async function clickResolved(
   client: LiveClient,
   resolved: ResolvedTarget,
-  opts: { mark?: string; inspectHitTest?: boolean } = {},
+  opts: { mark?: string; inspectHitTest?: boolean; includeHitTestReceiver?: boolean } = {},
 ): Promise<ClickDispatch> {
   const { backendNodeId } = resolved;
 
@@ -400,7 +400,7 @@ export async function clickResolved(
         { method: 'DOM.getNodeForLocation', response: hitTest },
       );
     }
-    if (hitTest.backendNodeId !== backendNodeId) hitTestReceiverBackendNodeId = hitTest.backendNodeId;
+    if (hitTest.backendNodeId !== backendNodeId || opts.includeHitTestReceiver) hitTestReceiverBackendNodeId = hitTest.backendNodeId;
   }
 
   const pressParams = { type: 'mousePressed', x: dispatchX, y: dispatchY, button: 'left', clickCount: 1 };
@@ -436,7 +436,7 @@ export async function focusAndType(
   client: LiveClient,
   resolved: ResolvedTarget,
   text: string,
-  opts: { inspectHitTest?: boolean } = {},
+  opts: { inspectHitTest?: boolean; includeHitTestReceiver?: boolean } = {},
 ): Promise<ClickDispatch> {
   client.suppressNextFocusClickMark?.();
   const dispatch = await clickResolved(client, resolved, opts);

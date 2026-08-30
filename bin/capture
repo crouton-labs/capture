@@ -4500,6 +4500,11 @@ var init_render = __esm({
       "navigated",
       "exec-result",
       "elements",
+      "listeners",
+      "cardinality",
+      "frames",
+      "resources",
+      "repeated",
       "screenshot",
       "tabs",
       "tab-opened",
@@ -5174,7 +5179,7 @@ async function acquirePrivateLock(lockPath2, options) {
   const now = options.nowNs ?? process.hrtime.bigint;
   const enforceTimeout = options.acquireTimeoutMs > 0;
   const deadline = now() + BigInt(Math.floor(options.acquireTimeoutMs * 1e6));
-  const sleep3 = options.sleep ?? sleepDefault;
+  const sleep4 = options.sleep ?? sleepDefault;
   const random = options.token ?? lockToken;
   const publish = () => pinnedParent(canonical, (name) => {
     hook("lock", "beforePublishAttempt", canonical, name);
@@ -5461,7 +5466,7 @@ async function acquirePrivateLock(lockPath2, options) {
     }
     retire();
     if (now() >= deadline) throw new Error(`private lock acquisition timed out: ${canonical}`);
-    await sleep3(Math.max(0, Math.min(10, Number((deadline - now()) / 1000000n))));
+    await sleep4(Math.max(0, Math.min(10, Number((deadline - now()) / 1000000n))));
   }
 }
 var crypto, import_node_child_process, fs, os, path, configuredRoot, CAPTURE_ROOT, DIR_MODE, FILE_MODE, MAX_TIMING_MS, ARTIFACT_TEST_HOOKS_SYMBOL, hooks, faults, artifactTempToken, lockToken, privateLockGate, captureRootIdentity, cwdPinned, BOOT_ID, MAX_LOG_LABEL_BYTES, LOG_TAILER_SOCKET_TOKEN, LOG_TAILER_NONCE, LOG_TAILER_SOCKET_DIR, DECIMAL_IDENTITY, execFileSyncForProvider, linuxProviderRead, processPidBirthProvider, sleepDefault;
@@ -9085,7 +9090,7 @@ function validateKnownLeaf(command, positional) {
   if (leaf === void 0) return;
   const branches = {
     session: ["start", "stop", "list", "view", "har", "log", "collectors"],
-    page: ["click", "type", "scroll", "navigate", "exec", "shot", "elements"],
+    page: ["click", "type", "scroll", "navigate", "exec", "shot", "elements", "inspect", "repeat"],
     tab: ["launch", "quit", "list", "open", "close", "reset", "network", "mock"],
     measure: ["snap", "check", "diff", "census", "explain", "sweep", "map"],
     motion: ["rec", "mask", "timeline", "jank", "response"],
@@ -9097,6 +9102,10 @@ function validateKnownLeaf(command, positional) {
   if (known && !known.includes(leaf)) {
     if (command === "perf" || command === "heap") throw schemaInput(command, leaf, `one of ${known.join(", ")}`, "<leaf>");
     throw invalidInput(`Unknown ${command} leaf: ${leaf}.`, "unknown_command");
+  }
+  if (command === "page" && leaf === "inspect" && positional[1] !== void 0) {
+    const inspectLeaf = positional[1];
+    if (!["listeners", "cardinality", "frames", "resources"].includes(inspectLeaf)) throw invalidInput(`Unknown page inspect leaf: ${inspectLeaf}.`, "unknown_command");
   }
   if (command === "measure" && leaf === "map" && positional[1] !== void 0) {
     const mapLeaf = positional[1];
@@ -9122,6 +9131,7 @@ Next: Run \`capture ${command} -h\` and read the schema before re-issuing.`);
 function leafCommand(command, positional) {
   if (command === "lighthouse" || command === "cdp") return command;
   if (command === "tab" && positional[0] === "mock") return positional[1] ? `tab mock ${positional[1]}` : "tab mock";
+  if (command === "page" && positional[0] === "inspect") return positional[1] ? `page inspect ${positional[1]}` : "page inspect";
   if (command === "measure" && positional[0] === "map") return positional[1] ? `measure map ${positional[1]}` : "measure map";
   return positional[0] ? `${command} ${positional[0]}` : command;
 }
@@ -9227,6 +9237,38 @@ function validateCliInvocation(parsed) {
     }
     if (leaf === "exec") requireCount(values, parsed.file === void 0 ? 1 : 0, parsed.file === void 0 ? 1 : 0, "page exec");
     if (leaf === "shot" || leaf === "elements") requireCount(values, 0, 0, `page ${leaf}`);
+    if (leaf === "repeat") {
+      requireCount(values, 0, 0, "page repeat");
+      if (parsed.iterations === void 0) throw schemaInput("page repeat", "(missing)", "an iteration count from 1 to 100", "--iterations");
+      if (parsed.steps === void 0) throw schemaInput("page repeat", "(missing)", "a JSON array of 1..20 click/type action objects", "--steps");
+      try {
+        const steps = JSON.parse(parsed.steps);
+        const valid = parsed.steps.length <= 1e4 && Array.isArray(steps) && steps.length >= 1 && steps.length <= 20 && steps.every((step) => {
+          if (!step || typeof step !== "object" || Array.isArray(step)) return false;
+          const record5 = step;
+          if (record5.action === "click") return Object.keys(record5).length === 2 && typeof record5.target === "string" && record5.target.length > 0;
+          if (record5.action === "type") return Object.keys(record5).every((key) => key === "action" || key === "text" || key === "into") && typeof record5.text === "string" && (record5.into === void 0 || typeof record5.into === "string" && record5.into.trim().length > 0);
+          return false;
+        });
+        if (!valid) throw new Error("invalid steps");
+      } catch {
+        throw schemaInput("page repeat", parsed.steps, 'a JSON array of 1..20 {"action":"click","target":"\u2026"} or {"action":"type","text":"\u2026","into":"\u2026"} objects', "--steps");
+      }
+    }
+    if (leaf === "inspect") {
+      const inspectLeaf = values[0];
+      if (inspectLeaf === void 0) return;
+      requireCount(values.slice(1), 0, 0, `page inspect ${inspectLeaf}`);
+      if (inspectLeaf === "listeners" && (parsed.scope ?? "window") === "target" && !parsed.selector?.trim()) {
+        throw schemaInput("page inspect listeners", "(missing)", "a live selector/backend target when --scope target", "--selector");
+      }
+      if (inspectLeaf === "listeners" && (parsed.scope ?? "window") !== "target" && parsed.selector !== void 0) {
+        throw schemaInput("page inspect listeners", `--scope=${parsed.scope ?? "window"}, --selector=${parsed.selector}`, "--selector only with --scope target", "--scope or --selector");
+      }
+      if (inspectLeaf === "frames" && parsed.duration !== void 0 && parsed.duration > 6e4) {
+        throw schemaInput("page inspect frames", `--duration=${parsed.duration / 1e3}`, "a duration from 0 through 60 seconds", "--duration");
+      }
+    }
     if (leaf === "shot" && parsed.viewport !== void 0) {
       const match = /^([1-9]\d*)x([1-9]\d*)$/.exec(parsed.viewport);
       if (!match || !Number.isSafeInteger(Number(match[1])) || !Number.isSafeInteger(Number(match[2]))) {
@@ -9585,6 +9627,20 @@ function parseCliSyntax(argv) {
     } else if (arg === "--preset") {
       parsed.preset = valueFor(arg, next);
       i++;
+    } else if (arg === "--scope") {
+      const scope = valueFor(arg, next);
+      if (scope !== "window" && scope !== "document" && scope !== "target") throw syntaxSchemaInput(commandPath, `--scope=${scope}`, "window, document, or target", "--scope");
+      parsed.scope = scope;
+      i++;
+    } else if (arg === "--event") {
+      parsed.event = valueFor(arg, next);
+      i++;
+    } else if (arg === "--steps") {
+      parsed.steps = valueFor(arg, next);
+      i++;
+    } else if (arg === "--iterations") {
+      parsed.iterations = integer(valueFor(arg, next), "--iterations", 1, 100, true);
+      i++;
     } else if (arg === "-h" || arg === "--help") parsed.help = true;
     else if (arg.startsWith("--")) throw invalidInput(`Unknown flag: ${arg}.`, "unknown_flag");
     else positional.push(arg);
@@ -9683,7 +9739,11 @@ var init_args = __esm({
       "--sort",
       "--rules",
       "--categories",
-      "--preset"
+      "--preset",
+      "--scope",
+      "--event",
+      "--steps",
+      "--iterations"
     ]);
   }
 });
@@ -16681,7 +16741,7 @@ async function clickResolved(client, resolved, opts = {}) {
         { method: "DOM.getNodeForLocation", response: hitTest }
       );
     }
-    if (hitTest.backendNodeId !== backendNodeId2) hitTestReceiverBackendNodeId = hitTest.backendNodeId;
+    if (hitTest.backendNodeId !== backendNodeId2 || opts.includeHitTestReceiver) hitTestReceiverBackendNodeId = hitTest.backendNodeId;
   }
   const pressParams = { type: "mousePressed", x: dispatchX, y: dispatchY, button: "left", clickCount: 1 };
   if (opts.mark !== void 0 && client.sendMarked) {
@@ -228915,6 +228975,433 @@ Effects: read-only \u2014 the accessibility fetch is CDP-side, no page-observabl
   }
 });
 
+// src/cdp/commands/page/inspect.ts
+function asRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function countLimit(parsed) {
+  const limit = parsed.limit ?? DEFAULT_LIMIT2;
+  if (!Number.isSafeInteger(limit) || limit < 1) throw invalidInput(`received: --limit ${String(parsed.limit)}; expected: a positive safe integer.`, "invalid_flag");
+  return limit;
+}
+async function listenerObjectId(client, parsed) {
+  const scope = parsed.scope ?? "window";
+  if (scope === "target") {
+    const resolved = await resolveLiveTarget(client, parsed.selector);
+    if (!resolved.ok) return { failure: resolved };
+    const response2 = asRecord(await client.send("DOM.resolveNode", { backendNodeId: resolved.backendNodeId }));
+    const object = asRecord(response2.object);
+    const objectId2 = typeof object.objectId === "string" ? object.objectId : void 0;
+    if (!objectId2) throw new Error("DOM.resolveNode returned no object id for the live listener target.");
+    return { identity: `backend:${resolved.backendNodeId}`, objectId: objectId2 };
+  }
+  const expression = scope === "window" ? "window" : "document";
+  const response = asRecord(await client.send("Runtime.evaluate", { expression, returnByValue: false }));
+  const result = asRecord(response.result);
+  const objectId = typeof result.objectId === "string" ? result.objectId : void 0;
+  if (!objectId) throw new Error(`Runtime.evaluate returned no object id for ${scope}.`);
+  return { identity: scope, objectId };
+}
+async function cmdListeners(parsed) {
+  if (parsed.help) return void console.log(LISTENERS_USAGE);
+  const limit = countLimit(parsed);
+  const outcome = await withConnection(parsed, async (client) => {
+    const scriptUrls = /* @__PURE__ */ new Map();
+    const parsedHandler = (params) => {
+      const event = params;
+      if (typeof event.scriptId === "string" && typeof event.url === "string") scriptUrls.set(event.scriptId, event.url);
+    };
+    client.on("Debugger.scriptParsed", parsedHandler);
+    try {
+      await client.send("Debugger.enable");
+      const target = await listenerObjectId(client, parsed);
+      if ("failure" in target) return target;
+      try {
+        const response = asRecord(await client.send("DOMDebugger.getEventListeners", { objectId: target.objectId, depth: 1, pierce: true }));
+        const listeners = Array.isArray(response.listeners) ? response.listeners : [];
+        const records = listeners.flatMap((listener) => {
+          if (typeof listener.type !== "string") return [];
+          if (parsed.event !== void 0 && listener.type !== parsed.event) return [];
+          const scriptId = typeof listener.scriptId === "string" ? listener.scriptId : void 0;
+          return [{
+            event: listener.type,
+            capture: listener.useCapture === true,
+            passive: listener.passive === true,
+            once: listener.once === true,
+            handler: typeof listener.handler?.description === "string" ? listener.handler.description : typeof listener.handler?.className === "string" ? listener.handler.className : void 0,
+            scriptId,
+            scriptUrl: scriptId === void 0 ? void 0 : scriptUrls.get(scriptId),
+            line: typeof listener.lineNumber === "number" ? listener.lineNumber : void 0,
+            column: typeof listener.columnNumber === "number" ? listener.columnNumber : void 0
+          }];
+        });
+        return { identity: target.identity, records };
+      } finally {
+        await client.send("Runtime.releaseObject", { objectId: target.objectId });
+      }
+    } finally {
+      client.off("Debugger.scriptParsed", parsedHandler);
+    }
+  }, { settle: 0 });
+  if ("failure" in outcome) return emitResolutionError(parsed, "page inspect listeners", outcome.failure);
+  const shown = outcome.records.slice(0, limit);
+  const rows = shown.map((record5) => fact`${record5.event} capture=${String(record5.capture)} passive=${String(record5.passive)} once=${String(record5.once)}${record5.handler === void 0 ? "" : ` handler=${record5.handler}`}${record5.scriptUrl === void 0 ? record5.scriptId === void 0 ? "" : ` script-id=${record5.scriptId}` : ` script=${record5.scriptUrl}:${record5.line ?? 0}:${record5.column ?? 0}`}`);
+  const sections = rows.length === 0 ? [] : [lineList(rows)];
+  if (shown.length < outcome.records.length) sections.push(fact`listeners-truncated: listing capped at ${shown.length} of ${outcome.records.length} filtered listeners (--limit).`);
+  emitResult({
+    tag: "listeners",
+    attrs: { identity: outcome.identity, count: outcome.records.length, displayed: shown.length, event: parsed.event },
+    summary: fact`${outcome.records.length} registered listener(s) collected from ${outcome.identity}; Debugger.scriptParsed maps script ids to URLs when Chrome supplied those events.`,
+    sections,
+    jsonSections: { listeners: shown }
+  }, { json: parsed.json });
+}
+async function cmdCardinality(parsed) {
+  if (parsed.help) return void console.log(CARDINALITY_USAGE);
+  const result = await withConnection(parsed, async (client) => {
+    const counters = asRecord(await client.send("Memory.getDOMCounters"));
+    const document = asRecord(await client.send("Runtime.evaluate", { expression: 'document.querySelectorAll("*").length', returnByValue: true }));
+    await client.send("Performance.enable");
+    const metricResult = asRecord(await client.send("Performance.getMetrics"));
+    const metricItems = Array.isArray(metricResult.metrics) ? metricResult.metrics.map(asRecord) : [];
+    const metric = (name) => {
+      const found = metricItems.find((item) => item.name === name);
+      return typeof found?.value === "number" ? found.value : void 0;
+    };
+    return {
+      documents: typeof counters.documents === "number" ? counters.documents : void 0,
+      nodes: typeof counters.nodes === "number" ? counters.nodes : void 0,
+      listeners: typeof counters.jsEventListeners === "number" ? counters.jsEventListeners : void 0,
+      elements: typeof asRecord(document.result).value === "number" ? asRecord(document.result).value : void 0,
+      frames: metric("Frames")
+    };
+  }, { settle: 0 });
+  emitResult({
+    tag: "cardinality",
+    attrs: result,
+    summary: fact`Counts collected now: documents/nodes/listeners from Memory.getDOMCounters; elements from document.querySelectorAll("*").length; frames from Performance.getMetrics.`,
+    jsonSections: { collection: { documents: "Memory.getDOMCounters", nodes: "Memory.getDOMCounters", listeners: "Memory.getDOMCounters", elements: 'Runtime.evaluate document.querySelectorAll("*").length', frames: "Performance.getMetrics Frames" } }
+  }, { json: parsed.json });
+}
+function flattenFrameTree(frameTree, out) {
+  const tree = asRecord(frameTree);
+  const frame = asRecord(tree.frame);
+  if (typeof frame.id === "string") out.push({ id: frame.id, parentId: typeof frame.parentId === "string" ? frame.parentId : void 0, url: typeof frame.url === "string" ? frame.url : void 0 });
+  if (Array.isArray(tree.childFrames)) for (const child of tree.childFrames) flattenFrameTree(child, out);
+}
+function sleep2(ms) {
+  return new Promise((resolve12) => setTimeout(resolve12, ms));
+}
+async function cmdFrames(parsed) {
+  if (parsed.help) return void console.log(FRAMES_USAGE);
+  const requestedMs = parsed.duration ?? 0;
+  const limit = countLimit(parsed);
+  const result = await withConnection(parsed, async (client) => {
+    const known = /* @__PURE__ */ new Map();
+    const detached = [];
+    const attachedHandler = (params) => {
+      const event = asRecord(params);
+      if (typeof event.frameId === "string") known.set(event.frameId, { id: event.frameId, parentId: typeof event.parentFrameId === "string" ? event.parentFrameId : void 0 });
+    };
+    const navigatedHandler = (params) => {
+      const frame = asRecord(asRecord(params).frame);
+      if (typeof frame.id === "string") known.set(frame.id, { id: frame.id, parentId: typeof frame.parentId === "string" ? frame.parentId : void 0, url: typeof frame.url === "string" ? frame.url : void 0 });
+    };
+    const detachedHandler = (params) => {
+      const event = asRecord(params);
+      if (typeof event.frameId !== "string") return;
+      const prior = known.get(event.frameId) ?? { id: event.frameId };
+      detached.push({ ...prior, reason: typeof event.reason === "string" ? event.reason : void 0 });
+      known.delete(event.frameId);
+    };
+    client.on("Page.frameAttached", attachedHandler);
+    client.on("Page.frameNavigated", navigatedHandler);
+    client.on("Page.frameDetached", detachedHandler);
+    try {
+      await client.send("Page.enable");
+      const tree = asRecord(await client.send("Page.getFrameTree"));
+      const attached = [];
+      flattenFrameTree(tree.frameTree, attached);
+      for (const frame of attached) known.set(frame.id, frame);
+      const observationStarted = performance.now();
+      if (requestedMs > 0) await sleep2(requestedMs);
+      const current = [];
+      flattenFrameTree(asRecord(await client.send("Page.getFrameTree")).frameTree, current);
+      const observedMs = performance.now() - observationStarted;
+      return { attached: current, detached, observedMs };
+    } finally {
+      client.off("Page.frameAttached", attachedHandler);
+      client.off("Page.frameNavigated", navigatedHandler);
+      client.off("Page.frameDetached", detachedHandler);
+    }
+  }, { settle: 0 });
+  const records = [
+    ...result.attached.map((frame) => ({ state: "attached", ...frame })),
+    ...result.detached.map((frame) => ({ state: "detached", ...frame }))
+  ];
+  const shown = records.slice(0, limit);
+  const rows = shown.map((frame) => frame.state === "attached" ? fact`attached frame:${frame.id}${frame.parentId === void 0 ? "" : ` parent:${frame.parentId}`}${frame.url === void 0 ? "" : ` url=${frame.url}`}` : fact`detached frame:${frame.id}${frame.parentId === void 0 ? "" : ` parent:${frame.parentId}`}${frame.url === void 0 ? "" : ` url=${frame.url}`}${frame.reason === void 0 ? "" : ` reason=${frame.reason}`}`);
+  const sections = rows.length ? [lineList(rows)] : [];
+  if (shown.length < records.length) sections.push(fact`frames-truncated: listing capped at ${shown.length} of ${records.length} attached/detached frame records (--limit).`);
+  emitResult({
+    tag: "frames",
+    attrs: { attached: result.attached.length, detached: result.detached.length, displayed: shown.length, "requested-ms": requestedMs, "observed-ms": result.observedMs },
+    summary: fact`${result.attached.length} frame(s) are attached in the final Page.getFrameTree; ${result.detached.length} detach event(s) were recorded after Page.enable during a requested ${requestedMs}ms window measured as ${result.observedMs.toFixed(1)}ms.`,
+    sections,
+    jsonSections: { frames: shown, collection: { requestedMs, observedMs: result.observedMs } }
+  }, { json: parsed.json });
+}
+async function cmdResources(parsed) {
+  if (parsed.help) return void console.log(RESOURCES_USAGE);
+  const limit = countLimit(parsed);
+  const records = await withConnection(parsed, async (client) => {
+    const response = asRecord(await client.send("Runtime.evaluate", {
+      expression: 'performance.getEntriesByType("resource").map(({name,initiatorType,startTime,duration,responseEnd,transferSize,encodedBodySize,decodedBodySize,nextHopProtocol,renderBlockingStatus})=>({name,initiatorType,startTime,duration,responseEnd,transferSize,encodedBodySize,decodedBodySize,nextHopProtocol,renderBlockingStatus}))',
+      returnByValue: true
+    }));
+    const value = asRecord(response.result).value;
+    if (!Array.isArray(value)) throw new Error('performance.getEntriesByType("resource") did not return an array.');
+    return value.flatMap((entry) => {
+      const record5 = asRecord(entry);
+      if (typeof record5.name !== "string") return [];
+      return [{
+        name: record5.name,
+        initiatorType: typeof record5.initiatorType === "string" ? record5.initiatorType : void 0,
+        startTime: typeof record5.startTime === "number" ? record5.startTime : void 0,
+        duration: typeof record5.duration === "number" ? record5.duration : void 0,
+        responseEnd: typeof record5.responseEnd === "number" ? record5.responseEnd : void 0,
+        transferSize: typeof record5.transferSize === "number" ? record5.transferSize : void 0,
+        encodedBodySize: typeof record5.encodedBodySize === "number" ? record5.encodedBodySize : void 0,
+        decodedBodySize: typeof record5.decodedBodySize === "number" ? record5.decodedBodySize : void 0,
+        nextHopProtocol: typeof record5.nextHopProtocol === "string" ? record5.nextHopProtocol : void 0,
+        renderBlockingStatus: typeof record5.renderBlockingStatus === "string" ? record5.renderBlockingStatus : void 0
+      }];
+    });
+  }, { settle: 0 });
+  const filtered = parsed.name === void 0 ? records : records.filter((record5) => record5.name.toLowerCase().includes(parsed.name.toLowerCase()));
+  const shown = filtered.slice(0, limit);
+  const sections = shown.length === 0 ? [] : [lineList(shown.map((record5) => fact`${record5.name} initiator=${record5.initiatorType ?? "(unknown)"} start=${record5.startTime ?? "(unknown)"}ms duration=${record5.duration ?? "(unknown)"}ms response-end=${record5.responseEnd ?? "(unknown)"}ms transfer=${record5.transferSize ?? "(unknown)"}B encoded=${record5.encodedBodySize ?? "(unknown)"}B decoded=${record5.decodedBodySize ?? "(unknown)"}B protocol=${record5.nextHopProtocol ?? "(unknown)"} render-blocking=${record5.renderBlockingStatus ?? "(unknown)"}`))];
+  if (shown.length < filtered.length) sections.push(fact`resources-truncated: listing capped at ${shown.length} of ${filtered.length} filtered entries (--limit).`);
+  emitResult({
+    tag: "resources",
+    attrs: { count: filtered.length, displayed: shown.length, "name-filter": parsed.name },
+    summary: fact`${filtered.length} current Performance Resource Timing entr${filtered.length === 1 ? "y" : "ies"} collected at command time.`,
+    sections,
+    jsonSections: { entries: shown, collection: 'performance.getEntriesByType("resource")' }
+  }, { json: parsed.json });
+}
+async function inspectMain(parsed, _args) {
+  const leaf = parsed.positional[0];
+  const rest = { ...parsed, positional: parsed.positional.slice(1) };
+  switch (leaf) {
+    case "listeners":
+      return cmdListeners(rest);
+    case "cardinality":
+      return cmdCardinality(rest);
+    case "frames":
+      return cmdFrames(rest);
+    case "resources":
+      return cmdResources(rest);
+    case void 0:
+      console.log(INSPECT_USAGE);
+      return;
+    default:
+      throw invalidInput(`Unknown page inspect leaf: ${leaf}.`, "unknown_command");
+  }
+}
+var DEFAULT_LIMIT2, INSPECT_USAGE, LISTENERS_USAGE, CARDINALITY_USAGE, FRAMES_USAGE, RESOURCES_USAGE;
+var init_inspect = __esm({
+  "src/cdp/commands/page/inspect.ts"() {
+    init_connection();
+    init_errors();
+    init_interact();
+    init_click();
+    init_render();
+    DEFAULT_LIMIT2 = 100;
+    INSPECT_USAGE = `<command name="inspect" description="factual live-tab inventories">
+<model>Each leaf reads the current selected tab without a page-observable write. List leaves filter before --limit and mirror only their bounded final records.</model>
+<subcommand name="listeners" description="registered event listeners" whenToUse="Use to read listeners on window, document, or one live-resolved target."/>
+<subcommand name="cardinality" description="DOM and document counts" whenToUse="Use to read Chrome's current DOM/document cardinality counters."/>
+<subcommand name="frames" description="attached and observed-detached frame identities" whenToUse="Use to read the current frame tree and frame lifecycle events observed during a bounded window."/>
+<subcommand name="resources" description="Resource Timing entries" whenToUse="Use to read the current page's Performance Resource Timing view."/>
+</command>`;
+    LISTENERS_USAGE = `capture page inspect listeners [--scope <window|document|target> --selector <target>] [--event <type>] [--limit <n>] \u2014 list registered listeners on one live identity
+
+input:
+  --scope <kind>       listener owner: window (default), document, or target; target requires --selector
+  --selector <target>  target-scope identity using the live page grammar: bare CSS selector (or exact accessible name when CSS finds none), ax:<name>, axid:<id>, backend:<id>
+  --event <type>       exact event-type filter; applies before --limit
+  --limit <n>          maximum listener records rendered and mirrored (positive integer, default ${DEFAULT_LIMIT2}); the summary retains the filtered count
+  --target <tabId> | --url <pattern> | --port <n>  tab targeting; defaults to the active session tab
+output:
+  <listeners identity=\u2026 count=\u2026 displayed=\u2026> \u2014 listener event type, capture/passive/once registration facts, handler description, and script URL/line/column provenance when CDP supplies it
+effects:
+  read-only CDP collection: enables Debugger to map listener script ids to the script URLs Chrome reports, then reads DOMDebugger listener registrations; no page-observable write`;
+    CARDINALITY_USAGE = `capture page inspect cardinality \u2014 read bounded current DOM/document counts
+
+input:
+  --target <tabId> | --url <pattern> | --port <n>  tab targeting; defaults to the active session tab
+output:
+  <cardinality documents=\u2026 nodes=\u2026 listeners=\u2026 elements=\u2026 frames=\u2026> \u2014 Chrome Memory.getDOMCounters values, the current document element count, and the Performance metric frame count with collection-method provenance
+effects:
+  read-only CDP collection through Memory.getDOMCounters, Runtime.evaluate, and Performance.getMetrics; no page-observable write`;
+    FRAMES_USAGE = `capture page inspect frames [--duration <seconds>] \u2014 read attached frame identities and lifecycle events observed in a bounded window
+
+input:
+  --duration <seconds>  observation window after the current frame-tree read (default 0; maximum 60); frame attach, navigate, and detach events received in this window are recorded
+  --limit <n>           maximum attached/detached frame records rendered and mirrored (positive integer, default ${DEFAULT_LIMIT2}); the summary retains attached and detached totals
+  --target <tabId> | --url <pattern> | --port <n>  tab targeting; defaults to the active session tab
+output:
+  <frames attached=\u2026 detached=\u2026 displayed=\u2026 requested-ms=\u2026 observed-ms=\u2026> \u2014 current attached frame ids, parent ids, and URLs plus identities and URL facts for frames observed detaching during this command's collection window; attached/detached records are bounded by --limit
+effects:
+  read-only CDP collection: enables Page, reads Page.getFrameTree, and observes Page frame lifecycle events for the bounded window; no page-observable write`;
+    RESOURCES_USAGE = `capture page inspect resources [--name <text>] [--limit <n>] \u2014 list the current page Resource Timing entries
+
+input:
+  --name <text>        case-insensitive substring filter over entry name URLs; applies before --limit
+  --limit <n>          maximum entries rendered and mirrored (positive integer, default ${DEFAULT_LIMIT2}); the summary retains the filtered count
+  --target <tabId> | --url <pattern> | --port <n>  tab targeting; defaults to the active session tab
+output:
+  <resources count=\u2026 displayed=\u2026> \u2014 Resource Timing name, initiator type, timing offsets/duration, transfer/body sizes, protocol, and collection provenance
+effects:
+  read-only Runtime evaluation of performance.getEntriesByType('resource'); no page-observable write`;
+  }
+});
+
+// src/cdp/commands/page/repeat.ts
+function parseSteps(raw) {
+  if (raw === void 0 || raw.length > 1e4) return null;
+  try {
+    const value = JSON.parse(raw);
+    if (!Array.isArray(value) || value.length < 1 || value.length > MAX_STEPS) return null;
+    const out = [];
+    for (const valueStep of value) {
+      if (!valueStep || typeof valueStep !== "object" || Array.isArray(valueStep)) return null;
+      const step = valueStep;
+      if (step.action === "click" && Object.keys(step).length === 2 && typeof step.target === "string" && step.target.length > 0) {
+        out.push({ action: "click", target: step.target });
+      } else if (step.action === "type" && Object.keys(step).every((key) => key === "action" || key === "text" || key === "into") && typeof step.text === "string" && (step.into === void 0 || typeof step.into === "string" && step.into.trim().length > 0)) {
+        out.push({ action: "type", text: step.text, ...typeof step.into === "string" ? { into: step.into } : {} });
+      } else return null;
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+function actionRecord(action, dispatch, target, text2) {
+  return {
+    action,
+    target,
+    ...text2 === void 0 ? {} : { text: text2 },
+    backendNodeId: dispatch.backendNodeId,
+    ...dispatch.role === null ? {} : { role: dispatch.role },
+    ...dispatch.name === null ? {} : { name: dispatch.name },
+    x: dispatch.x,
+    y: dispatch.y,
+    ...action === "type" ? { focused: true } : {},
+    ...dispatch.hitTestReceiverBackendNodeId === void 0 ? {} : { hitTestReceiverBackendNodeId: dispatch.hitTestReceiverBackendNodeId }
+  };
+}
+function emitRepeatResult(parsed, steps, settle, records, completion) {
+  const sections = records.map((record5) => lineList([
+    record5.completion === "completed" ? fact`iteration ${record5.iteration} completed in ${record5.durationMs.toFixed(1)}ms; settle requested ${record5.settle.requestedMs}ms, waited ${record5.settle.waitedMs}ms.` : fact`iteration ${record5.iteration} did not complete in ${record5.durationMs.toFixed(1)}ms; target ${record5.failure.target} resolution returned ${record5.failure.code}${record5.failure.matches === void 0 ? "" : ` with ${record5.failure.matches} live matches`}.`,
+    ...record5.actions.map((action) => action.action === "click" ? fact`click ${action.target ?? "(unknown)"} → backend:${action.backendNodeId ?? "(unknown)"}${action.role === void 0 ? "" : ` role=${action.role}`}${action.name === void 0 ? "" : ` name=${action.name}`} at x=${action.x ?? "(unknown)"} y=${action.y ?? "(unknown)"}${action.hitTestReceiverBackendNodeId === void 0 ? "" : `; hit-test receiver backend:${action.hitTestReceiverBackendNodeId}`}` : action.backendNodeId === void 0 ? fact`type into focused element: ${action.text ?? ""}` : fact`type into ${action.target ?? "(unknown)"} → backend:${action.backendNodeId}${action.role === void 0 ? "" : ` role=${action.role}`}${action.name === void 0 ? "" : ` name=${action.name}`} at x=${action.x ?? "(unknown)"} y=${action.y ?? "(unknown)"}${action.hitTestReceiverBackendNodeId === void 0 ? "" : `; hit-test receiver backend:${action.hitTestReceiverBackendNodeId}`}: ${action.text ?? ""}`)
+  ]));
+  emitResult({
+    tag: "repeated",
+    attrs: { iterations: records.length, steps, "settle-ms": settle, completion, ...completion === "partial" ? { "failed-iteration": records.at(-1).iteration, "failure-code": records.at(-1).failure.code } : {} },
+    summary: completion === "completed" ? fact`${records.length} iteration(s) completed; each record is one ordered ${steps}-step sequence against the live tab.` : fact`${records.length - 1} iteration(s) completed before iteration ${records.at(-1).iteration} did not complete; completed action records remain in this result.`,
+    sections,
+    jsonSections: { iterations: records }
+  }, { json: parsed.json });
+  if (completion === "partial") process.exitCode = 1;
+}
+async function cmdPageRepeat(parsed, _args) {
+  if (parsed.help) {
+    console.log(USAGE8);
+    return;
+  }
+  const steps = parseSteps(parsed.steps);
+  const iterations = parsed.iterations;
+  if (parsed.positional.length !== 0 || steps === null || iterations === void 0 || !Number.isSafeInteger(iterations) || iterations < 1 || iterations > MAX_ITERATIONS) {
+    return emitInvalidInput(parsed, "page repeat", fact`received: ${parsed.positional.length} positional arguments, --steps=${parsed.steps === void 0 ? "(missing)" : "provided"}, --iterations=${String(iterations ?? "(missing)")}; expected no positionals, a JSON array of 1..${MAX_STEPS} click/type step objects, and an iteration count from 1 to ${MAX_ITERATIONS}.`);
+  }
+  const deps23 = pageInputDeps();
+  const settle = effectiveSettle(parsed, { standalone: 1e3, session: 2500 });
+  const records = [];
+  for (let iteration = 1; iteration <= iterations; iteration++) {
+    const started = performance.now();
+    try {
+      const { result, settle: settleFacts } = await deps23.withPageAction(
+        { ...parsed, command: "repeat" },
+        { settleMs: settle },
+        async (client) => {
+          const live = client;
+          const actions = [];
+          for (const step of steps) {
+            if (step.action === "click") {
+              const resolved = await resolveLiveTarget(live, step.target);
+              if (!resolved.ok) throw new RepeatResolutionFailure(resolved, actions);
+              const dispatch = await clickResolved(live, resolved, { inspectHitTest: true, includeHitTestReceiver: true });
+              actions.push(actionRecord("click", dispatch, step.target));
+            } else if (step.into !== void 0) {
+              const resolved = await resolveLiveTarget(live, step.into);
+              if (!resolved.ok) throw new RepeatResolutionFailure(resolved, actions);
+              const dispatch = await focusAndType(live, resolved, step.text, { inspectHitTest: true, includeHitTestReceiver: true });
+              actions.push(actionRecord("type", dispatch, step.into, step.text));
+            } else {
+              await typeText(live, step.text);
+              actions.push({ action: "type", text: step.text, focused: true });
+            }
+          }
+          return { actions };
+        }
+      );
+      records.push({ iteration, completion: "completed", durationMs: performance.now() - started, settle: { requestedMs: settleFacts.requestedMs, waitedMs: settleFacts.waitedMs }, actions: result.actions });
+    } catch (error4) {
+      if (!(error4 instanceof RepeatResolutionFailure)) throw error4;
+      const failure = error4.failure;
+      const failureRecord = {
+        code: failure.code,
+        target: failure.input,
+        ..."matchCount" in failure ? { matches: failure.matchCount } : {}
+      };
+      records.push({ iteration, completion: "failed", durationMs: performance.now() - started, actions: error4.actions, failure: failureRecord });
+      return emitRepeatResult(parsed, steps.length, settle, records, "partial");
+    }
+  }
+  emitRepeatResult(parsed, steps.length, settle, records, "completed");
+}
+var MAX_STEPS, MAX_ITERATIONS, USAGE8, RepeatResolutionFailure;
+var init_repeat = __esm({
+  "src/cdp/commands/page/repeat.ts"() {
+    init_interact();
+    init_render();
+    init_click();
+    MAX_STEPS = 20;
+    MAX_ITERATIONS = 100;
+    USAGE8 = `capture page repeat --steps <json> --iterations <n> [--settle <ms>] \u2014 repeat one bounded declarative click/type sequence
+
+input:
+  --steps <json>       required JSON array of 1..${MAX_STEPS} action objects, in order: {"action":"click","target":"<live target>"} or {"action":"type","text":"<text>","into":"<live target>"}; type omits into to insert into the focused element
+  --iterations <n>     required repeat count from 1 to ${MAX_ITERATIONS}
+  --settle <ms>        network-settle window applied after each completed sequence (default: 1000; 2500 with an active session; 0 disables)
+  --target <tabId> | --url <pattern> | --port <n>  tab targeting; defaults to the active session tab
+output:
+  <repeated iterations=\u2026 steps=\u2026> \u2014 one factual completion record per iteration with step action, resolved identity when applicable, dispatch coordinates, elapsed duration, and measured requested/waited settle
+effects:
+  drives every click through the same live target resolution and real mouse dispatch as page click, and every type through the same focused/targeted real text insertion as page type; each completed iteration receives its own action lifecycle and settle window; no automatic screenshots are written`;
+    RepeatResolutionFailure = class extends Error {
+      constructor(failure, actions) {
+        super("page repeat target resolution did not complete.");
+        this.failure = failure;
+        this.actions = actions;
+      }
+    };
+  }
+});
+
 // src/cdp/commands/page/index.ts
 async function pageMain(parsed, args) {
   const leaf = parsed.positional[0];
@@ -228934,6 +229421,10 @@ async function pageMain(parsed, args) {
       return cmdPageShot(rest, args);
     case "elements":
       return cmdPageElements(rest, args);
+    case "inspect":
+      return inspectMain(rest, args);
+    case "repeat":
+      return cmdPageRepeat(rest, args);
     case void 0:
       console.log(PAGE_USAGE);
       return;
@@ -228952,8 +229443,10 @@ var init_page = __esm({
     init_exec();
     init_shot();
     init_elements();
+    init_inspect();
+    init_repeat();
     COMMAND_BLOCK2 = `<command name="page">
-verbs against the live session tab \u2014 act on it (click, type, scroll, navigate, exec) and look at it (shot, elements)
+verbs against the live session tab \u2014 act on it (click, type, scroll, navigate, exec, repeat) and inspect its current state (shot, elements, inspect)
 use when driving or inspecting the tab a session opened or adopted; nothing here records an artifact you query later \u2014 \`measure snap\`, \`motion rec\`, \`perf trace\`, and \`heap snapshot\` do that
 </command>`;
     PAGE_USAGE = `<command name="page" description="operations against the live session tab">
@@ -228965,6 +229458,8 @@ use when driving or inspecting the tab a session opened or adopted; nothing here
 <subcommand name="exec" description="arbitrary JavaScript in the tab" whenToUse="Use when no named page command exposes the needed page operation."/>
 <subcommand name="shot" description="current-page screenshot" whenToUse="Use to inspect the rendered page without interacting with it."/>
 <subcommand name="elements" description="actionable page elements" whenToUse="Use to discover targets for page interactions."/>
+<subcommand name="inspect" description="live-tab factual inventories" whenToUse="Use to read listeners, cardinality, frame lifecycle, or Resource Timing facts from the current tab."/>
+<subcommand name="repeat" description="repeat a declarative click/type sequence" whenToUse="Use to drive the same bounded interaction sequence over multiple iterations and retain per-iteration completion facts."/>
 </command>`;
   }
 });
@@ -228992,7 +229487,7 @@ function buildBrowserLaunchedResult(browser, swept) {
 }
 async function cmdTabLaunch(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE8);
+    console.log(USAGE9);
     return;
   }
   const swept = await sweepOwnedBrowsers();
@@ -229011,12 +229506,12 @@ async function cmdTabLaunch(parsed, _args) {
     { json: parsed.json }
   );
 }
-var USAGE8;
+var USAGE9;
 var init_launch = __esm({
   "src/cdp/commands/tab/launch.ts"() {
     init_browser_process();
     init_render();
-    USAGE8 = `capture tab launch \u2014 start a browser capture owns and report its CDP endpoint.
+    USAGE9 = `capture tab launch \u2014 start a browser capture owns and report its CDP endpoint.
 
 input:
   --url <url>     first page to open (default: about:blank)
@@ -229050,7 +229545,7 @@ function buildBrowserQuitResult(stopped, selector) {
 }
 async function cmdTabQuit(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE9);
+    console.log(USAGE10);
     return;
   }
   const token2 = parsed.positional[0];
@@ -229071,13 +229566,13 @@ async function cmdTabQuit(parsed, _args) {
     json: parsed.json
   });
 }
-var USAGE9;
+var USAGE10;
 var init_quit = __esm({
   "src/cdp/commands/tab/quit.ts"() {
     init_browser_process();
     init_errors();
     init_render();
-    USAGE9 = `capture tab quit \u2014 stop a browser capture started.
+    USAGE10 = `capture tab quit \u2014 stop a browser capture started.
 
 input:
   <port>          the port of a capture-launched browser (as reported by tab launch / tab list)
@@ -229140,7 +229635,7 @@ function errorMessage(err) {
 }
 async function cmdTabList(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE10);
+    console.log(USAGE11);
     return;
   }
   await sweepOwnedBrowsers();
@@ -229183,14 +229678,14 @@ async function cmdTabList(parsed, _args) {
   }
   emitResult(buildTabsResult(reachable, unreachable), { json: parsed.json });
 }
-var USAGE10;
+var USAGE11;
 var init_list = __esm({
   "src/cdp/commands/tab/list.ts"() {
     init_detect();
     init_targets();
     init_browser_process();
     init_render();
-    USAGE10 = `capture tab list \u2014 discover CDP endpoints and list the page tabs on each.
+    USAGE11 = `capture tab list \u2014 discover CDP endpoints and list the page tabs on each.
 
 input:
   --port <port>   probe one endpoint only, instead of discovering every localhost CDP endpoint
@@ -229226,7 +229721,7 @@ function errorMessage2(err) {
 }
 async function cmdTabOpen(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE11);
+    console.log(USAGE12);
     return;
   }
   const url = parsed.positional[0];
@@ -229251,14 +229746,14 @@ async function cmdTabOpen(parsed, _args) {
   }
   emitResult(buildTabOpenedResult(tab, port), { json: parsed.json });
 }
-var USAGE11;
+var USAGE12;
 var init_open = __esm({
   "src/cdp/commands/tab/open.ts"() {
     init_detect();
     init_errors();
     init_record();
     init_render();
-    USAGE11 = `capture tab open \u2014 open a URL in the browser and report the tab's target id.
+    USAGE12 = `capture tab open \u2014 open a URL in the browser and report the tab's target id.
 
 input:
   <url>           required \u2014 the URL to open; an existing tab already at it is reused unless --new
@@ -229280,7 +229775,7 @@ function buildTabClosedResult(tab, port) {
 }
 async function cmdTabClose(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE12);
+    console.log(USAGE13);
     return;
   }
   const target = parsed.positional[0];
@@ -229338,7 +229833,7 @@ async function cmdTabClose(parsed, _args) {
   });
   emitResult(buildTabClosedResult(tab, port), { json: parsed.json });
 }
-var USAGE12;
+var USAGE13;
 var init_close = __esm({
   "src/cdp/commands/tab/close.ts"() {
     init_errors();
@@ -229347,7 +229842,7 @@ var init_close = __esm({
     init_session_context();
     init_coordinator();
     init_render();
-    USAGE12 = `capture tab close \u2014 close one explicitly identified background browser tab.
+    USAGE13 = `capture tab close \u2014 close one explicitly identified background browser tab.
 
 input:
   <target>        required \u2014 full tab target id or an unambiguous 8-character prefix
@@ -229398,7 +229893,7 @@ async function boundedLoadWait(tab) {
 }
 async function cmdTabReset(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE13);
+    console.log(USAGE14);
     return;
   }
   const url = parsed.positional[0];
@@ -229439,7 +229934,7 @@ async function cmdTabReset(parsed, _args) {
     }
   });
 }
-var USAGE13, deps5;
+var USAGE14, deps5;
 var init_reset = __esm({
   "src/cdp/commands/tab/reset.ts"() {
     init_detect();
@@ -229450,7 +229945,7 @@ var init_reset = __esm({
     init_errors();
     init_handle();
     init_render();
-    USAGE13 = `capture tab reset \u2014 abandon a stuck tab and open a fresh one at the URL.
+    USAGE14 = `capture tab reset \u2014 abandon a stuck tab and open a fresh one at the URL.
 
 input:
   <url>           required \u2014 the URL the fresh tab opens at
@@ -229522,7 +230017,7 @@ function buildNetworkResult(mode, target) {
 }
 async function cmdTabNetwork(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE14);
+    console.log(USAGE15);
     return;
   }
   const mode = parsed.positional[0];
@@ -229619,7 +230114,7 @@ async function cmdTabNetwork(parsed, _args) {
   }
   emitResult(buildNetworkResult(mode, targetId), { json: parsed.json });
 }
-var fs17, USAGE14;
+var fs17, USAGE15;
 var init_network = __esm({
   "src/cdp/commands/tab/network.ts"() {
     fs17 = __toESM(require("node:fs"));
@@ -229630,7 +230125,7 @@ var init_network = __esm({
     init_client2();
     init_handle();
     init_render();
-    USAGE14 = `capture tab network \u2014 toggle connection-level network emulation for the active session's held tab.
+    USAGE15 = `capture tab network \u2014 toggle connection-level network emulation for the active session's held tab.
 
 input:
   <offline|online>   required \u2014 offline blocks HTTP requests and drops WebSocket connections; online restores connectivity
@@ -231040,7 +231535,7 @@ async function pollForSettle(opts) {
   const quietThresholdMs = opts.quietThresholdMs ?? DEFAULT_QUIET_THRESHOLD_MS;
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const now = opts.now ?? Date.now;
-  const sleep3 = opts.sleep ?? ((ms) => new Promise((resolve12) => setTimeout(resolve12, ms)));
+  const sleep4 = opts.sleep ?? ((ms) => new Promise((resolve12) => setTimeout(resolve12, ms)));
   const start2 = now();
   let sampleCount = 0;
   let previous = null;
@@ -231059,7 +231554,7 @@ async function pollForSettle(opts) {
       return { settled: false, elapsedMs: elapsed, sampleCount, lastSample: sample };
     }
     const remainingMs = opts.settleTimeoutMs - elapsed;
-    await sleep3(Math.min(pollIntervalMs, remainingMs));
+    await sleep4(Math.min(pollIntervalMs, remainingMs));
   }
 }
 async function evaluate(client, expression) {
@@ -238894,7 +239389,7 @@ function errorSections(details) {
 }
 async function cmdMeasureSnap(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE15);
+    console.log(USAGE16);
     return;
   }
   const captures = [];
@@ -238948,7 +239443,7 @@ async function cmdMeasureSnap(parsed, _args) {
     process.exitCode = 1;
   }
 }
-var fs24, path29, import_crypto2, USAGE15;
+var fs24, path29, import_crypto2, USAGE16;
 var init_snap = __esm({
   "src/cdp/commands/measure/snap.ts"() {
     fs24 = __toESM(require("fs"));
@@ -238967,7 +239462,7 @@ var init_snap = __esm({
     init_artifact();
     init_errors();
     init_render();
-    USAGE15 = `capture measure snap [url|snap] \u2014 drive the page and write one settled snapshot substrate directory
+    USAGE16 = `capture measure snap [url|snap] \u2014 drive the page and write one settled snapshot substrate directory
 
 input:
   [url|snap]                  a URL drives the page fresh; a snap id or absolute path re-captures states over that base snapshot. Outside a session a URL writes under a private one-shot session; with an active session, snapshots are written under it and later resolve by snap id
@@ -239416,7 +239911,7 @@ function contrastHeadline(detail) {
 }
 async function cmdMeasureCheck(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE16);
+    console.log(USAGE17);
     return;
   }
   if (parsed.positional.length > 1) {
@@ -239492,7 +239987,7 @@ async function cmdMeasureCheck(parsed, _args) {
     process.exitCode = 1;
   }
 }
-var USAGE16, DEFAULT_FINDING_LIMIT;
+var USAGE17, DEFAULT_FINDING_LIMIT;
 var init_check2 = __esm({
   "src/cdp/commands/measure/check.ts"() {
     init_artifact();
@@ -239500,7 +239995,7 @@ var init_check2 = __esm({
     init_render();
     init_snap();
     init_check();
-    USAGE16 = `capture measure check [url|snap] \u2014 read threshold/fact measurements from a settled snapshot
+    USAGE17 = `capture measure check [url|snap] \u2014 read threshold/fact measurements from a settled snapshot
 
 input:
   [url|snap]      a URL creates one one-shot snapshot first; a snap id or absolute path is read without re-driving the browser
@@ -239898,7 +240393,7 @@ function provenanceLines(records) {
 }
 async function cmdMeasureDiff(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE17);
+    console.log(USAGE18);
     return;
   }
   if (parsed.positional.length > 0 || !parsed.before || !parsed.after) {
@@ -239962,13 +240457,13 @@ async function cmdMeasureDiff(parsed, _args) {
     process.exitCode = 1;
   }
 }
-var USAGE17;
+var USAGE18;
 var init_diff3 = __esm({
   "src/cdp/commands/measure/diff.ts"() {
     init_artifact();
     init_diff2();
     init_render();
-    USAGE17 = `capture measure diff \u2014 structured before/after diff over two settled snapshots
+    USAGE18 = `capture measure diff \u2014 structured before/after diff over two settled snapshots
 
 input:
   --before <snap>   earlier snapshot id or absolute path (required; no positional target \u2014 both snapshots must already exist)
@@ -240171,7 +240666,7 @@ function errorResult(message, status) {
 }
 async function cmdMeasureCensus(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE18);
+    console.log(USAGE19);
     return;
   }
   if (parsed.positional.length) {
@@ -240202,7 +240697,7 @@ async function cmdMeasureCensus(parsed, _args) {
     process.exitCode = 1;
   }
 }
-var fs28, USAGE18;
+var fs28, USAGE19;
 var init_census2 = __esm({
   "src/cdp/commands/measure/census.ts"() {
     fs28 = __toESM(require("fs"));
@@ -240210,7 +240705,7 @@ var init_census2 = __esm({
     init_artifact();
     init_render();
     init_census();
-    USAGE18 = `capture measure census --axis <axis> \u2014 value distributions and token-audit facts across one or more settled snapshots
+    USAGE19 = `capture measure census --axis <axis> \u2014 value distributions and token-audit facts across one or more settled snapshots
 
 input:
   --axis <axis>       color|font|spacing|radius|shadow|animation|geometry|media|queries (required)
@@ -240904,7 +241399,7 @@ function requestedSectionsFirst(sections, parsed) {
 }
 async function cmdMeasureExplain(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE19);
+    console.log(USAGE20);
     return;
   }
   if (parsed.positional.length !== 1) {
@@ -240987,13 +241482,13 @@ async function cmdMeasureExplain(parsed, _args) {
     process.exitCode = 1;
   }
 }
-var USAGE19;
+var USAGE20;
 var init_explain2 = __esm({
   "src/cdp/commands/measure/explain.ts"() {
     init_explain();
     init_artifact();
     init_render();
-    USAGE19 = `capture measure explain <snap> --selector <sel> \u2014 per-element cascade, ink-box, stacking, and clipping measurements over one snapshot
+    USAGE20 = `capture measure explain <snap> --selector <sel> \u2014 per-element cascade, ink-box, stacking, and clipping measurements over one snapshot
 
 input:
   <snap>             snapshot id in the active session or absolute artifact path (required)
@@ -241272,7 +241767,7 @@ async function cmdMeasureSweep(parsed, args) {
 async function runMeasureSweep(parsed, _args, overrides = {}) {
   const dependencies = { ...defaultDependencies, ...overrides };
   if (parsed.help) {
-    console.log(USAGE20);
+    console.log(USAGE21);
     return;
   }
   if (parsed.positional.length > 1) {
@@ -241384,7 +241879,7 @@ async function runMeasureSweep(parsed, _args, overrides = {}) {
     process.exitCode = 1;
   }
 }
-var fs30, path34, import_crypto3, USAGE20, SAMPLE_LIMIT, defaultDependencies, parsePositive;
+var fs30, path34, import_crypto3, USAGE21, SAMPLE_LIMIT, defaultDependencies, parsePositive;
 var init_sweep2 = __esm({
   "src/cdp/commands/measure/sweep.ts"() {
     fs30 = __toESM(require("fs"));
@@ -241398,7 +241893,7 @@ var init_sweep2 = __esm({
     init_errors();
     init_leaf_grammar();
     init_sweep();
-    USAGE20 = `capture measure sweep [url] --axis <axis> \u2014 responsive/environment sampling with recursive bracketing of observed state changes
+    USAGE21 = `capture measure sweep [url] --axis <axis> \u2014 responsive/environment sampling with recursive bracketing of observed state changes
 
 input:
   [url]                     match an existing page tab by URL; this does not open a URL \u2014 run inside \`capture session start --url \u2026\` when no matching tab exists
@@ -241538,7 +242033,7 @@ function recoveryResult(err) {
 }
 async function cmdMeasureMapFocus(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE21);
+    console.log(USAGE22);
     return;
   }
   if (parsed.positional.length !== 1) {
@@ -241562,14 +242057,14 @@ async function cmdMeasureMapFocus(parsed, _args) {
     process.exitCode = 1;
   }
 }
-var USAGE21;
+var USAGE22;
 var init_map_focus2 = __esm({
   "src/cdp/commands/measure/map-focus.ts"() {
     init_snap();
     init_map_focus();
     init_artifact();
     init_render();
-    USAGE21 = `capture measure map focus [url|snap] \u2014 keyboard traversal facts recorded in a snapshot's focus.json
+    USAGE22 = `capture measure map focus [url|snap] \u2014 keyboard traversal facts recorded in a snapshot's focus.json
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id or absolute path is read without re-driving the browser
@@ -241785,7 +242280,7 @@ async function runMeasureMapScroll(parsed, deps23 = {}) {
   const captureSnap = deps23.captureSnap ?? captureMeasureSnap;
   const emit = deps23.emit ?? emitResult;
   if (parsed.help) {
-    console.log(USAGE22);
+    console.log(USAGE23);
     return;
   }
   if (parsed.positional.length > 1) {
@@ -241839,14 +242334,14 @@ async function runMeasureMapScroll(parsed, deps23 = {}) {
 async function cmdMeasureMapScroll(parsed, _args) {
   await runMeasureMapScroll(parsed);
 }
-var USAGE22;
+var USAGE23;
 var init_map_scroll2 = __esm({
   "src/cdp/commands/measure/map-scroll.ts"() {
     init_snap();
     init_artifact();
     init_render();
     init_map_scroll();
-    USAGE22 = `capture measure map scroll [url|snap] \u2014 scroll-container topology recorded in a snapshot's scroll.json
+    USAGE23 = `capture measure map scroll [url|snap] \u2014 scroll-container topology recorded in a snapshot's scroll.json
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id from the active session or an absolute snapshot artifact path is read without re-driving the browser
@@ -242044,7 +242539,7 @@ function errorResult2(err) {
 }
 async function cmdMeasureMapLayers(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE23);
+    console.log(USAGE24);
     return;
   }
   if (parsed.positional.length > 1) {
@@ -242077,14 +242572,14 @@ async function cmdMeasureMapLayers(parsed, _args) {
     process.exitCode = 1;
   }
 }
-var USAGE23;
+var USAGE24;
 var init_map_layers2 = __esm({
   "src/cdp/commands/measure/map-layers.ts"() {
     init_snap();
     init_map_layers();
     init_artifact();
     init_render();
-    USAGE23 = `capture measure map layers [url|snap] \u2014 paint/compositor facts recorded in a snapshot's layers.json
+    USAGE24 = `capture measure map layers [url|snap] \u2014 paint/compositor facts recorded in a snapshot's layers.json
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id or absolute path is read without re-driving the browser
@@ -242568,7 +243063,7 @@ function recoveryResult2(err) {
 }
 async function cmdMeasureMapAx(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE24);
+    console.log(USAGE25);
     return;
   }
   if (parsed.positional.length !== 1) {
@@ -242592,14 +243087,14 @@ async function cmdMeasureMapAx(parsed, _args) {
     process.exitCode = 1;
   }
 }
-var USAGE24;
+var USAGE25;
 var init_map_ax2 = __esm({
   "src/cdp/commands/measure/map-ax.ts"() {
     init_snap();
     init_map_ax();
     init_artifact();
     init_render();
-    USAGE24 = `capture measure map ax [url|snap] \u2014 accessibility-tree facts recorded in a snapshot's ax.json joined against geometry.json
+    USAGE25 = `capture measure map ax [url|snap] \u2014 accessibility-tree facts recorded in a snapshot's ax.json joined against geometry.json
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id or absolute path is read without re-driving the browser
@@ -242754,7 +243249,7 @@ function invalidInput3(message) {
 }
 async function cmdMeasureMapPaint(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE25);
+    console.log(USAGE26);
     return;
   }
   if (parsed.positional.length !== 1) {
@@ -242788,7 +243283,7 @@ async function cmdMeasureMapPaint(parsed, _args) {
     process.exitCode = 1;
   }
 }
-var USAGE25;
+var USAGE26;
 var init_map_paint = __esm({
   "src/cdp/commands/measure/map-paint.ts"() {
     init_artifact();
@@ -242796,7 +243291,7 @@ var init_map_paint = __esm({
     init_ink();
     init_ink_source();
     init_render();
-    USAGE25 = `capture measure map paint <snap> --selector <target> [--state <name>] \u2014 recorded AABB coverage by elements painted above one target
+    USAGE26 = `capture measure map paint <snap> --selector <target> [--state <name>] \u2014 recorded AABB coverage by elements painted above one target
 
 input:
   <snap>              snapshot id in the active session or absolute artifact path (required)
@@ -242994,7 +243489,7 @@ var init_recorder = __esm({
 // src/cdp/commands/motion/rec.ts
 async function cmdMotionRec(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE26);
+    console.log(USAGE27);
     return;
   }
   const lifecycleError = validateLifecycleInputs(parsed);
@@ -243060,7 +243555,7 @@ async function handleOneShot(parsed, viewport2) {
     const recorder = deps6.createRecorderSession({ client, recDir });
     await recorder.start();
     await driveOneShotAction(recorder, parsed.do);
-    if (parsed.duration) await sleep2(parsed.duration);
+    if (parsed.duration) await sleep3(parsed.duration);
     const stopped = await recorder.stop();
     let viewportRestored = null;
     if (viewportMayHaveApplied) {
@@ -243101,7 +243596,7 @@ async function handleHostedSessionOneShot(parsed, session, viewport2) {
         return response;
       }
     }, parsed.do);
-    if (parsed.duration) await sleep2(parsed.duration);
+    if (parsed.duration) await sleep3(parsed.duration);
     const stopped = await deps6.stopComposedRecorder({ sessionDir: session.dir, recId: started.recId });
     ensureFinalizedInventory(stopped.recDir);
     const video = deps6.encodeVideo(stopped.recDir, stopped.durationMs);
@@ -243259,7 +243754,7 @@ async function waitForPageReady(client, timeoutMs = 5e3) {
       lastState = `${readyState} ${href}`.trim();
       if ((readyState === "interactive" || readyState === "complete") && href !== "about:blank") return;
     }
-    await sleep2(50);
+    await sleep3(50);
   }
   throw new Error(`Timed out waiting for page readiness before recording one-shot action (last state: ${lastState}).`);
 }
@@ -243350,7 +243845,7 @@ function encodeVideoIfAvailable(recDir, _durationMs) {
     fs31.rmSync(tempDir, { recursive: true, force: true });
   }
 }
-function sleep2(ms) {
+function sleep3(ms) {
   return new Promise((resolve12) => setTimeout(resolve12, ms));
 }
 async function handleStart(parsed, viewport2) {
@@ -243486,7 +243981,7 @@ function listRecordingArtifacts(recDir) {
   }
   return names.sort().map((name) => ({ name }));
 }
-var fs31, path36, crypto12, import_child_process3, deps6, USAGE26, DoActionError;
+var fs31, path36, crypto12, import_child_process3, deps6, USAGE27, DoActionError;
 var init_rec = __esm({
   "src/cdp/commands/motion/rec.ts"() {
     fs31 = __toESM(require("fs"));
@@ -243520,7 +244015,7 @@ var init_rec = __esm({
       stopComposedRecorder,
       encodeVideo: encodeVideoIfAvailable
     };
-    USAGE26 = `capture motion rec \u2014 record the page over time: composed (whatever the active session does between --start and --stop) or one-shot (one scripted action on a URL or the active session tab).
+    USAGE27 = `capture motion rec \u2014 record the page over time: composed (whatever the active session does between --start and --stop) or one-shot (one scripted action on a URL or the active session tab).
 
 input:
   [url] --do <action>       one-shot: open <url> (or record the active session tab when <url> is omitted), record one action, finalize
@@ -243843,7 +244338,7 @@ var init_mask = __esm({
 // src/cdp/commands/motion/mask.ts
 async function cmdMotionMask(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE27);
+    console.log(USAGE28);
     return;
   }
   if (parsed.positional.length !== 1) {
@@ -243906,14 +244401,14 @@ function emitCommandError2(parsed, status, message) {
   }, { json: parsed.json });
   process.exitCode = 1;
 }
-var DEFAULT_REGION_LIMIT, USAGE27;
+var DEFAULT_REGION_LIMIT, USAGE28;
 var init_mask2 = __esm({
   "src/cdp/commands/motion/mask.ts"() {
     init_mask();
     init_artifact();
     init_render();
     DEFAULT_REGION_LIMIT = 20;
-    USAGE27 = `capture motion mask <rec> \u2014 motion-diff composite image plus per-region facts over a finalized recording
+    USAGE28 = `capture motion mask <rec> \u2014 motion-diff composite image plus per-region facts over a finalized recording
 
 input:
   <rec>          recording id in the active session or an absolute recording path (required; the recording must be finalized)
@@ -244051,7 +244546,7 @@ var init_timeline = __esm({
 // src/cdp/commands/motion/timeline.ts
 async function cmdMotionTimeline(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE28);
+    console.log(USAGE29);
     return;
   }
   const recArg = parsed.positional[0];
@@ -244149,13 +244644,13 @@ function emitCommandError3(parsed, status, message, recovery, ref, state) {
   emitResult(result, { json: parsed.json });
   process.exitCode = 1;
 }
-var USAGE28;
+var USAGE29;
 var init_timeline2 = __esm({
   "src/cdp/commands/motion/timeline.ts"() {
     init_artifact();
     init_timeline();
     init_render();
-    USAGE28 = `capture motion timeline <rec> --element <sel> \u2014 per-frame geometry/scroll/property timeline for one element across a finalized recording
+    USAGE29 = `capture motion timeline <rec> --element <sel> \u2014 per-frame geometry/scroll/property timeline for one element across a finalized recording
 
 input:
   <rec>             recording id in the active session or an absolute recording path (required; the recording must be finalized)
@@ -244424,7 +244919,7 @@ var init_jank = __esm({
 // src/cdp/commands/motion/jank.ts
 async function cmdMotionJank(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE29);
+    console.log(USAGE30);
     return;
   }
   if (parsed.positional.length !== 1 || !parsed.positional[0]) {
@@ -244513,13 +245008,13 @@ function emitCommandError4(parsed, status, message, recovery) {
   emitResult(result, { json: parsed.json });
   process.exitCode = 1;
 }
-var USAGE29;
+var USAGE30;
 var init_jank2 = __esm({
   "src/cdp/commands/motion/jank.ts"() {
     init_artifact();
     init_render();
     init_jank();
-    USAGE29 = `capture motion jank <rec> \u2014 long-task-record and layout-shift facts over a finalized recording
+    USAGE30 = `capture motion jank <rec> \u2014 long-task-record and layout-shift facts over a finalized recording
 
 input:
   <rec>   recording id in the active session or an absolute recording path (required; the recording must be finalized)
@@ -244774,7 +245269,7 @@ function emitError(parsed, status, message, sections) {
 }
 async function cmdMotionResponse(parsed, _args) {
   if (parsed.help) {
-    console.log(USAGE30);
+    console.log(USAGE31);
     return;
   }
   if (parsed.positional.length !== 1) {
@@ -244815,13 +245310,13 @@ async function cmdMotionResponse(parsed, _args) {
     return emitError(parsed, "response_unavailable", err instanceof Error ? err.message : String(err));
   }
 }
-var USAGE30;
+var USAGE31;
 var init_response2 = __esm({
   "src/cdp/commands/motion/response.ts"() {
     init_render();
     init_artifact();
     init_response();
-    USAGE30 = `capture motion response <rec> \u2014 input-to-settled response timeline over a finalized recording
+    USAGE31 = `capture motion response <rec> \u2014 input-to-settled response timeline over a finalized recording
 
 input:
   <rec>                recording id in the active session or an absolute recording path (required; the recording must be finalized)

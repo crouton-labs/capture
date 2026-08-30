@@ -42,6 +42,11 @@ const SURFACE: readonly SurfaceNode[] = [
       { name: 'exec' },
       { name: 'shot' },
       { name: 'elements' },
+      {
+        name: 'inspect',
+        children: [{ name: 'listeners' }, { name: 'cardinality' }, { name: 'frames' }, { name: 'resources' }],
+      },
+      { name: 'repeat' },
     ],
   },
   {
@@ -325,7 +330,7 @@ test('the settled branch tree is executable and every routed leaf has example-fr
     }
 
     const routedLeaves = leaves(SURFACE);
-    assert.equal(routedLeaves.length, 53, 'the settled surface has 53 routed leaves');
+    assert.equal(routedLeaves.length, 58, 'the settled surface has 58 routed leaves');
 
     for (const commandPath of routedLeaves) {
       const command = commandPath.join(' ');

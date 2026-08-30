@@ -18,10 +18,12 @@ import { cmdPageNavigate } from './navigate.js';
 import { cmdPageExec } from './exec.js';
 import { cmdPageShot } from './shot.js';
 import { cmdPageElements } from './elements.js';
+import { inspectMain } from './inspect.js';
+import { cmdPageRepeat } from './repeat.js';
 
 /** Root-help representation of this branch, assembled by `src/capture.ts`. */
 export const COMMAND_BLOCK = `<command name="page">
-verbs against the live session tab — act on it (click, type, scroll, navigate, exec) and look at it (shot, elements)
+verbs against the live session tab — act on it (click, type, scroll, navigate, exec, repeat) and inspect its current state (shot, elements, inspect)
 use when driving or inspecting the tab a session opened or adopted; nothing here records an artifact you query later — \`measure snap\`, \`motion rec\`, \`perf trace\`, and \`heap snapshot\` do that
 </command>`;
 
@@ -34,6 +36,8 @@ export const PAGE_USAGE = `<command name="page" description="operations against 
 <subcommand name="exec" description="arbitrary JavaScript in the tab" whenToUse="Use when no named page command exposes the needed page operation."/>
 <subcommand name="shot" description="current-page screenshot" whenToUse="Use to inspect the rendered page without interacting with it."/>
 <subcommand name="elements" description="actionable page elements" whenToUse="Use to discover targets for page interactions."/>
+<subcommand name="inspect" description="live-tab factual inventories" whenToUse="Use to read listeners, cardinality, frame lifecycle, or Resource Timing facts from the current tab."/>
+<subcommand name="repeat" description="repeat a declarative click/type sequence" whenToUse="Use to drive the same bounded interaction sequence over multiple iterations and retain per-iteration completion facts."/>
 </command>`;
 
 export async function pageMain(parsed: ParsedArgs, args: string[]): Promise<void> {
@@ -55,6 +59,10 @@ export async function pageMain(parsed: ParsedArgs, args: string[]): Promise<void
       return cmdPageShot(rest, args);
     case 'elements':
       return cmdPageElements(rest, args);
+    case 'inspect':
+      return inspectMain(rest, args);
+    case 'repeat':
+      return cmdPageRepeat(rest, args);
     case undefined:
       console.log(PAGE_USAGE);
       return;

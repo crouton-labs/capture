@@ -162,4 +162,12 @@ export interface ParsedArgs {
   categories?: string;
   /** `lighthouse --preset mobile|desktop` */
   preset?: string;
+  /** `page inspect listeners --scope window|document|target` */
+  scope?: 'window' | 'document' | 'target';
+  /** `page inspect listeners --event <type>` */
+  event?: string;
+  /** `page repeat --steps <json>` */
+  steps?: string;
+  /** `page repeat --iterations <n>` */
+  iterations?: number;
 }

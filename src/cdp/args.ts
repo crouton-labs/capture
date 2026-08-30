@@ -20,6 +20,7 @@ const VALUE_FLAGS = new Set([
   '--timeout', '--socket', '--settle-timeout', '--state', '--for', '--before', '--after', '--snap', '--set-file',
   '--axis', '--from', '--to', '--viewport-height', '--rec-id', '--selector', '--do', '--element', '--prop', '--action', '--occurrence',
   '--state-padding', '--crop', '--crop-selector', '--pad', '--zoom', '--constructor', '--node', '--paths', '--sort', '--rules', '--categories', '--preset',
+  '--scope', '--event', '--steps', '--iterations',
 ]);
 
 function syntaxSchemaInput(command: string | undefined, received: string, expected: string, field: string): ReturnType<typeof invalidInput> {
@@ -69,7 +70,7 @@ function validateKnownLeaf(command: string, positional: readonly string[]): void
   if (leaf === undefined) return;
   const branches: Record<string, readonly string[]> = {
     session: ['start', 'stop', 'list', 'view', 'har', 'log', 'collectors'],
-    page: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements'],
+    page: ['click', 'type', 'scroll', 'navigate', 'exec', 'shot', 'elements', 'inspect', 'repeat'],
     tab: ['launch', 'quit', 'list', 'open', 'close', 'reset', 'network', 'mock'],
     measure: ['snap', 'check', 'diff', 'census', 'explain', 'sweep', 'map'],
     motion: ['rec', 'mask', 'timeline', 'jank', 'response'],
@@ -81,6 +82,10 @@ function validateKnownLeaf(command: string, positional: readonly string[]): void
   if (known && !known.includes(leaf)) {
     if (command === 'perf' || command === 'heap') throw schemaInput(command, leaf, `one of ${known.join(', ')}`, '<leaf>');
     throw invalidInput(`Unknown ${command} leaf: ${leaf}.`, 'unknown_command');
+  }
+  if (command === 'page' && leaf === 'inspect' && positional[1] !== undefined) {
+    const inspectLeaf = positional[1];
+    if (!['listeners', 'cardinality', 'frames', 'resources'].includes(inspectLeaf)) throw invalidInput(`Unknown page inspect leaf: ${inspectLeaf}.`, 'unknown_command');
   }
   if (command === 'measure' && leaf === 'map' && positional[1] !== undefined) {
     const mapLeaf = positional[1];
@@ -106,6 +111,7 @@ function schemaInput(command: string, received: string, expected: string, field:
 function leafCommand(command: string, positional: readonly string[]): string {
   if (command === 'lighthouse' || command === 'cdp') return command;
   if (command === 'tab' && positional[0] === 'mock') return positional[1] ? `tab mock ${positional[1]}` : 'tab mock';
+  if (command === 'page' && positional[0] === 'inspect') return positional[1] ? `page inspect ${positional[1]}` : 'page inspect';
   if (command === 'measure' && positional[0] === 'map') return positional[1] ? `measure map ${positional[1]}` : 'measure map';
   return positional[0] ? `${command} ${positional[0]}` : command;
 }
@@ -206,6 +212,38 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
     }
     if (leaf === 'exec') requireCount(values, parsed.file === undefined ? 1 : 0, parsed.file === undefined ? 1 : 0, 'page exec');
     if (leaf === 'shot' || leaf === 'elements') requireCount(values, 0, 0, `page ${leaf}`);
+    if (leaf === 'repeat') {
+      requireCount(values, 0, 0, 'page repeat');
+      if (parsed.iterations === undefined) throw schemaInput('page repeat', '(missing)', 'an iteration count from 1 to 100', '--iterations');
+      if (parsed.steps === undefined) throw schemaInput('page repeat', '(missing)', 'a JSON array of 1..20 click/type action objects', '--steps');
+      try {
+        const steps = JSON.parse(parsed.steps) as unknown;
+        const valid = parsed.steps.length <= 10_000 && Array.isArray(steps) && steps.length >= 1 && steps.length <= 20 && steps.every((step) => {
+          if (!step || typeof step !== 'object' || Array.isArray(step)) return false;
+          const record = step as Record<string, unknown>;
+          if (record.action === 'click') return Object.keys(record).length === 2 && typeof record.target === 'string' && record.target.length > 0;
+          if (record.action === 'type') return Object.keys(record).every(key => key === 'action' || key === 'text' || key === 'into') && typeof record.text === 'string' && (record.into === undefined || (typeof record.into === 'string' && record.into.trim().length > 0));
+          return false;
+        });
+        if (!valid) throw new Error('invalid steps');
+      } catch {
+        throw schemaInput('page repeat', parsed.steps, 'a JSON array of 1..20 {"action":"click","target":"…"} or {"action":"type","text":"…","into":"…"} objects', '--steps');
+      }
+    }
+    if (leaf === 'inspect') {
+      const inspectLeaf = values[0];
+      if (inspectLeaf === undefined) return;
+      requireCount(values.slice(1), 0, 0, `page inspect ${inspectLeaf}`);
+      if (inspectLeaf === 'listeners' && (parsed.scope ?? 'window') === 'target' && !parsed.selector?.trim()) {
+        throw schemaInput('page inspect listeners', '(missing)', 'a live selector/backend target when --scope target', '--selector');
+      }
+      if (inspectLeaf === 'listeners' && (parsed.scope ?? 'window') !== 'target' && parsed.selector !== undefined) {
+        throw schemaInput('page inspect listeners', `--scope=${parsed.scope ?? 'window'}, --selector=${parsed.selector}`, '--selector only with --scope target', '--scope or --selector');
+      }
+      if (inspectLeaf === 'frames' && parsed.duration !== undefined && parsed.duration > 60_000) {
+        throw schemaInput('page inspect frames', `--duration=${parsed.duration / 1000}`, 'a duration from 0 through 60 seconds', '--duration');
+      }
+    }
     if (leaf === 'shot' && parsed.viewport !== undefined) {
       const match = /^([1-9]\d*)x([1-9]\d*)$/.exec(parsed.viewport);
       if (!match || !Number.isSafeInteger(Number(match[1])) || !Number.isSafeInteger(Number(match[2]))) {
@@ -458,6 +496,15 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
     else if (arg === '--rules') { parsed.rules = valueFor(arg, next); i++; }
     else if (arg === '--categories') { parsed.categories = valueFor(arg, next); i++; }
     else if (arg === '--preset') { parsed.preset = valueFor(arg, next); i++; }
+    else if (arg === '--scope') {
+      const scope = valueFor(arg, next);
+      if (scope !== 'window' && scope !== 'document' && scope !== 'target') throw syntaxSchemaInput(commandPath, `--scope=${scope}`, 'window, document, or target', '--scope');
+      parsed.scope = scope;
+      i++;
+    }
+    else if (arg === '--event') { parsed.event = valueFor(arg, next); i++; }
+    else if (arg === '--steps') { parsed.steps = valueFor(arg, next); i++; }
+    else if (arg === '--iterations') { parsed.iterations = integer(valueFor(arg, next), '--iterations', 1, 100, true); i++; }
     else if (arg === '-h' || arg === '--help') parsed.help = true;
     else if (arg.startsWith('--')) throw invalidInput(`Unknown flag: ${arg}.`, 'unknown_flag');
     else positional.push(arg);
