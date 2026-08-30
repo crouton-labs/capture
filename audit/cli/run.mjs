@@ -103,7 +103,11 @@ async function preflight(entry, browserFlags, resources) {
       cdp = await connect(`http://127.0.0.1:${resources.chrome.port}`);
       const capture = (argv, options = {}) => invokeCapture(argv, { ...options, env: { ...options.env, CDP_PORT: String(resources.chrome.port) } });
       const result = await resources.fixtureServer.preflight({ url: targetUrl(resources.fixtureServer.url), cdp, capture });
-      if (!result.ok || result.assertions?.some((assertion) => !assertion.ok)) throw new Error(`${entry.id} ${variant} preflight failed`);
+      const failed = (result.assertions ?? []).filter((assertion) => !assertion.ok);
+      if (!result.ok || failed.length > 0) {
+        const detail = failed.map((assertion) => `${assertion.name} expected=${JSON.stringify(assertion.expected)} actual=${JSON.stringify(assertion.actual)}`).join("; ");
+        throw new Error(`${entry.id} ${variant} preflight failed${detail ? `: ${detail}` : " (fixture reported ok=false with every assertion passing)"}`);
+      }
     } finally {
       try { await cdp?.close(); }
       finally {

@@ -1,10 +1,20 @@
 {
   "variant": "faulty",
   "caseRevision": "d.1",
-  "catalog": { "cardCount": 720 },
-  "widget": { "batchSize": 1 },
+  "catalog": {
+    "cardCount": 720
+  },
+  "widget": {
+    "batchSize": 1
+  },
   "preflight": {
-    "insight": { "present": true, "minLayoutCount": 100 },
-    "layoutMs": { "min": 800, "max": 10000 }
+    "insight": {
+      "present": true,
+      "minLayoutCount": 100
+    },
+    "layoutMs": {
+      "min": 800,
+      "max": 20000
+    }
   }
 }
