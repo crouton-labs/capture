@@ -163,6 +163,14 @@ test("targetless and failed setup commands are not contamination", async (t) => 
   }
 });
 
+test("the establishment ordinal is read from the investigation-path section regardless of phrasing", async (t) => {
+  const paraphrased = report.replace("- The command ordinal where the hypothesis became established: 2", "- Final hypothesis first formed: **command 1**\n- Hypothesis established: **command 2** (the counterfactual at 1 only hinted at it)");
+  const paths = await fixture(t, { reportValue: paraphrased });
+  const result = await gradeRun({ runId: "run", ...paths, facts });
+  assert.equal(result.record.routeMetrics.establishmentOrdinal, 2);
+  assert.doesNotMatch(result.record.grade.reasons.join("\n"), /not established at a valid transcript ordinal/);
+});
+
 test("a report that does not reproduce the symptom fails despite favorable fact verdicts", async (t) => {
   const paths = await fixture(t, { reportValue: report.replace("Symptom reproduced: yes", "Symptom reproduced: no") });
   const result = await gradeRun({ runId: "run", ...paths, facts });

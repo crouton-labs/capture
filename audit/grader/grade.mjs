@@ -167,9 +167,7 @@ function parseReport(report) {
   const outcome = sections.get("outcome") ?? "";
   const value = (label) => outcome.match(new RegExp(`^\\s*(?:[-*]\\s*)?${label}:\\s*(.+)$`, "im"))?.[1].trim() ?? "";
   const confidence = value("Confidence").toLowerCase();
-  const establishment = report.match(/hypothesis became established\s*:\s*(?:command )?(?:ordinal\s*)?(\d+)/i)?.[1]
-    ?? report.match(/established(?: at| on)?\s+(?:command )?ordinal\s*(\d+)/i)?.[1]
-    ?? null;
+  const establishment = (sections.get("investigation path") ?? "").split("\n").find((line) => /establish/i.test(line))?.match(/\d+/)?.[0] ?? null;
   return {
     sections,
     outcome: {
