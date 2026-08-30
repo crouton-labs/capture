@@ -12,8 +12,8 @@ input:
   <trace>          trace id in the active session or an absolute trace path (required; the trace must be finalized)
   --name <insight> select one engine insight by name from the default aggregation
   --limit <N>      return at most N selected insight records in prose and JSON; default 25
-  --full            with --name, include up to 50 related events across the result as a bounded drill-down; each insight states how many events remain
-output: <insights …> — default output is a bounded aggregation of engine insight names, scalar metrics, and related-event counts; --name adds top stack and duration-distribution facts for that insight, and --name with --full adds a bounded related-event drill-down; capture reports engine facts without converting an insight's presence into an assessment of the page; --json mirrors
+  --full            with --name, include a bounded related-event drill-down only when every selected event fits within 50 events and 48,000 serialized bytes; otherwise returns the bounded --name view and states the factual bound
+output: <insights …> — default output is a bounded aggregation of engine insight names, scalar metrics, and related-event counts; --name adds top stack and duration-distribution facts for that insight; --name with --full preserves those facts before adding a complete bounded event drill-down, or refuses partial event detail when the selected corpus exceeds its stated bound; capture reports engine facts without converting an insight's presence into an assessment of the page; --json mirrors
 effects: read-only — reads the finalized trace artifact, never drives the browser`;
 
 function error(parsed: ParsedArgs, status: string, message: string): void {
@@ -131,7 +131,24 @@ function fullFields(insight: TraceInsight, budget: FullBudget): FullFields {
 }
 
 function fullRecordLine(insight: TraceInsight, fields: FullFields): FactLine {
-  return line(fact`${insight.name}: ${relatedEventCount(insight.fields)} related event(s), ${fields.relatedEvents.omitted} omitted from the shared ${FULL_EVENT_LIMIT}-event/${FULL_BYTE_LIMIT}-byte drill-down budget; fields: `, data(JSON.stringify(fields)));
+  return lineList([
+    namedRecordLine(insight),
+    line(fact`${insight.name}: complete related-event detail (${fields.relatedEvents.events.length} event(s)); fields: `, data(JSON.stringify(fields), FULL_BYTE_LIMIT)),
+  ]);
+}
+
+function completeFullFields(insight: TraceInsight): FullFields {
+  return {
+    scalarMetrics: scalarMetrics(insight.fields),
+    relatedEvents: { events: relatedEvents(insight.fields), omitted: 0 },
+  };
+}
+
+function fullDetailSize(insights: readonly TraceInsight[]): { bytes: number; largestChars: number } {
+  return insights.reduce(({ bytes, largestChars }, insight) => {
+    const serialized = JSON.stringify(completeFullFields(insight));
+    return { bytes: bytes + Buffer.byteLength(serialized), largestChars: Math.max(largestChars, serialized.length) };
+  }, { bytes: 0, largestChars: 0 });
 }
 
 function section(set: TraceInsightSet, insights: readonly TraceInsight[], full: boolean, named: boolean, fullByInsight: ReadonlyMap<TraceInsight, FullFields>): FactLine {
@@ -165,27 +182,32 @@ export async function cmdPerfInsights(parsed: ParsedArgs): Promise<void> {
       remaining -= insights.length;
       return { ...set, insights };
     });
+    const selectedInsights = selected.flatMap((set) => set.insights);
+    const relatedEventsTotal = selectedInsights.reduce((count, insight) => count + relatedEvents(insight.fields).length, 0);
+    const detailSize = fullDetailSize(selectedInsights);
+    const fullRefused = parsed.full && (relatedEventsTotal > FULL_EVENT_LIMIT || detailSize.bytes > FULL_BYTE_LIMIT || detailSize.largestChars > FULL_BYTE_LIMIT);
     const fullBudget: FullBudget = { remainingEvents: FULL_EVENT_LIMIT, remainingBytes: FULL_BYTE_LIMIT };
     const fullByInsight = new Map<TraceInsight, FullFields>();
-    if (parsed.full) {
+    if (parsed.full && !fullRefused) {
       for (const set of selected) {
         for (const insight of set.insights) fullByInsight.set(insight, fullFields(insight, fullBudget));
       }
     }
-    const relatedEventsTotal = selected.reduce((total, set) => total + set.insights.reduce((count, insight) => count + relatedEvents(insight.fields).length, 0), 0);
     const relatedEventsRetained = [...fullByInsight.values()].reduce((total, fields) => total + fields.relatedEvents.events.length, 0);
     const noSet = selected.length === 0 ? noInsightSet(raw.traceEvents, trace.completion) : undefined;
     const result: RenderableResult = {
       tag: 'insights',
       attestation: { kind: 'trace', id: trace.id, path: trace.dir },
-      attrs: { completion: trace.completion, ...(trace.reason ? { reason: trace.reason } : {}), engine: analysis.source.engine, 'insight-sets': selected.length, insights: selected.reduce((count, set) => count + set.insights.length, 0), limit: parsed.limit ?? 25, ...(parsed.name ? { name: parsed.name } : {}), ...(parsed.full ? { detail: 'full', 'events-retained': relatedEventsRetained, 'events-omitted': relatedEventsTotal - relatedEventsRetained, 'event-bytes-retained': FULL_BYTE_LIMIT - fullBudget.remainingBytes } : { detail: 'aggregation' }) },
-      summary: parsed.full
-        ? fact`The selected related-event drill-down is capped across this result at ${FULL_EVENT_LIMIT} events and ${FULL_BYTE_LIMIT} bytes; each insight states its omitted count.`
-        : parsed.name
-          ? fact`The selected insight reports its related-event count, duration distribution, and most frequent reported stack without emitting the event corpus.`
-          : fact`Insight names, scalar metrics, and related-event counts are computed by the DevTools trace engine (${analysis.source.engine}, an unstable upstream API pinned by capture). Use \`--name <insight>\` for stack and duration facts, or add \`--full\` for a bounded related-event drill-down.`,
-      sections: selected.length ? selected.map(set => section(set, set.insights, parsed.full === true, parsed.name !== undefined, fullByInsight)) : [noSet!.section],
-      jsonSections: selected.length ? selected.map(set => ({ set: set.id, url: set.url, insights: parsed.full ? set.insights.map(insight => ({ name: insight.name, fields: fullByInsight.get(insight)! })) : parsed.name ? set.insights.map(insight => ({ ...aggregate(insight), ...namedFields(insight) })) : set.insights.map(aggregate) })) : [noSet!.json],
+      attrs: { completion: trace.completion, ...(trace.reason ? { reason: trace.reason } : {}), engine: analysis.source.engine, 'insight-sets': selected.length, insights: selected.reduce((count, set) => count + set.insights.length, 0), limit: parsed.limit ?? 25, ...(parsed.name ? { name: parsed.name } : {}), ...(parsed.full && !fullRefused ? { detail: 'full', 'events-retained': relatedEventsRetained, 'events-omitted': relatedEventsTotal - relatedEventsRetained, 'event-bytes-retained': FULL_BYTE_LIMIT - fullBudget.remainingBytes } : parsed.full ? { detail: 'aggregation', full: 'refused', 'full-reason': 'selected-event-corpus-exceeds-bound', 'related-events': relatedEventsTotal, 'related-event-bytes': detailSize.bytes } : { detail: 'aggregation' }) },
+      summary: parsed.full && !fullRefused
+        ? fact`The selected related-event drill-down contains every selected event within the ${FULL_EVENT_LIMIT}-event/${FULL_BYTE_LIMIT}-byte bound; each record begins with its duration-distribution and top-stack facts.`
+        : parsed.full
+          ? fact`The selected related-event corpus has ${relatedEventsTotal} event(s) and ${detailSize.bytes} serialized detail bytes, exceeding the ${FULL_EVENT_LIMIT}-event/${FULL_BYTE_LIMIT}-byte full-detail bound; this result preserves the bounded --name aggregation rather than emitting a partial event corpus.`
+          : parsed.name
+            ? fact`The selected insight reports its related-event count, duration distribution, and most frequent reported stack without emitting the event corpus.`
+            : fact`Insight names, scalar metrics, and related-event counts are computed by the DevTools trace engine (${analysis.source.engine}, an unstable upstream API pinned by capture). Use \`--name <insight>\` for stack and duration facts, or add \`--full\` for a bounded related-event drill-down.`,
+      sections: selected.length ? selected.map(set => section(set, set.insights, parsed.full === true && !fullRefused, parsed.name !== undefined, fullByInsight)) : [noSet!.section],
+      jsonSections: selected.length ? selected.map(set => ({ set: set.id, url: set.url, insights: parsed.full && !fullRefused ? set.insights.map(insight => ({ ...aggregate(insight), ...namedFields(insight), fields: fullByInsight.get(insight)! })) : parsed.name ? set.insights.map(insight => ({ ...aggregate(insight), ...namedFields(insight) })) : set.insights.map(aggregate) })) : [noSet!.json],
     };
     emitResult(result, { json: parsed.json });
   } catch (cause) { error(parsed, 'artifact_unavailable', cause instanceof Error ? cause.message : String(cause)); }

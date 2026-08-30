@@ -16,7 +16,7 @@ export function expandEqualsFlags(argv: string[]): string[] {
 
 const VALUE_FLAGS = new Set([
   '--port', '--out', '--artifact-dir', '--duration', '--settle', '--file', '--target', '--url', '--into', '--viewport', '--color-scheme', '--behavior', '--session',
-  '--filter', '--name', '--filter-url', '--filter-status', '--filter-method', '--limit', '--params', '--wait-event',
+  '--filter', '--name', '--filter-url', '--body', '--filter-status', '--filter-method', '--limit', '--params', '--wait-event',
   '--timeout', '--socket', '--settle-timeout', '--state', '--for', '--before', '--after', '--snap', '--set-file',
   '--axis', '--from', '--to', '--viewport-height', '--rec-id', '--selector', '--do', '--element', '--prop', '--action', '--occurrence',
   '--state-padding', '--crop', '--crop-selector', '--pad', '--zoom', '--constructor', '--node', '--paths', '--sort', '--rules', '--categories', '--preset',
@@ -150,6 +150,9 @@ function cdpMember(value: string): boolean {
 export function validateCliInvocation(parsed: ParsedArgs): void {
   validateKnownLeaf(parsed.command, parsed.positional);
   if (parsed.help && parsed.command !== 'cdp') return;
+  if (parsed.body !== undefined && !(parsed.command === 'session' && parsed.positional[0] === 'har')) {
+    throw schemaInput(leafCommand(parsed.command, parsed.positional), `--body=${parsed.body}`, '--body only with capture session har', '--body');
+  }
   if (parsed.command === 'cdp') {
     requireCount(parsed.positional, 0, 1, 'cdp');
     if (parsed.positional[0] !== undefined && !cdpMember(parsed.positional[0])) {
@@ -451,6 +454,7 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
     else if (arg === '--filter') { parsed.filter = valueFor(arg, next); i++; }
     else if (arg === '--name') { parsed.name = valueFor(arg, next); i++; }
     else if (arg === '--filter-url') { parsed.filterUrl = valueFor(arg, next); i++; }
+    else if (arg === '--body') { parsed.body = valueFor(arg, next); i++; }
     else if (arg === '--filter-status') { parsed.filterStatus = valueFor(arg, next); i++; }
     else if (arg === '--filter-method') { parsed.filterMethod = valueFor(arg, next).toUpperCase(); i++; }
     else if (arg === '--limit') { parsed.limit = integer(valueFor(arg, next), '--limit', 1, Number.MAX_SAFE_INTEGER, true); i++; }

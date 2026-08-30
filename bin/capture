@@ -9232,6 +9232,9 @@ function cdpMember(value) {
 function validateCliInvocation(parsed) {
   validateKnownLeaf(parsed.command, parsed.positional);
   if (parsed.help && parsed.command !== "cdp") return;
+  if (parsed.body !== void 0 && !(parsed.command === "session" && parsed.positional[0] === "har")) {
+    throw schemaInput(leafCommand(parsed.command, parsed.positional), `--body=${parsed.body}`, "--body only with capture session har", "--body");
+  }
   if (parsed.command === "cdp") {
     requireCount(parsed.positional, 0, 1, "cdp");
     if (parsed.positional[0] !== void 0 && !cdpMember(parsed.positional[0])) {
@@ -9573,6 +9576,9 @@ function parseCliSyntax(argv) {
     } else if (arg === "--filter-url") {
       parsed.filterUrl = valueFor(arg, next);
       i++;
+    } else if (arg === "--body") {
+      parsed.body = valueFor(arg, next);
+      i++;
     } else if (arg === "--filter-status") {
       parsed.filterStatus = valueFor(arg, next);
       i++;
@@ -9777,6 +9783,7 @@ var init_args = __esm({
       "--filter",
       "--name",
       "--filter-url",
+      "--body",
       "--filter-status",
       "--filter-method",
       "--limit",
@@ -15436,6 +15443,14 @@ function responseHeaders(item) {
   if (item.kind === "complete") return item.entry.response.headers ?? [];
   return incompleteResponse(item.record)?.headers;
 }
+function isStructuredResponse(item) {
+  if (item.kind !== "complete") return false;
+  const contentType = responseHeaders(item)?.find((header) => header.name.toLowerCase() === "content-type")?.value.toLowerCase().split(";", 1)[0]?.trim();
+  return contentType === "application/json" || contentType === "text/json" || contentType === "application/x-ndjson" || contentType === "application/xml" || contentType === "text/xml" || contentType?.endsWith("+json") === true || contentType?.endsWith("+xml") === true;
+}
+function prioritizeFullHarSelection(items) {
+  return [...items].sort((left, right) => Number(isStructuredResponse(right)) - Number(isStructuredResponse(left)));
+}
 function sharedHarHeaders(shown) {
   if (shown.length < 2) return {};
   const request = requestHeaders(shown[0]);
@@ -15493,6 +15508,63 @@ function harIncompleteDetail(record5, index, shared) {
     rows.push(text`   terminal: never observed`);
   }
   return lineList(rows);
+}
+function completeBodyBytes(entry) {
+  const provenance = entry._capture.body;
+  if (provenance.state !== "captured") {
+    return { code: "body_unavailable", message: `The selected transaction has no captured response body (${provenance.state === "fetch_failed" ? provenance.error : provenance.reason}).` };
+  }
+  if (provenance.truncated) {
+    return { code: "body_truncated", message: `The selected transaction retained ${provenance.capturedByteLength} of ${provenance.decodedByteLength} response bytes, so capture cannot export it as a complete body.` };
+  }
+  const content = entry.response.content.text;
+  if (content === void 0) {
+    return { code: "body_unavailable", message: "The selected transaction claims a captured response body but its HAR content is absent." };
+  }
+  return provenance.sourceEncoding === "base64" ? Buffer.from(content, "base64") : Buffer.from(content, "utf8");
+}
+function exportHarBody(id, located, parsed) {
+  if (parsed.body === void 0) return false;
+  if (!parsed.out) {
+    emitResult({ tag: "error", attrs: { command: "session har", code: "body_out_required" }, summary: fact`--body requires --out <path>; response bytes are written only to a caller-named file.` }, { json: parsed.json });
+    process.exitCode = 1;
+    return true;
+  }
+  if (parsed.filterUrl !== void 0 || parsed.filterStatus !== void 0 || parsed.filterMethod !== void 0 || parsed.limit !== void 0 || parsed.full) {
+    emitResult({ tag: "error", attrs: { command: "session har", code: "body_selection_conflict" }, summary: fact`--body selects one exact captured URL and cannot be combined with --filter-url, --filter-status, --filter-method, --limit, or --full.` }, { json: parsed.json });
+    process.exitCode = 1;
+    return true;
+  }
+  const matches2 = located.har.log.entries.filter((entry2) => entry2.request.url === parsed.body && "_capture" in entry2);
+  if (matches2.length !== 1) {
+    const code = matches2.length === 0 ? "body_not_found" : "body_ambiguous";
+    const message = matches2.length === 0 ? line(text`No completed captured transaction has the exact URL `, harUrl(parsed.body), text`.`) : line(fact`${matches2.length} completed captured transactions have the exact URL `, harUrl(parsed.body), text`; --body requires one recorded transaction.`);
+    emitResult({ tag: "error", attrs: { command: "session har", code }, summary: message }, { json: parsed.json });
+    process.exitCode = 1;
+    return true;
+  }
+  const entry = matches2[0];
+  const bytes = completeBodyBytes(entry);
+  if (!(bytes instanceof Buffer)) {
+    emitResult({ tag: "error", attrs: { command: "session har", code: bytes.code }, summary: fact`${bytes.message}` }, { json: parsed.json });
+    process.exitCode = 1;
+    return true;
+  }
+  try {
+    fs12.writeFileSync(parsed.out, bytes);
+  } catch (cause) {
+    emitResult({ tag: "error", attrs: { command: "session har", code: "body_write_failed" }, summary: fact`The selected response body was not written to ${parsed.out}: ${cause instanceof Error ? cause.message : String(cause)}` }, { json: parsed.json });
+    process.exitCode = 1;
+    return true;
+  }
+  const provenance = entry._capture.body;
+  emitResult({
+    tag: "session-har",
+    attrs: { id, path: located.path, source: located.source, "body-path": parsed.out, bytes: bytes.length, encoding: provenance.sourceEncoding, transaction: entry._capture.requestId, generation: entry._capture.generation, status: entry.response.status },
+    summary: line(fact`Wrote the complete recorded response body for ${entry.request.method} `, harUrl(entry.request.url), fact` to ${parsed.out}.`),
+    sections: [fact`Transaction ${entry._capture.requestId} (generation ${entry._capture.generation}) started ${entry.startedDateTime}; capture recorded ${provenance.capturedByteLength} of ${provenance.decodedByteLength} decoded bytes with ${provenance.sourceEncoding} encoding (truncated=${String(provenance.truncated)}).`]
+  }, { json: parsed.json });
+  return true;
 }
 async function har(parsed) {
   if (parsed.help) {
@@ -15553,6 +15625,12 @@ async function har(parsed) {
     process.exitCode = 1;
     return;
   }
+  if (exportHarBody(id, located, parsed)) return;
+  if (parsed.out) {
+    emitResult({ tag: "error", attrs: { command: "session har", code: "out_requires_body" }, summary: fact`--out is only available with --body <url>; it names the caller-owned response-body file.` }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
+  }
   let selection = buildHarSelection(located.har);
   const total = located.har.log.entries.length;
   const totalIncomplete = located.har.incompleteLifecycles.length;
@@ -15582,7 +15660,8 @@ async function har(parsed) {
   }
   const requestedLimit = typeof parsed.limit === "number" && parsed.limit > 0 ? parsed.limit : null;
   if (requestedLimit !== null) filters.push(`limit=${requestedLimit}`);
-  const bound = requestedLimit ?? DEFAULT_HAR_ROWS;
+  if (parsed.full) selection = prioritizeFullHarSelection(selection);
+  const bound = requestedLimit ?? (parsed.full ? DEFAULT_FULL_HAR_ROWS : DEFAULT_HAR_ROWS);
   const matched = selection.length;
   const shown = selection.slice(0, bound);
   const truncated = matched > shown.length;
@@ -15950,7 +16029,7 @@ async function sessionMain(parsed, _args) {
       return;
   }
 }
-var fs12, path16, VIEW_FILTERS, SECTION_LABELS, SESSION_TAB_ATTACH_TIMEOUT_MS, COMMAND_BLOCK, START_USAGE, STOP_USAGE, LIST_USAGE, VIEW_USAGE, DEFAULT_HAR_ROWS, HAR_USAGE, LOG_USAGE, productionStartWorld, startWorld;
+var fs12, path16, VIEW_FILTERS, SECTION_LABELS, SESSION_TAB_ATTACH_TIMEOUT_MS, COMMAND_BLOCK, START_USAGE, STOP_USAGE, LIST_USAGE, VIEW_USAGE, DEFAULT_HAR_ROWS, DEFAULT_FULL_HAR_ROWS, HAR_USAGE, LOG_USAGE, productionStartWorld, startWorld;
 var init_commands = __esm({
   "src/session/commands.ts"() {
     fs12 = __toESM(require("fs"));
@@ -16061,6 +16140,7 @@ Output:
 effects:
   None \u2014 reads bundle.json only.`;
     DEFAULT_HAR_ROWS = 100;
+    DEFAULT_FULL_HAR_ROWS = 10;
     HAR_USAGE = `capture session har [<session-id>] \u2014 read a session's recorded HTTP traffic as a selection list.
 
 input:
@@ -16069,25 +16149,31 @@ input:
                             stopped one reads the bundled har.json.
   --filter-url <pattern>    substring or regex match on the request URL (matched
                             against the URL as captured, before redaction)
+  --body <url> --out <path> write one exact, complete captured response body to
+                            the caller-owned file. <url> matches exactly one
+                            completed transaction by its captured URL; the result
+                            reports its transaction id, byte count, and encoding.
   --filter-status <spec>    exact status (100-599), one-digit class prefix
                             (1-5, e.g. 4 = every 4xx), or ordered range
                             (e.g. 400-499); any other token is invalid_filter.
                             A record with no observed response never matches.
   --filter-method <method>  HTTP method (GET, POST, \u2026)
-  --limit <n>               list at most n matching rows; default ${DEFAULT_HAR_ROWS}
-  --full                    inline full detail (headers, post data, response body \u2014 escaped and capped); identical headers shared by every rendered record are listed once, while differing headers stay with their record; bodies are never inlined without it
+  --limit <n>               list at most n matching rows; default ${DEFAULT_HAR_ROWS} (${DEFAULT_FULL_HAR_ROWS} with --full)
+  --full                    inline full detail (headers, post data, response body \u2014 escaped and capped); filters resolve first, then structured responses sort before unstructured records so the bounded selection reaches API-shaped bodies before page assets; identical headers shared by every rendered record are listed once, while differing headers stay with their record; bodies are never inlined without it
 
 output:
   One <session-har id=\u2026 path=\u2026 source=live|bundle entries=\u2026 incomplete=\u2026
   total=\u2026 total-incomplete=\u2026 [truncated=true]> block listing BOTH populations
-  in one chronological selection: completed entries (method, status, URL, body
+  in chronological order by default (or structured responses first under \`--full\`): completed entries (method, status, URL, body
   size, start time, HAR duration, response-end time) and the incomplete
   lifecycle records the recorder retained for requests whose response never
   completed \u2014 rendered as "incomplete: <kind>" plus their honest unavailable
   timing state (an out-of-order request clock also names its violation, e.g.
   invalid_clock_order/terminal_before_request). The path attribute is the HAR
   file's absolute path \u2014 the full-fidelity pointer, which holds every record
-  including the ones this list bounds away. --json mirrors the same fields.
+  including the ones this list bounds away. \`--body\` writes one complete body to
+  \`--out\` instead of listing rows; it refuses an ambiguous, absent, or truncated
+  body rather than writing a partial result. --json mirrors the same fields.
   Credential-like query parameter values (key, token, secret, signature, auth,
   password, oauth code, \u2026) render as REDACTED; credential-valued headers render
   as redacted \xB7 <N> chars. The HAR file keeps the real values. WebSockets opened
@@ -265503,7 +265589,22 @@ function fullFields(insight, budget) {
   };
 }
 function fullRecordLine(insight, fields) {
-  return line(fact`${insight.name}: ${relatedEventCount(insight.fields)} related event(s), ${fields.relatedEvents.omitted} omitted from the shared ${FULL_EVENT_LIMIT}-event/${FULL_BYTE_LIMIT}-byte drill-down budget; fields: `, data(JSON.stringify(fields)));
+  return lineList([
+    namedRecordLine(insight),
+    line(fact`${insight.name}: complete related-event detail (${fields.relatedEvents.events.length} event(s)); fields: `, data(JSON.stringify(fields), FULL_BYTE_LIMIT))
+  ]);
+}
+function completeFullFields(insight) {
+  return {
+    scalarMetrics: scalarMetrics(insight.fields),
+    relatedEvents: { events: relatedEvents(insight.fields), omitted: 0 }
+  };
+}
+function fullDetailSize(insights) {
+  return insights.reduce(({ bytes, largestChars }, insight) => {
+    const serialized = JSON.stringify(completeFullFields(insight));
+    return { bytes: bytes + Buffer.byteLength(serialized), largestChars: Math.max(largestChars, serialized.length) };
+  }, { bytes: 0, largestChars: 0 });
 }
 function section2(set, insights, full2, named, fullByInsight) {
   const records = insights.length ? insights.map((insight) => full2 ? fullRecordLine(insight, fullByInsight.get(insight)) : named ? namedRecordLine(insight) : aggregateLine(insight)) : [text`No engine records matched the requested insight name.`];
@@ -265533,23 +265634,26 @@ async function cmdPerfInsights(parsed) {
       remaining -= insights.length;
       return { ...set, insights };
     });
+    const selectedInsights = selected.flatMap((set) => set.insights);
+    const relatedEventsTotal = selectedInsights.reduce((count3, insight) => count3 + relatedEvents(insight.fields).length, 0);
+    const detailSize = fullDetailSize(selectedInsights);
+    const fullRefused = parsed.full && (relatedEventsTotal > FULL_EVENT_LIMIT || detailSize.bytes > FULL_BYTE_LIMIT || detailSize.largestChars > FULL_BYTE_LIMIT);
     const fullBudget = { remainingEvents: FULL_EVENT_LIMIT, remainingBytes: FULL_BYTE_LIMIT };
     const fullByInsight = /* @__PURE__ */ new Map();
-    if (parsed.full) {
+    if (parsed.full && !fullRefused) {
       for (const set of selected) {
         for (const insight of set.insights) fullByInsight.set(insight, fullFields(insight, fullBudget));
       }
     }
-    const relatedEventsTotal = selected.reduce((total, set) => total + set.insights.reduce((count3, insight) => count3 + relatedEvents(insight.fields).length, 0), 0);
     const relatedEventsRetained = [...fullByInsight.values()].reduce((total, fields) => total + fields.relatedEvents.events.length, 0);
     const noSet = selected.length === 0 ? noInsightSet(raw.traceEvents, trace2.completion) : void 0;
     const result = {
       tag: "insights",
       attestation: { kind: "trace", id: trace2.id, path: trace2.dir },
-      attrs: { completion: trace2.completion, ...trace2.reason ? { reason: trace2.reason } : {}, engine: analysis.source.engine, "insight-sets": selected.length, insights: selected.reduce((count3, set) => count3 + set.insights.length, 0), limit: parsed.limit ?? 25, ...parsed.name ? { name: parsed.name } : {}, ...parsed.full ? { detail: "full", "events-retained": relatedEventsRetained, "events-omitted": relatedEventsTotal - relatedEventsRetained, "event-bytes-retained": FULL_BYTE_LIMIT - fullBudget.remainingBytes } : { detail: "aggregation" } },
-      summary: parsed.full ? fact`The selected related-event drill-down is capped across this result at ${FULL_EVENT_LIMIT} events and ${FULL_BYTE_LIMIT} bytes; each insight states its omitted count.` : parsed.name ? fact`The selected insight reports its related-event count, duration distribution, and most frequent reported stack without emitting the event corpus.` : fact`Insight names, scalar metrics, and related-event counts are computed by the DevTools trace engine (${analysis.source.engine}, an unstable upstream API pinned by capture). Use \`--name <insight>\` for stack and duration facts, or add \`--full\` for a bounded related-event drill-down.`,
-      sections: selected.length ? selected.map((set) => section2(set, set.insights, parsed.full === true, parsed.name !== void 0, fullByInsight)) : [noSet.section],
-      jsonSections: selected.length ? selected.map((set) => ({ set: set.id, url: set.url, insights: parsed.full ? set.insights.map((insight) => ({ name: insight.name, fields: fullByInsight.get(insight) })) : parsed.name ? set.insights.map((insight) => ({ ...aggregate(insight), ...namedFields(insight) })) : set.insights.map(aggregate) })) : [noSet.json]
+      attrs: { completion: trace2.completion, ...trace2.reason ? { reason: trace2.reason } : {}, engine: analysis.source.engine, "insight-sets": selected.length, insights: selected.reduce((count3, set) => count3 + set.insights.length, 0), limit: parsed.limit ?? 25, ...parsed.name ? { name: parsed.name } : {}, ...parsed.full && !fullRefused ? { detail: "full", "events-retained": relatedEventsRetained, "events-omitted": relatedEventsTotal - relatedEventsRetained, "event-bytes-retained": FULL_BYTE_LIMIT - fullBudget.remainingBytes } : parsed.full ? { detail: "aggregation", full: "refused", "full-reason": "selected-event-corpus-exceeds-bound", "related-events": relatedEventsTotal, "related-event-bytes": detailSize.bytes } : { detail: "aggregation" } },
+      summary: parsed.full && !fullRefused ? fact`The selected related-event drill-down contains every selected event within the ${FULL_EVENT_LIMIT}-event/${FULL_BYTE_LIMIT}-byte bound; each record begins with its duration-distribution and top-stack facts.` : parsed.full ? fact`The selected related-event corpus has ${relatedEventsTotal} event(s) and ${detailSize.bytes} serialized detail bytes, exceeding the ${FULL_EVENT_LIMIT}-event/${FULL_BYTE_LIMIT}-byte full-detail bound; this result preserves the bounded --name aggregation rather than emitting a partial event corpus.` : parsed.name ? fact`The selected insight reports its related-event count, duration distribution, and most frequent reported stack without emitting the event corpus.` : fact`Insight names, scalar metrics, and related-event counts are computed by the DevTools trace engine (${analysis.source.engine}, an unstable upstream API pinned by capture). Use \`--name <insight>\` for stack and duration facts, or add \`--full\` for a bounded related-event drill-down.`,
+      sections: selected.length ? selected.map((set) => section2(set, set.insights, parsed.full === true && !fullRefused, parsed.name !== void 0, fullByInsight)) : [noSet.section],
+      jsonSections: selected.length ? selected.map((set) => ({ set: set.id, url: set.url, insights: parsed.full && !fullRefused ? set.insights.map((insight) => ({ ...aggregate(insight), ...namedFields(insight), fields: fullByInsight.get(insight) })) : parsed.name ? set.insights.map((insight) => ({ ...aggregate(insight), ...namedFields(insight) })) : set.insights.map(aggregate) })) : [noSet.json]
     };
     emitResult(result, { json: parsed.json });
   } catch (cause) {
@@ -265571,8 +265675,8 @@ input:
   <trace>          trace id in the active session or an absolute trace path (required; the trace must be finalized)
   --name <insight> select one engine insight by name from the default aggregation
   --limit <N>      return at most N selected insight records in prose and JSON; default 25
-  --full            with --name, include up to 50 related events across the result as a bounded drill-down; each insight states how many events remain
-output: <insights \u2026> \u2014 default output is a bounded aggregation of engine insight names, scalar metrics, and related-event counts; --name adds top stack and duration-distribution facts for that insight, and --name with --full adds a bounded related-event drill-down; capture reports engine facts without converting an insight's presence into an assessment of the page; --json mirrors
+  --full            with --name, include a bounded related-event drill-down only when every selected event fits within 50 events and 48,000 serialized bytes; otherwise returns the bounded --name view and states the factual bound
+output: <insights \u2026> \u2014 default output is a bounded aggregation of engine insight names, scalar metrics, and related-event counts; --name adds top stack and duration-distribution facts for that insight; --name with --full preserves those facts before adding a complete bounded event drill-down, or refuses partial event detail when the selected corpus exceeds its stated bound; capture reports engine facts without converting an insight's presence into an assessment of the page; --json mirrors
 effects: read-only \u2014 reads the finalized trace artifact, never drives the browser`;
     FULL_EVENT_LIMIT = 50;
     FULL_BYTE_LIMIT = 48e3;

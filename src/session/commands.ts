@@ -8,6 +8,7 @@ import {
   validateHarFile,
   type HarFile,
   type HAREntry,
+  type HttpHAREntry,
   type Header,
   type IncompleteLifecycle,
 } from '../har-manager.js';
@@ -463,6 +464,8 @@ effects:
  * thousands of records; an unbounded list buries the row the agent came for.
  * `--limit` overrides it in either direction. */
 const DEFAULT_HAR_ROWS = 100;
+/** `--full` includes capped body detail, so its unfiltered selection has a lower bound. */
+const DEFAULT_FULL_HAR_ROWS = 10;
 
 const HAR_USAGE = `capture session har [<session-id>] — read a session's recorded HTTP traffic as a selection list.
 
@@ -472,25 +475,31 @@ input:
                             stopped one reads the bundled har.json.
   --filter-url <pattern>    substring or regex match on the request URL (matched
                             against the URL as captured, before redaction)
+  --body <url> --out <path> write one exact, complete captured response body to
+                            the caller-owned file. <url> matches exactly one
+                            completed transaction by its captured URL; the result
+                            reports its transaction id, byte count, and encoding.
   --filter-status <spec>    exact status (100-599), one-digit class prefix
                             (1-5, e.g. 4 = every 4xx), or ordered range
                             (e.g. 400-499); any other token is invalid_filter.
                             A record with no observed response never matches.
   --filter-method <method>  HTTP method (GET, POST, …)
-  --limit <n>               list at most n matching rows; default ${DEFAULT_HAR_ROWS}
-  --full                    inline full detail (headers, post data, response body — escaped and capped); identical headers shared by every rendered record are listed once, while differing headers stay with their record; bodies are never inlined without it
+  --limit <n>               list at most n matching rows; default ${DEFAULT_HAR_ROWS} (${DEFAULT_FULL_HAR_ROWS} with --full)
+  --full                    inline full detail (headers, post data, response body — escaped and capped); filters resolve first, then structured responses sort before unstructured records so the bounded selection reaches API-shaped bodies before page assets; identical headers shared by every rendered record are listed once, while differing headers stay with their record; bodies are never inlined without it
 
 output:
   One <session-har id=… path=… source=live|bundle entries=… incomplete=…
   total=… total-incomplete=… [truncated=true]> block listing BOTH populations
-  in one chronological selection: completed entries (method, status, URL, body
+  in chronological order by default (or structured responses first under \`--full\`): completed entries (method, status, URL, body
   size, start time, HAR duration, response-end time) and the incomplete
   lifecycle records the recorder retained for requests whose response never
   completed — rendered as "incomplete: <kind>" plus their honest unavailable
   timing state (an out-of-order request clock also names its violation, e.g.
   invalid_clock_order/terminal_before_request). The path attribute is the HAR
   file's absolute path — the full-fidelity pointer, which holds every record
-  including the ones this list bounds away. --json mirrors the same fields.
+  including the ones this list bounds away. \`--body\` writes one complete body to
+  \`--out\` instead of listing rows; it refuses an ambiguous, absent, or truncated
+  body rather than writing a partial result. --json mirrors the same fields.
   Credential-like query parameter values (key, token, secret, signature, auth,
   password, oauth code, …) render as REDACTED; credential-valued headers render
   as redacted · <N> chars. The HAR file keeps the real values. WebSockets opened
@@ -1171,6 +1180,17 @@ function responseHeaders(item: HarSelection): readonly Header[] | undefined {
   return incompleteResponse(item.record)?.headers;
 }
 
+function isStructuredResponse(item: HarSelection): boolean {
+  if (item.kind !== 'complete') return false;
+  const contentType = responseHeaders(item)?.find((header) => header.name.toLowerCase() === 'content-type')?.value.toLowerCase().split(';', 1)[0]?.trim();
+  return contentType === 'application/json' || contentType === 'text/json' || contentType === 'application/x-ndjson' || contentType === 'application/xml' || contentType === 'text/xml' || contentType?.endsWith('+json') === true || contentType?.endsWith('+xml') === true;
+}
+
+/** `--full` resolves filters before this ordering, then selects its bounded record set. */
+function prioritizeFullHarSelection(items: readonly HarSelection[]): HarSelection[] {
+  return [...items].sort((left, right) => Number(isStructuredResponse(right)) - Number(isStructuredResponse(left)));
+}
+
 /** Hoist only complete identical header lists shared by every displayed row; every differing value remains next to its record. */
 function sharedHarHeaders(shown: readonly HarSelection[]): SharedHarHeaders {
   if (shown.length < 2) return {};
@@ -1236,6 +1256,67 @@ function harIncompleteDetail(record: IncompleteLifecycle, index: number, shared:
     rows.push(text`   terminal: never observed`);
   }
   return lineList(rows);
+}
+
+function completeBodyBytes(entry: HttpHAREntry): Buffer | { code: string; message: string } {
+  const provenance = entry._capture.body;
+  if (provenance.state !== 'captured') {
+    return { code: 'body_unavailable', message: `The selected transaction has no captured response body (${provenance.state === 'fetch_failed' ? provenance.error : provenance.reason}).` };
+  }
+  if (provenance.truncated) {
+    return { code: 'body_truncated', message: `The selected transaction retained ${provenance.capturedByteLength} of ${provenance.decodedByteLength} response bytes, so capture cannot export it as a complete body.` };
+  }
+  const content = entry.response.content.text;
+  if (content === undefined) {
+    return { code: 'body_unavailable', message: 'The selected transaction claims a captured response body but its HAR content is absent.' };
+  }
+  return provenance.sourceEncoding === 'base64' ? Buffer.from(content, 'base64') : Buffer.from(content, 'utf8');
+}
+
+function exportHarBody(id: string, located: HarSource, parsed: ParsedArgs): boolean {
+  if (parsed.body === undefined) return false;
+  if (!parsed.out) {
+    emitResult({ tag: 'error', attrs: { command: 'session har', code: 'body_out_required' }, summary: fact`--body requires --out <path>; response bytes are written only to a caller-named file.` }, { json: parsed.json });
+    process.exitCode = 1;
+    return true;
+  }
+  if (parsed.filterUrl !== undefined || parsed.filterStatus !== undefined || parsed.filterMethod !== undefined || parsed.limit !== undefined || parsed.full) {
+    emitResult({ tag: 'error', attrs: { command: 'session har', code: 'body_selection_conflict' }, summary: fact`--body selects one exact captured URL and cannot be combined with --filter-url, --filter-status, --filter-method, --limit, or --full.` }, { json: parsed.json });
+    process.exitCode = 1;
+    return true;
+  }
+  const matches = located.har.log.entries.filter((entry): entry is HttpHAREntry => entry.request.url === parsed.body && '_capture' in entry);
+  if (matches.length !== 1) {
+    const code = matches.length === 0 ? 'body_not_found' : 'body_ambiguous';
+    const message = matches.length === 0
+      ? line(text`No completed captured transaction has the exact URL `, harUrl(parsed.body), text`.`)
+      : line(fact`${matches.length} completed captured transactions have the exact URL `, harUrl(parsed.body), text`; --body requires one recorded transaction.`);
+    emitResult({ tag: 'error', attrs: { command: 'session har', code }, summary: message }, { json: parsed.json });
+    process.exitCode = 1;
+    return true;
+  }
+  const entry = matches[0]!;
+  const bytes = completeBodyBytes(entry);
+  if (!(bytes instanceof Buffer)) {
+    emitResult({ tag: 'error', attrs: { command: 'session har', code: bytes.code }, summary: fact`${bytes.message}` }, { json: parsed.json });
+    process.exitCode = 1;
+    return true;
+  }
+  try {
+    fs.writeFileSync(parsed.out, bytes);
+  } catch (cause) {
+    emitResult({ tag: 'error', attrs: { command: 'session har', code: 'body_write_failed' }, summary: fact`The selected response body was not written to ${parsed.out}: ${cause instanceof Error ? cause.message : String(cause)}` }, { json: parsed.json });
+    process.exitCode = 1;
+    return true;
+  }
+  const provenance = entry._capture.body;
+  emitResult({
+    tag: 'session-har',
+    attrs: { id, path: located.path, source: located.source, 'body-path': parsed.out, bytes: bytes.length, encoding: provenance.sourceEncoding, transaction: entry._capture.requestId, generation: entry._capture.generation, status: entry.response.status },
+    summary: line(fact`Wrote the complete recorded response body for ${entry.request.method} `, harUrl(entry.request.url), fact` to ${parsed.out}.`),
+    sections: [fact`Transaction ${entry._capture.requestId} (generation ${entry._capture.generation}) started ${entry.startedDateTime}; capture recorded ${provenance.capturedByteLength} of ${provenance.decodedByteLength} decoded bytes with ${provenance.sourceEncoding} encoding (truncated=${String(provenance.truncated)}).`],
+  }, { json: parsed.json });
+  return true;
 }
 
 async function har(parsed: ParsedArgs): Promise<void> {
@@ -1306,6 +1387,13 @@ async function har(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
+  if (exportHarBody(id, located, parsed)) return;
+  if (parsed.out) {
+    emitResult({ tag: 'error', attrs: { command: 'session har', code: 'out_requires_body' }, summary: fact`--out is only available with --body <url>; it names the caller-owned response-body file.` }, { json: parsed.json });
+    process.exitCode = 1;
+    return;
+  }
+
   let selection = buildHarSelection(located.har);
   const total = located.har.log.entries.length;
   const totalIncomplete = located.har.incompleteLifecycles.length;
@@ -1337,7 +1425,8 @@ async function har(parsed: ParsedArgs): Promise<void> {
 
   const requestedLimit = typeof parsed.limit === 'number' && parsed.limit > 0 ? parsed.limit : null;
   if (requestedLimit !== null) filters.push(`limit=${requestedLimit}`);
-  const bound = requestedLimit ?? DEFAULT_HAR_ROWS;
+  if (parsed.full) selection = prioritizeFullHarSelection(selection);
+  const bound = requestedLimit ?? (parsed.full ? DEFAULT_FULL_HAR_ROWS : DEFAULT_HAR_ROWS);
   const matched = selection.length;
   const shown = selection.slice(0, bound);
   const truncated = matched > shown.length;

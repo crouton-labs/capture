@@ -57,6 +57,8 @@ export interface ParsedArgs {
   /** `session log --name <label>` */
   name?: string;
   filterUrl?: string;
+  /** `session har --body <url>` — exact captured response URL to export. */
+  body?: string;
   filterStatus?: string;
   filterMethod?: string;
   limit?: number;
