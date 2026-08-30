@@ -8,8 +8,9 @@ const USAGE = `capture measure map scroll [url|snap] — scroll-container topolo
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id from the active session or an absolute snapshot artifact path is read without re-driving the browser
+  --artifact-dir <path>  root for the one-shot snapshot bundle when the target is a URL
 output: <scroll-map …> — containers, ranges, current/max offsets, sticky/fixed occupancy, snap points, visual/layout viewport facts, and reachable-content samples; --json mirrors
-effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot first`;
+effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot bundle under --artifact-dir when supplied`;
 
 type CaptureSnap = (parsed: ParsedArgs, target: string) => Promise<SnapUrlResult>;
 type Emit = typeof emitResult;

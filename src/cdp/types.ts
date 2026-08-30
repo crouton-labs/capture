@@ -16,6 +16,8 @@ export interface ParsedArgs {
    * different browser endpoint. */
   portSource?: 'flag' | 'session' | 'env';
   out?: string;
+  /** Root directory for a session bundle or one-shot artifact bundle. */
+  artifactDir?: string;
   json?: boolean;
   duration?: number;
   settle?: number;

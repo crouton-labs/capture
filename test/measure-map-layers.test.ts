@@ -88,6 +88,7 @@ test('measure map layers preserves DOMSnapshot paint-order facts when LayerTree 
     layers: [], layersTruncated: 0,
     paintOrder: { available: true, backendNodeIds: [10, 11], truncated: 0, paintedNodeCount: 2, backendNodeIdsOmitted: 0 },
     layerPaintOrder: [],
+    layerPaintOrderOmitted: 0,
     membership: { available: false, reason: 'layertree-unavailable: no-layertree-event-within-timeout', unassignedCount: 0 },
     styleSheetHeaders: { available: true },
   }]);

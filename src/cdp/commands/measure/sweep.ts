@@ -36,8 +36,9 @@ input:
   --from <val>              numeric range start, or a color-scheme/reduced-motion value
   --to <val>                numeric range end, or a color-scheme/reduced-motion value
   --viewport-height <val>   fixed viewport height for width/dpr sweeps
+  --artifact-dir <path>     root for this sessionless sweep bundle; ignored when an active session owns the sweep
 output: <sweep axis=… samples=… transitions=…> — observed state facts per sampled point, each sampled snapshot path included; --json mirrors
-effects: drives the page repeatedly under CDP Emulation settings; writes one snapshot substrate per sampled point plus sweep.json`;
+effects: drives the page repeatedly under CDP Emulation settings; writes one snapshot substrate per sampled point plus sweep.json under the active session or, when sessionless, a one-shot bundle under --artifact-dir`;
 
 const SAMPLE_LIMIT = 96;
 
@@ -139,7 +140,7 @@ export async function runMeasureSweep(parsed: ParsedArgs, _args: string[], overr
 
   const axis = parsed.axis;
   const active = dependencies.getActiveSession();
-  const oneShot = active ? undefined : dependencies.createOneshotSession('measure');
+  const oneShot = active ? undefined : dependencies.createOneshotSession('measure', parsed.artifactDir);
   const snapsDir = active ? path.join(active.dir, 'measure', 'snaps') : oneShot!.artifactsDir;
   const artifactDir = active ? path.join(active.dir, 'measure', 'sweeps', sweepId()) : path.join(oneShot!.dir, 'measure', 'sweeps', sweepId());
   const recoverySamples: Array<SweepRecovery['samples'][number]> = [];

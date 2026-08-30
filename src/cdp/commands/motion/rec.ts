@@ -78,6 +78,7 @@ input:
                             must resolve to exactly one live element; text: is not accepted by driving actions
     --duration <seconds>    keep recording after the action (default: 0)
     --viewport <WxH>        emulate a viewport for the recording window (restored after); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace
+    --artifact-dir <path>   root for a sessionless one-shot recording bundle
   --start                   arm the composed recorder on the active session tab (requires \`capture session start\`)
     --viewport <WxH>        as above; restored on --stop
   --stop                    finalize the composed recording
@@ -88,7 +89,7 @@ output:
   Caveat: screencast frames are change-driven, not a dropped-frame measurement; use \`capture perf trace\` for frame-timing questions.
 
 effects:
-  One-shot on a URL opens a new tab and writes a private one-shot artifact dir; with <url> omitted it records the active session tab through the session collector host and writes under the session. If that active-session one-shot process is interrupted after recording starts, the collector remains live and \`capture motion rec --stop\` finalizes it. Composed writes under the active session. Scripted actions dispatch real input, marked as labeled landmarks in events.jsonl. Video encodes via ffmpeg when available.`;
+  One-shot on a URL opens a new tab and writes a private one-shot artifact dir under --artifact-dir when supplied; with <url> omitted it records the active session tab through the session collector host and writes under the session. If that active-session one-shot process is interrupted after recording starts, the collector remains live and \`capture motion rec --stop\` finalizes it. Composed writes under the active session. Scripted actions dispatch real input, marked as labeled landmarks in events.jsonl. Video encodes via ffmpeg when available.`;
 
 export async function cmdMotionRec(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
@@ -140,7 +141,7 @@ async function handleOneShot(parsed: ParsedArgs, viewport: Viewport | undefined)
   // host row is then discoverable through session collectors and --stop.
   if (active && !parsedUrl && active.harId) return handleHostedSessionOneShot(parsed, active, viewport);
 
-  const oneshot = active ? undefined : deps.createOneshotSession('motion');
+  const oneshot = active ? undefined : deps.createOneshotSession('motion', parsed.artifactDir);
   const destination = active ? path.join(active.dir, 'motion', 'recs') : oneshot!.artifactsDir;
   const recId = `rec-${crypto.randomBytes(2).toString('hex')}`;
   const recDir = path.join(destination, recId);

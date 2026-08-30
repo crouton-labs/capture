@@ -315,7 +315,7 @@ test('check accepts individual checks and rejects unknown names', () => {
   assert.throws(() => parseChecks('advice'), /unknown check/);
 });
 
-test('command renders a bounded cross-kind sample with a factual rollup, while JSON retains every finding', () => {
+test('command renders a bounded cross-kind sample with the same JSON selection', () => {
   const gated = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--gate'], { encoding: 'utf8' });
   assert.equal(gated.status, 2);
   assert.match(gated.stdout, /<checks [^>]*findings="8"[^>]*displayed="8"/);
@@ -341,6 +341,9 @@ test('command renders a bounded cross-kind sample with a factual rollup, while J
   const customLimit = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--limit', '3'], { encoding: 'utf8' });
   assert.equal(customLimit.status, 0);
   assert.equal((customLimit.stdout.match(/^\d+\. /gm) ?? []).length, 3);
+  const customLimitJson = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--limit', '3', '--json'], { encoding: 'utf8' });
+  assert.equal(customLimitJson.status, 0);
+  assert.equal(JSON.parse(customLimitJson.stdout).attrs.displayed, 3);
 
   const clean = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'contrast', '--gate'], { encoding: 'utf8' });
   assert.equal(clean.status, 0);

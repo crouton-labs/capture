@@ -107,7 +107,10 @@ function combineFailure(primary: unknown, secondary: unknown, message: string): 
 // The root is established lazily by the first pinned artifact transaction: every
 // transaction traverses it, pinning its identity on first use and verifying it
 // on every later traversal. Non-artifact invocations touch no filesystem state.
-let captureRootIdentity: Identity | undefined;
+const artifactRoots = new Set<string>([CAPTURE_ROOT]);
+const artifactRootIdentities = new Map<string, Identity>();
+const ARTIFACT_ROOT_REGISTRY = path.join(CAPTURE_ROOT, '.artifact-roots.ndjson');
+let loadingArtifactRoots = false;
 let cwdPinned = false;
 
 export interface SnapMeta { id: string; url: string | null; viewport: string | null; settled: boolean; capturedAt: string; }
@@ -125,8 +128,57 @@ function writeAll(fd: number, data: string | Buffer, role: Extract<ArtifactSysca
     const wrote = fs.writeSync(fd, bytes, off, prescribed); if (!Number.isSafeInteger(wrote) || wrote <= 0 || wrote > prescribed) throw new Error('short private artifact write'); off += wrote;
   } }
 function privateDirHere(): void { const fd = fs.openSync('.', fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW); try { fs.fchmodSync(fd, DIR_MODE); } finally { fs.closeSync(fd); } }
-function verifyRoot(actual: Identity): void { if (captureRootIdentity) { if (!sameIdentity(captureRootIdentity, actual)) throw new Error('capture root changed since it was first established'); } else captureRootIdentity = actual; }
-function rootOrAncestor(current: string): boolean { return current === CAPTURE_ROOT || CAPTURE_ROOT.startsWith(`${current}${path.sep}`); }
+function loadRegisteredArtifactRoots(): void {
+  if (loadingArtifactRoots || !fs.existsSync(CAPTURE_ROOT)) return;
+  loadingArtifactRoots = true;
+  try {
+    let records: string;
+    try { records = readPrivateFile(ARTIFACT_ROOT_REGISTRY).toString('utf8'); }
+    catch (error) { if (isMissing(error)) return; throw error; }
+    for (const [index, line] of records.split('\n').entries()) {
+      if (!line) continue;
+      let value: unknown;
+      try { value = JSON.parse(line); } catch { throw new Error(`invalid artifact root registry record ${index + 1}`); }
+      if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1 || typeof (value as Record<string, unknown>).root !== 'string') throw new Error(`invalid artifact root registry record ${index + 1}`);
+      const root = (value as { root: string }).root;
+      if (!path.isAbsolute(root) || path.resolve(root) !== root) throw new Error(`invalid artifact root registry record ${index + 1}`);
+      artifactRoots.add(root);
+    }
+  } finally { loadingArtifactRoots = false; }
+}
+function rootForPath(target: string): string | undefined {
+  return [...artifactRoots].find((root) => target === root || target.startsWith(`${root}${path.sep}`));
+}
+/** Every root selected with --artifact-dir in this capture root, including the default root. */
+export function registeredArtifactRoots(): readonly string[] {
+  loadRegisteredArtifactRoots();
+  return [...artifactRoots];
+}
+function verifyRoot(root: string, actual: Identity): void {
+  const prior = artifactRootIdentities.get(root);
+  if (prior && !sameIdentity(prior, actual)) throw new Error('artifact root changed since it was first established');
+  artifactRootIdentities.set(root, actual);
+}
+function rootOrAncestor(current: string): boolean {
+  return [...artifactRoots].some((root) => current === root || root.startsWith(`${current}${path.sep}`));
+}
+
+/** Admit and durably record one caller-selected artifact root for future Capture invocations. */
+export function registerArtifactRoot(root: string): string {
+  if (!path.isAbsolute(root)) throw new Error('--artifact-dir must be an absolute path');
+  const resolved = path.resolve(root);
+  loadRegisteredArtifactRoots();
+  if (artifactRoots.has(resolved)) return resolved;
+  artifactRoots.add(resolved);
+  try {
+    inPinnedDirectory(resolved, true, () => undefined, 'root-bootstrap');
+    appendNdjsonPrivate(ARTIFACT_ROOT_REGISTRY, { root: resolved });
+  } catch (error) {
+    artifactRoots.delete(resolved);
+    throw error;
+  }
+  return resolved;
+}
 
 /** Performs only synchronous single-component operations while cwd is inode-pinned. */
 function inPinnedDirectory<T>(absoluteDir: string, create: boolean, operation: () => T, operationKind: ArtifactHookOperation = 'traversal'): T {
@@ -140,9 +192,10 @@ function inPinnedDirectory<T>(absoluteDir: string, create: boolean, operation: (
     const root = path.parse(absoluteDir).root; process.chdir(root); let current = root;
     for (const component of absoluteDir.slice(root.length).split(path.sep).filter(Boolean)) {
       assertName(component); current = path.join(current, component);
-      const privateComponent = current === CAPTURE_ROOT || current.startsWith(`${CAPTURE_ROOT}${path.sep}`);
-      const darwinVarAlias = process.platform === 'darwin' && current === '/var' && CAPTURE_ROOT.startsWith('/var/');
-      const hookOperation: ArtifactHookOperation = current === CAPTURE_ROOT || darwinVarAlias ? 'root-bootstrap' : operationKind;
+      const artifactRoot = rootForPath(current);
+      const privateComponent = artifactRoot !== undefined;
+      const darwinSystemAlias = process.platform === 'darwin' && (current === '/var' || current === '/tmp') && [...artifactRoots].some((root) => root.startsWith(`${current}/`));
+      const hookOperation: ArtifactHookOperation = artifactRoots.has(current) || darwinSystemAlias ? 'root-bootstrap' : operationKind;
       let before: fs.Stats;
       try { before = fs.lstatSync(component); hook(hookOperation, 'afterComponentLstat', current, component); }
       catch (error) {
@@ -156,11 +209,11 @@ function inPinnedDirectory<T>(absoluteDir: string, create: boolean, operation: (
         catch (createError) { if (errno(createError) !== 'EEXIST') throw createError; }
         before = fs.lstatSync(component);
       }
-      // Darwin exposes /var as a kernel-owned alias for /private/var. It is the only
-      // host alias accepted before the configured root; all user-controlled components
-      // including the configured root itself must be real directories.
+      // Darwin exposes /var and /tmp as kernel-owned aliases under /private. They are
+      // the only host aliases accepted before a configured root; all user-controlled
+      // components including the configured root itself must be real directories.
       // Pin and compare the followed vnode, not the alias directory entry.
-      if (before.isSymbolicLink() && darwinVarAlias) {
+      if (before.isSymbolicLink() && darwinSystemAlias) {
         const expected = identity(fs.statSync(component));
         hook(hookOperation, 'beforeComponentChdir', current, component);
         process.chdir(component);
@@ -172,7 +225,7 @@ function inPinnedDirectory<T>(absoluteDir: string, create: boolean, operation: (
       if (!before.isDirectory()) throw new Error(`refusing non-directory artifact component: ${component}`);
       const expected = identity(before); hook(hookOperation, 'beforeComponentChdir', current, component); process.chdir(component); hook(hookOperation, 'afterComponentChdirBeforeIdentityCheck', current, component);
       if (!sameIdentity(expected, identity(fs.statSync('.')))) throw new Error(`artifact directory changed while pinning: ${component}`);
-      if (current === CAPTURE_ROOT) { verifyRoot(expected); hook('root-bootstrap', 'afterRootPinned', current, component); }
+      if (artifactRoots.has(current)) { verifyRoot(current, expected); hook('root-bootstrap', 'afterRootPinned', current, component); }
       if (privateComponent) privateDirHere();
     }
     hook(absoluteDir === CAPTURE_ROOT ? 'root-bootstrap' : operationKind, 'afterParentPinned', absoluteDir); result = operation();
@@ -186,7 +239,13 @@ function inPinnedDirectory<T>(absoluteDir: string, create: boolean, operation: (
   return result as T;
 }
 
-export function assertUnderCaptureRoot(targetPath: string): string { const resolved = path.resolve(targetPath); const relative = path.relative(CAPTURE_ROOT, resolved); if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error(`artifact path escapes capture root ${CAPTURE_ROOT}: ${targetPath}`); return resolved; }
+export function assertUnderCaptureRoot(targetPath: string): string {
+  const resolved = path.resolve(targetPath);
+  loadRegisteredArtifactRoots();
+  const root = rootForPath(resolved);
+  if (!root || resolved === root) throw new Error(`artifact path escapes capture root or registered artifact root: ${targetPath}`);
+  return resolved;
+}
 function pinnedParent<T>(target: string, operation: (name: string) => T, create = true, operationKind: ArtifactHookOperation = 'traversal'): T { const resolved = assertUnderCaptureRoot(target); const name = path.basename(resolved); assertName(name); return inPinnedDirectory(path.dirname(resolved), create, () => operation(name), operationKind); }
 export function ensurePrivateDir(dirPath: string): string { const resolved = assertUnderCaptureRoot(dirPath); inPinnedDirectory(resolved, true, () => undefined); return resolved; }
 function openRegular(name: string, flags: number, create = false, onOpened?: (fd: number) => void, closeRole: Extract<ArtifactSyscallRole, 'artifact-temp-close' | 'lock-owner-close'> = 'artifact-temp-close', hookOperation: ArtifactHookOperation = 'final-file'): number {

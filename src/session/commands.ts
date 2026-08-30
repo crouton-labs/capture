@@ -45,6 +45,8 @@ import {
   rejectLogLabel,
   writeJsonPrivate,
   readPrivateFile,
+  registerArtifactRoot,
+  registeredArtifactRoots,
   removeArtifactTree,
   type SnapMeta,
   type RecMeta,
@@ -167,8 +169,8 @@ const SECTION_LABELS: Record<SectionKey, string> = {
   other: 'other',
 };
 
-function sessionDir(id: string): string {
-  return path.join(CAPTURE_ROOT, id);
+function sessionDir(id: string, artifactRoot = CAPTURE_ROOT): string {
+  return path.join(artifactRoot, id);
 }
 
 function isSessionStopped(session: Session): boolean {
@@ -195,9 +197,9 @@ export interface OneshotSession {
  * bundled/torn down by `session stop`; it accumulates under `/tmp` the same as
  * any other session dir until the OS reaps `/tmp`.
  */
-export function createOneshotSession(kind: 'measure' | 'motion' | 'page'): OneshotSession {
+export function createOneshotSession(kind: 'measure' | 'motion' | 'page', artifactDir?: string): OneshotSession {
   const id = `oneshot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const dir = sessionDir(id);
+  const dir = sessionDir(id, artifactDir === undefined ? CAPTURE_ROOT : registerArtifactRoot(artifactDir));
   const artifactsDir = kind === 'measure'
     ? path.join(dir, 'measure', 'snaps')
     : kind === 'motion'
@@ -280,8 +282,8 @@ function collectLighthouseReports(dir: string): BundleManifest['reports'] {
     .map((name) => readLighthouseReportMeta(path.join(reportsRoot, name), name));
 }
 
-function sessionMetaPath(id: string): string {
-  return path.join(sessionDir(id), '.session.json');
+function sessionMetaPath(id: string, artifactRoot = CAPTURE_ROOT): string {
+  return path.join(sessionDir(id, artifactRoot), '.session.json');
 }
 
 /** Outcome of reading one persisted record without failing the caller: either
@@ -298,8 +300,8 @@ type SessionRead =
  * A missing file is not a read outcome here; only `readSession` (targeted
  * commands) turns that into `unknown_session`.
  */
-function tryReadSession(id: string): SessionRead {
-  const metaPath = sessionMetaPath(id);
+function tryReadSession(id: string, artifactRoot = CAPTURE_ROOT): SessionRead {
+  const metaPath = sessionMetaPath(id, artifactRoot);
   const bad = (reason: string): SessionRead => ({ ok: false, id, metaPath, reason });
   let parsed: unknown;
   try {
@@ -322,16 +324,21 @@ function tryReadSession(id: string): SessionRead {
  * unbranded via `fact` interpolation of undefined fields).
  */
 function readSession(id: string): Session {
-  const metaPath = sessionMetaPath(id);
-  let read: SessionRead;
-  try {
-    read = tryReadSession(id);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw captureError('precondition', 'unknown_session', `No capture session found: ${id}`);
-    throw error;
+  const active = getActiveSession();
+  if (active?.sessionId === id) return active;
+  for (const artifactRoot of registeredArtifactRoots()) {
+    const metaPath = sessionMetaPath(id, artifactRoot);
+    let read: SessionRead;
+    try {
+      read = tryReadSession(id, artifactRoot);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    if (!read.ok) throw captureError('artifact', 'invalid_session_record', `session metadata at ${metaPath} ${read.reason}.`);
+    return read.session;
   }
-  if (!read.ok) throw captureError('artifact', 'invalid_session_record', `session metadata at ${metaPath} ${read.reason}.`);
-  return read.session;
+  throw captureError('precondition', 'unknown_session', `No capture session found: ${id}`);
 }
 
 function generateId(): string {
@@ -379,7 +386,7 @@ the artifact container — a session records HAR and bundles every artifact; it 
 use when starting scoped work against a page, reading the traffic or logs it recorded, or asking what is collecting right now; use \`tab\` for the browser itself and the conditions its network runs under, and \`measure\`/\`motion\`/\`perf\`/\`heap\` for the artifacts a session contains
 </command>`;
 
-const START_USAGE = `capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>] — open or adopt a tab, record HAR, and set the active capture context.
+const START_USAGE = `capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>] [--artifact-dir <path>] — open or adopt a tab, record HAR, and set the active capture context.
 
 input:
   --url <url>       Absolute URL to open in a fresh tab through CDP's
@@ -396,6 +403,7 @@ input:
                     lifetime, so browser-level state (permission grants,
                     ServiceWorker enablement) survives across separate commands.
   --port <n>         CDP port to attach to; default is auto-detected across localhost.
+  --artifact-dir <path>  Absolute root for this session bundle and every later session-owned artifact.
 
 Output:
   One <session id=… path=… [url=…] [target=… port=…]> block: the session id,
@@ -403,7 +411,7 @@ Output:
   applicable. --json mirrors the same fields.
 
 effects:
-  Creates a private session dir with shots/, starts a HAR recording, opens a
+  Creates a private session dir under --artifact-dir when supplied (otherwise the configured capture root), with shots/, starts a HAR recording, opens a
   fresh tab only when --url is supplied or adopts the resolved --target tab,
   optionally holds a CDP bridge, and registers the session as the active capture
   context so subsequent commands auto-target its tab.`;
@@ -641,7 +649,7 @@ async function start(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
-  if (rejectSurplusPositionals(parsed, 'start', 0, 'capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>]')) return;
+  if (rejectSurplusPositionals(parsed, 'start', 0, 'capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>] [--artifact-dir <path>]')) return;
 
   return withSessionScopeLifecycle(async () => {
     const active = getActiveSession();
@@ -660,7 +668,7 @@ async function start(parsed: ParsedArgs): Promise<void> {
     const requestedTarget = parsed.target ?? null;
     const hold = parsed.hold === true;
     const id = generateId();
-    const dir = sessionDir(id);
+    const dir = sessionDir(id, parsed.artifactDir === undefined ? CAPTURE_ROOT : registerArtifactRoot(parsed.artifactDir));
 
     // Every effect below is owned the instant it succeeds and released in exact
     // reverse order if any later step throws. Nothing is committed outside this
@@ -1558,14 +1566,14 @@ function list(parsed: ParsedArgs): void {
 
   if (rejectSurplusPositionals(parsed, 'list', 0, 'capture session list')) return;
 
-  const reads = fs.existsSync(CAPTURE_ROOT)
-    ? fs.readdirSync(CAPTURE_ROOT)
-        .filter((d) => fs.existsSync(sessionMetaPath(d)))
+  const reads = registeredArtifactRoots().flatMap((artifactRoot) => fs.existsSync(artifactRoot)
+    ? fs.readdirSync(artifactRoot)
+        .filter((d) => fs.existsSync(sessionMetaPath(d, artifactRoot)))
         .flatMap((d) => {
           // A record deleted between readdir and read is simply gone, not unreadable.
-          try { return [tryReadSession(d)]; } catch { return []; }
+          try { return [tryReadSession(d, artifactRoot)]; } catch { return []; }
         })
-    : [];
+    : []);
 
   const sessions = reads.flatMap((read) => {
     if (!read.ok) return [];

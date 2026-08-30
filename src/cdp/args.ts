@@ -15,7 +15,7 @@ export function expandEqualsFlags(argv: string[]): string[] {
 }
 
 const VALUE_FLAGS = new Set([
-  '--port', '--out', '--duration', '--settle', '--file', '--target', '--url', '--into', '--viewport', '--color-scheme', '--behavior', '--session',
+  '--port', '--out', '--artifact-dir', '--duration', '--settle', '--file', '--target', '--url', '--into', '--viewport', '--color-scheme', '--behavior', '--session',
   '--filter', '--name', '--filter-url', '--filter-status', '--filter-method', '--limit', '--params', '--wait-event',
   '--timeout', '--socket', '--settle-timeout', '--state', '--for', '--before', '--after', '--snap', '--set-file',
   '--axis', '--from', '--to', '--viewport-height', '--rec-id', '--selector', '--do', '--element', '--prop', '--action', '--occurrence',
@@ -421,6 +421,7 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
 
     if (arg === '--port') { parsed.port = integer(valueFor(arg, next), '--port', 1, 65535); parsed.portSource = 'flag'; i++; }
     else if (arg === '--out') { parsed.out = valueFor(arg, next); i++; }
+    else if (arg === '--artifact-dir') { parsed.artifactDir = valueFor(arg, next); i++; }
     else if (arg === '--json') parsed.json = true;
     else if (arg === '--duration') { parsed.duration = durationMs(valueFor(arg, next)); i++; }
     else if (arg === '--settle') { parsed.settle = integer(valueFor(arg, next), '--settle', 0, 2_147_483_647); i++; }

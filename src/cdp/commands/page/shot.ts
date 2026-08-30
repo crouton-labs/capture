@@ -44,13 +44,14 @@ input:
   --crop-selector <sel>  resolve exactly one live target (bare CSS takes precedence; exact accessible name applies when CSS finds none; ax:<name>, axid:<id>, or backend:<id>), scroll it into view, then crop its border box and surroundings
   --pad <px>        nonnegative integer CSS pixels added on every side of --crop-selector (default: 0; not accepted with --crop)
   --zoom <factor>   positive decimal CSS-to-image scale requested for a CSS crop; the 1600px image cap may produce a smaller reported scale
-  --out <path>      destination file; default: the active session's shots/ sequence, or a fresh oneshot-*/page/ dir under the capture root when no session is active
+  --out <path>      caller-owned destination PNG; default: the active session's shots/ sequence, or a fresh one-shot bundle when no session is active
+  --artifact-dir <path>  root for that sessionless one-shot bundle (ignored with --out or an active session)
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json            mirror the result as JSON
 output:
   <screenshot path=… width=… height=… css-width=… css-height=… css-x=… css-y=… css-to-image-x=… css-to-image-y=… effective-downscale-x=… effective-downscale-y=… scroll-x=… scroll-y=… emulation=none|viewport|full-page color-scheme=dark|light> — saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, visual-viewport scroll offset at capture, any effective downscale below 1 image px/CSS px, byte size, crop provenance, and any requested transient emulation
 effects:
-  no flags: none — the capture reads the viewport as-is, with zero Emulation.* calls. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture — two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; a selector crop reports its requested and delivered regions when its padded box cannot fit. An empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
+  no flags: none — the capture reads the viewport as-is, with zero Emulation.* calls. Sessionless captures write one bundle under --artifact-dir when supplied; --out writes only its caller-owned PNG. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture — two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; a selector crop reports its requested and delivered regions when its padded box cannot fit. An empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
 
 // ---------------------------------------------------------------------------
 // Test-injectable dependency seam (the CDP-stub test pattern; the capture
@@ -93,13 +94,13 @@ export function pngDimensions(png: Buffer): { width: number; height: number } | 
 
 /**
  * Resolves the output path: explicit `--out` > active session's `shots/`
- * sequence > a fresh `oneshot-{id}/page` dir under the capture root.
+ * sequence > a fresh `oneshot-{id}/page` dir under the selected artifact root.
  */
 async function resolveOutPath(parsed: ParsedArgs): Promise<string> {
   if (parsed.out) return parsed.out;
   const sessionPath = await deps.nextStepPath('shot', 'manual');
   if (sessionPath) return sessionPath;
-  return path.join(deps.createOneshotSession('page').artifactsDir, 'shot.png');
+  return path.join(deps.createOneshotSession('page', parsed.artifactDir).artifactsDir, 'shot.png');
 }
 
 // ---------------------------------------------------------------------------

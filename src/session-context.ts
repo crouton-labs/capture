@@ -16,6 +16,7 @@ import {
   ensurePrivateDir,
   parseRegisteredLogTailer,
   readPrivateFile,
+  registerArtifactRoot,
   removeArtifactTree,
   unlinkPrivateFile,
   writeJsonPrivate,
@@ -221,6 +222,7 @@ export function getActiveSession({ cleanStale = true }: { cleanStale?: boolean }
   }
 
   try {
+    registerArtifactRoot(path.dirname(path.resolve(index.dir)));
     const sessionDir = assertUnderCaptureRoot(path.resolve(index.dir));
     if (sessionDir !== index.dir) throw new Error('active session directory escaped capture root');
 

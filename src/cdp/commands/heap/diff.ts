@@ -2,13 +2,14 @@ import { type ParsedArgs } from '../../types.js';
 import { HeapSnapshot } from '../../heap-snapshot.js';
 import { capped, emitResult, fact, formatArtifactList, lineList, text } from '../../../output/render.js';
 import { completionAttrs, loadHeap, resolveHeapRef, resultReference } from './common.js';
+import { selectRecords } from '../../../output/selection.js';
 
 const HELP = `capture heap diff --before <snapshot> --after <snapshot> [--limit <N>] — what changed between two heap snapshots
 
 input:
   --before <snapshot>   required. Heap snapshot id in the active session or an absolute snapshot path
   --after <snapshot>    required. Heap snapshot id in the active session or an absolute snapshot path
-  --limit <N>           render the top N constructors by added retained bytes and top N after-snapshot nodes Chrome marks detached; default 25, --json always carries every constructor
+  --limit <N>           return the top N constructors by added retained bytes and top N after-snapshot nodes Chrome marks detached in prose and JSON; default 25
 output: <heap-diff …> — before/after snapshot node and serialized-byte totals, then per constructor nodes added, removed, and grown with retained-byte and detached-node totals; after-snapshot nodes Chrome marks detached are listed with their object ids; --json mirrors
 effects: read-only — reads both finalized snapshot artifacts, never drives the browser`;
 
@@ -29,14 +30,14 @@ export function cmdHeapDiff(parsed: ParsedArgs): void {
   };
   const constructors = [...comparison.constructors].sort((a, b) => b.added.retainedSize - a.added.retainedSize || b.grown.retainedSize - a.grown.retainedSize || b.removed.retainedSize - a.removed.retainedSize || a.constructorName.localeCompare(b.constructorName));
   const limit = parsed.limit ?? 25;
-  const displayed = constructors.slice(0, limit);
-  const detached = comparison.afterDetachedNodes.slice(0, limit);
+  const displayed = selectRecords(constructors, parsed, limit);
+  const detached = selectRecords(comparison.afterDetachedNodes, parsed, limit);
   const detachedSection = detached.length
     ? lineList(detached.map((node, index) => fact`${index + 1}. object-id=${node.objectId} constructor=${capped(node.constructorName, 120)} type=${node.type} detachedness=${node.detachedness}`))
     : text`No after-snapshot nodes are marked detached by Chrome.`;
   const jsonSections = [
     { before: totals.before, after: totals.after },
-    ...constructors.map(constructor => ({
+    ...displayed.map(constructor => ({
       constructor: capped(constructor.constructorName, Number.MAX_SAFE_INTEGER),
       added: { nodeCount: constructor.added.nodeCount, detachedNodeCount: constructor.added.detachedNodeCount, retainedSize: constructor.added.retainedSize },
       removed: { nodeCount: constructor.removed.nodeCount, detachedNodeCount: constructor.removed.detachedNodeCount, retainedSize: constructor.removed.retainedSize },

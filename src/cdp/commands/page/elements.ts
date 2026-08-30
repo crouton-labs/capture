@@ -18,6 +18,7 @@
  */
 import { type ParsedArgs } from '../../types.js';
 import { invalidInput } from '../../../errors.js';
+import { selectRecords } from '../../../output/selection.js';
 import { withConnection } from '../../connection.js';
 import { INTERACTIVE_ROLES, readFullAXTree } from '../../a11y.js';
 import {
@@ -38,7 +39,7 @@ const USAGE = `capture page elements — list what can be acted on in the live t
 Input:
   --all               full exposed accessibility tree instead of interactive elements only
   --name <text>       case-insensitive substring filter over each exposed accessibility name; applies before --limit
-  --limit <n>         max elements listed (positive integer, default ${DEFAULT_LIMIT}; a capped list states the total as an elements-truncated fact)
+  --limit <n>         max filtered elements returned in prose and JSON (positive integer, default ${DEFAULT_LIMIT}; a capped list states the total as an elements-truncated fact)
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json              mirror the result as JSON
 
@@ -133,7 +134,7 @@ export function buildElementsResult(
   opts: { all: boolean; limit: number; name?: string },
 ): RenderableResult {
   const total = records.length;
-  const shown = records.slice(0, opts.limit);
+  const shown = selectRecords(records, { limit: opts.limit }, opts.limit);
 
   const rows = shown.map((r) =>
     r.backendNodeId !== null

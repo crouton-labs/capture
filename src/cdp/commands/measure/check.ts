@@ -1,4 +1,5 @@
 import { type ParsedArgs } from '../../types.js';
+import { selectRecords } from '../../../output/selection.js';
 import { resolveSnapRef, readGeometry, readMeta, type ArtifactResolutionError } from '../../../output/artifact.js';
 import { resolveSelectorInput } from '../../../output/selector.js';
 import { capped, data, emitResult, fact, line, text, formatCoordinate, formatFindings, type FactLine, type FindingInput, type RenderableResult } from '../../../output/render.js';
@@ -10,11 +11,12 @@ const USAGE = `capture measure check [url|snap] — read threshold/fact measurem
 input:
   [url|snap]      a URL creates one one-shot snapshot first; a snap id or absolute path is read without re-driving the browser
   --for <checks>  geometry|content|targetability|forms|animation|all, or comma-separated overlap,offscreen,overflow,tap-targets,contrast,hit-test,truncation,forms,media,animation
-  --limit <n>     render at most n representative findings in prose (default: 20; --json retains all findings)
+  --limit <n>     return at most n representative findings in prose and JSON (default: 20)
   --selector <s>  limit measurements to recorded CSS/text/AX selector input or backend:<id>
+  --artifact-dir <path>  root for the one-shot snapshot bundle when the target is a URL
   --gate          exit 2 when the report contains findings (default: exit 0)
 output: <checks result=… findings=…> — findings with coordinates and collection provenance; measurements, not a pass/fail judgment; --json mirrors
-effects: read-only over an existing snapshot artifact; a URL target writes one one-shot snapshot first`;
+effects: read-only over an existing snapshot artifact; a URL target writes one one-shot snapshot bundle under --artifact-dir when supplied`;
 
 const DEFAULT_FINDING_LIMIT = 20;
 
@@ -111,8 +113,7 @@ export async function cmdMeasureCheck(parsed: ParsedArgs, _args: string[]): Prom
     for (const element of readGeometry<{ elements?: Array<{ selector?: string }> }>(ref).elements ?? []) if (element.selector !== undefined) selectorCounts.set(element.selector, (selectorCounts.get(element.selector) ?? 0) + 1);
     const scopedSelectors = scopedElements ? new Set(scopedElements.map((element) => element.selector).filter((selector): selector is string => selector !== undefined && selectorCounts.get(selector) === 1)) : undefined;
     const findings = scopedIds ? report.findings.filter((finding) => (finding.elementId !== undefined && scopedIds.has(finding.elementId)) || (finding.backendNodeId !== undefined && scopedBackendNodeIds!.has(finding.backendNodeId)) || (finding.selector !== undefined && scopedSelectors!.has(finding.selector))) : report.findings;
-    const proseFindings = representativeFindings(findings, parsed.limit ?? DEFAULT_FINDING_LIMIT);
-    const findingsForOutput = parsed.json ? findings : proseFindings;
+    const findingsForOutput = selectRecords(representativeFindings(findings, parsed.limit ?? DEFAULT_FINDING_LIMIT), parsed, parsed.limit ?? DEFAULT_FINDING_LIMIT);
     const withCrops = findingsForOutput.map((finding, index) => ({ ...finding, crop: writeFindingCrop(ref, finding, index) }));
     const meta = readMeta<{ settled: boolean; capturedAt?: string }> (ref);
     const findingSections: FindingInput[] = withCrops.map((finding) => ({
@@ -140,9 +141,9 @@ export async function cmdMeasureCheck(parsed: ParsedArgs, _args: string[]): Prom
         ...(findings.length ? [line(text`Finding counts: `, rollup(findings)!)] : []),
         ...formatFindings(findingSections),
       ],
-      followUp: parsed.json
-        ? fact`All ${findings.length} measured finding record(s) are included in this JSON result.`
-        : fact`Use --json to read all ${findings.length} measured finding record(s) from this snapshot.`,
+      followUp: findings.length > withCrops.length
+        ? fact`The full snapshot artifact at ${ref.dir} retains every measured finding input; this result is bounded by --limit.`
+        : undefined,
     };
     emitResult(result, { json: parsed.json });
     if (parsed.gate && findings.length) process.exitCode = 2;

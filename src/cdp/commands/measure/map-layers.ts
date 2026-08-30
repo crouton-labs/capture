@@ -8,8 +8,10 @@ const USAGE = `capture measure map layers [url|snap] — paint/compositor facts 
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id or absolute path is read without re-driving the browser
+  --artifact-dir <path>  root for the one-shot snapshot bundle when the target is a URL
+  --limit <n>  maximum final layer records in prose and JSON (default 25)
 output: <layer-map …> — layer bounds, compositing reasons, painted-node counts, per-node membership, and available source provenance for layer-affecting declarations; backend-id corpora are limited to 50 per list with omitted counts, and --json mirrors the same cap
-effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot first`;
+effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot bundle under --artifact-dir when supplied`;
 
 function errorResult(err: unknown): RenderableResult {
   const detail = err instanceof Error ? err.message : String(err);
@@ -51,7 +53,7 @@ export async function cmdMeasureMapLayers(parsed: ParsedArgs, _args: string[]): 
     const ref = await resolveSnapRef(target, {
       onUrl: async (url) => captureMeasureSnap(parsed, url),
     });
-    emitResult(buildMeasureMapLayersResult(ref), { json: parsed.json });
+    emitResult(buildMeasureMapLayersResult(ref, parsed.limit), { json: parsed.json });
   } catch (err) {
     emitResult(errorResult(err), { json: parsed.json });
     process.exitCode = 1;

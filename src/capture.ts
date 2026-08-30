@@ -63,7 +63,7 @@ ${ROOT_BLOCKS.join('\n\n')}
 
 Selecting a noun: session/tab/page own live things and conditions on them; measure/motion/perf/heap each own one recorded substrate and the read-only queries over it; lighthouse captures Lighthouse's third-party scored diagnostic sweep, while cdp/lib wrap something capture did not compute. If the facts you want come from an artifact a substrate noun already owns, the command is a leaf of that noun.
 
-I/O contract: flags and positionals on input; one rendered prose block on stdout. --json mirrors the same result as JSON, but the rendered block is the contract. stderr carries in-flight diagnostics only.
+I/O contract: flags and positionals on input; one rendered prose block on stdout. --json mirrors the same result as JSON, but the rendered block is the contract. stderr carries in-flight diagnostics only. --artifact-dir <path> selects the root for a session bundle (\`session start\`) or a sessionless artifact-producing leaf's one-shot bundle; leaf help states when it writes one. --out always names one caller-owned file, never a bundle directory.
 
 A CDP-enabled browser must be running; \`capture tab list\` is the probe, and \`capture tab launch\` starts one capture owns and reaps when nothing is (never hand-roll a detached browser — nothing reaps that). Capture never signals a browser it did not start, so attaching to your own with --port is unchanged. CDP_PORT / CDP_TARGET pin the browser + tab for target-selecting commands — precedence: explicit flag > active session > env. \`session start\` adopts only an explicit --target.`;
 }

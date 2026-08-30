@@ -1,6 +1,7 @@
 import { type ParsedArgs } from '../../types.js';
 import { capped, emitResult, fact, formatArtifactList, lineList, text } from '../../../output/render.js';
 import { completionAttrs, loadHeap, resolveHeapRef, resultReference } from './common.js';
+import { selectRecords } from '../../../output/selection.js';
 
 const HELP = `capture heap census <snapshot> [--axis constructor|string] [--limit <N>] — what the heap is made of
 
@@ -23,7 +24,7 @@ export function cmdHeapCensus(parsed: ParsedArgs): void {
   if (axis === 'string') {
     const duplicate = heap.duplicateStrings();
     const groups = [...duplicate.duplicates].sort((a, b) => b.wastedBytes - a.wastedBytes || b.totalSelfBytes - a.totalSelfBytes || a.value.localeCompare(b.value));
-    const displayed = groups.slice(0, limit);
+    const displayed = selectRecords(groups, parsed, limit);
     emitResult({
       tag: 'heap-census',
       attrs: { heap: ref.id, path: ref.dir, ...completionAttrs(ref.meta), axis, groups: groups.length, displayed: displayed.length, nodes: heap.nodeCount, 'size-qualification': duplicate.sizeQualification },
@@ -47,7 +48,7 @@ export function cmdHeapCensus(parsed: ParsedArgs): void {
     grouped.set(node.name, group);
   }
   const groups = [...grouped.values()].sort((a, b) => b.retainedBytes - a.retainedBytes || b.selfBytes - a.selfBytes || a.constructor.localeCompare(b.constructor));
-  const displayed = groups.slice(0, limit);
+  const displayed = selectRecords(groups, parsed, limit);
   emitResult({
     tag: 'heap-census',
     attrs: { heap: ref.id, path: ref.dir, ...completionAttrs(ref.meta), axis, groups: groups.length, displayed: displayed.length, nodes: heap.nodeCount, 'size-qualification': dominators.sizeQualification },

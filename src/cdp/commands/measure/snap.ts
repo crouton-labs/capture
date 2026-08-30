@@ -40,8 +40,9 @@ input:
   --state-padding <px>        CSS-pixel padding around the target border box in each forced-state diff crop (default 8)
   --viewport <WxH>            temporarily capture at a CSS-pixel viewport (repeatable); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace
   --color-scheme <dark|light> temporarily capture under this prefers-color-scheme value; cleared afterward
+  --artifact-dir <path>      root for this sessionless snapshot bundle; ignored when an active session owns the snapshot
 output: <snapshot id=… path=…> — the settled artifact directory (geometry, styles, hit-test, text, forms, animation, ax, queries, focus, scroll, layers; per-element crops with --pixels) every other measure/motion query leaf reads instead of re-driving the browser; --json mirrors
-effects: drives the target page to capture; writes one snapshot artifact directory under the active (or a private one-shot) session. --color-scheme transiently applies Emulation.setEmulatedMedia and clears it after capture.`;
+effects: drives the target page to capture; writes one snapshot artifact directory under the active session or, when sessionless, a one-shot bundle under --artifact-dir. --color-scheme transiently applies Emulation.setEmulatedMedia and clears it after capture.`;
 
 interface SnapshotMetaForBase {
   readonly url?: string | null;
@@ -285,7 +286,7 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
     let artifacts: readonly string[] = [];
     await withConnection(connectionArgs, async (client, tab) => {
       await withAppliedColorScheme(client, colorScheme, async () => withAppliedViewport(client, viewport, async () => {
-        const oneshot = active ? undefined : createOneshotSession('measure');
+        const oneshot = active ? undefined : createOneshotSession('measure', parsed.artifactDir);
         const destination = active ? path.join(active.dir, 'measure', 'snaps') : oneshot!.artifactsDir;
         snapDir = path.join(destination, snapId);
         allocatedRoot = active ? snapDir : oneshot!.dir;

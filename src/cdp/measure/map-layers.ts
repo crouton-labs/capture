@@ -1,4 +1,5 @@
 import type { LayerRecord, LayersReport } from './collectors/layers.js';
+import { selectRecords } from '../../output/selection.js';
 import type { SnapMeta } from '../../session/artifacts.js';
 import {
   annotateUnstableFacts,
@@ -133,7 +134,7 @@ function paintOrderLine(report: LayersReport, caveats: readonly UnstableCaveat[]
   return caveat ? lineList([base, caveat]) : base;
 }
 
-export function buildMeasureMapLayersResult(ref: SnapRef): RenderableResult {
+export function buildMeasureMapLayersResult(ref: SnapRef, limit?: number): RenderableResult {
   const report = readLayers<LayersReport>(ref);
   const meta = readMeta<SnapMeta>(ref);
   const regions = unstableRegionsFor(ref);
@@ -167,6 +168,8 @@ export function buildMeasureMapLayersResult(ref: SnapRef): RenderableResult {
   const availability = report.layerTree.available
     ? fact`LayerTree facts available for ${report.layers.length} layer(s). DOMSnapshot paint order is ${paintOrderStatus}.`
     : fact`LayerTree facts unavailable${report.layerTree.reason ? `: ${report.layerTree.reason}` : ''}. DOMSnapshot paint order is ${paintOrderStatus}.`;
+  const displayed = selectRecords(annotated, { limit }, 25);
+  const layerPaintOrder = selectRecords(report.layerPaintOrder, { limit }, 25);
   const sections: FactLine[] = [availability, paintOrderLine(report, paintOrderCaveats)];
   if (report.layersTruncated) sections.push(fact`${report.layersTruncated} compositor layer(s) were not listed because the snapshot collector capped the layer inventory.`);
   if (report.membership.available) {
@@ -177,7 +180,8 @@ export function buildMeasureMapLayersResult(ref: SnapRef): RenderableResult {
   if (!report.styleSheetHeaders.available) {
     sections.push(fact`Stylesheet-header provenance availability: unavailable${report.styleSheetHeaders.reason ? `: ${report.styleSheetHeaders.reason}` : ''}.`);
   }
-  sections.push(...annotated.map(({ layerFact, caveats }) => formatLayer(layerFact.layer, report.membership.available, caveats)));
+  if (annotated.length > displayed.length) sections.push(fact`Layer records: listing capped at ${displayed.length} of ${annotated.length} layers (--limit).`);
+  sections.push(...displayed.map(({ layerFact, caveats }) => formatLayer(layerFact.layer, report.membership.available, caveats)));
 
   return {
     tag: 'layer-map',
@@ -191,6 +195,7 @@ export function buildMeasureMapLayersResult(ref: SnapRef): RenderableResult {
     },
     attrs: {
       layers: report.layers.length,
+      displayed: displayed.length,
       'layer-tree': layerTreeStatus,
       'paint-order': paintOrderStatus,
       membership: membershipStatus,
@@ -203,10 +208,11 @@ export function buildMeasureMapLayersResult(ref: SnapRef): RenderableResult {
     sections,
     jsonSections: [{
       layerTree: report.layerTree,
-      layers: report.layers.map(layerJson),
+      layers: displayed.map(({ layerFact }) => layerJson(layerFact.layer)),
       layersTruncated: report.layersTruncated,
       paintOrder: paintOrderJson,
-      layerPaintOrder: report.layerPaintOrder,
+      layerPaintOrder,
+      layerPaintOrderOmitted: report.layerPaintOrder.length - layerPaintOrder.length,
       membership: report.membership,
       styleSheetHeaders: report.styleSheetHeaders,
     }],

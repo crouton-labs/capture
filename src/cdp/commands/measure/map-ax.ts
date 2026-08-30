@@ -8,8 +8,9 @@ const USAGE = `capture measure map ax [url|snap] — accessibility-tree facts re
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id or absolute path is read without re-driving the browser
+  --artifact-dir <path>  root for the one-shot snapshot bundle when the target is a URL
 output: <ax-map …> — non-ignored AX nodes with role, name, states, backendNodeId, and top-viewport rect; ignored AX nodes with their ignored-reasons; DOM elements with rendered boxes but no non-ignored AX node; and AX nodes whose rect is offscreen, clipped, or zero-size; --json mirrors
-effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot first`;
+effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot bundle under --artifact-dir when supplied`;
 
 function recoveryResult(err: unknown): RenderableResult {
   const detail = err instanceof ArtifactResolutionError || err instanceof Error

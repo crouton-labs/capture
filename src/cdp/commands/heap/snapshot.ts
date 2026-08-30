@@ -8,7 +8,7 @@ import { collectorHostSocketPath, startCollectorHost } from '../../bridge/spawn.
 import { sendHostRequest } from '../../host/client.js';
 import { scanCollectorHost, type CollectorHostHandle } from '../../host/handle.js';
 import { stopAndReapCollectorHostAtSessionStop } from '../../host/lifecycle.js';
-import { CAPTURE_ROOT, ensurePrivateDir } from '../../../session/artifacts.js';
+import { CAPTURE_ROOT, ensurePrivateDir, registerArtifactRoot } from '../../../session/artifacts.js';
 import { getActiveSession } from '../../../session-context.js';
 import { withSessionLifecycle } from '../../../session/coordinator.js';
 import { emitResult, fact, formatArtifactList, text } from '../../../output/render.js';
@@ -18,8 +18,9 @@ const HELP = `capture heap snapshot [url] — take a V8 heap snapshot of the tab
 
 input:
   [url]   navigate to this URL and snapshot it in a one-shot session; without a URL the active session tab is snapshotted in place
+  --artifact-dir <path>  root for a sessionless heap snapshot bundle
 output: <heap-snapshot …> — the finalized snapshot artifact, its node and edge counts, on-disk bytes, and completion state; --json mirrors
-effects: drives the browser and writes a large artifact; spawns or joins the session's collector host for the duration of one snapshot and releases it immediately. Claims \`heap-snapshot\`; refused while another heap snapshot is streaming, and the refusal names the claim and its holder. Composes with a live trace and with a live mock.`;
+effects: drives the browser and writes a large artifact under the active session or, when sessionless, a bundle under --artifact-dir; spawns or joins the session's collector host for the duration of one snapshot and releases it immediately. Claims \`heap-snapshot\`; refused while another heap snapshot is streaming, and the refusal names the claim and its holder. Composes with a live trace and with a live mock.`;
 
 async function liveHost(sessionDir: string, port: number, targetId: string): Promise<CollectorHostHandle> {
   let scanned = scanCollectorHost(sessionDir);
@@ -49,8 +50,8 @@ async function collect(sessionDir: string, port: number, targetId: string): Prom
   return collector.dir;
 }
 
-function oneshotHeapDir(): string {
-  const dir = path.join(CAPTURE_ROOT, `oneshot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, 'heap', 'snapshots');
+function oneshotHeapDir(artifactDir?: string): string {
+  const dir = path.join(artifactDir === undefined ? CAPTURE_ROOT : registerArtifactRoot(artifactDir), `oneshot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, 'heap', 'snapshots');
   ensurePrivateDir(dir);
   return path.dirname(path.dirname(dir));
 }
@@ -72,7 +73,7 @@ export async function cmdHeapSnapshot(parsed: ParsedArgs): Promise<void> {
   if (url) {
     const tab = await openTab(port, url);
     targetId = tab.id;
-    const sessionDir = oneshotHeapDir();
+    const sessionDir = oneshotHeapDir(parsed.artifactDir);
     snapshotDir = await collect(sessionDir, port, targetId);
   } else {
     targetId = active!.targetId!;

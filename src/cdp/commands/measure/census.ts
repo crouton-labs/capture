@@ -13,8 +13,9 @@ input:
   --snap <id|path>    existing snapshot id or absolute artifact path (repeatable)
   --url <url>         URL to snap first (repeatable)
   --set-file <path>   file listing one snapshot id/path or URL per line
+  --artifact-dir <path>  root for each one-shot snapshot bundle created by --url
 output: <census axis=… snapshots=… distinct=…> — distributions with provenance where recorded, and per-region nondeterminism caveats for facts touching an unsettled capture; --json mirrors
-effects: read-only over existing snapshot artifacts; each --url writes one one-shot snapshot first`;
+effects: read-only over existing snapshot artifacts; each --url writes one one-shot snapshot bundle under --artifact-dir when supplied`;
 
 function targetsFromFile(filePath: string): string[] {
   const raw = fs.readFileSync(filePath, 'utf8');

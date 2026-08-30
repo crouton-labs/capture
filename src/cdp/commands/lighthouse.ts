@@ -5,7 +5,8 @@ import { createRequire } from 'node:module';
 import { detectCdpPort } from '../detect.js';
 import { captureError } from '../../errors.js';
 import { type ParsedArgs } from '../types.js';
-import { CAPTURE_ROOT, ensurePrivateDir, processPidBirthProvider, writeJsonPrivate, writePrivateFile } from '../../session/artifacts.js';
+import { selectRecords } from '../../output/selection.js';
+import { CAPTURE_ROOT, ensurePrivateDir, processPidBirthProvider, registerArtifactRoot, writeJsonPrivate, writePrivateFile } from '../../session/artifacts.js';
 import { getActiveSession } from '../../session-context.js';
 import { withSessionLifecycle } from '../../session/coordinator.js';
 import { collectorHostSocketPath, startCollectorHost } from '../bridge/spawn.js';
@@ -25,10 +26,11 @@ input:
   <url>                 required. The URL Lighthouse navigates to. Lighthouse drives the browser destructively — it clears state and reloads — so it will not run against a tab another collector is recording
   --categories <list>   comma-separated Lighthouse categories; default performance. Any category Lighthouse ships (performance, accessibility, best-practices, seo)
   --preset <preset>     mobile (default, Lighthouse's mobile emulation and simulated throttling) or desktop
-  --limit <N>           render at most N failing nodes per audit; default 25, --json always carries every node
-  --out <path>          also write Lighthouse's HTML report to this path
+  --limit <N>           return at most N failing nodes per audit in prose and JSON; default 25
+  --out <path>          also write Lighthouse's HTML report to this caller-owned path
+  --artifact-dir <path> root for this sessionless Lighthouse report bundle
 output: <lighthouse …> — Lighthouse's own category scores, its audit pass/fail counts, one row per failing audit, and for each failing node that audit's DOM path with its selector, snippet, and Lighthouse's own explanation; plus the absolute path to the unmodified JSON report; capture adds no assessment of its own; --json mirrors
-effects: drives the browser destructively — Lighthouse clears storage and cache and performs its own navigations on the target tab, and runs its own trace. Refused while anything holds the browser-global \`tracing\` claim, and refused while any collector is live on the target tab; both refusals name the holder.`;
+effects: drives the browser destructively — a sessionless report bundle lands under --artifact-dir; Lighthouse clears storage and cache and performs its own navigations on the target tab, and runs its own trace. Refused while anything holds the browser-global \`tracing\` claim, and refused while any collector is live on the target tab; both refusals name the holder.`;
 
 type NodeItem = {
   readonly path: string;
@@ -212,9 +214,9 @@ async function pageForSessionTarget(port: number, targetId: string): Promise<{ b
   throw captureError('precondition', 'lighthouse_target_unavailable', `Lighthouse could not find the active session target ${targetId} on CDP port ${port}.`);
 }
 
-function reportDirectory(): { id: string; dir: string } {
+function reportDirectory(artifactDir?: string): { id: string; dir: string } {
   const id = `report-${Date.now().toString(36)}-${crypto.randomBytes(6).toString('hex')}`;
-  const parent = getActiveSession()?.dir ?? path.join(CAPTURE_ROOT, `oneshot-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`);
+  const parent = getActiveSession()?.dir ?? path.join(artifactDir === undefined ? CAPTURE_ROOT : registerArtifactRoot(artifactDir), `oneshot-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`);
   const dir = path.join(parent, 'lighthouse', 'reports', id);
   ensurePrivateDir(dir);
   return { id, dir };
@@ -244,7 +246,7 @@ function full(value: string) {
   return capped(value, FULL_DATA_MAX);
 }
 
-function categoryJson(category: Category): JsonValue {
+function categoryJson(category: Category, limit: number): JsonValue {
   return {
     category: category.id,
     score: category.score,
@@ -254,7 +256,7 @@ function categoryJson(category: Category): JsonValue {
       id: audit.id,
       title: audit.title,
       score: audit.score,
-      items: audit.items.map(item => ({
+      items: selectRecords(audit.items, { limit }, limit).map(item => ({
         path: full(item.path),
         selector: full(item.selector),
         snippet: full(item.snippet),
@@ -269,7 +271,7 @@ function categoryProse(category: Category, limit: number): FactLine {
   const rows: FactLine[] = [fact`${category.id}: score ${category.score ?? 'not-scored'}; ${category.auditsPassed} passed audit(s), ${category.auditsFailed} failed audit(s).`];
   for (const audit of category.failingAudits) {
     rows.push(line(text`  `, fact`${audit.id} — ${audit.title}; score ${audit.score}`));
-    const displayed = audit.items.slice(0, limit);
+    const displayed = selectRecords(audit.items, { limit }, limit);
     for (const item of displayed) {
       rows.push(line(text`    path: `, fact`${full(item.path)}`));
       rows.push(line(text`    selector: `, fact`${full(item.selector)}`));
@@ -318,7 +320,7 @@ function resultFor(input: {
       text`Lighthouse applies simulated throttling by default, so its timings are not the wall-clock timings of an unthrottled load and are not comparable with capture perf vitals.`,
       text`Failing-node selectors are minimized by axe and may drop class modifiers, so a selector can match more elements than the one that failed; the DOM path identifies the failing node.`,
     ],
-    jsonSections: categories.map(categoryJson),
+    jsonSections: categories.map(category => categoryJson(category, input.limit)),
   };
 }
 
@@ -377,7 +379,7 @@ export async function cmdLighthouse(parsed: ParsedArgs, _args: string[]): Promis
   if (!run) throw captureError('world', 'lighthouse_no_report', 'Lighthouse completed without a report.');
 
   const reports = reportStrings(run.report);
-  const artifact = reportDirectory();
+  const artifact = reportDirectory(parsed.artifactDir);
   const reportPath = path.join(artifact.dir, 'report.json');
   writePrivateFile(reportPath, reports.json);
   if (parsed.out) {

@@ -4,12 +4,14 @@ import { type ParsedArgs } from '../../types.js';
 import { analyzeChromeTrace, type TraceInsight, type TraceInsightField, type TraceInsightSet } from '../../trace-analysis.js';
 import { resolveTraceRef } from '../../../output/artifact.js';
 import { data, emitResult, fact, line, lineList, text, type FactLine, type RenderableResult } from '../../../output/render.js';
+import { selectRecords } from '../../../output/selection.js';
 
-const HELP = `capture perf insights <trace> [--name <insight> --full] — the DevTools insight set computed from a recorded trace
+const HELP = `capture perf insights <trace> [--name <insight> --full] [--limit <N>] — the DevTools insight set computed from a recorded trace
 
 input:
   <trace>          trace id in the active session or an absolute trace path (required; the trace must be finalized)
   --name <insight> select one engine insight by name from the default aggregation
+  --limit <N>      return at most N selected insight records in prose and JSON; default 25
   --full            with --name, include up to 50 related events across the result as a bounded drill-down; each insight states how many events remain
 output: <insights …> — default output is a bounded aggregation of engine insight names, scalar metrics, and related-event counts; --name adds top stack and duration-distribution facts for that insight, and --name with --full adds a bounded related-event drill-down; capture reports engine facts without converting an insight's presence into an assessment of the page; --json mirrors
 effects: read-only — reads the finalized trace artifact, never drives the browser`;
@@ -156,7 +158,13 @@ export async function cmdPerfInsights(parsed: ParsedArgs): Promise<void> {
     const raw = JSON.parse(fs.readFileSync(path.join(trace.dir, 'trace.json'), 'utf8')) as { traceEvents?: object[] };
     if (!Array.isArray(raw.traceEvents)) throw new Error('trace.json is not a Chrome trace with a traceEvents array');
     const analysis = await analyzeChromeTrace({ traceEvents: raw.traceEvents });
-    const selected = analysis.insightSets.map(set => ({ ...set, insights: parsed.name === undefined ? set.insights : set.insights.filter(insight => insight.name === parsed.name) }));
+    let remaining = parsed.limit ?? 25;
+    const selected = analysis.insightSets.map((set) => {
+      const filtered = parsed.name === undefined ? set.insights : set.insights.filter(insight => insight.name === parsed.name);
+      const insights = selectRecords(filtered, { limit: remaining }, remaining);
+      remaining -= insights.length;
+      return { ...set, insights };
+    });
     const fullBudget: FullBudget = { remainingEvents: FULL_EVENT_LIMIT, remainingBytes: FULL_BYTE_LIMIT };
     const fullByInsight = new Map<TraceInsight, FullFields>();
     if (parsed.full) {
@@ -170,7 +178,7 @@ export async function cmdPerfInsights(parsed: ParsedArgs): Promise<void> {
     const result: RenderableResult = {
       tag: 'insights',
       attestation: { kind: 'trace', id: trace.id, path: trace.dir },
-      attrs: { completion: trace.completion, ...(trace.reason ? { reason: trace.reason } : {}), engine: analysis.source.engine, 'insight-sets': selected.length, insights: selected.reduce((count, set) => count + set.insights.length, 0), ...(parsed.name ? { name: parsed.name } : {}), ...(parsed.full ? { detail: 'full', 'events-retained': relatedEventsRetained, 'events-omitted': relatedEventsTotal - relatedEventsRetained, 'event-bytes-retained': FULL_BYTE_LIMIT - fullBudget.remainingBytes } : { detail: 'aggregation' }) },
+      attrs: { completion: trace.completion, ...(trace.reason ? { reason: trace.reason } : {}), engine: analysis.source.engine, 'insight-sets': selected.length, insights: selected.reduce((count, set) => count + set.insights.length, 0), limit: parsed.limit ?? 25, ...(parsed.name ? { name: parsed.name } : {}), ...(parsed.full ? { detail: 'full', 'events-retained': relatedEventsRetained, 'events-omitted': relatedEventsTotal - relatedEventsRetained, 'event-bytes-retained': FULL_BYTE_LIMIT - fullBudget.remainingBytes } : { detail: 'aggregation' }) },
       summary: parsed.full
         ? fact`The selected related-event drill-down is capped across this result at ${FULL_EVENT_LIMIT} events and ${FULL_BYTE_LIMIT} bytes; each insight states its omitted count.`
         : parsed.name

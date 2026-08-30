@@ -8,8 +8,9 @@ const USAGE = `capture measure map focus [url|snap] — keyboard traversal facts
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id or absolute path is read without re-driving the browser
+  --artifact-dir <path>  root for the one-shot snapshot bundle when the target is a URL
 output: <focus-map …> — forward and reverse Tab sequences, top-viewport rects, scroll jumps, focus-visible style facts, and unreached focusable elements; --json mirrors
-effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot first`;
+effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot bundle under --artifact-dir when supplied`;
 
 function recoveryResult(err: unknown): RenderableResult {
   const detail = err instanceof ArtifactResolutionError || err instanceof Error

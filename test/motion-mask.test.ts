@@ -132,7 +132,7 @@ test('motion mask transforms CSS rects into device pixels before attribution and
   } finally { fs.rmSync(sessionDir, { recursive: true, force: true }); }
 });
 
-test('motion mask bounds large prose reports while --json retains every region row', async () => {
+test('motion mask bounds the same final region set in prose and JSON', async () => {
   const sessionDir = path.join(CAPTURE_ROOT, `motion-mask-many-regions-${process.pid}-${Date.now()}`);
   const recDir = path.join(sessionDir, 'motion', 'recs', 'rec-many-regions');
   const framesDir = path.join(recDir, 'frames');
@@ -161,7 +161,7 @@ test('motion mask bounds large prose reports while --json retains every region r
     assert.equal((limited.match(/^\d+\. x=/gm) ?? []).length, 5);
 
     const json = JSON.parse(await captureOutput(() => motionMain(parseCliArgs(['motion', 'mask', recDir, '--json']), []))) as { sections: string[] };
-    assert.equal(json.sections.at(-1)?.split('\n').length, 6528);
+    assert.equal(json.sections.at(-1)?.split('\n').length, 20);
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }

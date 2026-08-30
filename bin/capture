@@ -4646,13 +4646,63 @@ function privateDirHere() {
     fs.closeSync(fd);
   }
 }
-function verifyRoot(actual) {
-  if (captureRootIdentity) {
-    if (!sameIdentity(captureRootIdentity, actual)) throw new Error("capture root changed since it was first established");
-  } else captureRootIdentity = actual;
+function loadRegisteredArtifactRoots() {
+  if (loadingArtifactRoots || !fs.existsSync(CAPTURE_ROOT)) return;
+  loadingArtifactRoots = true;
+  try {
+    let records;
+    try {
+      records = readPrivateFile(ARTIFACT_ROOT_REGISTRY).toString("utf8");
+    } catch (error4) {
+      if (isMissing(error4)) return;
+      throw error4;
+    }
+    for (const [index, line4] of records.split("\n").entries()) {
+      if (!line4) continue;
+      let value;
+      try {
+        value = JSON.parse(line4);
+      } catch {
+        throw new Error(`invalid artifact root registry record ${index + 1}`);
+      }
+      if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 1 || typeof value.root !== "string") throw new Error(`invalid artifact root registry record ${index + 1}`);
+      const root = value.root;
+      if (!path.isAbsolute(root) || path.resolve(root) !== root) throw new Error(`invalid artifact root registry record ${index + 1}`);
+      artifactRoots.add(root);
+    }
+  } finally {
+    loadingArtifactRoots = false;
+  }
+}
+function rootForPath(target) {
+  return [...artifactRoots].find((root) => target === root || target.startsWith(`${root}${path.sep}`));
+}
+function registeredArtifactRoots() {
+  loadRegisteredArtifactRoots();
+  return [...artifactRoots];
+}
+function verifyRoot(root, actual) {
+  const prior = artifactRootIdentities.get(root);
+  if (prior && !sameIdentity(prior, actual)) throw new Error("artifact root changed since it was first established");
+  artifactRootIdentities.set(root, actual);
 }
 function rootOrAncestor(current) {
-  return current === CAPTURE_ROOT || CAPTURE_ROOT.startsWith(`${current}${path.sep}`);
+  return [...artifactRoots].some((root) => current === root || root.startsWith(`${current}${path.sep}`));
+}
+function registerArtifactRoot(root) {
+  if (!path.isAbsolute(root)) throw new Error("--artifact-dir must be an absolute path");
+  const resolved = path.resolve(root);
+  loadRegisteredArtifactRoots();
+  if (artifactRoots.has(resolved)) return resolved;
+  artifactRoots.add(resolved);
+  try {
+    inPinnedDirectory(resolved, true, () => void 0, "root-bootstrap");
+    appendNdjsonPrivate(ARTIFACT_ROOT_REGISTRY, { root: resolved });
+  } catch (error4) {
+    artifactRoots.delete(resolved);
+    throw error4;
+  }
+  return resolved;
 }
 function inPinnedDirectory(absoluteDir, create, operation, operationKind = "traversal") {
   if (cwdPinned) throw new Error("nested private artifact cwd transaction");
@@ -4669,9 +4719,10 @@ function inPinnedDirectory(absoluteDir, create, operation, operationKind = "trav
     for (const component of absoluteDir.slice(root.length).split(path.sep).filter(Boolean)) {
       assertName(component);
       current = path.join(current, component);
-      const privateComponent = current === CAPTURE_ROOT || current.startsWith(`${CAPTURE_ROOT}${path.sep}`);
-      const darwinVarAlias = process.platform === "darwin" && current === "/var" && CAPTURE_ROOT.startsWith("/var/");
-      const hookOperation = current === CAPTURE_ROOT || darwinVarAlias ? "root-bootstrap" : operationKind;
+      const artifactRoot = rootForPath(current);
+      const privateComponent = artifactRoot !== void 0;
+      const darwinSystemAlias = process.platform === "darwin" && (current === "/var" || current === "/tmp") && [...artifactRoots].some((root2) => root2.startsWith(`${current}/`));
+      const hookOperation = artifactRoots.has(current) || darwinSystemAlias ? "root-bootstrap" : operationKind;
       let before;
       try {
         before = fs.lstatSync(component);
@@ -4686,7 +4737,7 @@ function inPinnedDirectory(absoluteDir, create, operation, operationKind = "trav
         }
         before = fs.lstatSync(component);
       }
-      if (before.isSymbolicLink() && darwinVarAlias) {
+      if (before.isSymbolicLink() && darwinSystemAlias) {
         const expected2 = identity(fs.statSync(component));
         hook(hookOperation, "beforeComponentChdir", current, component);
         process.chdir(component);
@@ -4701,8 +4752,8 @@ function inPinnedDirectory(absoluteDir, create, operation, operationKind = "trav
       process.chdir(component);
       hook(hookOperation, "afterComponentChdirBeforeIdentityCheck", current, component);
       if (!sameIdentity(expected, identity(fs.statSync(".")))) throw new Error(`artifact directory changed while pinning: ${component}`);
-      if (current === CAPTURE_ROOT) {
-        verifyRoot(expected);
+      if (artifactRoots.has(current)) {
+        verifyRoot(current, expected);
         hook("root-bootstrap", "afterRootPinned", current, component);
       }
       if (privateComponent) privateDirHere();
@@ -4729,8 +4780,9 @@ function inPinnedDirectory(absoluteDir, create, operation, operationKind = "trav
 }
 function assertUnderCaptureRoot(targetPath) {
   const resolved = path.resolve(targetPath);
-  const relative3 = path.relative(CAPTURE_ROOT, resolved);
-  if (!relative3 || relative3.startsWith("..") || path.isAbsolute(relative3)) throw new Error(`artifact path escapes capture root ${CAPTURE_ROOT}: ${targetPath}`);
+  loadRegisteredArtifactRoots();
+  const root = rootForPath(resolved);
+  if (!root || resolved === root) throw new Error(`artifact path escapes capture root or registered artifact root: ${targetPath}`);
   return resolved;
 }
 function pinnedParent(target, operation, create = true, operationKind = "traversal") {
@@ -5469,7 +5521,7 @@ async function acquirePrivateLock(lockPath2, options) {
     await sleep4(Math.max(0, Math.min(10, Number((deadline - now()) / 1000000n))));
   }
 }
-var crypto, import_node_child_process, fs, os, path, configuredRoot, CAPTURE_ROOT, DIR_MODE, FILE_MODE, MAX_TIMING_MS, ARTIFACT_TEST_HOOKS_SYMBOL, hooks, faults, artifactTempToken, lockToken, privateLockGate, captureRootIdentity, cwdPinned, BOOT_ID, MAX_LOG_LABEL_BYTES, LOG_TAILER_SOCKET_TOKEN, LOG_TAILER_NONCE, LOG_TAILER_SOCKET_DIR, DECIMAL_IDENTITY, execFileSyncForProvider, linuxProviderRead, processPidBirthProvider, sleepDefault;
+var crypto, import_node_child_process, fs, os, path, configuredRoot, CAPTURE_ROOT, DIR_MODE, FILE_MODE, MAX_TIMING_MS, ARTIFACT_TEST_HOOKS_SYMBOL, hooks, faults, artifactTempToken, lockToken, privateLockGate, artifactRoots, artifactRootIdentities, ARTIFACT_ROOT_REGISTRY, loadingArtifactRoots, cwdPinned, BOOT_ID, MAX_LOG_LABEL_BYTES, LOG_TAILER_SOCKET_TOKEN, LOG_TAILER_NONCE, LOG_TAILER_SOCKET_DIR, DECIMAL_IDENTITY, execFileSyncForProvider, linuxProviderRead, processPidBirthProvider, sleepDefault;
 var init_artifacts = __esm({
   "src/session/artifacts.ts"() {
     crypto = __toESM(require("node:crypto"));
@@ -5488,6 +5540,10 @@ var init_artifacts = __esm({
     artifactTempToken = () => crypto.randomBytes(12).toString("hex");
     lockToken = () => crypto.randomBytes(24).toString("hex");
     privateLockGate = Promise.resolve();
+    artifactRoots = /* @__PURE__ */ new Set([CAPTURE_ROOT]);
+    artifactRootIdentities = /* @__PURE__ */ new Map();
+    ARTIFACT_ROOT_REGISTRY = path.join(CAPTURE_ROOT, ".artifact-roots.ndjson");
+    loadingArtifactRoots = false;
     cwdPinned = false;
     BOOT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
     MAX_LOG_LABEL_BYTES = 64;
@@ -5674,13 +5730,13 @@ function puppeteerVersionDirs(product) {
 function browserCandidates() {
   const configured = process.env.CAPTURE_BROWSER;
   const candidates = configured ? [{ path: path2.resolve(configured), source: "CAPTURE_BROWSER", headlessOnly: false }] : [];
-  const relative3 = PUPPETEER_RELATIVE[`${process.platform}-${process.arch}`];
-  if (relative3) {
+  const relative2 = PUPPETEER_RELATIVE[`${process.platform}-${process.arch}`];
+  if (relative2) {
     for (const dir of puppeteerVersionDirs("chrome-headless-shell")) {
-      candidates.push({ path: path2.join(dir, relative3.shell), source: "puppeteer-cache", headlessOnly: true });
+      candidates.push({ path: path2.join(dir, relative2.shell), source: "puppeteer-cache", headlessOnly: true });
     }
     for (const dir of puppeteerVersionDirs("chrome")) {
-      candidates.push({ path: path2.join(dir, relative3.chrome), source: "puppeteer-cache", headlessOnly: false });
+      candidates.push({ path: path2.join(dir, relative2.chrome), source: "puppeteer-cache", headlessOnly: false });
     }
   }
   for (const file of SYSTEM_PATHS[process.platform] ?? []) {
@@ -8222,6 +8278,7 @@ function getActiveSession({ cleanStale = true } = {}) {
     return null;
   }
   try {
+    registerArtifactRoot(path3.dirname(path3.resolve(index.dir)));
     const sessionDir2 = assertUnderCaptureRoot(path3.resolve(index.dir));
     if (sessionDir2 !== index.dir) throw new Error("active session directory escaped capture root");
     try {
@@ -9448,6 +9505,9 @@ function parseCliSyntax(argv) {
     } else if (arg === "--out") {
       parsed.out = valueFor(arg, next);
       i++;
+    } else if (arg === "--artifact-dir") {
+      parsed.artifactDir = valueFor(arg, next);
+      i++;
     } else if (arg === "--json") parsed.json = true;
     else if (arg === "--duration") {
       parsed.duration = durationMs(valueFor(arg, next));
@@ -9690,6 +9750,7 @@ var init_args = __esm({
     VALUE_FLAGS = /* @__PURE__ */ new Set([
       "--port",
       "--out",
+      "--artifact-dir",
       "--duration",
       "--settle",
       "--file",
@@ -14811,15 +14872,15 @@ function readBundleManifest(bundlePath) {
   }
   return parsed;
 }
-function sessionDir(id) {
-  return path16.join(CAPTURE_ROOT, id);
+function sessionDir(id, artifactRoot = CAPTURE_ROOT) {
+  return path16.join(artifactRoot, id);
 }
 function isSessionStopped(session) {
   return Boolean(session.stoppedAt) || fs12.existsSync(path16.join(session.dir, "bundle.json"));
 }
-function createOneshotSession(kind) {
+function createOneshotSession(kind, artifactDir) {
   const id = `oneshot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const dir = sessionDir(id);
+  const dir = sessionDir(id, artifactDir === void 0 ? CAPTURE_ROOT : registerArtifactRoot(artifactDir));
   const artifactsDir = kind === "measure" ? path16.join(dir, "measure", "snaps") : kind === "motion" ? path16.join(dir, "motion", "recs") : path16.join(dir, "page");
   ensurePrivateDir(artifactsDir);
   return { id, dir, kind, artifactsDir };
@@ -14880,11 +14941,11 @@ function collectLighthouseReports(dir) {
   if (!fs12.existsSync(reportsRoot)) return [];
   return fs12.readdirSync(reportsRoot).filter((name) => fs12.existsSync(path16.join(reportsRoot, name, "meta.json"))).map((name) => readLighthouseReportMeta(path16.join(reportsRoot, name), name));
 }
-function sessionMetaPath2(id) {
-  return path16.join(sessionDir(id), ".session.json");
+function sessionMetaPath2(id, artifactRoot = CAPTURE_ROOT) {
+  return path16.join(sessionDir(id, artifactRoot), ".session.json");
 }
-function tryReadSession(id) {
-  const metaPath = sessionMetaPath2(id);
+function tryReadSession(id, artifactRoot = CAPTURE_ROOT) {
+  const metaPath = sessionMetaPath2(id, artifactRoot);
   const bad = (reason) => ({ ok: false, id, metaPath, reason });
   let parsed;
   try {
@@ -14897,16 +14958,21 @@ function tryReadSession(id) {
   return { ok: true, session: parsed };
 }
 function readSession(id) {
-  const metaPath = sessionMetaPath2(id);
-  let read;
-  try {
-    read = tryReadSession(id);
-  } catch (error4) {
-    if (error4.code === "ENOENT") throw captureError("precondition", "unknown_session", `No capture session found: ${id}`);
-    throw error4;
+  const active = getActiveSession();
+  if (active?.sessionId === id) return active;
+  for (const artifactRoot of registeredArtifactRoots()) {
+    const metaPath = sessionMetaPath2(id, artifactRoot);
+    let read;
+    try {
+      read = tryReadSession(id, artifactRoot);
+    } catch (error4) {
+      if (error4.code === "ENOENT") continue;
+      throw error4;
+    }
+    if (!read.ok) throw captureError("artifact", "invalid_session_record", `session metadata at ${metaPath} ${read.reason}.`);
+    return read.session;
   }
-  if (!read.ok) throw captureError("artifact", "invalid_session_record", `session metadata at ${metaPath} ${read.reason}.`);
-  return read.session;
+  throw captureError("precondition", "unknown_session", `No capture session found: ${id}`);
 }
 function generateId() {
   return `cap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -14960,7 +15026,7 @@ async function start(parsed) {
     console.log(START_USAGE);
     return;
   }
-  if (rejectSurplusPositionals(parsed, "start", 0, "capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>]")) return;
+  if (rejectSurplusPositionals(parsed, "start", 0, "capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>] [--artifact-dir <path>]")) return;
   return withSessionScopeLifecycle(async () => {
     const active = getActiveSession();
     if (active && !isSessionStopped(active)) {
@@ -14977,7 +15043,7 @@ async function start(parsed) {
     const requestedTarget = parsed.target ?? null;
     const hold = parsed.hold === true;
     const id = generateId();
-    const dir = sessionDir(id);
+    const dir = sessionDir(id, parsed.artifactDir === void 0 ? CAPTURE_ROOT : registerArtifactRoot(parsed.artifactDir));
     const acquired = [];
     let harId = null;
     let target = null;
@@ -15681,13 +15747,13 @@ function list(parsed) {
     return;
   }
   if (rejectSurplusPositionals(parsed, "list", 0, "capture session list")) return;
-  const reads = fs12.existsSync(CAPTURE_ROOT) ? fs12.readdirSync(CAPTURE_ROOT).filter((d) => fs12.existsSync(sessionMetaPath2(d))).flatMap((d) => {
+  const reads = registeredArtifactRoots().flatMap((artifactRoot) => fs12.existsSync(artifactRoot) ? fs12.readdirSync(artifactRoot).filter((d) => fs12.existsSync(sessionMetaPath2(d, artifactRoot))).flatMap((d) => {
     try {
-      return [tryReadSession(d)];
+      return [tryReadSession(d, artifactRoot)];
     } catch {
       return [];
     }
-  }) : [];
+  }) : []);
   const sessions = reads.flatMap((read) => {
     if (!read.ok) return [];
     const session = read.session;
@@ -15893,7 +15959,7 @@ var init_commands = __esm({
 the artifact container \u2014 a session records HAR and bundles every artifact; it may open or adopt a tab, and once it has one, every command auto-targets it
 use when starting scoped work against a page, reading the traffic or logs it recorded, or asking what is collecting right now; use \`tab\` for the browser itself and the conditions its network runs under, and \`measure\`/\`motion\`/\`perf\`/\`heap\` for the artifacts a session contains
 </command>`;
-    START_USAGE = `capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>] \u2014 open or adopt a tab, record HAR, and set the active capture context.
+    START_USAGE = `capture session start [--url <url> | --target <tab-id>] [--hold] [--port <n>] [--artifact-dir <path>] \u2014 open or adopt a tab, record HAR, and set the active capture context.
 
 input:
   --url <url>       Absolute URL to open in a fresh tab through CDP's
@@ -15910,6 +15976,7 @@ input:
                     lifetime, so browser-level state (permission grants,
                     ServiceWorker enablement) survives across separate commands.
   --port <n>         CDP port to attach to; default is auto-detected across localhost.
+  --artifact-dir <path>  Absolute root for this session bundle and every later session-owned artifact.
 
 Output:
   One <session id=\u2026 path=\u2026 [url=\u2026] [target=\u2026 port=\u2026]> block: the session id,
@@ -15917,7 +15984,7 @@ Output:
   applicable. --json mirrors the same fields.
 
 effects:
-  Creates a private session dir with shots/, starts a HAR recording, opens a
+  Creates a private session dir under --artifact-dir when supplied (otherwise the configured capture root), with shots/, starts a HAR recording, opens a
   fresh tab only when --url is supplied or adopts the resolved --target tab,
   optionally holds a CDP bridge, and registers the session as the active capture
   context so subsequent commands auto-target its tab.`;
@@ -26762,11 +26829,11 @@ ${lanes.join("\n")}
           return toComponents;
         }
         const components = toComponents.slice(start2);
-        const relative3 = [];
+        const relative2 = [];
         for (; start2 < fromComponents.length; start2++) {
-          relative3.push("..");
+          relative2.push("..");
         }
-        return ["", ...relative3, ...components];
+        return ["", ...relative2, ...components];
       }
       function getRelativePathFromDirectory(fromDirectory, to, getCanonicalFileNameOrIgnoreCase) {
         Debug.assert(getRootLength(fromDirectory) > 0 === getRootLength(to) > 0, "Paths must either both be absolute or both be relative");
@@ -71245,9 +71312,9 @@ ${lanes.join("\n")}
               if (!startsWithDirectory(target, realPathDirectory, getCanonicalFileName)) {
                 return;
               }
-              const relative3 = getRelativePathFromDirectory(realPathDirectory, target, getCanonicalFileName);
+              const relative2 = getRelativePathFromDirectory(realPathDirectory, target, getCanonicalFileName);
               for (const symlinkDirectory of symlinkDirectories) {
-                const option = resolvePath(symlinkDirectory, relative3);
+                const option = resolvePath(symlinkDirectory, relative2);
                 const result2 = cb(option, target === referenceRedirect);
                 shouldFilterIgnoredPaths = true;
                 if (result2) return result2;
@@ -228335,10 +228402,10 @@ function emitExecError(parsed, code, summary, followUp) {
   );
   process.exitCode = 1;
 }
-function spillWholeResult(payload) {
+function spillWholeResult(payload, artifactDir) {
   const name = `exec-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`;
   const session = deps3.getActiveSession();
-  const filePath = session ? path19.join(session.dir, "page", name) : path19.join(deps3.createOneshotSession("page").artifactsDir, name);
+  const filePath = session ? path19.join(session.dir, "page", name) : path19.join(deps3.createOneshotSession("page", artifactDir).artifactsDir, name);
   writePrivateFile(filePath, payload);
   return filePath;
 }
@@ -228497,7 +228564,7 @@ async function cmdPageExec(parsed, _args) {
   const payload = JSON.stringify(evalResult.result?.value) ?? "undefined";
   let spillPath;
   if (payload.length > GENEROUS_RESULT_CAP) {
-    spillPath = spillWholeResult(payload);
+    spillPath = spillWholeResult(payload, parsed.artifactDir);
   }
   const inlineCap = parsed.json ? payload.length : GENEROUS_RESULT_CAP;
   const sections = [line(text`result: `, data(capped(payload, inlineCap)))];
@@ -228545,10 +228612,11 @@ input:
   --timeout <ms>   evaluation deadline (default: ${DEFAULT_EVALUATION_TIMEOUT_MS}); on expiry Capture requests Runtime.terminateExecution and reports whether cancellation completed or the renderer remains blocked
   --target <id>    target a tab explicitly (default: the active session tab, else exactly one available page tab; multiple page tabs require --target or --url)
   --url <pattern>  target the first tab whose URL matches <pattern>
+  --artifact-dir <path>  root for a sessionless oversize-result bundle
 output:
   <exec-result result-chars=\u2026> \u2014 the JSON-serialized return value inline, escaped and capped at ${GENEROUS_RESULT_CAP} chars; a larger result is also written whole to a private artifact file (the active session's page/ dir, else a one-shot artifact dir) whose absolute path appears in the block. --json mirrors the same block with the value at full fidelity.
 effects:
-  runs the code in the page with full DOM/JS access \u2014 whatever the code mutates, it mutates; emulates focus on the tab for the duration of the call (disabled again before the command returns); writes the oversize-result artifact file when the inline cap is exceeded`;
+  runs the code in the page with full DOM/JS access \u2014 whatever the code mutates, it mutates; emulates focus on the tab for the duration of the call (disabled again before the command returns); writes the oversize-result artifact file under --artifact-dir when sessionless and the inline cap is exceeded`;
     deps3 = { withPageAction, getActiveSession, createOneshotSession, isMotionHeldClient };
     ExecDeadlineError = class extends Error {
       constructor(cancellation, timeoutMs, detail) {
@@ -228632,7 +228700,7 @@ async function resolveOutPath(parsed) {
   if (parsed.out) return parsed.out;
   const sessionPath = await deps4.nextStepPath("shot", "manual");
   if (sessionPath) return sessionPath;
-  return path20.join(deps4.createOneshotSession("page").artifactsDir, "shot.png");
+  return path20.join(deps4.createOneshotSession("page", parsed.artifactDir).artifactsDir, "shot.png");
 }
 function round6(value) {
   return Math.round(value * 1e6) / 1e6;
@@ -228865,16 +228933,26 @@ input:
   --crop-selector <sel>  resolve exactly one live target (bare CSS takes precedence; exact accessible name applies when CSS finds none; ax:<name>, axid:<id>, or backend:<id>), scroll it into view, then crop its border box and surroundings
   --pad <px>        nonnegative integer CSS pixels added on every side of --crop-selector (default: 0; not accepted with --crop)
   --zoom <factor>   positive decimal CSS-to-image scale requested for a CSS crop; the 1600px image cap may produce a smaller reported scale
-  --out <path>      destination file; default: the active session's shots/ sequence, or a fresh oneshot-*/page/ dir under the capture root when no session is active
+  --out <path>      caller-owned destination PNG; default: the active session's shots/ sequence, or a fresh one-shot bundle when no session is active
+  --artifact-dir <path>  root for that sessionless one-shot bundle (ignored with --out or an active session)
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json            mirror the result as JSON
 output:
   <screenshot path=\u2026 width=\u2026 height=\u2026 css-width=\u2026 css-height=\u2026 css-x=\u2026 css-y=\u2026 css-to-image-x=\u2026 css-to-image-y=\u2026 effective-downscale-x=\u2026 effective-downscale-y=\u2026 scroll-x=\u2026 scroll-y=\u2026 emulation=none|viewport|full-page color-scheme=dark|light> \u2014 saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, visual-viewport scroll offset at capture, any effective downscale below 1 image px/CSS px, byte size, crop provenance, and any requested transient emulation
 effects:
-  no flags: none \u2014 the capture reads the viewport as-is, with zero Emulation.* calls. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture \u2014 two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; a selector crop reports its requested and delivered regions when its padded box cannot fit. An empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
+  no flags: none \u2014 the capture reads the viewport as-is, with zero Emulation.* calls. Sessionless captures write one bundle under --artifact-dir when supplied; --out writes only its caller-owned PNG. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture \u2014 two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; a selector crop reports its requested and delivered regions when its padded box cannot fit. An empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
     deps4 = { withConnection, nextStepPath, createOneshotSession };
     PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
     LEGIBILITY_SCALE_THRESHOLD = 0.5;
+  }
+});
+
+// src/output/selection.ts
+function selectRecords(records, parsed, defaultLimit) {
+  return records.slice(0, parsed.limit ?? defaultLimit);
+}
+var init_selection = __esm({
+  "src/output/selection.ts"() {
   }
 });
 
@@ -228916,7 +228994,7 @@ async function collectElements(client, opts = {}) {
 }
 function buildElementsResult(records, opts) {
   const total = records.length;
-  const shown = records.slice(0, opts.limit);
+  const shown = selectRecords(records, { limit: opts.limit }, opts.limit);
   const rows = shown.map(
     (r) => r.backendNodeId !== null ? fact`${r.role} "${r.name}" target:ax:${r.name} backend:${r.backendNodeId}` : fact`${r.role} "${r.name}"`
   );
@@ -228955,6 +229033,7 @@ var DEFAULT_LIMIT, USAGE7;
 var init_elements = __esm({
   "src/cdp/commands/page/elements.ts"() {
     init_errors();
+    init_selection();
     init_connection();
     init_a11y();
     init_render();
@@ -228964,7 +229043,7 @@ var init_elements = __esm({
 Input:
   --all               full exposed accessibility tree instead of interactive elements only
   --name <text>       case-insensitive substring filter over each exposed accessibility name; applies before --limit
-  --limit <n>         max elements listed (positive integer, default ${DEFAULT_LIMIT}; a capped list states the total as an elements-truncated fact)
+  --limit <n>         max filtered elements returned in prose and JSON (positive integer, default ${DEFAULT_LIMIT}; a capped list states the total as an elements-truncated fact)
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
   --json              mirror the result as JSON
 
@@ -231275,9 +231354,9 @@ var init_core = __esm({
       }
       finalizedFiles(dir) {
         const files = [];
-        const walk2 = (relative3) => {
-          for (const entry of fs21.readdirSync(path24.join(dir, relative3), { withFileTypes: true })) {
-            const name = path24.join(relative3, entry.name);
+        const walk2 = (relative2) => {
+          for (const entry of fs21.readdirSync(path24.join(dir, relative2), { withFileTypes: true })) {
+            const name = path24.join(relative2, entry.name);
             if (entry.isDirectory()) walk2(name);
             else if (entry.isFile()) files.push({ name, bytes: readPrivateFile(path24.join(dir, name)).length });
           }
@@ -239276,7 +239355,7 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
     let artifacts = [];
     await withConnection(connectionArgs, async (client, tab) => {
       await withAppliedColorScheme(client, colorScheme, async () => withAppliedViewport(client, viewport2, async () => {
-        const oneshot = active ? void 0 : createOneshotSession("measure");
+        const oneshot = active ? void 0 : createOneshotSession("measure", parsed.artifactDir);
         const destination = active ? path29.join(active.dir, "measure", "snaps") : oneshot.artifactsDir;
         snapDir = path29.join(destination, snapId);
         allocatedRoot = active ? snapDir : oneshot.dir;
@@ -239476,8 +239555,9 @@ input:
   --state-padding <px>        CSS-pixel padding around the target border box in each forced-state diff crop (default 8)
   --viewport <WxH>            temporarily capture at a CSS-pixel viewport (repeatable); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace
   --color-scheme <dark|light> temporarily capture under this prefers-color-scheme value; cleared afterward
+  --artifact-dir <path>      root for this sessionless snapshot bundle; ignored when an active session owns the snapshot
 output: <snapshot id=\u2026 path=\u2026> \u2014 the settled artifact directory (geometry, styles, hit-test, text, forms, animation, ax, queries, focus, scroll, layers; per-element crops with --pixels) every other measure/motion query leaf reads instead of re-driving the browser; --json mirrors
-effects: drives the target page to capture; writes one snapshot artifact directory under the active (or a private one-shot) session. --color-scheme transiently applies Emulation.setEmulatedMedia and clears it after capture.`;
+effects: drives the target page to capture; writes one snapshot artifact directory under the active session or, when sessionless, a one-shot bundle under --artifact-dir. --color-scheme transiently applies Emulation.setEmulatedMedia and clears it after capture.`;
   }
 });
 
@@ -239942,8 +240022,7 @@ async function cmdMeasureCheck(parsed, _args) {
     for (const element of readGeometry(ref).elements ?? []) if (element.selector !== void 0) selectorCounts.set(element.selector, (selectorCounts.get(element.selector) ?? 0) + 1);
     const scopedSelectors = scopedElements ? new Set(scopedElements.map((element) => element.selector).filter((selector) => selector !== void 0 && selectorCounts.get(selector) === 1)) : void 0;
     const findings = scopedIds ? report.findings.filter((finding2) => finding2.elementId !== void 0 && scopedIds.has(finding2.elementId) || finding2.backendNodeId !== void 0 && scopedBackendNodeIds.has(finding2.backendNodeId) || finding2.selector !== void 0 && scopedSelectors.has(finding2.selector)) : report.findings;
-    const proseFindings = representativeFindings(findings, parsed.limit ?? DEFAULT_FINDING_LIMIT);
-    const findingsForOutput = parsed.json ? findings : proseFindings;
+    const findingsForOutput = selectRecords(representativeFindings(findings, parsed.limit ?? DEFAULT_FINDING_LIMIT), parsed, parsed.limit ?? DEFAULT_FINDING_LIMIT);
     const withCrops = findingsForOutput.map((finding2, index) => ({ ...finding2, crop: writeFindingCrop(ref, finding2, index) }));
     const meta = readMeta(ref);
     const findingSections = withCrops.map((finding2) => ({
@@ -239971,7 +240050,7 @@ async function cmdMeasureCheck(parsed, _args) {
         ...findings.length ? [line(text`Finding counts: `, rollup(findings))] : [],
         ...formatFindings(findingSections)
       ],
-      followUp: parsed.json ? fact`All ${findings.length} measured finding record(s) are included in this JSON result.` : fact`Use --json to read all ${findings.length} measured finding record(s) from this snapshot.`
+      followUp: findings.length > withCrops.length ? fact`The full snapshot artifact at ${ref.dir} retains every measured finding input; this result is bounded by --limit.` : void 0
     };
     emitResult(result, { json: parsed.json });
     if (parsed.gate && findings.length) process.exitCode = 2;
@@ -239990,6 +240069,7 @@ async function cmdMeasureCheck(parsed, _args) {
 var USAGE17, DEFAULT_FINDING_LIMIT;
 var init_check2 = __esm({
   "src/cdp/commands/measure/check.ts"() {
+    init_selection();
     init_artifact();
     init_selector();
     init_render();
@@ -240000,11 +240080,12 @@ var init_check2 = __esm({
 input:
   [url|snap]      a URL creates one one-shot snapshot first; a snap id or absolute path is read without re-driving the browser
   --for <checks>  geometry|content|targetability|forms|animation|all, or comma-separated overlap,offscreen,overflow,tap-targets,contrast,hit-test,truncation,forms,media,animation
-  --limit <n>     render at most n representative findings in prose (default: 20; --json retains all findings)
+  --limit <n>     return at most n representative findings in prose and JSON (default: 20)
   --selector <s>  limit measurements to recorded CSS/text/AX selector input or backend:<id>
+  --artifact-dir <path>  root for the one-shot snapshot bundle when the target is a URL
   --gate          exit 2 when the report contains findings (default: exit 0)
 output: <checks result=\u2026 findings=\u2026> \u2014 findings with coordinates and collection provenance; measurements, not a pass/fail judgment; --json mirrors
-effects: read-only over an existing snapshot artifact; a URL target writes one one-shot snapshot first`;
+effects: read-only over an existing snapshot artifact; a URL target writes one one-shot snapshot bundle under --artifact-dir when supplied`;
     DEFAULT_FINDING_LIMIT = 20;
   }
 });
@@ -240712,8 +240793,9 @@ input:
   --snap <id|path>    existing snapshot id or absolute artifact path (repeatable)
   --url <url>         URL to snap first (repeatable)
   --set-file <path>   file listing one snapshot id/path or URL per line
+  --artifact-dir <path>  root for each one-shot snapshot bundle created by --url
 output: <census axis=\u2026 snapshots=\u2026 distinct=\u2026> \u2014 distributions with provenance where recorded, and per-region nondeterminism caveats for facts touching an unsettled capture; --json mirrors
-effects: read-only over existing snapshot artifacts; each --url writes one one-shot snapshot first`;
+effects: read-only over existing snapshot artifacts; each --url writes one one-shot snapshot bundle under --artifact-dir when supplied`;
   }
 });
 
@@ -241782,7 +241864,7 @@ async function runMeasureSweep(parsed, _args, overrides = {}) {
   }
   const axis = parsed.axis;
   const active = dependencies.getActiveSession();
-  const oneShot = active ? void 0 : dependencies.createOneshotSession("measure");
+  const oneShot = active ? void 0 : dependencies.createOneshotSession("measure", parsed.artifactDir);
   const snapsDir = active ? path34.join(active.dir, "measure", "snaps") : oneShot.artifactsDir;
   const artifactDir = active ? path34.join(active.dir, "measure", "sweeps", sweepId()) : path34.join(oneShot.dir, "measure", "sweeps", sweepId());
   const recoverySamples = [];
@@ -241901,8 +241983,9 @@ input:
   --from <val>              numeric range start, or a color-scheme/reduced-motion value
   --to <val>                numeric range end, or a color-scheme/reduced-motion value
   --viewport-height <val>   fixed viewport height for width/dpr sweeps
+  --artifact-dir <path>     root for this sessionless sweep bundle; ignored when an active session owns the sweep
 output: <sweep axis=\u2026 samples=\u2026 transitions=\u2026> \u2014 observed state facts per sampled point, each sampled snapshot path included; --json mirrors
-effects: drives the page repeatedly under CDP Emulation settings; writes one snapshot substrate per sampled point plus sweep.json`;
+effects: drives the page repeatedly under CDP Emulation settings; writes one snapshot substrate per sampled point plus sweep.json under the active session or, when sessionless, a one-shot bundle under --artifact-dir`;
     SAMPLE_LIMIT = 96;
     defaultDependencies = { withConnection, captureSnapshotSubstrate, getActiveSession, createOneshotSession, emitResult };
     parsePositive = parsePositiveNumber;
@@ -242068,8 +242151,9 @@ var init_map_focus2 = __esm({
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id or absolute path is read without re-driving the browser
+  --artifact-dir <path>  root for the one-shot snapshot bundle when the target is a URL
 output: <focus-map \u2026> \u2014 forward and reverse Tab sequences, top-viewport rects, scroll jumps, focus-visible style facts, and unreached focusable elements; --json mirrors
-effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot first`;
+effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot bundle under --artifact-dir when supplied`;
   }
 });
 
@@ -242345,8 +242429,9 @@ var init_map_scroll2 = __esm({
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id from the active session or an absolute snapshot artifact path is read without re-driving the browser
+  --artifact-dir <path>  root for the one-shot snapshot bundle when the target is a URL
 output: <scroll-map \u2026> \u2014 containers, ranges, current/max offsets, sticky/fixed occupancy, snap points, visual/layout viewport facts, and reachable-content samples; --json mirrors
-effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot first`;
+effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot bundle under --artifact-dir when supplied`;
   }
 });
 
@@ -242444,7 +242529,7 @@ function paintOrderLine(report, caveats) {
   const caveat = caveatLine3(caveats);
   return caveat ? lineList([base, caveat]) : base;
 }
-function buildMeasureMapLayersResult(ref) {
+function buildMeasureMapLayersResult(ref, limit) {
   const report = readLayers(ref);
   const meta = readMeta(ref);
   const regions = unstableRegionsFor(ref);
@@ -242477,6 +242562,8 @@ function buildMeasureMapLayersResult(ref) {
     return { backendNodeIds: ids.listed, backendNodeIdsOmitted: ids.omitted };
   })() } : report.paintOrder;
   const availability = report.layerTree.available ? fact`LayerTree facts available for ${report.layers.length} layer(s). DOMSnapshot paint order is ${paintOrderStatus}.` : fact`LayerTree facts unavailable${report.layerTree.reason ? `: ${report.layerTree.reason}` : ""}. DOMSnapshot paint order is ${paintOrderStatus}.`;
+  const displayed = selectRecords(annotated, { limit }, 25);
+  const layerPaintOrder = selectRecords(report.layerPaintOrder, { limit }, 25);
   const sections = [availability, paintOrderLine(report, paintOrderCaveats)];
   if (report.layersTruncated) sections.push(fact`${report.layersTruncated} compositor layer(s) were not listed because the snapshot collector capped the layer inventory.`);
   if (report.membership.available) {
@@ -242487,7 +242574,8 @@ function buildMeasureMapLayersResult(ref) {
   if (!report.styleSheetHeaders.available) {
     sections.push(fact`Stylesheet-header provenance availability: unavailable${report.styleSheetHeaders.reason ? `: ${report.styleSheetHeaders.reason}` : ""}.`);
   }
-  sections.push(...annotated.map(({ layerFact, caveats }) => formatLayer(layerFact.layer, report.membership.available, caveats)));
+  if (annotated.length > displayed.length) sections.push(fact`Layer records: listing capped at ${displayed.length} of ${annotated.length} layers (--limit).`);
+  sections.push(...displayed.map(({ layerFact, caveats }) => formatLayer(layerFact.layer, report.membership.available, caveats)));
   return {
     tag: "layer-map",
     attestation: {
@@ -242498,6 +242586,7 @@ function buildMeasureMapLayersResult(ref) {
     },
     attrs: {
       layers: report.layers.length,
+      displayed: displayed.length,
       "layer-tree": layerTreeStatus,
       "paint-order": paintOrderStatus,
       membership: membershipStatus,
@@ -242508,10 +242597,11 @@ function buildMeasureMapLayersResult(ref) {
     sections,
     jsonSections: [{
       layerTree: report.layerTree,
-      layers: report.layers.map(layerJson),
+      layers: displayed.map(({ layerFact }) => layerJson(layerFact.layer)),
       layersTruncated: report.layersTruncated,
       paintOrder: paintOrderJson,
-      layerPaintOrder: report.layerPaintOrder,
+      layerPaintOrder,
+      layerPaintOrderOmitted: report.layerPaintOrder.length - layerPaintOrder.length,
       membership: report.membership,
       styleSheetHeaders: report.styleSheetHeaders
     }],
@@ -242521,6 +242611,7 @@ function buildMeasureMapLayersResult(ref) {
 var INLINE_IDENTIFIER_LIMIT;
 var init_map_layers = __esm({
   "src/cdp/measure/map-layers.ts"() {
+    init_selection();
     init_artifact();
     init_render();
     INLINE_IDENTIFIER_LIMIT = 50;
@@ -242566,7 +242657,7 @@ async function cmdMeasureMapLayers(parsed, _args) {
     const ref = await resolveSnapRef(target, {
       onUrl: async (url) => captureMeasureSnap(parsed, url)
     });
-    emitResult(buildMeasureMapLayersResult(ref), { json: parsed.json });
+    emitResult(buildMeasureMapLayersResult(ref, parsed.limit), { json: parsed.json });
   } catch (err) {
     emitResult(errorResult2(err), { json: parsed.json });
     process.exitCode = 1;
@@ -242583,8 +242674,10 @@ var init_map_layers2 = __esm({
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id or absolute path is read without re-driving the browser
+  --artifact-dir <path>  root for the one-shot snapshot bundle when the target is a URL
+  --limit <n>  maximum final layer records in prose and JSON (default 25)
 output: <layer-map \u2026> \u2014 layer bounds, compositing reasons, painted-node counts, per-node membership, and available source provenance for layer-affecting declarations; backend-id corpora are limited to 50 per list with omitted counts, and --json mirrors the same cap
-effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot first`;
+effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot bundle under --artifact-dir when supplied`;
   }
 });
 
@@ -243098,8 +243191,9 @@ var init_map_ax2 = __esm({
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id or absolute path is read without re-driving the browser
+  --artifact-dir <path>  root for the one-shot snapshot bundle when the target is a URL
 output: <ax-map \u2026> \u2014 non-ignored AX nodes with role, name, states, backendNodeId, and top-viewport rect; ignored AX nodes with their ignored-reasons; DOM elements with rendered boxes but no non-ignored AX node; and AX nodes whose rect is offscreen, clipped, or zero-size; --json mirrors
-effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot first`;
+effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot bundle under --artifact-dir when supplied`;
   }
 });
 
@@ -243527,7 +243621,7 @@ async function handleOneShot(parsed, viewport2) {
     }
   }
   if (active && !parsedUrl && active.harId) return handleHostedSessionOneShot(parsed, active, viewport2);
-  const oneshot = active ? void 0 : deps6.createOneshotSession("motion");
+  const oneshot = active ? void 0 : deps6.createOneshotSession("motion", parsed.artifactDir);
   const destination = active ? path36.join(active.dir, "motion", "recs") : oneshot.artifactsDir;
   const recId = `rec-${crypto12.randomBytes(2).toString("hex")}`;
   const recDir = path36.join(destination, recId);
@@ -244024,6 +244118,7 @@ input:
                             must resolve to exactly one live element; text: is not accepted by driving actions
     --duration <seconds>    keep recording after the action (default: 0)
     --viewport <WxH>        emulate a viewport for the recording window (restored after); exact <positive-safe-int>x<positive-safe-int> grammar with lowercase x and no whitespace
+    --artifact-dir <path>   root for a sessionless one-shot recording bundle
   --start                   arm the composed recorder on the active session tab (requires \`capture session start\`)
     --viewport <WxH>        as above; restored on --stop
   --stop                    finalize the composed recording
@@ -244034,7 +244129,7 @@ output:
   Caveat: screencast frames are change-driven, not a dropped-frame measurement; use \`capture perf trace\` for frame-timing questions.
 
 effects:
-  One-shot on a URL opens a new tab and writes a private one-shot artifact dir; with <url> omitted it records the active session tab through the session collector host and writes under the session. If that active-session one-shot process is interrupted after recording starts, the collector remains live and \`capture motion rec --stop\` finalizes it. Composed writes under the active session. Scripted actions dispatch real input, marked as labeled landmarks in events.jsonl. Video encodes via ffmpeg when available.`;
+  One-shot on a URL opens a new tab and writes a private one-shot artifact dir under --artifact-dir when supplied; with <url> omitted it records the active session tab through the session collector host and writes under the session. If that active-session one-shot process is interrupted after recording starts, the collector remains live and \`capture motion rec --stop\` finalizes it. Composed writes under the active session. Scripted actions dispatch real input, marked as labeled landmarks in events.jsonl. Video encodes via ffmpeg when available.`;
     DoActionError = class extends Error {
       constructor(message, status) {
         super(message);
@@ -244354,7 +244449,7 @@ async function cmdMotionMask(parsed, _args) {
     }
     const mask = createMotionMask(ref);
     const proseLimit = parsed.limit ?? DEFAULT_REGION_LIMIT;
-    const reportedRegions = parsed.json ? mask.regions : mask.regions.slice(0, proseLimit);
+    const reportedRegions = selectRecords(mask.regions, parsed, proseLimit);
     const regionLines = reportedRegions.length ? reportedRegions.map((region) => formatRegion(region)) : [text`No changed pixels were measured across the recorded frame pairs.`];
     const result = {
       tag: "motion-mask",
@@ -244376,7 +244471,7 @@ async function cmdMotionMask(parsed, _args) {
       artifacts: formatArtifactList([{ name: "motion-mask.png", note: "motion-diff composite" }]),
       sections: [
         ...mask.caveat ? [line(text`${mask.caveat}`)] : [],
-        ...mask.regions.length > proseLimit && !parsed.json ? [fact`Showing ${reportedRegions.length} of ${mask.regions.length} size-sorted changed-pixel regions; --json contains all region rows.`] : [],
+        ...mask.regions.length > reportedRegions.length ? [fact`Showing ${reportedRegions.length} of ${mask.regions.length} size-sorted changed-pixel regions; the recording artifact retains all rows.`] : [],
         lineList(regionLines)
       ],
       followUp: mask.regions[0]?.element ? line(text`Per-frame geometry for region 1: \`capture motion timeline `, fact`${ref.id}`, text` --element `, fact`${mask.regions[0].element.label}\`.`) : void 0
@@ -244404,6 +244499,7 @@ function emitCommandError2(parsed, status, message) {
 var DEFAULT_REGION_LIMIT, USAGE28;
 var init_mask2 = __esm({
   "src/cdp/commands/motion/mask.ts"() {
+    init_selection();
     init_mask();
     init_artifact();
     init_render();
@@ -244412,7 +244508,7 @@ var init_mask2 = __esm({
 
 input:
   <rec>          recording id in the active session or an absolute recording path (required; the recording must be finalized)
-  --limit <N>    render at most N size-sorted region rows (default: ${DEFAULT_REGION_LIMIT}); --json always contains every region row
+  --limit <N>    return at most N size-sorted region rows in prose and JSON (default: ${DEFAULT_REGION_LIMIT})
 output: <motion-mask \u2026> \u2014 the composite image path plus per-region area, distance, velocity, and element attribution where recorded rects overlap; frame-derived times carry \xB11-frame uncertainty; --json mirrors
 effects: reads the finalized recording artifact, never drives the browser; writes motion-mask.png inside the recording directory`;
   }
@@ -245483,8 +245579,8 @@ async function drive(host, url, action, durationMs) {
   }
   await new Promise((resolve12) => setTimeout(resolve12, durationMs));
 }
-function oneShotDir() {
-  const dir = path39.join(CAPTURE_ROOT, `oneshot-${Date.now().toString(36)}-${crypto13.randomBytes(4).toString("hex")}`);
+function oneShotDir(artifactDir) {
+  const dir = path39.join(artifactDir === void 0 ? CAPTURE_ROOT : registerArtifactRoot(artifactDir), `oneshot-${Date.now().toString(36)}-${crypto13.randomBytes(4).toString("hex")}`);
   ensurePrivateDir(path39.join(dir, "perf", "traces"));
   return dir;
 }
@@ -245529,7 +245625,7 @@ async function handleOneShot2(parsed) {
   let started;
   try {
     const port = active?.port ?? parsed.port ?? await detectCdpPort();
-    const sessionDir2 = active?.dir ?? oneShotDir();
+    const sessionDir2 = active?.dir ?? oneShotDir(parsed.artifactDir);
     const targetId = active?.targetId ?? (await openTab(port, "about:blank")).id;
     const run = async () => {
       host = await ensureHost(sessionDir2, port, targetId);
@@ -245586,10 +245682,11 @@ input:
   [url]                  navigate to this URL and trace the load until it settles; without a URL the active session tab is traced in place (mutually exclusive with --start/--stop)
   --do <action>          trace across one action on the current page (same action grammar as \`motion rec --do\`), for an interaction trace INP can be read from
   --duration <seconds>   stop tracing this long after the action; default 3
+  --artifact-dir <path>  root for a sessionless one-shot trace bundle
   --start                open a trace window and return; requires an active session, and the trace stays live across intervening commands until --stop
   --stop                 close the live trace window and finalize its artifact; the session's one live trace is selected without an id. If a one-shot trace process is interrupted after it starts, the session collector host keeps this trace live; use --stop to finalize it (or session collectors to read its id/state)
 output: <trace \u2026> \u2014 the finalized trace artifact, its recorded window, event count, and completion state; --json mirrors
-effects: drives the browser and records; spawns or joins the session's collector host, which holds the tab connection until the trace is stopped. Claims \`tracing\`, which is browser-global: refused while \`motion rec\` or another trace is live anywhere in the browser, and the refusal names the claim and the collector holding it.`;
+effects: drives the browser and records; a sessionless trace writes one bundle under --artifact-dir, then spawns or joins the session's collector host, which holds the tab connection until the trace is stopped. Claims \`tracing\`, which is browser-global: refused while \`motion rec\` or another trace is live anywhere in the browser, and the refusal names the claim and the collector holding it.`;
   }
 });
 
@@ -265037,7 +265134,13 @@ async function cmdPerfInsights(parsed) {
     const raw = JSON.parse(fs35.readFileSync(path41.join(trace2.dir, "trace.json"), "utf8"));
     if (!Array.isArray(raw.traceEvents)) throw new Error("trace.json is not a Chrome trace with a traceEvents array");
     const analysis = await analyzeChromeTrace({ traceEvents: raw.traceEvents });
-    const selected = analysis.insightSets.map((set) => ({ ...set, insights: parsed.name === void 0 ? set.insights : set.insights.filter((insight) => insight.name === parsed.name) }));
+    let remaining = parsed.limit ?? 25;
+    const selected = analysis.insightSets.map((set) => {
+      const filtered = parsed.name === void 0 ? set.insights : set.insights.filter((insight) => insight.name === parsed.name);
+      const insights = selectRecords(filtered, { limit: remaining }, remaining);
+      remaining -= insights.length;
+      return { ...set, insights };
+    });
     const fullBudget = { remainingEvents: FULL_EVENT_LIMIT, remainingBytes: FULL_BYTE_LIMIT };
     const fullByInsight = /* @__PURE__ */ new Map();
     if (parsed.full) {
@@ -265051,7 +265154,7 @@ async function cmdPerfInsights(parsed) {
     const result = {
       tag: "insights",
       attestation: { kind: "trace", id: trace2.id, path: trace2.dir },
-      attrs: { completion: trace2.completion, ...trace2.reason ? { reason: trace2.reason } : {}, engine: analysis.source.engine, "insight-sets": selected.length, insights: selected.reduce((count3, set) => count3 + set.insights.length, 0), ...parsed.name ? { name: parsed.name } : {}, ...parsed.full ? { detail: "full", "events-retained": relatedEventsRetained, "events-omitted": relatedEventsTotal - relatedEventsRetained, "event-bytes-retained": FULL_BYTE_LIMIT - fullBudget.remainingBytes } : { detail: "aggregation" } },
+      attrs: { completion: trace2.completion, ...trace2.reason ? { reason: trace2.reason } : {}, engine: analysis.source.engine, "insight-sets": selected.length, insights: selected.reduce((count3, set) => count3 + set.insights.length, 0), limit: parsed.limit ?? 25, ...parsed.name ? { name: parsed.name } : {}, ...parsed.full ? { detail: "full", "events-retained": relatedEventsRetained, "events-omitted": relatedEventsTotal - relatedEventsRetained, "event-bytes-retained": FULL_BYTE_LIMIT - fullBudget.remainingBytes } : { detail: "aggregation" } },
       summary: parsed.full ? fact`The selected related-event drill-down is capped across this result at ${FULL_EVENT_LIMIT} events and ${FULL_BYTE_LIMIT} bytes; each insight states its omitted count.` : parsed.name ? fact`The selected insight reports its related-event count, duration distribution, and most frequent reported stack without emitting the event corpus.` : fact`Insight names, scalar metrics, and related-event counts are computed by the DevTools trace engine (${analysis.source.engine}, an unstable upstream API pinned by capture). Use \`--name <insight>\` for stack and duration facts, or add \`--full\` for a bounded related-event drill-down.`,
       sections: selected.length ? selected.map((set) => section2(set, set.insights, parsed.full === true, parsed.name !== void 0, fullByInsight)) : [noSet.section],
       jsonSections: selected.length ? selected.map((set) => ({ set: set.id, url: set.url, insights: parsed.full ? set.insights.map((insight) => ({ name: insight.name, fields: fullByInsight.get(insight) })) : parsed.name ? set.insights.map((insight) => ({ ...aggregate(insight), ...namedFields(insight) })) : set.insights.map(aggregate) })) : [noSet.json]
@@ -265069,11 +265172,13 @@ var init_insights2 = __esm({
     init_trace_analysis();
     init_artifact();
     init_render();
-    HELP6 = `capture perf insights <trace> [--name <insight> --full] \u2014 the DevTools insight set computed from a recorded trace
+    init_selection();
+    HELP6 = `capture perf insights <trace> [--name <insight> --full] [--limit <N>] \u2014 the DevTools insight set computed from a recorded trace
 
 input:
   <trace>          trace id in the active session or an absolute trace path (required; the trace must be finalized)
   --name <insight> select one engine insight by name from the default aggregation
+  --limit <N>      return at most N selected insight records in prose and JSON; default 25
   --full            with --name, include up to 50 related events across the result as a bounded drill-down; each insight states how many events remain
 output: <insights \u2026> \u2014 default output is a bounded aggregation of engine insight names, scalar metrics, and related-event counts; --name adds top stack and duration-distribution facts for that insight, and --name with --full adds a bounded related-event drill-down; capture reports engine facts without converting an insight's presence into an assessment of the page; --json mirrors
 effects: read-only \u2014 reads the finalized trace artifact, never drives the browser`;
@@ -265699,8 +265804,8 @@ async function collect(sessionDir2, port, targetId) {
   if (!stopped.ok) throw new Error(stopped.error ?? "collector host refused to finalize heap snapshot");
   return collector.dir;
 }
-function oneshotHeapDir() {
-  const dir = path43.join(CAPTURE_ROOT, `oneshot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, "heap", "snapshots");
+function oneshotHeapDir(artifactDir) {
+  const dir = path43.join(artifactDir === void 0 ? CAPTURE_ROOT : registerArtifactRoot(artifactDir), `oneshot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, "heap", "snapshots");
   ensurePrivateDir(dir);
   return path43.dirname(path43.dirname(dir));
 }
@@ -265721,7 +265826,7 @@ async function cmdHeapSnapshot(parsed) {
   if (url) {
     const tab = await openTab(port, url);
     targetId = tab.id;
-    const sessionDir2 = oneshotHeapDir();
+    const sessionDir2 = oneshotHeapDir(parsed.artifactDir);
     snapshotDir = await collect(sessionDir2, port, targetId);
   } else {
     targetId = active.targetId;
@@ -265761,8 +265866,9 @@ var init_snapshot2 = __esm({
 
 input:
   [url]   navigate to this URL and snapshot it in a one-shot session; without a URL the active session tab is snapshotted in place
+  --artifact-dir <path>  root for a sessionless heap snapshot bundle
 output: <heap-snapshot \u2026> \u2014 the finalized snapshot artifact, its node and edge counts, on-disk bytes, and completion state; --json mirrors
-effects: drives the browser and writes a large artifact; spawns or joins the session's collector host for the duration of one snapshot and releases it immediately. Claims \`heap-snapshot\`; refused while another heap snapshot is streaming, and the refusal names the claim and its holder. Composes with a live trace and with a live mock.`;
+effects: drives the browser and writes a large artifact under the active session or, when sessionless, a bundle under --artifact-dir; spawns or joins the session's collector host for the duration of one snapshot and releases it immediately. Claims \`heap-snapshot\`; refused while another heap snapshot is streaming, and the refusal names the claim and its holder. Composes with a live trace and with a live mock.`;
   }
 });
 
@@ -265779,7 +265885,7 @@ function cmdHeapCensus(parsed) {
   if (axis === "string") {
     const duplicate = heap2.duplicateStrings();
     const groups2 = [...duplicate.duplicates].sort((a, b) => b.wastedBytes - a.wastedBytes || b.totalSelfBytes - a.totalSelfBytes || a.value.localeCompare(b.value));
-    const displayed2 = groups2.slice(0, limit);
+    const displayed2 = selectRecords(groups2, parsed, limit);
     emitResult({
       tag: "heap-census",
       attrs: { heap: ref.id, path: ref.dir, ...completionAttrs(ref.meta), axis, groups: groups2.length, displayed: displayed2.length, nodes: heap2.nodeCount, "size-qualification": duplicate.sizeQualification },
@@ -265802,7 +265908,7 @@ function cmdHeapCensus(parsed) {
     grouped.set(node.name, group);
   }
   const groups = [...grouped.values()].sort((a, b) => b.retainedBytes - a.retainedBytes || b.selfBytes - a.selfBytes || a.constructor.localeCompare(b.constructor));
-  const displayed = groups.slice(0, limit);
+  const displayed = selectRecords(groups, parsed, limit);
   emitResult({
     tag: "heap-census",
     attrs: { heap: ref.id, path: ref.dir, ...completionAttrs(ref.meta), axis, groups: groups.length, displayed: displayed.length, nodes: heap2.nodeCount, "size-qualification": dominators.sizeQualification },
@@ -265818,6 +265924,7 @@ var init_census3 = __esm({
   "src/cdp/commands/heap/census.ts"() {
     init_render();
     init_common2();
+    init_selection();
     HELP9 = `capture heap census <snapshot> [--axis constructor|string] [--limit <N>] \u2014 what the heap is made of
 
 input:
@@ -265846,14 +265953,14 @@ function cmdHeapObjects(parsed) {
     if (node.name === constructor) objects.push({ objectId: node.id, type: node.type, name: node.name, selfBytes: node.selfSize, retainedBytes: dominators.retainedSizes[index] });
   }
   objects.sort((a, b) => (sort === "self" ? b.selfBytes - a.selfBytes || b.retainedBytes - a.retainedBytes : b.retainedBytes - a.retainedBytes || b.selfBytes - a.selfBytes) || a.objectId - b.objectId);
-  const displayed = objects.slice(0, parsed.limit ?? 25);
+  const displayed = selectRecords(objects, parsed, 25);
   emitResult({
     tag: "heap-objects",
     attrs: { heap: ref.id, path: ref.dir, ...completionAttrs(ref.meta), constructor, objects: objects.length, displayed: displayed.length, sort, "size-qualification": dominators.sizeQualification },
     summary: text`Individual snapshot nodes of the selected constructor. Chrome snapshot object ids are not DOM backend node ids and are not stable across snapshots.`,
     artifacts: formatArtifactList([{ name: "snapshot.heapsnapshot" }]),
     sections: [fact`${dominators.sizeQualification}`, lineList(displayed.map((object, index) => fact`${index + 1}. object-id=${object.objectId} type=${object.type} self-bytes=${object.selfBytes} retained-bytes=${object.retainedBytes}`))],
-    jsonSections: objects.map((object) => ({ ...object, sizeQualification: dominators.sizeQualification })),
+    jsonSections: displayed.map((object) => ({ ...object, sizeQualification: dominators.sizeQualification })),
     followUp: fact`Use \`capture heap retainers ${resultReference(ref)} --node <object-id>\` with one Chrome snapshot object id from this result.`
   }, { json: parsed.json });
 }
@@ -265862,12 +265969,13 @@ var init_objects = __esm({
   "src/cdp/commands/heap/objects.ts"() {
     init_render();
     init_common2();
+    init_selection();
     HELP10 = `capture heap objects <snapshot> --constructor <name> [--limit <N>] [--sort retained|self] \u2014 the individual objects of one constructor
 
 input:
   <snapshot>            heap snapshot id in the active session or an absolute snapshot path (required)
   --constructor <name>  required. Exact constructor name as reported by \`capture heap census\` \u2014 the id source for \`capture heap retainers\`
-  --limit <N>           render the top N objects; default 25, --json always carries every object
+  --limit <N>           return the top N objects in prose and JSON; default 25
   --sort <key>          retained (default) or self
 output: <heap-objects \u2026> \u2014 one row per object with its Chrome snapshot object id, node type, self bytes, and retained bytes, carrying the same retained-size qualification as \`census\`; --json mirrors
 effects: read-only \u2014 reads the finalized snapshot artifact, never drives the browser`;
@@ -265951,12 +266059,12 @@ function cmdHeapDiff(parsed) {
   };
   const constructors = [...comparison.constructors].sort((a, b) => b.added.retainedSize - a.added.retainedSize || b.grown.retainedSize - a.grown.retainedSize || b.removed.retainedSize - a.removed.retainedSize || a.constructorName.localeCompare(b.constructorName));
   const limit = parsed.limit ?? 25;
-  const displayed = constructors.slice(0, limit);
-  const detached = comparison.afterDetachedNodes.slice(0, limit);
+  const displayed = selectRecords(constructors, parsed, limit);
+  const detached = selectRecords(comparison.afterDetachedNodes, parsed, limit);
   const detachedSection = detached.length ? lineList(detached.map((node, index) => fact`${index + 1}. object-id=${node.objectId} constructor=${capped(node.constructorName, 120)} type=${node.type} detachedness=${node.detachedness}`)) : text`No after-snapshot nodes are marked detached by Chrome.`;
   const jsonSections = [
     { before: totals.before, after: totals.after },
-    ...constructors.map((constructor) => ({
+    ...displayed.map((constructor) => ({
       constructor: capped(constructor.constructorName, Number.MAX_SAFE_INTEGER),
       added: { nodeCount: constructor.added.nodeCount, detachedNodeCount: constructor.added.detachedNodeCount, retainedSize: constructor.added.retainedSize },
       removed: { nodeCount: constructor.removed.nodeCount, detachedNodeCount: constructor.removed.detachedNodeCount, retainedSize: constructor.removed.retainedSize },
@@ -266015,12 +266123,13 @@ var init_diff4 = __esm({
     init_heap_snapshot();
     init_render();
     init_common2();
+    init_selection();
     HELP12 = `capture heap diff --before <snapshot> --after <snapshot> [--limit <N>] \u2014 what changed between two heap snapshots
 
 input:
   --before <snapshot>   required. Heap snapshot id in the active session or an absolute snapshot path
   --after <snapshot>    required. Heap snapshot id in the active session or an absolute snapshot path
-  --limit <N>           render the top N constructors by added retained bytes and top N after-snapshot nodes Chrome marks detached; default 25, --json always carries every constructor
+  --limit <N>           return the top N constructors by added retained bytes and top N after-snapshot nodes Chrome marks detached in prose and JSON; default 25
 output: <heap-diff \u2026> \u2014 before/after snapshot node and serialized-byte totals, then per constructor nodes added, removed, and grown with retained-byte and detached-node totals; after-snapshot nodes Chrome marks detached are listed with their object ids; --json mirrors
 effects: read-only \u2014 reads both finalized snapshot artifacts, never drives the browser`;
   }
@@ -266197,9 +266306,9 @@ async function pageForSessionTarget(port, targetId) {
   await browser.disconnect();
   throw captureError("precondition", "lighthouse_target_unavailable", `Lighthouse could not find the active session target ${targetId} on CDP port ${port}.`);
 }
-function reportDirectory() {
+function reportDirectory(artifactDir) {
   const id = `report-${Date.now().toString(36)}-${crypto14.randomBytes(6).toString("hex")}`;
-  const parent = getActiveSession()?.dir ?? path44.join(CAPTURE_ROOT, `oneshot-${Date.now().toString(36)}-${crypto14.randomBytes(4).toString("hex")}`);
+  const parent = getActiveSession()?.dir ?? path44.join(artifactDir === void 0 ? CAPTURE_ROOT : registerArtifactRoot(artifactDir), `oneshot-${Date.now().toString(36)}-${crypto14.randomBytes(4).toString("hex")}`);
   const dir = path44.join(parent, "lighthouse", "reports", id);
   ensurePrivateDir(dir);
   return { id, dir };
@@ -266223,7 +266332,7 @@ function reportStrings(report) {
 function full(value) {
   return capped(value, FULL_DATA_MAX);
 }
-function categoryJson(category) {
+function categoryJson(category, limit) {
   return {
     category: category.id,
     score: category.score,
@@ -266233,7 +266342,7 @@ function categoryJson(category) {
       id: audit.id,
       title: audit.title,
       score: audit.score,
-      items: audit.items.map((item) => ({
+      items: selectRecords(audit.items, { limit }, limit).map((item) => ({
         path: full(item.path),
         selector: full(item.selector),
         snippet: full(item.snippet),
@@ -266247,7 +266356,7 @@ function categoryProse(category, limit) {
   const rows = [fact`${category.id}: score ${category.score ?? "not-scored"}; ${category.auditsPassed} passed audit(s), ${category.auditsFailed} failed audit(s).`];
   for (const audit of category.failingAudits) {
     rows.push(line(text`  `, fact`${audit.id} — ${audit.title}; score ${audit.score}`));
-    const displayed = audit.items.slice(0, limit);
+    const displayed = selectRecords(audit.items, { limit }, limit);
     for (const item of displayed) {
       rows.push(line(text`    path: `, fact`${full(item.path)}`));
       rows.push(line(text`    selector: `, fact`${full(item.selector)}`));
@@ -266286,7 +266395,7 @@ function resultFor(input) {
       text`Lighthouse applies simulated throttling by default, so its timings are not the wall-clock timings of an unthrottled load and are not comparable with capture perf vitals.`,
       text`Failing-node selectors are minimized by axe and may drop class modifiers, so a selector can match more elements than the one that failed; the DOM path identifies the failing node.`
     ],
-    jsonSections: categories.map(categoryJson)
+    jsonSections: categories.map((category) => categoryJson(category, input.limit))
   };
 }
 async function cmdLighthouse(parsed, _args) {
@@ -266341,7 +266450,7 @@ async function cmdLighthouse(parsed, _args) {
   if (cleanupFailures.length > 1) throw new AggregateError(cleanupFailures, "Lighthouse completed but cleanup could not complete.");
   if (!run) throw captureError("world", "lighthouse_no_report", "Lighthouse completed without a report.");
   const reports = reportStrings(run.report);
-  const artifact = reportDirectory();
+  const artifact = reportDirectory(parsed.artifactDir);
   const reportPath = path44.join(artifact.dir, "report.json");
   writePrivateFile(reportPath, reports.json);
   if (parsed.out) {
@@ -266382,6 +266491,7 @@ var init_lighthouse = __esm({
     import_node_module = require("node:module");
     init_detect();
     init_errors();
+    init_selection();
     init_artifacts();
     init_session_context();
     init_coordinator();
@@ -266400,10 +266510,11 @@ input:
   <url>                 required. The URL Lighthouse navigates to. Lighthouse drives the browser destructively \u2014 it clears state and reloads \u2014 so it will not run against a tab another collector is recording
   --categories <list>   comma-separated Lighthouse categories; default performance. Any category Lighthouse ships (performance, accessibility, best-practices, seo)
   --preset <preset>     mobile (default, Lighthouse's mobile emulation and simulated throttling) or desktop
-  --limit <N>           render at most N failing nodes per audit; default 25, --json always carries every node
-  --out <path>          also write Lighthouse's HTML report to this path
+  --limit <N>           return at most N failing nodes per audit in prose and JSON; default 25
+  --out <path>          also write Lighthouse's HTML report to this caller-owned path
+  --artifact-dir <path> root for this sessionless Lighthouse report bundle
 output: <lighthouse \u2026> \u2014 Lighthouse's own category scores, its audit pass/fail counts, one row per failing audit, and for each failing node that audit's DOM path with its selector, snippet, and Lighthouse's own explanation; plus the absolute path to the unmodified JSON report; capture adds no assessment of its own; --json mirrors
-effects: drives the browser destructively \u2014 Lighthouse clears storage and cache and performs its own navigations on the target tab, and runs its own trace. Refused while anything holds the browser-global \`tracing\` claim, and refused while any collector is live on the target tab; both refusals name the holder.`;
+effects: drives the browser destructively \u2014 a sessionless report bundle lands under --artifact-dir; Lighthouse clears storage and cache and performs its own navigations on the target tab, and runs its own trace. Refused while anything holds the browser-global \`tracing\` claim, and refused while any collector is live on the target tab; both refusals name the holder.`;
     FULL_DATA_MAX = Number.MAX_SAFE_INTEGER;
   }
 });
@@ -266621,7 +266732,7 @@ ${ROOT_BLOCKS.join("\n\n")}
 
 Selecting a noun: session/tab/page own live things and conditions on them; measure/motion/perf/heap each own one recorded substrate and the read-only queries over it; lighthouse captures Lighthouse's third-party scored diagnostic sweep, while cdp/lib wrap something capture did not compute. If the facts you want come from an artifact a substrate noun already owns, the command is a leaf of that noun.
 
-I/O contract: flags and positionals on input; one rendered prose block on stdout. --json mirrors the same result as JSON, but the rendered block is the contract. stderr carries in-flight diagnostics only.
+I/O contract: flags and positionals on input; one rendered prose block on stdout. --json mirrors the same result as JSON, but the rendered block is the contract. stderr carries in-flight diagnostics only. --artifact-dir <path> selects the root for a session bundle (\`session start\`) or a sessionless artifact-producing leaf's one-shot bundle; leaf help states when it writes one. --out always names one caller-owned file, never a bundle directory.
 
 A CDP-enabled browser must be running; \`capture tab list\` is the probe, and \`capture tab launch\` starts one capture owns and reaps when nothing is (never hand-roll a detached browser \u2014 nothing reaps that). Capture never signals a browser it did not start, so attaching to your own with --port is unchanged. CDP_PORT / CDP_TARGET pin the browser + tab for target-selecting commands \u2014 precedence: explicit flag > active session > env. \`session start\` adopts only an explicit --target.`;
 }

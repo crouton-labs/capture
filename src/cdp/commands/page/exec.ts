@@ -55,10 +55,11 @@ input:
   --timeout <ms>   evaluation deadline (default: ${DEFAULT_EVALUATION_TIMEOUT_MS}); on expiry Capture requests Runtime.terminateExecution and reports whether cancellation completed or the renderer remains blocked
   --target <id>    target a tab explicitly (default: the active session tab, else exactly one available page tab; multiple page tabs require --target or --url)
   --url <pattern>  target the first tab whose URL matches <pattern>
+  --artifact-dir <path>  root for a sessionless oversize-result bundle
 output:
   <exec-result result-chars=…> — the JSON-serialized return value inline, escaped and capped at ${GENEROUS_RESULT_CAP} chars; a larger result is also written whole to a private artifact file (the active session's page/ dir, else a one-shot artifact dir) whose absolute path appears in the block. --json mirrors the same block with the value at full fidelity.
 effects:
-  runs the code in the page with full DOM/JS access — whatever the code mutates, it mutates; emulates focus on the tab for the duration of the call (disabled again before the command returns); writes the oversize-result artifact file when the inline cap is exceeded`;
+  runs the code in the page with full DOM/JS access — whatever the code mutates, it mutates; emulates focus on the tab for the duration of the call (disabled again before the command returns); writes the oversize-result artifact file under --artifact-dir when sessionless and the inline cap is exceeded`;
 
 // ---------------------------------------------------------------------------
 // Test-injectable dependency seam (repo CDP-stub pattern — see
@@ -94,12 +95,12 @@ function emitExecError(parsed: ParsedArgs, code: string, summary: FactLine, foll
  * the active session's `page/` dir when a session exists, else into a fresh
  * one-shot artifact dir. Returns the absolute file path.
  */
-function spillWholeResult(payload: string): string {
+function spillWholeResult(payload: string, artifactDir?: string): string {
   const name = `exec-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`;
   const session = deps.getActiveSession();
   const filePath = session
     ? path.join(session.dir, 'page', name)
-    : path.join(deps.createOneshotSession('page').artifactsDir, name);
+    : path.join(deps.createOneshotSession('page', artifactDir).artifactsDir, name);
   writePrivateFile(filePath, payload);
   return filePath;
 }
@@ -327,7 +328,7 @@ export async function cmdPageExec(parsed: ParsedArgs, _args: string[]): Promise<
 
   let spillPath: string | undefined;
   if (payload.length > GENEROUS_RESULT_CAP) {
-    spillPath = spillWholeResult(payload);
+    spillPath = spillWholeResult(payload, parsed.artifactDir);
   }
 
   const inlineCap = parsed.json ? payload.length : GENEROUS_RESULT_CAP;

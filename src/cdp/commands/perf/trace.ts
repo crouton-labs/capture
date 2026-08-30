@@ -9,7 +9,7 @@ import { scanCollectorHost, type CollectorHostHandle } from '../../host/handle.j
 import { stopAndReapCollectorHostAtSessionStop } from '../../host/lifecycle.js';
 import { resolveTraceRef } from '../../../output/artifact.js';
 import { emitResult, fact, formatArtifactList, type RenderableResult } from '../../../output/render.js';
-import { CAPTURE_ROOT, ensurePrivateDir, readPrivateFile } from '../../../session/artifacts.js';
+import { CAPTURE_ROOT, ensurePrivateDir, readPrivateFile, registerArtifactRoot } from '../../../session/artifacts.js';
 import { getActiveSession } from '../../../session-context.js';
 import { withSessionLifecycle } from '../../../session/coordinator.js';
 import { driveOneShotAction } from '../motion/rec.js';
@@ -20,10 +20,11 @@ input:
   [url]                  navigate to this URL and trace the load until it settles; without a URL the active session tab is traced in place (mutually exclusive with --start/--stop)
   --do <action>          trace across one action on the current page (same action grammar as \`motion rec --do\`), for an interaction trace INP can be read from
   --duration <seconds>   stop tracing this long after the action; default 3
+  --artifact-dir <path>  root for a sessionless one-shot trace bundle
   --start                open a trace window and return; requires an active session, and the trace stays live across intervening commands until --stop
   --stop                 close the live trace window and finalize its artifact; the session's one live trace is selected without an id. If a one-shot trace process is interrupted after it starts, the session collector host keeps this trace live; use --stop to finalize it (or session collectors to read its id/state)
 output: <trace …> — the finalized trace artifact, its recorded window, event count, and completion state; --json mirrors
-effects: drives the browser and records; spawns or joins the session's collector host, which holds the tab connection until the trace is stopped. Claims \`tracing\`, which is browser-global: refused while \`motion rec\` or another trace is live anywhere in the browser, and the refusal names the claim and the collector holding it.`;
+effects: drives the browser and records; a sessionless trace writes one bundle under --artifact-dir, then spawns or joins the session's collector host, which holds the tab connection until the trace is stopped. Claims \`tracing\`, which is browser-global: refused while \`motion rec\` or another trace is live anywhere in the browser, and the refusal names the claim and the collector holding it.`;
 
 interface TraceSummary { events: number; windowMs: number; navigations: number; categories: string; }
 interface TraceArtifact { id: string; dir: string; completion: string; reason?: string; summary: TraceSummary; }
@@ -148,8 +149,8 @@ async function drive(host: CollectorHostHandle, url: string | undefined, action:
   await new Promise(resolve => setTimeout(resolve, durationMs));
 }
 
-function oneShotDir(): string {
-  const dir = path.join(CAPTURE_ROOT, `oneshot-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`);
+function oneShotDir(artifactDir?: string): string {
+  const dir = path.join(artifactDir === undefined ? CAPTURE_ROOT : registerArtifactRoot(artifactDir), `oneshot-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`);
   ensurePrivateDir(path.join(dir, 'perf', 'traces'));
   return dir;
 }
@@ -193,7 +194,7 @@ async function handleOneShot(parsed: ParsedArgs): Promise<void> {
   let started: { id: string; dir: string } | undefined;
   try {
     const port = active?.port ?? parsed.port ?? await detectCdpPort();
-    const sessionDir = active?.dir ?? oneShotDir();
+    const sessionDir = active?.dir ?? oneShotDir(parsed.artifactDir);
     const targetId = active?.targetId ?? (await openTab(port, 'about:blank')).id;
     const run = async (): Promise<TraceArtifact> => {
       host = await ensureHost(sessionDir, port, targetId);
