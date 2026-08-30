@@ -593,7 +593,7 @@ async function handleStop(parsed: ParsedArgs): Promise<void> {
 }
 
 type RecordingLossCounts =
-  | { rectSampleElementsDropped: number; bindingRecordsDropped: number }
+  | { rectSampleElementsDropped: number; bindingRecordsDropped: number; rectSampleFramesTruncated: number; rectSampleFramesCandidateTruncated: number }
   | { unavailableReason: string };
 
 function recordingLossCounts(recDir: string): RecordingLossCounts {
@@ -605,6 +605,8 @@ function recordingLossCounts(recDir: string): RecordingLossCounts {
   }
   let rectSampleElementsDropped = 0;
   let bindingRecordsDropped = 0;
+  let rectSampleFramesTruncated = 0;
+  let rectSampleFramesCandidateTruncated = 0;
   for (const line of raw.split('\n').filter(Boolean)) {
     let event: unknown;
     try {
@@ -616,21 +618,62 @@ function recordingLossCounts(recDir: string): RecordingLossCounts {
     const { kind, count } = event as { kind?: unknown; count?: unknown };
     if (kind !== 'rect-sample-dropped' && kind !== 'binding-dropped') continue;
     if (!Number.isSafeInteger(count) || count < 0) return { unavailableReason: `${String(kind)} has no non-negative integer count` };
-    if (kind === 'rect-sample-dropped') rectSampleElementsDropped += count;
-    else bindingRecordsDropped += count;
+    if (kind === 'rect-sample-dropped') {
+      if (!Number.isSafeInteger(rectSampleElementsDropped + count)) return { unavailableReason: 'rect-sample-dropped count exceeds the safe integer range' };
+      rectSampleElementsDropped += count;
+    } else {
+      if (!Number.isSafeInteger(bindingRecordsDropped + count)) return { unavailableReason: 'binding-dropped count exceeds the safe integer range' };
+      bindingRecordsDropped += count;
+    }
   }
-  return { rectSampleElementsDropped, bindingRecordsDropped };
+  let rectsRaw: string;
+  try {
+    rectsRaw = readPrivateFile(path.join(recDir, 'rects.jsonl')).toString('utf8');
+  } catch (error) {
+    return { unavailableReason: `rects.jsonl could not be read (${error instanceof Error ? error.message : String(error)})` };
+  }
+  for (const line of rectsRaw.split('\n').filter(Boolean)) {
+    let rect: unknown;
+    try {
+      rect = JSON.parse(line);
+    } catch {
+      return { unavailableReason: 'rects.jsonl contains a malformed rect record' };
+    }
+    if (!rect || typeof rect !== 'object') continue;
+    if ((rect as { elementSampleTruncated?: unknown }).elementSampleTruncated === true) {
+      if (!Number.isSafeInteger(rectSampleFramesTruncated + 1)) return { unavailableReason: 'rect-sample truncation count exceeds the safe integer range' };
+      rectSampleFramesTruncated++;
+    }
+    if ((rect as { candidateSampleTruncated?: unknown }).candidateSampleTruncated === true) {
+      if (!Number.isSafeInteger(rectSampleFramesCandidateTruncated + 1)) return { unavailableReason: 'rect-sample candidate truncation count exceeds the safe integer range' };
+      rectSampleFramesCandidateTruncated++;
+    }
+  }
+  return { rectSampleElementsDropped, bindingRecordsDropped, rectSampleFramesTruncated, rectSampleFramesCandidateTruncated };
 }
 
 function emitFinalizedResult(parsed: ParsedArgs, stopped: FinalizedRecording & { action?: string }): void {
   const durationS = `${(stopped.durationMs / 1000).toFixed(1)}s`;
   const lossCounts = recordingLossCounts(stopped.recDir);
   const lossAttrs = 'unavailableReason' in lossCounts
-    ? { 'rect-sample-elements-dropped': 'unavailable', 'binding-records-dropped': 'unavailable' }
-    : { 'rect-sample-elements-dropped': lossCounts.rectSampleElementsDropped, 'binding-records-dropped': lossCounts.bindingRecordsDropped };
+    ? { 'rect-sample-elements-dropped': 'unavailable', 'binding-records-dropped': 'unavailable', 'rect-sample-frames-truncated': 'unavailable', 'rect-sample-frames-candidate-truncated': 'unavailable' }
+    : {
+      'rect-sample-elements-dropped': lossCounts.rectSampleElementsDropped,
+      'binding-records-dropped': lossCounts.bindingRecordsDropped,
+      'rect-sample-frames-truncated': lossCounts.rectSampleFramesTruncated,
+      'rect-sample-frames-candidate-truncated': lossCounts.rectSampleFramesCandidateTruncated,
+    };
   const lossFacts = 'unavailableReason' in lossCounts
-    ? [fact`Dropped rect-sample element and binding-record counts are unavailable: ${lossCounts.unavailableReason}.`]
-    : [fact`Retained rect samples contain only the frame and element facts the recorder retained; ${lossCounts.rectSampleElementsDropped} rect-sample element fact(s) and ${lossCounts.bindingRecordsDropped} binding record(s) were dropped.`];
+    ? [fact`Dropped rect-sample element and binding-record counts and rect-sample truncation state are unavailable: ${lossCounts.unavailableReason}.`]
+    : [
+      fact`Retained rect samples contain only the frame and element facts the recorder retained; ${lossCounts.rectSampleElementsDropped} rect-sample element fact(s) and ${lossCounts.bindingRecordsDropped} binding record(s) were dropped.`,
+      ...(lossCounts.rectSampleFramesTruncated > 0
+        ? [fact`${lossCounts.rectSampleFramesTruncated} rect sample frame(s) stopped after 4000 non-zero-size elements; remaining DOM candidates were not sampled because of the element cap.`]
+        : []),
+      ...(lossCounts.rectSampleFramesCandidateTruncated > 0
+        ? [fact`${lossCounts.rectSampleFramesCandidateTruncated} rect sample frame(s) sampled rect geometry from 8000 DOM element candidates; remaining DOM candidates were not sampled because of the geometry-read cap.`]
+        : []),
+    ];
   const result: RenderableResult = {
     tag: 'recording',
     attestation: { kind: 'recording', id: stopped.recId, path: stopped.recDir },

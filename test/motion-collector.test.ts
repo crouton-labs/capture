@@ -53,7 +53,7 @@ class StubCdpClient extends EventEmitter implements RecorderCdpClient {
           this.perfNow += 1;
           return { result: { value: this.perfNow } };
         }
-        if (expression.includes('querySelectorAll')) {
+        if (expression.includes('createTreeWalker')) {
           return {
             result: {
               value: [{ tag: 'div', id: null, classes: 'box', x: 1, y: 2, width: 30, height: 40 }],
@@ -619,7 +619,7 @@ test('a hostile rect sample is capped/sanitized host-side before it reaches rect
   const originalSend = client.send.bind(client);
   client.send = async (method: string, params: Record<string, unknown> = {}) => {
     const expression = String((params as { expression?: unknown }).expression ?? '');
-    if (method === 'Runtime.evaluate' && expression.includes('querySelectorAll')) {
+    if (method === 'Runtime.evaluate' && expression.includes('createTreeWalker')) {
       const hostile: unknown[] = [];
       // A non-object entry \u2014 must be dropped, not crash the sanitizer.
       hostile.push('not-an-object');
@@ -662,7 +662,7 @@ test('a hostile rect sample is capped/sanitized host-side before it reaches rect
     // The 3000-plus hostile elements must not all land \u2014 the host enforces its own
     // element-count cap and byte budget regardless of what the page returned.
     assert.ok(elements.length < 3000, `expected the host guard to cap the sample, got ${elements.length} elements`);
-    assert.ok(elements.length <= 2000, 'the element-count cap must hold host-side');
+    assert.ok(elements.length <= 4000, 'the element-count cap must hold host-side');
     for (const el of elements) {
       assert.ok((el.id?.length ?? 0) <= 256, 'id must be length-capped host-side, not written verbatim');
       assert.ok((el.classes?.length ?? 0) <= 256, 'classes must be length-capped host-side, not written verbatim');
@@ -695,7 +695,7 @@ test('stop() awaits an in-flight screencast frame handler (including its rect sa
   const originalSend = client.send.bind(client);
   let delayNextRectSample = false;
   client.send = async (method: string, params: Record<string, unknown> = {}) => {
-    if (delayNextRectSample && method === 'Runtime.evaluate' && String((params as { expression?: unknown }).expression ?? '').includes('querySelectorAll')) {
+    if (delayNextRectSample && method === 'Runtime.evaluate' && String((params as { expression?: unknown }).expression ?? '').includes('createTreeWalker')) {
       delayNextRectSample = false;
       await new Promise((r) => setTimeout(r, 40));
     }
@@ -1195,7 +1195,7 @@ test('rect DOM identity and performance-entry evidence survive unchanged', async
   const originalSend = client.send.bind(client);
   client.send = async (method: string, params: Record<string, unknown> = {}) => {
     const expression = String((params as { expression?: unknown }).expression ?? '');
-    if (method === 'Runtime.evaluate' && expression.includes('querySelectorAll')) {
+    if (method === 'Runtime.evaluate' && expression.includes('createTreeWalker')) {
       return {
         result: {
           value: [{ tag: 'div', id: SECRET_TOKEN, classes: `box ${SECRET_TOKEN} active`, x: 1, y: 2, width: 10, height: 10 }],
@@ -1865,7 +1865,7 @@ test('a rect-identity property walk that materializes more than the cap still ge
   const overCapCount = 305;
   client.send = async (method: string, params: Record<string, unknown> = {}) => {
     const expression = String((params as { expression?: unknown }).expression ?? '');
-    if (method === 'Runtime.evaluate' && expression.includes('querySelectorAll')) {
+    if (method === 'Runtime.evaluate' && expression.includes('createTreeWalker')) {
       client.calls.push({ method, params });
       const facts = Array.from({ length: overCapCount }, (_, i) => ({
         tag: 'div',
@@ -1927,7 +1927,7 @@ test('a rect-identity property walk that materializes more than the cap still ge
     assert.equal(
       elements.length,
       overCapCount,
-      'MAX_RECT_ELEMENTS (2000) is a separate, much higher cap — all 305 elements must still land in rects.jsonl',
+      'MAX_RECT_ELEMENTS (4000) is a separate, much higher cap — all 305 elements must still land in rects.jsonl',
     );
 
     const resolved = elements.filter((el) => el.backendNodeId !== null);
@@ -2198,7 +2198,7 @@ test('a main-frame navigation during start() initialization installs the observe
     await tick();
     const sampleCall = client
       .callsFor('Runtime.evaluate')
-      .find((c) => String(c.params?.expression ?? '').includes('querySelectorAll'));
+      .find((c) => String(c.params?.expression ?? '').includes('createTreeWalker'));
     assert.ok(sampleCall, 'a rect sample evaluate happened after start()');
     assert.equal(
       sampleCall!.params?.contextId,
@@ -2431,7 +2431,7 @@ test('a recording-time failed rearm never targets the destroyed isolated world c
 
     const sampleCalls = client
       .callsFor('Runtime.evaluate')
-      .filter((c) => String(c.params?.expression ?? '').includes('querySelectorAll'));
+      .filter((c) => String(c.params?.expression ?? '').includes('createTreeWalker'));
     for (const call of sampleCalls) {
       assert.notEqual(
         call.params?.contextId,
@@ -2514,7 +2514,7 @@ test('a startup navigation whose rearm fails aborts start() and never samples wi
     assert.ok(
       client
         .callsFor('Runtime.evaluate')
-        .filter((c) => String(c.params?.expression ?? '').includes('querySelectorAll'))
+        .filter((c) => String(c.params?.expression ?? '').includes('createTreeWalker'))
         .every((c) => typeof c.params?.contextId === 'number'),
       'no rect-sample evaluate may ever be sent with an undefined contextId (which would run in the page main world)',
     );
@@ -2529,19 +2529,18 @@ test('a startup navigation whose rearm fails aborts start() and never samples wi
 });
 
 // ---------------------------------------------------------------------------
-// The in-page rect-sample expression caps the identity-handle array it stashes
-// at MAX_RECT_IDENTITY_RESOLUTIONS (300) while still returning every descriptive
-// fact — bounding the real CDP property walk, not just the host-side release loop.
+// The in-page rect-sample expression caps identity handles and geometry reads;
+// execute the exact expression rather than asserting against a second implementation.
 // ---------------------------------------------------------------------------
 
-test('the production rect-sample expression caps its stashed identity-handle array at 300 while still returning every descriptive fact', async () => {
+test('the production rect-sample expression caps identity handles and candidate geometry reads while retaining facts', async () => {
   const recDir = freshRecDir('rect-sample-expression-identity-cap');
   const client = new StubCdpClient();
   const originalSend = client.send.bind(client);
   let capturedExpression: string | undefined;
   client.send = async (method: string, params: Record<string, unknown> = {}) => {
     const expression = String((params as { expression?: unknown }).expression ?? '');
-    if (method === 'Runtime.evaluate' && expression.includes('querySelectorAll')) {
+    if (method === 'Runtime.evaluate' && expression.includes('createTreeWalker')) {
       capturedExpression = expression; // the EXACT bytes the recorder sends to Chrome this frame
     }
     return originalSend(method, params);
@@ -2567,23 +2566,64 @@ test('the production rect-sample expression caps its stashed identity-handle arr
       className: 'box',
       getBoundingClientRect: () => ({ x: i + 1, y: i + 1, width: 10, height: 10 }),
     }));
-    const fakeDocument = { querySelectorAll: () => fakeEls };
+    const fakeDocument = {
+      createTreeWalker: () => {
+        let index = 0;
+        return { nextNode: () => fakeEls[index++] ?? null };
+      },
+    };
     const fakeWindow: Record<string, unknown> = {};
     fakeWindow['__captureRecorder_' + nonce] = {
       stashRectElements: (_frameIndex: number, els: unknown[]) => {
         stashed.push(els);
       },
     };
-    const runExpr = new Function('window', 'document', `return ${capturedExpression};`);
-    const out = runExpr(fakeWindow, fakeDocument) as { elements: unknown[] };
+    const runExpr = new Function('window', 'document', 'NodeFilter', `return ${capturedExpression};`);
+    const out = runExpr(fakeWindow, fakeDocument, { SHOW_ELEMENT: 1 }) as { elements: unknown[] };
 
-    assert.equal(out.elements.length, overCap, 'all 305 descriptive facts are returned (MAX_RECT_ELEMENTS is a far higher 2000 cap)');
+    assert.equal(out.elements.length, overCap, 'all 305 descriptive facts are returned (MAX_RECT_ELEMENTS is a far higher 4000 cap)');
     assert.equal(stashed.length, 1, 'the expression stashed exactly one identity-handle array for this frame');
     assert.equal(
       stashed[0].length,
       300,
       'the stashed identity-bridge handle array is capped at MAX_RECT_IDENTITY_RESOLUTIONS (300), bounding the real CDP property walk',
     );
+
+    const sampleZeroSizeCandidates = (candidateTotal: number) => {
+      let geometryReads = 0;
+      let walkerReads = 0;
+      const candidates = Array.from({ length: candidateTotal }, () => ({
+        tagName: 'DIV',
+        id: '',
+        className: 'hidden',
+        getBoundingClientRect: () => {
+          geometryReads++;
+          return { x: 0, y: 0, width: 0, height: 0 };
+        },
+      }));
+      const candidateDocument = {
+        createTreeWalker: () => {
+          let index = 0;
+          return { nextNode: () => { walkerReads++; return candidates[index++] ?? null; } };
+        },
+      };
+      const result = runExpr(fakeWindow, candidateDocument, { SHOW_ELEMENT: 1 }) as {
+        elements: unknown[];
+        elementSampleTruncated?: true;
+        candidateSampleTruncated?: true;
+      };
+      return { result, geometryReads, walkerReads };
+    };
+    const atCandidateCap = sampleZeroSizeCandidates(8000);
+    assert.equal(atCandidateCap.result.elements.length, 0, 'zero-size candidates do not consume the retained-element budget');
+    assert.equal(atCandidateCap.geometryReads, 8000, 'the candidate geometry-read budget permits exactly 8000 candidates');
+    assert.equal(atCandidateCap.walkerReads, 8001, 'one sentinel TreeWalker read establishes that the 8000th candidate was final');
+    assert.equal(atCandidateCap.result.candidateSampleTruncated, false, 'exactly 8000 candidates do not claim a loss');
+
+    const overCandidateCap = sampleZeroSizeCandidates(8001);
+    assert.equal(overCandidateCap.geometryReads, 8000, 'an 8001st candidate never receives a geometry read');
+    assert.equal(overCandidateCap.walkerReads, 8001, 'the sentinel TreeWalker read is bounded while establishing loss provenance');
+    assert.equal(overCandidateCap.result.candidateSampleTruncated, true, 'an 8001st candidate records that its rect was not sampled');
   } finally {
     fs.rmSync(recDir, { recursive: true, force: true });
   }

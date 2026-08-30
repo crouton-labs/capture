@@ -155,6 +155,10 @@ export interface FrameRectsRecord {
   screencastTimestampPrecision: 'frame-metadata';
   recordedAtWallClockMs: number;
   elements: SampledRect[];
+  /** The sampler reached its element cap before examining every remaining DOM candidate. */
+  elementSampleTruncated?: true;
+  /** The sampler exhausted its geometry-read budget while DOM candidates remained. */
+  candidateSampleTruncated?: true;
 }
 
 /**
@@ -242,18 +246,20 @@ const BINDING_RATE_LIMIT_PER_SECOND = 200;
 // page-controlled DOM data (element tag/id/className strings, and an array length) read in the
 // isolated world and returned once per screencast frame, so it must be re-validated host-side
 // rather than trusted because the injected script capped it. The in-page cap
-// (`buildSampleRectsExpression`'s `max = 2000`) is an optimization only — a hostile page can
+// (`buildSampleRectsExpression`'s `max = 4000`) is an optimization only — a hostile page can
 // corrupt or bypass in-page JS (e.g. clobbering `Array.prototype` before the script runs),
 // so every one of these limits is re-enforced here, on the host, before a sample is ever
 // appended to `rects.jsonl`.
 // ---------------------------------------------------------------------------
 
 /** Mirrors the in-page cap, re-enforced host-side regardless of what the page script actually returned. */
-const MAX_RECT_ELEMENTS = 2000;
+const MAX_RECT_ELEMENTS = 4000;
+/** Bounds per-frame `getBoundingClientRect()` calls; one TreeWalker sentinel read establishes whether unvisited candidates remain. */
+const MAX_RECT_GEOMETRY_CANDIDATES = 8000;
 const MAX_RECT_TAG_LENGTH = 32;
 const MAX_RECT_STRING_LENGTH = 256;
 /** Total serialized-byte budget for one frame's sanitized rect array, independent of the element-count cap. */
-const MAX_RECTS_SERIALIZED_BYTES = 256 * 1024;
+const MAX_RECTS_SERIALIZED_BYTES = 1024 * 1024;
 /** Bounds per-frame `DOM.describeNode` round-trip cost for the rect sampler's identity bridge —
  * mirrors `hittest.ts`'s `MAX_BRIDGE_ELEMENTS` cap, tuned far lower because this bridge runs on
  * EVERY screencast frame instead of once per snapshot. Elements past this cap are left
@@ -323,6 +329,10 @@ function sanitizeRectString(value: unknown, maxLength: number): string | undefin
 
 function sanitizeBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
+}
+
+function sanitizeElementSampleTruncated(value: unknown): true | undefined {
+  return value === true ? true : undefined;
 }
 
 /** Preserves an admitted observer string verbatim in its source artifact. */
@@ -1050,6 +1060,8 @@ export class RecorderSession {
     try {
       const sample = await this.sampleRects(frameIndex);
       const elements = this.sanitizeRectSample(sample.facts, sample.backendNodeIds);
+      const elementSampleTruncated = sanitizeElementSampleTruncated(sample.elementSampleTruncated);
+      const candidateSampleTruncated = sanitizeElementSampleTruncated(sample.candidateSampleTruncated);
       appendNdjsonPrivate(this.rectsPath, {
         frame: frameIndex,
         file: frameName,
@@ -1058,6 +1070,8 @@ export class RecorderSession {
         screencastTimestampPrecision: 'frame-metadata',
         recordedAtWallClockMs: Date.now(),
         elements,
+        ...(elementSampleTruncated === undefined ? {} : { elementSampleTruncated }),
+        ...(candidateSampleTruncated === undefined ? {} : { candidateSampleTruncated }),
       } satisfies FrameRectsRecord);
     } catch (err) {
       // A failed rect sample for one frame shouldn't take the recorder down;
@@ -1328,7 +1342,7 @@ export class RecorderSession {
    * method must never hand back that data typed as if it were already safe) alongside this frame's
    * resolved `backendNodeId`s, one per fact in the same order.
    */
-  private async sampleRects(frameIndex: number): Promise<{ facts: unknown; viewport: unknown; backendNodeIds: Array<number | undefined> }> {
+  private async sampleRects(frameIndex: number): Promise<{ facts: unknown; viewport: unknown; elementSampleTruncated: unknown; candidateSampleTruncated: unknown; backendNodeIds: Array<number | undefined> }> {
     const evaluation = (await this.client.send('Runtime.evaluate', {
       expression: buildSampleRectsExpression(this.bindingNonce, frameIndex),
       returnByValue: true,
@@ -1343,7 +1357,13 @@ export class RecorderSession {
     const facts = Array.isArray(value) ? value : value?.elements;
     const count = Array.isArray(facts) ? facts.length : 0;
     const backendNodeIds = await this.resolveRectIdentity(frameIndex, count);
-    return { facts, viewport: Array.isArray(value) ? undefined : value?.viewport, backendNodeIds };
+    return {
+      facts,
+      viewport: Array.isArray(value) ? undefined : value?.viewport,
+      elementSampleTruncated: Array.isArray(value) ? undefined : value?.elementSampleTruncated,
+      candidateSampleTruncated: Array.isArray(value) ? undefined : value?.candidateSampleTruncated,
+      backendNodeIds,
+    };
   }
 
   /**
@@ -1618,10 +1638,14 @@ function buildObserverScript(bindingName: string, nonce: string): string {
     }
 
     var mutationObserver = new MutationObserver(function(records) {
-      emit('mutation', {
-        count: records.length,
-        types: records.map(function(r) { return r.type; }),
-      });
+      var maxRecordsPerEmission = 256;
+      for (var start = 0; start < records.length; start += maxRecordsPerEmission) {
+        var batch = records.slice(start, start + maxRecordsPerEmission);
+        emit('mutation', {
+          count: batch.length,
+          types: batch.map(function(r) { return r.type; }),
+        });
+      }
     });
     mutationObserver.observe(document.documentElement, {
       childList: true, subtree: true, attributes: true, characterData: true,
@@ -1696,7 +1720,7 @@ function buildObserverScript(bindingName: string, nonce: string): string {
 
 /**
  * Single round-trip element-rect sample, evaluated once per screencast frame. Uses
- * `getBoundingClientRect()` over every element (capped) rather than one CDP `DOM.getBoxModel`
+ * `getBoundingClientRect()` over a bounded TreeWalker prefix and retains its visible elements rather than one CDP `DOM.getBoxModel`
  * round trip per element — the cheap approximation this mechanism unit ships with; quad-accurate
  * geometry (transforms, clipping, frame/shadow stitching) is the `measure snap` substrate's job
  * (`geometry.json`), not the motion recorder's. Also stashes the live element handles it walked
@@ -1713,11 +1737,14 @@ function buildSampleRectsExpression(nonce: string, frameIndex: number): string {
   return `(function() {
     var out = [];
     var els = [];
-    var all = document.querySelectorAll('*');
-    var max = 2000;
+    var max = ${JSON.stringify(MAX_RECT_ELEMENTS)};
+    var candidateGeometryReadMax = ${JSON.stringify(MAX_RECT_GEOMETRY_CANDIDATES)};
     var identityCap = ${JSON.stringify(MAX_RECT_IDENTITY_RESOLUTIONS)};
-    for (var i = 0; i < all.length && out.length < max; i++) {
-      var el = all[i];
+    var walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
+    var candidateGeometryReads = 0;
+    var el;
+    while (candidateGeometryReads < candidateGeometryReadMax && out.length < max && (el = walker.nextNode())) {
+      candidateGeometryReads++;
       var r = el.getBoundingClientRect();
       if (r.width === 0 && r.height === 0) continue;
       out.push({
@@ -1728,12 +1755,15 @@ function buildSampleRectsExpression(nonce: string, frameIndex: number): string {
       });
       if (els.length < identityCap) els.push(el);
     }
+    var unexaminedCandidate = walker.nextNode() !== null;
     var k = '__captureRecorder_' + ${JSON.stringify(nonce)};
     var host = window[k];
     if (host && host.stashRectElements) host.stashRectElements(${JSON.stringify(frameIndex)}, els);
     var viewport = window.visualViewport;
     return {
       elements: out,
+      elementSampleTruncated: out.length === max && unexaminedCandidate,
+      candidateSampleTruncated: candidateGeometryReads === candidateGeometryReadMax && unexaminedCandidate,
       viewport: {
         width: viewport ? viewport.width : window.innerWidth,
         height: viewport ? viewport.height : window.innerHeight,

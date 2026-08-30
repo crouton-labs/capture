@@ -13172,6 +13172,9 @@ function sanitizeRectString(value, maxLength) {
 function sanitizeBoolean(value) {
   return typeof value === "boolean" ? value : void 0;
 }
+function sanitizeElementSampleTruncated(value) {
+  return value === true ? true : void 0;
+}
 function preserveObserverString(value) {
   return typeof value === "string" ? value : void 0;
 }
@@ -13225,10 +13228,14 @@ function buildObserverScript(bindingName, nonce) {
     }
 
     var mutationObserver = new MutationObserver(function(records) {
-      emit('mutation', {
-        count: records.length,
-        types: records.map(function(r) { return r.type; }),
-      });
+      var maxRecordsPerEmission = 256;
+      for (var start = 0; start < records.length; start += maxRecordsPerEmission) {
+        var batch = records.slice(start, start + maxRecordsPerEmission);
+        emit('mutation', {
+          count: batch.length,
+          types: batch.map(function(r) { return r.type; }),
+        });
+      }
     });
     mutationObserver.observe(document.documentElement, {
       childList: true, subtree: true, attributes: true, characterData: true,
@@ -13304,11 +13311,14 @@ function buildSampleRectsExpression(nonce, frameIndex) {
   return `(function() {
     var out = [];
     var els = [];
-    var all = document.querySelectorAll('*');
-    var max = 2000;
+    var max = ${JSON.stringify(MAX_RECT_ELEMENTS)};
+    var candidateGeometryReadMax = ${JSON.stringify(MAX_RECT_GEOMETRY_CANDIDATES)};
     var identityCap = ${JSON.stringify(MAX_RECT_IDENTITY_RESOLUTIONS)};
-    for (var i = 0; i < all.length && out.length < max; i++) {
-      var el = all[i];
+    var walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
+    var candidateGeometryReads = 0;
+    var el;
+    while (candidateGeometryReads < candidateGeometryReadMax && out.length < max && (el = walker.nextNode())) {
+      candidateGeometryReads++;
       var r = el.getBoundingClientRect();
       if (r.width === 0 && r.height === 0) continue;
       out.push({
@@ -13319,12 +13329,15 @@ function buildSampleRectsExpression(nonce, frameIndex) {
       });
       if (els.length < identityCap) els.push(el);
     }
+    var unexaminedCandidate = walker.nextNode() !== null;
     var k = '__captureRecorder_' + ${JSON.stringify(nonce)};
     var host = window[k];
     if (host && host.stashRectElements) host.stashRectElements(${JSON.stringify(frameIndex)}, els);
     var viewport = window.visualViewport;
     return {
       elements: out,
+      elementSampleTruncated: out.length === max && unexaminedCandidate,
+      candidateSampleTruncated: candidateGeometryReads === candidateGeometryReadMax && unexaminedCandidate,
       viewport: {
         width: viewport ? viewport.width : window.innerWidth,
         height: viewport ? viewport.height : window.innerHeight,
@@ -13357,7 +13370,7 @@ function buildTakeRectElementsExpression(nonce, frameIndex) {
 function buildTakeResizeTargetsExpression(nonce, seq) {
   return `(function(){var k='__captureRecorder_'+${JSON.stringify(nonce)};var h=window[k];return h&&h.takeResizeTargets?h.takeResizeTargets(${JSON.stringify(seq)}):[];})()`;
 }
-var crypto7, path12, RECORDER_BINDING_NAME, OBSERVER_INSTALLED_SENTINEL, TRACE_CATEGORIES, SCREENCAST_OPTIONS, MAX_BINDING_PAYLOAD_BYTES, BINDING_RATE_LIMIT_PER_SECOND, MAX_RECT_ELEMENTS, MAX_RECT_TAG_LENGTH, MAX_RECT_STRING_LENGTH, MAX_RECTS_SERIALIZED_BYTES, MAX_RECT_IDENTITY_RESOLUTIONS, MAX_TRACE_EVENTS_PER_BATCH, MAX_TRACE_SERIALIZED_BYTES, BINDING_FIELD_SANITIZERS, RecorderSession, MotionCollector;
+var crypto7, path12, RECORDER_BINDING_NAME, OBSERVER_INSTALLED_SENTINEL, TRACE_CATEGORIES, SCREENCAST_OPTIONS, MAX_BINDING_PAYLOAD_BYTES, BINDING_RATE_LIMIT_PER_SECOND, MAX_RECT_ELEMENTS, MAX_RECT_GEOMETRY_CANDIDATES, MAX_RECT_TAG_LENGTH, MAX_RECT_STRING_LENGTH, MAX_RECTS_SERIALIZED_BYTES, MAX_RECT_IDENTITY_RESOLUTIONS, MAX_TRACE_EVENTS_PER_BATCH, MAX_TRACE_SERIALIZED_BYTES, BINDING_FIELD_SANITIZERS, RecorderSession, MotionCollector;
 var init_motion = __esm({
   "src/cdp/host/collectors/motion.ts"() {
     crypto7 = __toESM(require("crypto"));
@@ -13376,10 +13389,11 @@ var init_motion = __esm({
     SCREENCAST_OPTIONS = { format: "png", everyNthFrame: 1 };
     MAX_BINDING_PAYLOAD_BYTES = 8 * 1024;
     BINDING_RATE_LIMIT_PER_SECOND = 200;
-    MAX_RECT_ELEMENTS = 2e3;
+    MAX_RECT_ELEMENTS = 4e3;
+    MAX_RECT_GEOMETRY_CANDIDATES = 8e3;
     MAX_RECT_TAG_LENGTH = 32;
     MAX_RECT_STRING_LENGTH = 256;
-    MAX_RECTS_SERIALIZED_BYTES = 256 * 1024;
+    MAX_RECTS_SERIALIZED_BYTES = 1024 * 1024;
     MAX_RECT_IDENTITY_RESOLUTIONS = 300;
     MAX_TRACE_EVENTS_PER_BATCH = 500;
     MAX_TRACE_SERIALIZED_BYTES = 256 * 1024;
@@ -13937,6 +13951,8 @@ var init_motion = __esm({
         try {
           const sample = await this.sampleRects(frameIndex);
           const elements = this.sanitizeRectSample(sample.facts, sample.backendNodeIds);
+          const elementSampleTruncated = sanitizeElementSampleTruncated(sample.elementSampleTruncated);
+          const candidateSampleTruncated = sanitizeElementSampleTruncated(sample.candidateSampleTruncated);
           appendNdjsonPrivate(this.rectsPath, {
             frame: frameIndex,
             file: frameName,
@@ -13944,7 +13960,9 @@ var init_motion = __esm({
             screencastTimestamp: params.metadata?.timestamp ?? null,
             screencastTimestampPrecision: "frame-metadata",
             recordedAtWallClockMs: Date.now(),
-            elements
+            elements,
+            ...elementSampleTruncated === void 0 ? {} : { elementSampleTruncated },
+            ...candidateSampleTruncated === void 0 ? {} : { candidateSampleTruncated }
           });
         } catch (err) {
           this.appendEvent({
@@ -14187,7 +14205,13 @@ var init_motion = __esm({
         const facts = Array.isArray(value) ? value : value?.elements;
         const count3 = Array.isArray(facts) ? facts.length : 0;
         const backendNodeIds2 = await this.resolveRectIdentity(frameIndex, count3);
-        return { facts, viewport: Array.isArray(value) ? void 0 : value?.viewport, backendNodeIds: backendNodeIds2 };
+        return {
+          facts,
+          viewport: Array.isArray(value) ? void 0 : value?.viewport,
+          elementSampleTruncated: Array.isArray(value) ? void 0 : value?.elementSampleTruncated,
+          candidateSampleTruncated: Array.isArray(value) ? void 0 : value?.candidateSampleTruncated,
+          backendNodeIds: backendNodeIds2
+        };
       }
       /**
        * Follow-up identity bridge for the SAME frame's rect sample: drains the elements
@@ -244479,6 +244503,8 @@ function recordingLossCounts(recDir) {
   }
   let rectSampleElementsDropped = 0;
   let bindingRecordsDropped = 0;
+  let rectSampleFramesTruncated = 0;
+  let rectSampleFramesCandidateTruncated = 0;
   for (const line4 of raw.split("\n").filter(Boolean)) {
     let event;
     try {
@@ -244490,16 +244516,53 @@ function recordingLossCounts(recDir) {
     const { kind, count: count3 } = event;
     if (kind !== "rect-sample-dropped" && kind !== "binding-dropped") continue;
     if (!Number.isSafeInteger(count3) || count3 < 0) return { unavailableReason: `${String(kind)} has no non-negative integer count` };
-    if (kind === "rect-sample-dropped") rectSampleElementsDropped += count3;
-    else bindingRecordsDropped += count3;
+    if (kind === "rect-sample-dropped") {
+      if (!Number.isSafeInteger(rectSampleElementsDropped + count3)) return { unavailableReason: "rect-sample-dropped count exceeds the safe integer range" };
+      rectSampleElementsDropped += count3;
+    } else {
+      if (!Number.isSafeInteger(bindingRecordsDropped + count3)) return { unavailableReason: "binding-dropped count exceeds the safe integer range" };
+      bindingRecordsDropped += count3;
+    }
   }
-  return { rectSampleElementsDropped, bindingRecordsDropped };
+  let rectsRaw;
+  try {
+    rectsRaw = readPrivateFile(path37.join(recDir, "rects.jsonl")).toString("utf8");
+  } catch (error4) {
+    return { unavailableReason: `rects.jsonl could not be read (${error4 instanceof Error ? error4.message : String(error4)})` };
+  }
+  for (const line4 of rectsRaw.split("\n").filter(Boolean)) {
+    let rect3;
+    try {
+      rect3 = JSON.parse(line4);
+    } catch {
+      return { unavailableReason: "rects.jsonl contains a malformed rect record" };
+    }
+    if (!rect3 || typeof rect3 !== "object") continue;
+    if (rect3.elementSampleTruncated === true) {
+      if (!Number.isSafeInteger(rectSampleFramesTruncated + 1)) return { unavailableReason: "rect-sample truncation count exceeds the safe integer range" };
+      rectSampleFramesTruncated++;
+    }
+    if (rect3.candidateSampleTruncated === true) {
+      if (!Number.isSafeInteger(rectSampleFramesCandidateTruncated + 1)) return { unavailableReason: "rect-sample candidate truncation count exceeds the safe integer range" };
+      rectSampleFramesCandidateTruncated++;
+    }
+  }
+  return { rectSampleElementsDropped, bindingRecordsDropped, rectSampleFramesTruncated, rectSampleFramesCandidateTruncated };
 }
 function emitFinalizedResult(parsed, stopped) {
   const durationS = `${(stopped.durationMs / 1e3).toFixed(1)}s`;
   const lossCounts = recordingLossCounts(stopped.recDir);
-  const lossAttrs = "unavailableReason" in lossCounts ? { "rect-sample-elements-dropped": "unavailable", "binding-records-dropped": "unavailable" } : { "rect-sample-elements-dropped": lossCounts.rectSampleElementsDropped, "binding-records-dropped": lossCounts.bindingRecordsDropped };
-  const lossFacts = "unavailableReason" in lossCounts ? [fact`Dropped rect-sample element and binding-record counts are unavailable: ${lossCounts.unavailableReason}.`] : [fact`Retained rect samples contain only the frame and element facts the recorder retained; ${lossCounts.rectSampleElementsDropped} rect-sample element fact(s) and ${lossCounts.bindingRecordsDropped} binding record(s) were dropped.`];
+  const lossAttrs = "unavailableReason" in lossCounts ? { "rect-sample-elements-dropped": "unavailable", "binding-records-dropped": "unavailable", "rect-sample-frames-truncated": "unavailable", "rect-sample-frames-candidate-truncated": "unavailable" } : {
+    "rect-sample-elements-dropped": lossCounts.rectSampleElementsDropped,
+    "binding-records-dropped": lossCounts.bindingRecordsDropped,
+    "rect-sample-frames-truncated": lossCounts.rectSampleFramesTruncated,
+    "rect-sample-frames-candidate-truncated": lossCounts.rectSampleFramesCandidateTruncated
+  };
+  const lossFacts = "unavailableReason" in lossCounts ? [fact`Dropped rect-sample element and binding-record counts and rect-sample truncation state are unavailable: ${lossCounts.unavailableReason}.`] : [
+    fact`Retained rect samples contain only the frame and element facts the recorder retained; ${lossCounts.rectSampleElementsDropped} rect-sample element fact(s) and ${lossCounts.bindingRecordsDropped} binding record(s) were dropped.`,
+    ...lossCounts.rectSampleFramesTruncated > 0 ? [fact`${lossCounts.rectSampleFramesTruncated} rect sample frame(s) stopped after 4000 non-zero-size elements; remaining DOM candidates were not sampled because of the element cap.`] : [],
+    ...lossCounts.rectSampleFramesCandidateTruncated > 0 ? [fact`${lossCounts.rectSampleFramesCandidateTruncated} rect sample frame(s) sampled rect geometry from 8000 DOM element candidates; remaining DOM candidates were not sampled because of the geometry-read cap.`] : []
+  ];
   const result = {
     tag: "recording",
     attestation: { kind: "recording", id: stopped.recId, path: stopped.recDir },
