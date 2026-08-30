@@ -13,6 +13,7 @@ input:
   --text             include text line/baseline/font/wrap metrics before general rendering context
   --form             include form value/geometry/caret/selection/autofill facts before general rendering context
 output: <explain selector=… matches=…> — requested size/text/form measurements lead after target identity; full cascade, border/ink, stacking, clipping, focus, scroll, query, and state context remains in the result; --json mirrors
+boundary: measurements are local to the selected snapshot. \`capture lighthouse\` runs the independent audited sweep.
 effects: read-only — reads existing snapshot artifacts, never drives the browser`;
 
 function attestation(ref: { id: string; dir: string }, meta: { settled?: boolean; settleMs?: number }) {
@@ -162,7 +163,10 @@ export async function cmdMeasureExplain(parsed: ParsedArgs, _args: string[]): Pr
         state: parsed.state?.[0] ?? 'base',
       },
       summary: fact`Recorded cascade, border/ink geometry, stacking, clipping, focus, scroll, query, and state context for ${targetSelector}${parsed.state?.[0] ? ` under requested state ${parsed.state[0]}` : ' from base-state artifacts'}.`,
-      sections,
+      sections: [
+        ...sections,
+        fact`Measurements are local to snapshot ${report.ref.id}; \`capture lighthouse\` runs the independent audited sweep.`,
+      ],
       followUp: parsed.size || parsed.text || parsed.form
         ? text`Re-run against a new snapshot to compare the same recorded measurements after a page change.`
         : text`Add --size, --text, or --form to include only those optional detail sections.`,

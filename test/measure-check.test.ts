@@ -328,7 +328,7 @@ test('command renders a bounded cross-kind sample with the same JSON selection',
   const rendered = JSON.parse(jsonResult.stdout) as { attrs: { findings: number; displayed: number }; sections: string[] };
   assert.equal(rendered.attrs.findings, 8);
   assert.equal(rendered.attrs.displayed, 8);
-  assert.equal(rendered.sections.length, 9);
+  assert.equal(rendered.sections.length, 10);
 
   for (const limit of ['0', '1.9', 'nope', 'Infinity']) {
     const invalid = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--limit', limit], { encoding: 'utf8' });

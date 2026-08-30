@@ -499,6 +499,9 @@ output:
   200 frames/socket, 4KB/frame); sockets opened before recording started are
   not visible.
 
+boundary:
+  Reports recorded transactions and does not change responses. For a counterfactual response, use \`capture tab mock start\`.
+
 effects:
   None — reads recorded HAR data only.`;
 
@@ -1375,7 +1378,10 @@ async function har(parsed: ParsedArgs): Promise<void> {
       truncated: truncated ? true : undefined,
     },
     summary,
-    sections,
+    sections: [
+      ...sections,
+      fact`Recorded transactions only; this read does not change responses. \`capture tab mock start\` serves a counterfactual response.`,
+    ],
   }, { json: parsed.json });
 }
 

@@ -60,12 +60,15 @@ picks which tab navigates. Navigate never creates a tab — use "tab open" for
 that; an unresolvable source is a targeting error, not a new tab.
 
 Output:
-  One <navigated url=… settle=… load-outcome=… deadline-exceeded=…> block:
+  One <navigated url=… settle=… load-outcome=… document-outcome=… deadline-exceeded=…> block:
   the tab URL after navigation, the measured settle, and — reported
-  separately — the load outcome (observed | bounded-timeout), whether the
-  nav phase exceeded its deadline, the dispatched navigation's loaderId (and
+  separately — the load outcome (observed | bounded-timeout), the document/network
+  outcome (http-response | http-error-document | not-observed; the latter has no
+  document status or URL), whether the nav phase exceeded its deadline, the
+  dispatched navigation's loaderId (and
   any about:blank bounce for a same-document target), and whether the CDP
-  routed through an active recording. --json mirrors the same fields.
+  routed through an active recording. A document HTTP error does not change the
+  navigation dispatch or load outcome. --json mirrors the same fields.
 
 Effects:
   Navigates the source tab (exactly one Page.navigate for the destination;
@@ -78,8 +81,13 @@ Effects:
 /** Load outcome plus the dispatched navigation's own facts, produced by one
  * navigation core (recorder-routed or direct). Distinct fields so the render
  * layer can report the load result separately from the method result. */
+type DocumentOutcome =
+  | { kind: 'http-response' | 'http-error-document'; status: number; url: string }
+  | { kind: 'not-observed' };
+
 interface NavCore {
   loadOutcome: 'observed' | 'bounded-timeout';
+  documentOutcome: DocumentOutcome;
   /** The dispatched navigation's loaderId (present on a real cross-document
    * navigation; absent for a same-document target before the bounce). */
   loaderId?: string;
@@ -96,18 +104,23 @@ interface NavCore {
  * target returns no loaderId — recover with exactly one dest→about:blank→dest
  * bounce, bundling the wait only on the final re-navigate.
  */
+function documentOutcomeFor(response?: { status: number; url: string }): DocumentOutcome {
+  if (!response) return { kind: 'not-observed' };
+  return { kind: response.status >= 400 ? 'http-error-document' : 'http-response', status: response.status, url: response.url };
+}
+
 async function navigateViaRecorder(client: MotionHeldClient, url: string): Promise<NavCore> {
-  const first = await client.dispatch('Page.navigate', { url }, LOAD_EVENT_NAME, timing.innerTimeoutMs);
+  const first = await client.dispatch('Page.navigate', { url }, LOAD_EVENT_NAME, timing.innerTimeoutMs, true);
   const loaderId = (first.result as { loaderId?: string } | undefined)?.loaderId;
   if (loaderId) {
-    return { loadOutcome: first.waitOutcome ?? 'bounded-timeout', loaderId, bounced: false };
+    return { loadOutcome: first.waitOutcome ?? 'bounded-timeout', documentOutcome: documentOutcomeFor(first.documentResponse), loaderId, bounced: false };
   }
   // Same-document target: the destination is already committed (no loaderId);
   // bounce through about:blank and re-navigate so a fresh document mounts.
   await client.dispatch('Page.navigate', { url: 'about:blank' });
-  const final = await client.dispatch('Page.navigate', { url }, LOAD_EVENT_NAME, timing.innerTimeoutMs);
+  const final = await client.dispatch('Page.navigate', { url }, LOAD_EVENT_NAME, timing.innerTimeoutMs, true);
   const finalLoaderId = (final.result as { loaderId?: string } | undefined)?.loaderId;
-  return { loadOutcome: final.waitOutcome ?? 'bounded-timeout', loaderId: finalLoaderId, bounced: true };
+  return { loadOutcome: final.waitOutcome ?? 'bounded-timeout', documentOutcome: documentOutcomeFor(final.documentResponse), loaderId: finalLoaderId, bounced: true };
 }
 
 /** Arms a bounded `Page.loadEventFired` wait on a direct client's broker and
@@ -134,43 +147,66 @@ function armLoadWait(broker: EventBroker): {
  * exactly one dest→about:blank→dest bounce, re-arming the wait before the
  * final send.
  */
+function observeDocumentResponses(client: CDPClient): { outcomeFor(loaderId?: string): DocumentOutcome; dispose(): void } {
+  const responses: Array<{ loaderId: string; status: number; url: string }> = [];
+  const handler = (params: unknown) => {
+    if (!params || typeof params !== 'object' || Array.isArray(params)) return;
+    const event = params as { type?: unknown; loaderId?: unknown; response?: unknown };
+    if (event.type !== 'Document' || typeof event.loaderId !== 'string' || !event.response || typeof event.response !== 'object' || Array.isArray(event.response)) return;
+    const response = event.response as { status?: unknown; url?: unknown };
+    if (typeof response.status !== 'number' || !Number.isFinite(response.status) || typeof response.url !== 'string') return;
+    responses.push({ loaderId: event.loaderId, status: response.status, url: response.url });
+  };
+  client.on('Network.responseReceived', handler);
+  return {
+    outcomeFor(loaderId) {
+      const response = loaderId === undefined ? undefined : responses.filter((candidate) => candidate.loaderId === loaderId).at(-1);
+      if (!response) return { kind: 'not-observed' };
+      return { kind: response.status >= 400 ? 'http-error-document' : 'http-response', status: response.status, url: response.url };
+    },
+    dispose() { client.off('Network.responseReceived', handler); },
+  };
+}
+
 async function navigateDirect(
   client: CDPClient,
   url: string,
   armed?: { cancel: () => void },
 ): Promise<NavCore> {
   await client.send('Page.enable');
+  await client.send('Network.enable');
+  const documents = observeDocumentResponses(client);
   const broker = new EventBroker(client);
 
-  const first = armLoadWait(broker);
-  // Publish the currently-armed wait's canceller so an outer-deadline
-  // abandonment can clear its inner timer instead of letting it fire on its own.
-  if (armed) armed.cancel = () => first.wait.cancel();
-  let nav: { loaderId?: string } | undefined;
   try {
-    nav = (await client.send('Page.navigate', { url })) as { loaderId?: string };
-  } catch (err) {
-    first.wait.cancel();
-    throw err;
-  }
-  if (nav?.loaderId) {
-    return { loadOutcome: await first.outcome, loaderId: nav.loaderId, bounced: false };
-  }
+    const first = armLoadWait(broker);
+    if (armed) armed.cancel = () => first.wait.cancel();
+    let nav: { loaderId?: string } | undefined;
+    try {
+      nav = (await client.send('Page.navigate', { url })) as { loaderId?: string };
+    } catch (err) {
+      first.wait.cancel();
+      throw err;
+    }
+    if (nav?.loaderId) {
+      return { loadOutcome: await first.outcome, documentOutcome: documents.outcomeFor(nav.loaderId), loaderId: nav.loaderId, bounced: false };
+    }
 
-  // Same-document target: discard the first wait, bounce through about:blank,
-  // re-arm the wait, then re-navigate to the destination.
-  first.wait.cancel();
-  await client.send('Page.navigate', { url: 'about:blank' });
-  const second = armLoadWait(broker);
-  if (armed) armed.cancel = () => second.wait.cancel();
-  let navFinal: { loaderId?: string } | undefined;
-  try {
-    navFinal = (await client.send('Page.navigate', { url })) as { loaderId?: string };
-  } catch (err) {
-    second.wait.cancel();
-    throw err;
+    first.wait.cancel();
+    await client.send('Page.navigate', { url: 'about:blank' });
+    const second = armLoadWait(broker);
+    if (armed) armed.cancel = () => second.wait.cancel();
+    let navFinal: { loaderId?: string } | undefined;
+    try {
+      navFinal = (await client.send('Page.navigate', { url })) as { loaderId?: string };
+    } catch (err) {
+      second.wait.cancel();
+      throw err;
+    }
+    return { loadOutcome: await second.outcome, documentOutcome: documents.outcomeFor(navFinal?.loaderId), loaderId: navFinal?.loaderId, bounced: true };
+  } finally {
+    documents.dispose();
   }
-  return { loadOutcome: await second.outcome, loaderId: navFinal?.loaderId, bounced: true };
 }
 
 /** Races the nav+load phase against the outer deadline. The deadline never
@@ -200,6 +236,7 @@ interface NavigatedFacts {
   tabUrl: string;
   requestedUrl: string;
   loadOutcome: 'observed' | 'bounded-timeout';
+  documentOutcome: DocumentOutcome;
   deadlineExceeded: boolean;
   loaderId?: string;
   bounced: boolean;
@@ -212,6 +249,9 @@ function buildNavigatedResult(f: NavigatedFacts): RenderableResult {
     f.loadOutcome === 'observed'
       ? fact`load: ${LOAD_EVENT_NAME} observed within the ${timing.innerTimeoutMs}ms load-wait window.`
       : fact`load: ${LOAD_EVENT_NAME} not observed within the ${timing.innerTimeoutMs}ms load-wait window (bounded-timeout); the navigation still dispatched.`,
+    f.documentOutcome.kind === 'not-observed'
+      ? fact`document/network outcome: no matching HTTP document response was observed.`
+      : fact`document/network outcome: HTTP ${f.documentOutcome.status} at ${f.documentOutcome.url}${f.documentOutcome.kind === 'http-error-document' ? ' (HTTP error document)' : ''}.`,
     fact`navigation dispatched: loaderId ${f.loaderId ?? '(none)'}${f.bounced ? '; delivered via dest→about:blank→dest bounce (same-document target)' : ''}.`,
     fact`settle: requested ${f.settle.requestedMs}ms, waited ${f.settle.waitedMs}ms.`,
   ];
@@ -229,6 +269,9 @@ function buildNavigatedResult(f: NavigatedFacts): RenderableResult {
       url: f.tabUrl,
       settle: f.settle.requestedMs,
       'load-outcome': f.loadOutcome,
+      'document-outcome': f.documentOutcome.kind,
+      'document-status': f.documentOutcome.kind === 'not-observed' ? undefined : f.documentOutcome.status,
+      'document-url': f.documentOutcome.kind === 'not-observed' ? undefined : f.documentOutcome.url,
       'deadline-exceeded': f.deadlineExceeded || undefined,
       routed: f.routed || undefined,
     },
@@ -305,6 +348,7 @@ export async function cmdPageNavigate(parsed: ParsedArgs, _args: string[]): Prom
       armed.cancel();
       return {
         loadOutcome: 'bounded-timeout' as const,
+        documentOutcome: { kind: 'not-observed' } as const,
         loaderId: undefined,
         bounced: false,
         deadlineExceeded: true,
@@ -319,6 +363,7 @@ export async function cmdPageNavigate(parsed: ParsedArgs, _args: string[]): Prom
       tabUrl: core.tabUrl,
       requestedUrl: url,
       loadOutcome: core.loadOutcome,
+      documentOutcome: core.documentOutcome,
       deadlineExceeded: core.deadlineExceeded,
       loaderId: core.loaderId,
       bounced: core.bounced,

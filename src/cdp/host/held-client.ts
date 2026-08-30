@@ -44,11 +44,11 @@ export class MotionHeldClient {
     return response.event;
   }
 
-  async dispatch(method: string, params: Record<string, unknown> = {}, waitEvent?: string, timeoutMs?: number): Promise<{ result: unknown; event?: unknown; waitOutcome?: 'observed' | 'bounded-timeout' }> {
+  async dispatch(method: string, params: Record<string, unknown> = {}, waitEvent?: string, timeoutMs?: number, observeDocumentResponse = false): Promise<{ result: unknown; event?: unknown; waitOutcome?: 'observed' | 'bounded-timeout'; documentResponse?: { status: number; url: string } }> {
     const suppressMousePress = method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed' && this.suppressNextMousePressMark;
     if (suppressMousePress) this.suppressNextMousePressMark = false;
     const annotation = !suppressMousePress && isMarkableActionMethod(method, params) ? this.options.actionLabel : undefined;
-    return this.request(method, params, annotation, waitEvent, timeoutMs);
+    return this.request(method, params, annotation, waitEvent, timeoutMs, observeDocumentResponse);
   }
 
   async flushHar(): Promise<void> {
@@ -71,12 +71,20 @@ export class MotionHeldClient {
   onDisconnect(_handler: () => void): void {}
   close(): void {}
 
-  private async request(method: string, params: Record<string, unknown>, annotation?: string, waitEvent?: string, timeoutMs?: number): Promise<{ result: unknown; event?: unknown; waitOutcome?: 'observed' | 'bounded-timeout' }> {
+  private async request(method: string, params: Record<string, unknown>, annotation?: string, waitEvent?: string, timeoutMs?: number, observeDocumentResponse = false): Promise<{ result: unknown; event?: unknown; waitOutcome?: 'observed' | 'bounded-timeout'; documentResponse?: { status: number; url: string } }> {
     const response = await sendHostRequest(this.options.socketPath, {
-      type: 'cdp', nonce: this.options.nonce, method, params, annotation, waitEvent, timeoutMs: timeoutMs ?? this.defaultTimeoutMs,
+      type: 'cdp', nonce: this.options.nonce, method, params, annotation, waitEvent, timeoutMs: timeoutMs ?? this.defaultTimeoutMs, observeDocumentResponse,
     }, (timeoutMs ?? this.defaultTimeoutMs) + 5_000);
     if (!response.ok) throw new Error(`collector-host CDP call "${method}"${waitEvent ? ` with wait-event "${waitEvent}"` : ''} failed: ${response.error}`);
-    return { result: response.result, event: response.event, waitOutcome: response.waitOutcome as 'observed' | 'bounded-timeout' | undefined };
+    const documentResponse = response.documentResponse;
+    return {
+      result: response.result,
+      event: response.event,
+      waitOutcome: response.waitOutcome as 'observed' | 'bounded-timeout' | undefined,
+      documentResponse: documentResponse && typeof documentResponse === 'object' && typeof (documentResponse as { status?: unknown }).status === 'number' && typeof (documentResponse as { url?: unknown }).url === 'string'
+        ? documentResponse as { status: number; url: string }
+        : undefined,
+    };
   }
 }
 

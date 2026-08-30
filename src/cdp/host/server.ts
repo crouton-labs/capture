@@ -75,7 +75,8 @@ export async function runCollectorHost(options: RunCollectorHostOptions): Promis
             typeof request.annotation === 'string' ? request.annotation : undefined,
             typeof request.waitEvent === 'string' ? request.waitEvent : undefined,
             typeof request.timeoutMs === 'number' ? request.timeoutMs : undefined,
-          ) as { result?: unknown; event?: unknown; waitOutcome?: unknown };
+            request.observeDocumentResponse === true,
+          ) as { result?: unknown; event?: unknown; waitOutcome?: unknown; documentResponse?: unknown };
           answer({ ok: true, ...(dispatched && typeof dispatched === 'object' ? dispatched as Record<string, unknown> : { result: dispatched }) });
           return;
         }

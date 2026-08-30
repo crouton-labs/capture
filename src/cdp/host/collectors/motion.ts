@@ -95,6 +95,8 @@ export interface RecCdpCall {
   mark?: string;
   waitEvent?: string;
   timeoutMs?: number;
+  /** Retains Document `Network.responseReceived` facts until this request's paired wait settles. */
+  observeDocumentResponse?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +175,7 @@ export interface RecorderEventRecord {
 // tests (accepts anything shaped like the public surface of `CDPClient`).
 // ---------------------------------------------------------------------------
 
-export type RecorderCdpClient = Pick<CDPClient, 'send' | 'on' | 'onDisconnect' | 'close'>;
+export type RecorderCdpClient = Pick<CDPClient, 'send' | 'on' | 'off' | 'onDisconnect' | 'close'>;
 
 /**
  * `'starting'` covers `start()`'s initialization window — from the top of `start()` until the
@@ -606,7 +608,7 @@ export class RecorderSession {
    * FAILURE cancels the wait and throws. A wait-event-ONLY request (no method)
    * that times out still rejects — there is no method result to preserve.
    */
-  async handleCdp(req: RecCdpRequest | RecCdpCall): Promise<{ result?: unknown; event?: unknown; waitOutcome?: 'observed' | 'bounded-timeout' }> {
+  async handleCdp(req: RecCdpRequest | RecCdpCall): Promise<{ result?: unknown; event?: unknown; waitOutcome?: 'observed' | 'bounded-timeout'; documentResponse?: { status: number; url: string } }> {
     if (this.state === 'stopping' || this.state === 'stopped') {
       throw new Error(`cannot dispatch cdp request in state "${this.state}"`);
     }
@@ -624,6 +626,16 @@ export class RecorderSession {
     // This recorder owns a direct tab websocket, so its actual CDP event
     // envelope scope is `undefined` (there is no flattened attach session).
     // Arm synchronously before any triggering send below.
+    const documentResponses: Array<{ loaderId: string; status: number; url: string }> = [];
+    const onDocumentResponse = req.observeDocumentResponse ? (params: unknown) => {
+      if (!params || typeof params !== 'object' || Array.isArray(params)) return;
+      const event = params as { type?: unknown; loaderId?: unknown; response?: unknown };
+      if (event.type !== 'Document' || typeof event.loaderId !== 'string' || !event.response || typeof event.response !== 'object' || Array.isArray(event.response)) return;
+      const response = event.response as { status?: unknown; url?: unknown };
+      if (typeof response.status !== 'number' || !Number.isFinite(response.status) || typeof response.url !== 'string') return;
+      documentResponses.push({ loaderId: event.loaderId, status: response.status, url: response.url });
+    } : undefined;
+    if (onDocumentResponse) this.client.on('Network.responseReceived', onDocumentResponse);
     const eventWait = hasWaitEvent
       ? this.events.wait(req.waitEvent as string, undefined, req.timeoutMs ?? 10000)
       : undefined;
@@ -667,15 +679,24 @@ export class RecorderSession {
       // its own timeout destroy the method result: an observed event tags
       // `'observed'`; the wait's bounded timer elapsing tags `'bounded-timeout'`
       // and preserves `result` with no `event`.
-      if (!eventWait) return { result };
+      const loaderId = (result as { loaderId?: unknown } | undefined)?.loaderId;
+      const documentResponse = typeof loaderId === 'string'
+        ? documentResponses.filter((response) => response.loaderId === loaderId).at(-1)
+        : undefined;
+      if (!eventWait) return { result, ...(documentResponse ? { documentResponse } : {}) };
       const settled = await eventWait.result().then(
         (event) => ({ event, waitOutcome: 'observed' as const }),
         () => ({ waitOutcome: 'bounded-timeout' as const }),
       );
-      return { result, ...settled };
+      const settledDocumentResponse = typeof loaderId === 'string'
+        ? documentResponses.filter((response) => response.loaderId === loaderId).at(-1)
+        : undefined;
+      return { result, ...settled, ...(settledDocumentResponse ? { documentResponse: settledDocumentResponse } : {}) };
     } catch (err) {
       eventWait?.cancel();
       throw err;
+    } finally {
+      if (onDocumentResponse) this.client.off('Network.responseReceived', onDocumentResponse);
     }
   }
 
@@ -1532,7 +1553,7 @@ export class MotionCollector implements Collector<{ frames: number; durationMs: 
 
   async control(message: unknown): Promise<unknown> {
     if (!this.session || !this.har) throw new Error('motion collector was not started');
-    const request = message as { type?: unknown; method?: unknown; params?: unknown; annotation?: unknown; waitEvent?: unknown; timeoutMs?: unknown } | null;
+    const request = message as { type?: unknown; method?: unknown; params?: unknown; annotation?: unknown; waitEvent?: unknown; timeoutMs?: unknown; observeDocumentResponse?: unknown } | null;
     if (request?.type === 'har-flush') return this.har.flush();
     if (request?.type !== 'cdp') throw new Error('unsupported motion collector control request');
     return this.session.handleCdp({
@@ -1542,6 +1563,7 @@ export class MotionCollector implements Collector<{ frames: number; durationMs: 
       mark: typeof request.annotation === 'string' ? request.annotation : undefined,
       waitEvent: typeof request.waitEvent === 'string' ? request.waitEvent : undefined,
       timeoutMs: typeof request.timeoutMs === 'number' ? request.timeoutMs : undefined,
+      observeDocumentResponse: request.observeDocumentResponse === true,
     });
   }
 

@@ -22,7 +22,7 @@ import {
 const USAGE = `capture page scroll <target> --to <top|bottom|px> — scroll one resolved container to a position
 
 input:
-  <target>          resolved against the LIVE page: bare CSS selector (takes precedence) or exact accessible name when CSS finds none, ax:<name> (case-insensitive substring), axid:<id>, backend:<id>; text: is not accepted; exactly one match required — zero or many matches is a structured error listing candidates
+  <target>          resolved against the LIVE page: bare CSS selector (takes precedence) or exact accessible name when CSS finds none, ax:<name> (case-insensitive substring), axid:<id>, backend:<id>; text: is not accepted; exactly one match required — zero or many matches is a structured error listing candidates. This leaf does not enumerate scroll containers; when the target is unknown, use \`capture measure map scroll\`.
   --to <dest>       required destination: top, bottom, or a pixel offset (scrollTop value)
   --behavior <instant|smooth> dispatch behavior; instant is the default, smooth waits at most 5000ms for scrollend before reporting the measured offset
   --settle <ms>     network-settle window applied after the scroll (default: 1000; 2500 with an active session; 0 disables)

@@ -16,6 +16,7 @@ input:
   --artifact-dir <path>  root for the one-shot snapshot bundle when the target is a URL
   --gate          exit 2 when the report contains findings (default: exit 0)
 output: <checks result=… findings=…> — findings with coordinates and collection provenance; measurements, not a pass/fail judgment; --json mirrors
+boundary: measurements are local to the selected snapshot. \`capture lighthouse\` runs the independent audited sweep.
 effects: read-only over an existing snapshot artifact; a URL target writes one one-shot snapshot bundle under --artifact-dir when supplied`;
 
 const DEFAULT_FINDING_LIMIT = 20;
@@ -140,6 +141,7 @@ export async function cmdMeasureCheck(parsed: ParsedArgs, _args: string[]): Prom
       sections: [
         ...(findings.length ? [line(text`Finding counts: `, rollup(findings)!)] : []),
         ...formatFindings(findingSections),
+        fact`Measurements are local to snapshot ${ref.id}; \`capture lighthouse\` runs the independent audited sweep.`,
       ],
       followUp: findings.length > withCrops.length
         ? fact`The full snapshot artifact at ${ref.dir} retains every measured finding input; this result is bounded by --limit.`

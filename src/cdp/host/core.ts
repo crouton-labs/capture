@@ -187,10 +187,10 @@ export class CollectorHost {
     return controller.control(message);
   }
 
-  async dispatch(method: string, params: Record<string, unknown> = {}, annotation?: string, waitEvent?: string, timeoutMs?: number): Promise<unknown> {
+  async dispatch(method: string, params: Record<string, unknown> = {}, annotation?: string, waitEvent?: string, timeoutMs?: number, observeDocumentResponse = false): Promise<unknown> {
     if (!this.clientUsable) throw new Error('collector host CDP transport is unavailable');
     const controller = this.motionController();
-    if (controller?.control) return controller.control({ type: 'cdp', method, params, annotation, waitEvent, timeoutMs });
+    if (controller?.control) return controller.control({ type: 'cdp', method, params, annotation, waitEvent, timeoutMs, observeDocumentResponse });
     const notice: DispatchNotice = { method, params, annotation, atPerformanceNowMs: performance.now() };
     const callbacks = [...this.live.values()].flatMap(live => {
       try { const callback = live.collector.onDispatch?.(notice); return callback ? [callback] : []; } catch { return []; }

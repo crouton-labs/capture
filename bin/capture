@@ -8460,11 +8460,11 @@ var init_held_client = __esm({
         if (!response.ok) throw new Error(`collector-host wait-event "${eventName}" failed: ${response.error}`);
         return response.event;
       }
-      async dispatch(method, params = {}, waitEvent, timeoutMs) {
+      async dispatch(method, params = {}, waitEvent, timeoutMs, observeDocumentResponse = false) {
         const suppressMousePress = method === "Input.dispatchMouseEvent" && params.type === "mousePressed" && this.suppressNextMousePressMark;
         if (suppressMousePress) this.suppressNextMousePressMark = false;
         const annotation = !suppressMousePress && isMarkableActionMethod(method, params) ? this.options.actionLabel : void 0;
-        return this.request(method, params, annotation, waitEvent, timeoutMs);
+        return this.request(method, params, annotation, waitEvent, timeoutMs, observeDocumentResponse);
       }
       async flushHar() {
         const response = await sendHostRequest(this.options.socketPath, { type: "har-flush", nonce: this.options.nonce });
@@ -8484,7 +8484,7 @@ var init_held_client = __esm({
       }
       close() {
       }
-      async request(method, params, annotation, waitEvent, timeoutMs) {
+      async request(method, params, annotation, waitEvent, timeoutMs, observeDocumentResponse = false) {
         const response = await sendHostRequest(this.options.socketPath, {
           type: "cdp",
           nonce: this.options.nonce,
@@ -8492,10 +8492,17 @@ var init_held_client = __esm({
           params,
           annotation,
           waitEvent,
-          timeoutMs: timeoutMs ?? this.defaultTimeoutMs
+          timeoutMs: timeoutMs ?? this.defaultTimeoutMs,
+          observeDocumentResponse
         }, (timeoutMs ?? this.defaultTimeoutMs) + 5e3);
         if (!response.ok) throw new Error(`collector-host CDP call "${method}"${waitEvent ? ` with wait-event "${waitEvent}"` : ""} failed: ${response.error}`);
-        return { result: response.result, event: response.event, waitOutcome: response.waitOutcome };
+        const documentResponse = response.documentResponse;
+        return {
+          result: response.result,
+          event: response.event,
+          waitOutcome: response.waitOutcome,
+          documentResponse: documentResponse && typeof documentResponse === "object" && typeof documentResponse.status === "number" && typeof documentResponse.url === "string" ? documentResponse : void 0
+        };
       }
     };
   }
@@ -13580,6 +13587,16 @@ var init_motion = __esm({
             'Invalid cdp request: requires a nonempty string "method" (to dispatch) or "waitEvent" (to wait only) \u2014 got neither.'
           );
         }
+        const documentResponses = [];
+        const onDocumentResponse = req.observeDocumentResponse ? (params) => {
+          if (!params || typeof params !== "object" || Array.isArray(params)) return;
+          const event = params;
+          if (event.type !== "Document" || typeof event.loaderId !== "string" || !event.response || typeof event.response !== "object" || Array.isArray(event.response)) return;
+          const response = event.response;
+          if (typeof response.status !== "number" || !Number.isFinite(response.status) || typeof response.url !== "string") return;
+          documentResponses.push({ loaderId: event.loaderId, status: response.status, url: response.url });
+        } : void 0;
+        if (onDocumentResponse) this.client.on("Network.responseReceived", onDocumentResponse);
         const eventWait = hasWaitEvent ? this.events.wait(req.waitEvent, void 0, req.timeoutMs ?? 1e4) : void 0;
         try {
           if (!hasMethod) {
@@ -13605,15 +13622,20 @@ var init_motion = __esm({
           } else {
             result = await this.client.send(req.method, req.params ?? {}, req.timeoutMs ?? 6e4);
           }
-          if (!eventWait) return { result };
+          const loaderId = result?.loaderId;
+          const documentResponse = typeof loaderId === "string" ? documentResponses.filter((response) => response.loaderId === loaderId).at(-1) : void 0;
+          if (!eventWait) return { result, ...documentResponse ? { documentResponse } : {} };
           const settled = await eventWait.result().then(
             (event) => ({ event, waitOutcome: "observed" }),
             () => ({ waitOutcome: "bounded-timeout" })
           );
-          return { result, ...settled };
+          const settledDocumentResponse = typeof loaderId === "string" ? documentResponses.filter((response) => response.loaderId === loaderId).at(-1) : void 0;
+          return { result, ...settled, ...settledDocumentResponse ? { documentResponse: settledDocumentResponse } : {} };
         } catch (err) {
           eventWait?.cancel();
           throw err;
+        } finally {
+          if (onDocumentResponse) this.client.off("Network.responseReceived", onDocumentResponse);
         }
       }
       /** Records a host-routed marked dispatch without issuing a second CDP call. */
@@ -14336,7 +14358,8 @@ var init_motion = __esm({
           params: request.params && typeof request.params === "object" && !Array.isArray(request.params) ? request.params : {},
           mark: typeof request.annotation === "string" ? request.annotation : void 0,
           waitEvent: typeof request.waitEvent === "string" ? request.waitEvent : void 0,
-          timeoutMs: typeof request.timeoutMs === "number" ? request.timeoutMs : void 0
+          timeoutMs: typeof request.timeoutMs === "number" ? request.timeoutMs : void 0,
+          observeDocumentResponse: request.observeDocumentResponse === true
         });
       }
       async drain(cause) {
@@ -15586,7 +15609,10 @@ async function har(parsed) {
       truncated: truncated ? true : void 0
     },
     summary,
-    sections
+    sections: [
+      ...sections,
+      fact`Recorded transactions only; this read does not change responses. \`capture tab mock start\` serves a counterfactual response.`
+    ]
   }, { json: parsed.json });
 }
 function bundleRows(manifest) {
@@ -16063,6 +16089,9 @@ output:
   _resourceType "websocket" and their frames in _webSocketMessages (capped at
   200 frames/socket, 4KB/frame); sockets opened before recording started are
   not visible.
+
+boundary:
+  Reports recorded transactions and does not change responses. For a counterfactual response, use \`capture tab mock start\`.
 
 effects:
   None \u2014 reads recorded HAR data only.`;
@@ -17231,7 +17260,7 @@ var init_scroll = __esm({
     USAGE3 = `capture page scroll <target> --to <top|bottom|px> \u2014 scroll one resolved container to a position
 
 input:
-  <target>          resolved against the LIVE page: bare CSS selector (takes precedence) or exact accessible name when CSS finds none, ax:<name> (case-insensitive substring), axid:<id>, backend:<id>; text: is not accepted; exactly one match required \u2014 zero or many matches is a structured error listing candidates
+  <target>          resolved against the LIVE page: bare CSS selector (takes precedence) or exact accessible name when CSS finds none, ax:<name> (case-insensitive substring), axid:<id>, backend:<id>; text: is not accepted; exactly one match required \u2014 zero or many matches is a structured error listing candidates. This leaf does not enumerate scroll containers; when the target is unknown, use \`capture measure map scroll\`.
   --to <dest>       required destination: top, bottom, or a pixel offset (scrollTop value)
   --behavior <instant|smooth> dispatch behavior; instant is the default, smooth waits at most 5000ms for scrollend before reporting the measured offset
   --settle <ms>     network-settle window applied after the scroll (default: 1000; 2500 with an active session; 0 disables)
@@ -17244,16 +17273,20 @@ effects:
 });
 
 // src/cdp/commands/page/navigate.ts
+function documentOutcomeFor(response) {
+  if (!response) return { kind: "not-observed" };
+  return { kind: response.status >= 400 ? "http-error-document" : "http-response", status: response.status, url: response.url };
+}
 async function navigateViaRecorder(client, url) {
-  const first = await client.dispatch("Page.navigate", { url }, LOAD_EVENT_NAME, timing.innerTimeoutMs);
+  const first = await client.dispatch("Page.navigate", { url }, LOAD_EVENT_NAME, timing.innerTimeoutMs, true);
   const loaderId = first.result?.loaderId;
   if (loaderId) {
-    return { loadOutcome: first.waitOutcome ?? "bounded-timeout", loaderId, bounced: false };
+    return { loadOutcome: first.waitOutcome ?? "bounded-timeout", documentOutcome: documentOutcomeFor(first.documentResponse), loaderId, bounced: false };
   }
   await client.dispatch("Page.navigate", { url: "about:blank" });
-  const final = await client.dispatch("Page.navigate", { url }, LOAD_EVENT_NAME, timing.innerTimeoutMs);
+  const final = await client.dispatch("Page.navigate", { url }, LOAD_EVENT_NAME, timing.innerTimeoutMs, true);
   const finalLoaderId = final.result?.loaderId;
-  return { loadOutcome: final.waitOutcome ?? "bounded-timeout", loaderId: finalLoaderId, bounced: true };
+  return { loadOutcome: final.waitOutcome ?? "bounded-timeout", documentOutcome: documentOutcomeFor(final.documentResponse), loaderId: finalLoaderId, bounced: true };
 }
 function armLoadWait(broker) {
   const wait = broker.wait(LOAD_EVENT_NAME, void 0, timing.innerTimeoutMs);
@@ -17263,33 +17296,61 @@ function armLoadWait(broker) {
   );
   return { wait, outcome };
 }
+function observeDocumentResponses(client) {
+  const responses = [];
+  const handler = (params) => {
+    if (!params || typeof params !== "object" || Array.isArray(params)) return;
+    const event = params;
+    if (event.type !== "Document" || typeof event.loaderId !== "string" || !event.response || typeof event.response !== "object" || Array.isArray(event.response)) return;
+    const response = event.response;
+    if (typeof response.status !== "number" || !Number.isFinite(response.status) || typeof response.url !== "string") return;
+    responses.push({ loaderId: event.loaderId, status: response.status, url: response.url });
+  };
+  client.on("Network.responseReceived", handler);
+  return {
+    outcomeFor(loaderId) {
+      const response = loaderId === void 0 ? void 0 : responses.filter((candidate) => candidate.loaderId === loaderId).at(-1);
+      if (!response) return { kind: "not-observed" };
+      return { kind: response.status >= 400 ? "http-error-document" : "http-response", status: response.status, url: response.url };
+    },
+    dispose() {
+      client.off("Network.responseReceived", handler);
+    }
+  };
+}
 async function navigateDirect(client, url, armed) {
   await client.send("Page.enable");
+  await client.send("Network.enable");
+  const documents = observeDocumentResponses(client);
   const broker = new EventBroker(client);
-  const first = armLoadWait(broker);
-  if (armed) armed.cancel = () => first.wait.cancel();
-  let nav;
   try {
-    nav = await client.send("Page.navigate", { url });
-  } catch (err) {
+    const first = armLoadWait(broker);
+    if (armed) armed.cancel = () => first.wait.cancel();
+    let nav;
+    try {
+      nav = await client.send("Page.navigate", { url });
+    } catch (err) {
+      first.wait.cancel();
+      throw err;
+    }
+    if (nav?.loaderId) {
+      return { loadOutcome: await first.outcome, documentOutcome: documents.outcomeFor(nav.loaderId), loaderId: nav.loaderId, bounced: false };
+    }
     first.wait.cancel();
-    throw err;
+    await client.send("Page.navigate", { url: "about:blank" });
+    const second = armLoadWait(broker);
+    if (armed) armed.cancel = () => second.wait.cancel();
+    let navFinal;
+    try {
+      navFinal = await client.send("Page.navigate", { url });
+    } catch (err) {
+      second.wait.cancel();
+      throw err;
+    }
+    return { loadOutcome: await second.outcome, documentOutcome: documents.outcomeFor(navFinal?.loaderId), loaderId: navFinal?.loaderId, bounced: true };
+  } finally {
+    documents.dispose();
   }
-  if (nav?.loaderId) {
-    return { loadOutcome: await first.outcome, loaderId: nav.loaderId, bounced: false };
-  }
-  first.wait.cancel();
-  await client.send("Page.navigate", { url: "about:blank" });
-  const second = armLoadWait(broker);
-  if (armed) armed.cancel = () => second.wait.cancel();
-  let navFinal;
-  try {
-    navFinal = await client.send("Page.navigate", { url });
-  } catch (err) {
-    second.wait.cancel();
-    throw err;
-  }
-  return { loadOutcome: await second.outcome, loaderId: navFinal?.loaderId, bounced: true };
 }
 async function raceNavDeadline(work) {
   let timer;
@@ -17309,6 +17370,7 @@ async function raceNavDeadline(work) {
 function buildNavigatedResult(f) {
   const sections = [
     f.loadOutcome === "observed" ? fact`load: ${LOAD_EVENT_NAME} observed within the ${timing.innerTimeoutMs}ms load-wait window.` : fact`load: ${LOAD_EVENT_NAME} not observed within the ${timing.innerTimeoutMs}ms load-wait window (bounded-timeout); the navigation still dispatched.`,
+    f.documentOutcome.kind === "not-observed" ? fact`document/network outcome: no matching HTTP document response was observed.` : fact`document/network outcome: HTTP ${f.documentOutcome.status} at ${f.documentOutcome.url}${f.documentOutcome.kind === "http-error-document" ? " (HTTP error document)" : ""}.`,
     fact`navigation dispatched: loaderId ${f.loaderId ?? "(none)"}${f.bounced ? "; delivered via dest\u2192about:blank\u2192dest bounce (same-document target)" : ""}.`,
     fact`settle: requested ${f.settle.requestedMs}ms, waited ${f.settle.waitedMs}ms.`
   ];
@@ -17326,6 +17388,9 @@ function buildNavigatedResult(f) {
       url: f.tabUrl,
       settle: f.settle.requestedMs,
       "load-outcome": f.loadOutcome,
+      "document-outcome": f.documentOutcome.kind,
+      "document-status": f.documentOutcome.kind === "not-observed" ? void 0 : f.documentOutcome.status,
+      "document-url": f.documentOutcome.kind === "not-observed" ? void 0 : f.documentOutcome.url,
       "deadline-exceeded": f.deadlineExceeded || void 0,
       routed: f.routed || void 0
     },
@@ -17372,6 +17437,7 @@ async function cmdPageNavigate(parsed, _args) {
       armed.cancel();
       return {
         loadOutcome: "bounded-timeout",
+        documentOutcome: { kind: "not-observed" },
         loaderId: void 0,
         bounced: false,
         deadlineExceeded: true,
@@ -17385,6 +17451,7 @@ async function cmdPageNavigate(parsed, _args) {
       tabUrl: core.tabUrl,
       requestedUrl: url,
       loadOutcome: core.loadOutcome,
+      documentOutcome: core.documentOutcome,
       deadlineExceeded: core.deadlineExceeded,
       loaderId: core.loaderId,
       bounced: core.bounced,
@@ -17420,12 +17487,15 @@ picks which tab navigates. Navigate never creates a tab \u2014 use "tab open" fo
 that; an unresolvable source is a targeting error, not a new tab.
 
 Output:
-  One <navigated url=\u2026 settle=\u2026 load-outcome=\u2026 deadline-exceeded=\u2026> block:
+  One <navigated url=\u2026 settle=\u2026 load-outcome=\u2026 document-outcome=\u2026 deadline-exceeded=\u2026> block:
   the tab URL after navigation, the measured settle, and \u2014 reported
-  separately \u2014 the load outcome (observed | bounded-timeout), whether the
-  nav phase exceeded its deadline, the dispatched navigation's loaderId (and
+  separately \u2014 the load outcome (observed | bounded-timeout), the document/network
+  outcome (http-response | http-error-document | not-observed; the latter has no
+  document status or URL), whether the nav phase exceeded its deadline, the
+  dispatched navigation's loaderId (and
   any about:blank bounce for a same-document target), and whether the CDP
-  routed through an active recording. --json mirrors the same fields.
+  routed through an active recording. A document HTTP error does not change the
+  navigation dispatch or load outcome. --json mirrors the same fields.
 
 Effects:
   Navigates the source tab (exactly one Page.navigate for the destination;
@@ -231415,10 +231485,10 @@ var init_core = __esm({
         if (!controller?.control) throw new Error("no collector accepts this host control request");
         return controller.control(message);
       }
-      async dispatch(method, params = {}, annotation, waitEvent, timeoutMs) {
+      async dispatch(method, params = {}, annotation, waitEvent, timeoutMs, observeDocumentResponse = false) {
         if (!this.clientUsable) throw new Error("collector host CDP transport is unavailable");
         const controller = this.motionController();
-        if (controller?.control) return controller.control({ type: "cdp", method, params, annotation, waitEvent, timeoutMs });
+        if (controller?.control) return controller.control({ type: "cdp", method, params, annotation, waitEvent, timeoutMs, observeDocumentResponse });
         const notice = { method, params, annotation, atPerformanceNowMs: import_node_perf_hooks3.performance.now() };
         const callbacks = [...this.live.values()].flatMap((live) => {
           try {
@@ -231549,7 +231619,8 @@ async function runCollectorHost(options) {
             request.params ?? {},
             typeof request.annotation === "string" ? request.annotation : void 0,
             typeof request.waitEvent === "string" ? request.waitEvent : void 0,
-            typeof request.timeoutMs === "number" ? request.timeoutMs : void 0
+            typeof request.timeoutMs === "number" ? request.timeoutMs : void 0,
+            request.observeDocumentResponse === true
           );
           answer({ ok: true, ...dispatched && typeof dispatched === "object" ? dispatched : { result: dispatched } });
           return;
@@ -240048,7 +240119,8 @@ async function cmdMeasureCheck(parsed, _args) {
       summary: findings.length ? fact`${findings.length} measured fact(s) matched the selected thresholds in viewport ${report.viewport.width}×${report.viewport.height}; ${withCrops.length} representative record(s) rendered.` : fact`No selected measurement threshold was crossed among ${scopedElements?.length ?? report.elementCount} recorded elements in viewport ${report.viewport.width}×${report.viewport.height}.`,
       sections: [
         ...findings.length ? [line(text`Finding counts: `, rollup(findings))] : [],
-        ...formatFindings(findingSections)
+        ...formatFindings(findingSections),
+        fact`Measurements are local to snapshot ${ref.id}; \`capture lighthouse\` runs the independent audited sweep.`
       ],
       followUp: findings.length > withCrops.length ? fact`The full snapshot artifact at ${ref.dir} retains every measured finding input; this result is bounded by --limit.` : void 0
     };
@@ -240085,6 +240157,7 @@ input:
   --artifact-dir <path>  root for the one-shot snapshot bundle when the target is a URL
   --gate          exit 2 when the report contains findings (default: exit 0)
 output: <checks result=\u2026 findings=\u2026> \u2014 findings with coordinates and collection provenance; measurements, not a pass/fail judgment; --json mirrors
+boundary: measurements are local to the selected snapshot. \`capture lighthouse\` runs the independent audited sweep.
 effects: read-only over an existing snapshot artifact; a URL target writes one one-shot snapshot bundle under --artifact-dir when supplied`;
     DEFAULT_FINDING_LIMIT = 20;
   }
@@ -241549,7 +241622,10 @@ async function cmdMeasureExplain(parsed, _args) {
         state: parsed.state?.[0] ?? "base"
       },
       summary: fact`Recorded cascade, border/ink geometry, stacking, clipping, focus, scroll, query, and state context for ${targetSelector}${parsed.state?.[0] ? ` under requested state ${parsed.state[0]}` : " from base-state artifacts"}.`,
-      sections,
+      sections: [
+        ...sections,
+        fact`Measurements are local to snapshot ${report.ref.id}; \`capture lighthouse\` runs the independent audited sweep.`
+      ],
       followUp: parsed.size || parsed.text || parsed.form ? text`Re-run against a new snapshot to compare the same recorded measurements after a page change.` : text`Add --size, --text, or --form to include only those optional detail sections.`
     };
     emitResult(result, { json: parsed.json });
@@ -241580,6 +241656,7 @@ input:
   --text             include text line/baseline/font/wrap metrics before general rendering context
   --form             include form value/geometry/caret/selection/autofill facts before general rendering context
 output: <explain selector=\u2026 matches=\u2026> \u2014 requested size/text/form measurements lead after target identity; full cascade, border/ink, stacking, clipping, focus, scroll, query, and state context remains in the result; --json mirrors
+boundary: measurements are local to the selected snapshot. \`capture lighthouse\` runs the independent audited sweep.
 effects: read-only \u2014 reads existing snapshot artifacts, never drives the browser`;
   }
 });
