@@ -200,6 +200,10 @@ function renderWorksheet(oracle, report, parsedReport, record) {
     `- First intended-capability ordinal: ${record.routeMetrics.firstIntendedCapabilityOrdinal ?? "none"}; capability use: ${record.grade.firstClassCapability}.`,
     `- Reference ratios — calls: ${record.routeMetrics.callRatio ?? "undefined"}; elapsed: ${record.routeMetrics.elapsedRatio ?? "undefined"}; stdout: ${record.routeMetrics.stdoutTokenRatio ?? "undefined"}${record.referenceProvisional ? " (reference provisional)" : ""}.`,
     `- CDP accounting: ${record.grade.cdpAccounting.unaccounted} unaccounted connection(s), using: ${record.grade.cdpAccounting.rule}`,
+    ...(record._mechanical.unaccounted.length === 0 ? ["- Unaccounted CDP connections: none."] : [
+      "- Unaccounted CDP connections:",
+      ...record._mechanical.unaccounted.map((connection) => `  - ${connection.connId}: accepted ${connection.acceptedAt}; closed ${connection.closedAt}; remote ${connection.remoteAddr}:${connection.remotePort}; bytes to browser/client ${connection.bytesToBrowser}/${connection.bytesToClient}; first request ${JSON.stringify(connection.firstRequestLine)}.`),
+    ]),
     `- Isolation contamination: ${record._mechanical.contaminationFailures.length ? record._mechanical.contaminationFailures.join("; ") : "none detected"}.`,
     ...record._mechanical.budgetBreaches.map((breach) => `- Budget breach: ${breach.condition} at transcript ordinal ${breach.ordinal ?? "none"}.`),
     "",
@@ -348,8 +352,24 @@ function mechanicalRecord({ runId, meta, oracle, reference, events, connections,
   };
 }
 
-function validateFacts(input, transcriptOrdinals, oracle) {
+function validateFacts(input, transcriptOrdinals, oracle, unaccountedConnections) {
   if (input === null || typeof input !== "object" || Array.isArray(input)) throw new Error("facts.json must be an object keyed by worksheet item ID");
+  const { cdpAttributions = [], ...factInput } = input;
+  if (!Array.isArray(cdpAttributions)) throw new Error(`Invalid cdpAttributions: ${JSON.stringify(cdpAttributions)}`);
+  const unaccountedConnIds = new Set(unaccountedConnections.map((connection) => connection.connId));
+  const attributedConnIds = new Set();
+  for (const attribution of cdpAttributions) {
+    if (attribution === null || typeof attribution !== "object" || Array.isArray(attribution) || Object.keys(attribution).length !== 3 || !["connId", "emitter", "evidence"].every((key) => Object.hasOwn(attribution, key))) {
+      throw new Error(`Invalid CDP attribution: ${JSON.stringify(attribution)}`);
+    }
+    const { connId, emitter, evidence } = attribution;
+    if (!Number.isInteger(connId) || connId <= 0) throw new Error(`Invalid CDP attribution connId: ${JSON.stringify(connId)}`);
+    if (!unaccountedConnIds.has(connId)) throw new Error(`CDP attribution connId is not unaccounted: ${connId}`);
+    if (attributedConnIds.has(connId)) throw new Error(`Duplicate CDP attribution connId: ${connId}`);
+    if (typeof emitter !== "string" || emitter.trim() === "") throw new Error(`Invalid CDP attribution emitter for connId ${connId}: ${JSON.stringify(emitter)}`);
+    if (typeof evidence !== "string" || evidence.trim() === "") throw new Error(`Invalid CDP attribution evidence for connId ${connId}: ${JSON.stringify(evidence)}`);
+    attributedConnIds.add(connId);
+  }
   const expectedIds = new Set([
     ...oracle.requiredDiagnosisFacts.map((item) => item.id),
     ...oracle.requiredEvidence.map((item) => item.id),
@@ -358,7 +378,7 @@ function validateFacts(input, transcriptOrdinals, oracle) {
   ]);
   if (expectedIds.size !== oracle.requiredDiagnosisFacts.length + oracle.requiredEvidence.length + 2) throw new Error("Oracle fact IDs must be unique");
   const facts = new Map();
-  for (const [id, verdict] of Object.entries(input)) {
+  for (const [id, verdict] of Object.entries(factInput)) {
     if (!expectedIds.has(id)) throw new Error(`Unknown fact verdict ID: ${id}`);
     const validShape = verdict !== null && typeof verdict === "object" && !Array.isArray(verdict) && typeof verdict.present === "boolean" && typeof verdict.quote === "string" && Array.isArray(verdict.ordinals) && verdict.ordinals.every((ordinal) => Number.isInteger(ordinal) && ordinal > 0 && transcriptOrdinals.has(ordinal));
     if (!validShape || (verdict.present && (verdict.quote.trim() === "" || verdict.ordinals.length === 0))) {
@@ -366,14 +386,15 @@ function validateFacts(input, transcriptOrdinals, oracle) {
     }
     facts.set(id, verdict);
   }
-  return facts;
+  return { facts, cdpAttributions };
 }
 
 function ordinalsText(ordinals) {
   return ordinals.length ? ordinals.join(", ") : "none";
 }
 
-function adjudicate(record, oracle, facts) {
+function adjudicate(record, oracle, { facts, cdpAttributions }) {
+  const unaccounted = record._mechanical.unaccounted.filter((connection) => !cdpAttributions.some((attribution) => attribution.connId === connection.connId));
   const classifiedByOrdinal = new Map(record._mechanical.classified.map((event) => [event.ordinal, event]));
   const requiredFacts = oracle.requiredDiagnosisFacts.map((item) => ({ ...item, verdict: facts.get(item.id) ?? { present: false, quote: "", ordinals: [] } }));
   const requiredEvidence = oracle.requiredEvidence.map((item) => ({ ...item, verdict: facts.get(item.id) ?? { present: false, quote: "", ordinals: [] } }));
@@ -412,10 +433,10 @@ function adjudicate(record, oracle, facts) {
   ].filter(Boolean);
   let finalClass;
   let reasons;
-  if (record._mechanical.unaccounted.length > 0 || record._mechanical.infrastructureFailure || record._mechanical.telemetryFailures.length > 0 || record._mechanical.provenanceFailures.length > 0 || record._mechanical.contaminationFailures.length > 0) {
+  if (unaccounted.length > 0 || record._mechanical.infrastructureFailure || record._mechanical.telemetryFailures.length > 0 || record._mechanical.provenanceFailures.length > 0 || record._mechanical.contaminationFailures.length > 0) {
     finalClass = "invalid";
     reasons = [
-      ...record._mechanical.unaccounted.map((connection) => `unaccounted CDP connection ${connection.connId}`),
+      ...unaccounted.map((connection) => `unaccounted CDP connection ${connection.connId}`),
       ...(record._mechanical.infrastructureFailure ? ["meta.json flags an infrastructure failure"] : []),
       ...record._mechanical.telemetryFailures,
       ...record._mechanical.provenanceFailures,
@@ -438,7 +459,7 @@ function adjudicate(record, oracle, facts) {
       correctness,
       evidenceComplete,
       firstClassCapability: oracle.intendedCapabilityStatus === "unshipped" ? "unavailable" : record.routeMetrics.firstIntendedCapabilityOrdinal === null ? "absent" : "used",
-      cdpAccounting: { unaccounted: record._mechanical.unaccounted.length, rule: CDP_ACCOUNTING_RULE },
+      cdpAccounting: { unaccounted: unaccounted.length, rule: CDP_ACCOUNTING_RULE, ...(cdpAttributions.length ? { externallyAttributed: cdpAttributions } : {}) },
       callRatio: record.routeMetrics.callRatio,
       elapsedRatio: record.routeMetrics.elapsedRatio,
       stdoutTokenRatio: record.routeMetrics.stdoutTokenRatio,
@@ -471,7 +492,7 @@ export async function gradeRun({ runId, runDir, oraclePath, referencePath, facts
     writeFile(join(runDir, "run-record.json"), `${JSON.stringify(partial, null, 2)}\n`),
   ]);
   if (facts === null) return { stage: 1, record: partial, worksheetPath: join(runDir, "grading-worksheet.md") };
-  const adjudicated = adjudicate(mechanical, oracle, validateFacts(facts, new Set(events.map((event) => event.ordinal)), oracle));
+  const adjudicated = adjudicate(mechanical, oracle, validateFacts(facts, new Set(events.map((event) => event.ordinal)), oracle, mechanical._mechanical.unaccounted));
   await writeFile(join(runDir, "run-record.json"), `${JSON.stringify(adjudicated, null, 2)}\n`);
   return { stage: 2, record: adjudicated, worksheetPath: join(runDir, "grading-worksheet.md") };
 }

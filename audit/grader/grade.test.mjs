@@ -47,6 +47,10 @@ const facts = {
   plausibleWrongAnswer: { present: true, quote: "rules out alternative", ordinals: [2] },
 };
 
+function unaccountedConnection(connId) {
+  return { connId, acceptedAt: "2026-01-01T00:01:00.000Z", closedAt: "2026-01-01T00:01:01.000Z", remoteAddr: "127.0.0.1", remotePort: 1, bytesToBrowser: 151, bytesToClient: 1_141, firstRequestLine: "GET /json/list HTTP/1.1" };
+}
+
 async function fixture(t, { events = [event(1, ["-h"]), event(2, ["page", "inspect"])], connections = [], oracleValue = oracle(), referenceValue = reference(), meta = {}, reportValue = report } = {}) {
   const root = await mkdtemp(join(tmpdir(), "capture-grader-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -115,6 +119,52 @@ test("other JSON endpoints and version requests with extra traffic remain unacco
     const result = await gradeRun({ runId: "run", ...paths, facts });
     assert.equal(result.record.grade.finalClass, "invalid");
     assert.equal(result.record.grade.cdpAccounting.unaccounted, 1);
+  }
+});
+
+test("an externally attributed CDP connection is recorded rather than invalidating and remains visible in stage 1", async (t) => {
+  const connection = unaccountedConnection(1);
+  const paths = await fixture(t, { connections: [connection] });
+  await gradeRun({ runId: "run", ...paths });
+  const worksheet = await readFile(join(paths.runDir, "grading-worksheet.md"), "utf8");
+  assert.match(worksheet, /CDP accounting: 1 unaccounted connection/);
+  assert.match(worksheet, /- 1: accepted 2026-01-01T00:01:00\.000Z; closed 2026-01-01T00:01:01\.000Z; remote 127\.0\.0\.1:1; bytes to browser\/client 151\/1141; first request "GET \/json\/list HTTP\/1\.1"\./);
+
+  const attribution = { connId: 1, emitter: "sibling capture process", evidence: "Host process list and endpoint-detector trace identify the sibling." };
+  const result = await gradeRun({ runId: "run", ...paths, facts: { ...facts, cdpAttributions: [attribution] } });
+  assert.equal(result.record.grade.finalClass, "pass");
+  assert.equal(result.record.grade.cdpAccounting.unaccounted, 0);
+  assert.deepEqual(result.record.grade.cdpAccounting.externallyAttributed, [attribution]);
+});
+
+test("an unattributed CDP connection still invalidates", async (t) => {
+  const paths = await fixture(t, { connections: [unaccountedConnection(1)] });
+  const result = await gradeRun({ runId: "run", ...paths, facts });
+  assert.equal(result.record.grade.finalClass, "invalid");
+  assert.equal(result.record.grade.cdpAccounting.unaccounted, 1);
+  assert.match(result.record.grade.reasons.join("\n"), /unaccounted CDP connection 1/);
+});
+
+test("a mixed CDP run invalidates on the unattributed remainder", async (t) => {
+  const attribution = { connId: 1, emitter: "sibling capture process", evidence: "Host process list and endpoint-detector trace identify the sibling." };
+  const paths = await fixture(t, { connections: [unaccountedConnection(1), unaccountedConnection(2)] });
+  const result = await gradeRun({ runId: "run", ...paths, facts: { ...facts, cdpAttributions: [attribution] } });
+  assert.equal(result.record.grade.finalClass, "invalid");
+  assert.equal(result.record.grade.cdpAccounting.unaccounted, 1);
+  assert.deepEqual(result.record.grade.cdpAccounting.externallyAttributed, [attribution]);
+  assert.deepEqual(result.record.grade.reasons.filter((reason) => reason.startsWith("unaccounted CDP connection")), ["unaccounted CDP connection 2"]);
+});
+
+test("an attribution for an unknown or duplicate CDP connection is an error", async (t) => {
+  const paths = await fixture(t, { connections: [unaccountedConnection(1)] });
+  await assert.rejects(gradeRun({ runId: "run", ...paths, facts: { ...facts, cdpAttributions: [{ connId: 2, emitter: "sibling capture process", evidence: "Process trace." }] } }), /CDP attribution connId is not unaccounted: 2/);
+  await assert.rejects(gradeRun({ runId: "run", ...paths, facts: { ...facts, cdpAttributions: [{ connId: 1, emitter: "sibling capture process", evidence: "Process trace." }, { connId: 1, emitter: "sibling capture process", evidence: "Process trace." }] } }), /Duplicate CDP attribution connId: 1/);
+});
+
+test("an attribution needs non-blank emitter and evidence", async (t) => {
+  for (const [field, value] of [["emitter", "   "], ["evidence", ""]]) {
+    const paths = await fixture(t, { connections: [unaccountedConnection(1)] });
+    await assert.rejects(gradeRun({ runId: "run", ...paths, facts: { ...facts, cdpAttributions: [{ connId: 1, emitter: "sibling capture process", evidence: "Process trace.", [field]: value }] } }), new RegExp(`Invalid CDP attribution ${field} for connId 1`));
   }
 });
 
