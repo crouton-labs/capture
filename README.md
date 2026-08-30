@@ -36,8 +36,13 @@ Both ship a JavaScript escape hatch, so much of this is *reachable* in either on
 | Per-frame geometry of one element through an animation | ✅ | ❌ Video file only | ❌ Must use raw JS |
 | Changed pixel regions attributed to elements | ✅ | ❌ Must use raw JS | ❌ Must use raw JS |
 | A whole interaction as one image | ✅ | ❌ | ❌ |
+| Stub network responses from ordered rules | ✅ `tab mock` | ✅ `browser_route` | ❌ No interception tools |
+| Core Web Vitals with subparts and attribution | ✅ `perf vitals` | ❌ Trace file for the Trace Viewer | ✅ Trace insights |
+| DevTools insight set — render-blocking, forced reflow, shift culprits | ✅ `perf insights` | ❌ | ✅ |
+| Lighthouse, failing nodes in the reply | ✅ Per-node DOM path, selector, snippet | ❌ | ❌ Scores and counts; findings in the report file |
+| Heap census, retaining paths, snapshot diff | ✅ `heap` | ❌ | ✅ Behind `--memoryDebugging` |
 
-Both do things capture does not. Playwright MCP is cross-browser and can mock network responses; Chrome DevTools MCP has Core Web Vitals, real Lighthouse, DevTools performance tracing and heap profiling. capture is Chromium-only and points at one question — what is this page actually doing, in numbers.
+Both still do things capture does not. Playwright MCP is cross-browser — the sharpest structural gap — and has storage-state save/restore, test-code generation, device presets, PDF export, and richer input verbs (hover, drag, file upload). Chrome DevTools MCP automates Chrome extensions and PWAs and has CPU-throttling presets. capture is Chromium-only and points at one question — what is this page actually doing, in numbers.
 
 ## See it
 
@@ -137,15 +142,18 @@ Add `--gate` to `check` or `diff` and it exits nonzero on findings, so the same 
 
 ## The command surface
 
-Seven roots. Every leaf renders prose by default and mirrors the same result under `--json`.
+Ten roots. Every leaf renders prose by default and mirrors the same result under `--json`.
 
 | root | what it owns |
 |---|---|
 | `session` | the artifact container — records HAR, bundles artifacts, sets the active context |
-| `page` | verbs against the live tab — `click`, `type`, `scroll`, `navigate`, `exec`, `shot`, `elements` |
-| `tab` | browser and tab plumbing — `launch`, `list`, `open`, `close`, `reset`, `network` |
-| `measure` | settled-snapshot substrate plus read-only queries — `snap`, `check`, `diff`, `explain`, `sweep`, `census`, `map` |
+| `page` | verbs against the live tab — `click`, `type`, `scroll`, `navigate`, `exec`, `repeat`, `shot`, `elements`, `inspect` |
+| `tab` | browser and tab plumbing — `launch`, `quit`, `list`, `open`, `close`, `reset`, `network`, `mock` |
+| `measure` | settled-snapshot substrate plus read-only queries — `snap`, `check`, `diff`, `explain`, `sweep`, `census`, `map`, `text` |
 | `motion` | recorder lifecycle plus queries over a recording — `rec`, `mask`, `timeline`, `response`, `jank` |
+| `perf` | performance-trace substrate — `trace` records, `vitals` and `insights` read it |
+| `heap` | V8 heap-snapshot substrate — `snapshot`, `census`, `objects`, `retainers`, `diff` |
+| `lighthouse` | runs Lighthouse against a URL and stores its report unmodified |
 | `cdp` | raw Chrome DevTools Protocol escape hatch |
 | `lib` | vault-lib introspection, for running forked libs in the tab |
 
@@ -153,11 +161,12 @@ Run any of them bare for the subcommand list, or `capture <root> <leaf> -h` for 
 
 ## How it fits together
 
-Three artifact kinds, and the split matters because it is what keeps queries cheap.
+A session is the container; recorded substrates are what keep queries cheap.
 
 - **A session** is the container. It opens or adopts a tab, records HAR while it is active, and writes a bundle manifest when it stops. Everything produced while it runs lands in one directory.
 - **A snapshot** (`measure snap`) drives the page once and writes a settled substrate — geometry, styles, accessibility, layers, hit testing, text, forms, screenshot. Every other `measure` leaf is a cheap read over that artifact and never re-drives the browser.
 - **A recording** (`motion rec`) captures an interaction, one-shot or composed across several commands. Every other `motion` leaf reads the finalized recording.
+- **A performance trace** (`perf trace`) and **a heap snapshot** (`heap snapshot`) work the same way: record once, then `vitals`/`insights` and `census`/`objects`/`retainers`/`diff` are read-only queries over the artifact.
 
 Findings exit 0 — they are a report, not a crash. Only `check` and `diff` accept `--gate`, which turns findings into exit 2.
 
