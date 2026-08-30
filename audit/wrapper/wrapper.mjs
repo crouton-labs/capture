@@ -132,9 +132,23 @@ async function appendEvent(transcriptPath, event) {
   }
 }
 
-function pipeOutput(source, destination, onChunk) {
+// A consumer that exits early (`./capture … | head`) closes our stdout while the child is still
+// writing. Without this handler the EPIPE surfaces as an unhandled 'error' event and kills the
+// wrapper before it can append the transcript record, so the invocation vanishes from the
+// authoritative transcript while ordinals stay gapless — a call could hide contamination behind a
+// pipe. Stop forwarding, tear down the child's stream so it observes the closed pipe exactly as it
+// would unwrapped, and let the run continue to its record.
+function pipeOutput(source, destination, onChunk, onDestinationLost) {
+  let lost = false;
+  destination.on('error', (error) => {
+    if (lost) return;
+    lost = true;
+    onDestinationLost(error?.code ?? String(error));
+    source.destroy();
+  });
   source.on('data', (chunk) => {
     onChunk(chunk);
+    if (lost) return;
     if (!destination.write(chunk)) source.pause();
   });
   destination.on('drain', () => source.resume());
@@ -154,6 +168,7 @@ export async function runWrapper({ argv = process.argv.slice(2), env = process.e
   let stdoutBytes = 0;
   let stderrBytes = 0;
   const artifacts = new ArtifactExtractor();
+  const outputPipeErrors = {};
   const child = spawn(env.AUDIT_CAPTURE_BIN || DEFAULT_CAPTURE_BIN, argv, {
     cwd,
     env,
@@ -162,10 +177,10 @@ export async function runWrapper({ argv = process.argv.slice(2), env = process.e
   pipeOutput(child.stdout, process.stdout, (chunk) => {
     stdoutBytes += chunk.length;
     artifacts.add(chunk);
-  });
+  }, (code) => { outputPipeErrors.stdout = code; });
   pipeOutput(child.stderr, process.stderr, (chunk) => {
     stderrBytes += chunk.length;
-  });
+  }, (code) => { outputPipeErrors.stderr = code; });
 
   let forwardedSignal = null;
   const forwardSignal = (signal) => {
@@ -201,6 +216,7 @@ export async function runWrapper({ argv = process.argv.slice(2), env = process.e
     artifactPaths: artifacts.paths(),
     cwd,
     pid: process.pid,
+    ...(Object.keys(outputPipeErrors).length > 0 ? { outputPipeErrors } : {}),
   };
 
   try {

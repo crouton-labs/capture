@@ -209,3 +209,24 @@ test('makes an unwritable transcript detectable without running the child', asyn
   assert.match(result.stderr.toString(), /configuration error/);
   assert.ok(existsSync(`${transcriptDirectory}.failure`));
 });
+
+test('records the invocation when a downstream consumer closes the pipe early', async () => {
+  const stub = await writeStub('flood', `
+const chunk = 'x'.repeat(64 * 1024);
+for (let i = 0; i < 40; i += 1) process.stdout.write(chunk);
+`);
+  const transcript = join(temporaryRoot, `transcript-${crypto.randomUUID()}.ndjson`);
+  await writeFile(transcript, '');
+
+  const piped = await start('sh', ['-c', `"$0" flood | head -c 100 > /dev/null`, WRAPPER], {
+    env: { AUDIT_TRANSCRIPT: transcript, AUDIT_RUN_ID: 'test-run', AUDIT_CAPTURE_BIN: stub },
+  }).done;
+  const direct = await start('sh', ['-c', `"$0" | head -c 100 > /dev/null`, stub]).done;
+
+  const lines = (await readFile(transcript, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1, 'a piped invocation must still reach the transcript');
+  assert.equal(lines[0].ordinal, 1);
+  assert.deepEqual(lines[0].argv, ['flood']);
+  assert.equal(lines[0].outputPipeErrors?.stdout, 'EPIPE', 'the lost consumer is recorded, not silently swallowed');
+  assert.equal(piped.code, direct.code, 'exit code matches the unwrapped pipeline');
+});
