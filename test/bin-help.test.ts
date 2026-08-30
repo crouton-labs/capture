@@ -143,7 +143,10 @@ test('page branch grammar names the leaf: `page click` is rejected at the valida
     const result = run(['page', 'click'], tempRoot);
     assert.equal(result.status, 1);
     assert.ok(result.stdout.includes('<error code="invalid_input" kind="invocation">'), result.stdout);
-    assert.ok(result.stdout.includes('page click received 0 positional argument(s); expected exactly 1.'), result.stdout);
+    assert.ok(result.stdout.includes('received: 0 positional argument(s)'), result.stdout);
+    assert.ok(result.stdout.includes('expected: exactly 1 positional argument(s)'), result.stdout);
+    assert.ok(result.stdout.includes('field: &lt;positional&gt;'), result.stdout);
+    assert.ok(result.stdout.includes('Next: Run `capture page click -h` and read the schema before re-issuing.'), result.stdout);
     assert.ok(!result.stdout.includes('not_implemented'), result.stdout);
     assert.deepEqual(readdirSync(tempRoot), []);
   });

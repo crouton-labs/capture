@@ -50,8 +50,7 @@ export async function cmdMeasureDiff(parsed: ParsedArgs, _args: string[]): Promi
     const result: RenderableResult = {
       tag: 'error',
       attrs: { command: 'measure diff', status: 'invalid_input' },
-      summary: text`This command requires --before SNAP and --after SNAP and accepts no positional target.`,
-      followUp: text`Use capture measure diff --before SNAP --after SNAP.`,
+      summary: fact`received: ${parsed.positional.length} positional argument(s), --before=${parsed.before ?? '(missing)'}, --after=${parsed.after ?? '(missing)'}\nexpected: no positional target and both settled snapshot references\nfield: <positional>, --before, --after\nNext: Run \`capture measure diff -h\` and read the schema before re-issuing.`,
     };
     emitResult(result, { json: parsed.json });
     process.exitCode = 1;

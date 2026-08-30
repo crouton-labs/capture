@@ -22,27 +22,36 @@ const VALUE_FLAGS = new Set([
   '--state-padding', '--crop', '--crop-selector', '--pad', '--zoom', '--constructor', '--node', '--paths', '--sort', '--rules', '--categories', '--preset',
 ]);
 
-function valueFor(flag: string, next: string | undefined): string {
-  if (next === undefined || next.startsWith('--')) throw invalidInput(`${flag} requires a value.`);
+function syntaxSchemaInput(command: string | undefined, received: string, expected: string, field: string): ReturnType<typeof invalidInput> {
+  return command
+    ? schemaInput(command, received, expected, field)
+    : invalidInput(`received: ${received}\nexpected: ${expected}\nfield: ${field}`);
+}
+
+function schemaValueFor(command: string | undefined, flag: string, next: string | undefined): string {
+  if (next === undefined || next.startsWith('--')) throw syntaxSchemaInput(command, `${flag}=(missing)`, `a value for ${flag}`, flag);
   return next;
 }
 
-function integer(token: string, flag: string, min: number, max: number, safe = false): number {
+function schemaInteger(command: string | undefined, token: string, flag: string, min: number, max: number, safe = false): number {
   // Full unsigned decimal integer grammar (leading zeros allowed); no sign,
   // exponent, decimal point, partial token, or non-finite value.
-  if (!/^\d+$/.test(token)) throw invalidInput(`Invalid ${flag}: ${token}.`);
+  const expected = `${safe ? 'a safe ' : ''}integer from ${min} to ${max}`;
+  const received = `${flag}=${token}`;
+  if (!/^\d+$/.test(token)) throw syntaxSchemaInput(command, received, expected, flag);
   const value = Number(token);
   if (!Number.isInteger(value) || value < min || value > max || (safe && !Number.isSafeInteger(value))) {
-    throw invalidInput(`Invalid ${flag}: ${token}.`);
+    throw syntaxSchemaInput(command, received, expected, flag);
   }
   return value;
 }
 
-function durationMs(token: string): number {
+function schemaDuration(command: string | undefined, token: string): number {
   // Full unsigned decimal-seconds grammar (`1`, `1.`, `.5`, `00.5`); no sign,
   // exponent, partial token, or non-finite value. Compare the decimal token
   // before Number conversion so precision rounding cannot admit an overflow.
-  if (!/^(?:\d+\.?\d*|\.\d+)$/.test(token)) throw invalidInput(`Invalid --duration: ${token}.`);
+  const expected = 'an unsigned decimal seconds value from 0 through 2147483.647';
+  if (!/^(?:\d+\.?\d*|\.\d+)$/.test(token)) throw syntaxSchemaInput(command, `--duration=${token}`, expected, '--duration');
   const [whole = '', fraction = ''] = token.split('.');
   const normalizedWhole = whole.replace(/^0+/, '') || '0';
   const maxWhole = '2147483';
@@ -50,7 +59,7 @@ function durationMs(token: string): number {
   const maxFraction = '647';
   const fractionComparison = fraction.slice(0, maxFraction.length).padEnd(maxFraction.length, '0').localeCompare(maxFraction);
   if (wholeComparison > 0 || (wholeComparison === 0 && (fractionComparison > 0 || (fractionComparison === 0 && /[1-9]/.test(fraction.slice(maxFraction.length)))))) {
-    throw invalidInput(`Invalid --duration: ${token}.`);
+    throw syntaxSchemaInput(command, `--duration=${token}`, expected, '--duration');
   }
   return Number(token) * 1000;
 }
@@ -83,15 +92,33 @@ function validateKnownLeaf(command: string, positional: readonly string[]): void
   }
 }
 
-function requireCount(values: readonly string[], min: number, max: number, command: string): void {
+function requireCount(values: readonly string[], min: number, max: number, command: string, field = '<positional>'): void {
   if (values.length < min || values.length > max) {
-    const expected = min === max ? `exactly ${min}` : `${min}..${max}`;
-    throw invalidInput(`${command} received ${values.length} positional argument(s); expected ${expected}.`);
+    const expected = min === max ? `exactly ${min} positional argument(s)` : `${min}..${max} positional argument(s)`;
+    throw schemaInput(command, `${values.length} positional argument(s)`, expected, field);
   }
 }
 
 function schemaInput(command: string, received: string, expected: string, field: string): ReturnType<typeof invalidInput> {
   return invalidInput(`received: ${received}\nexpected: ${expected}\nfield: ${field}\nNext: Run \`capture ${command} -h\` and read the schema before re-issuing.`);
+}
+
+function leafCommand(command: string, positional: readonly string[]): string {
+  if (command === 'lighthouse' || command === 'cdp') return command;
+  if (command === 'tab' && positional[0] === 'mock') return positional[1] ? `tab mock ${positional[1]}` : 'tab mock';
+  if (command === 'measure' && positional[0] === 'map') return positional[1] ? `measure map ${positional[1]}` : 'measure map';
+  return positional[0] ? `${command} ${positional[0]}` : command;
+}
+
+function syntaxCommand(argv: readonly string[]): string {
+  const command = argv[0] ?? 'capture';
+  const positional: string[] = [];
+  for (let index = 1; index < argv.length; index++) {
+    const token = argv[index]!;
+    if (VALUE_FLAGS.has(token)) { index++; continue; }
+    if (!token.startsWith('-')) positional.push(token);
+  }
+  return leafCommand(command, positional);
 }
 
 function requireSchemaCount(values: readonly string[], min: number, max: number, command: string, field: string): void {
@@ -120,19 +147,19 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
   if (parsed.command === 'cdp') {
     requireCount(parsed.positional, 0, 1, 'cdp');
     if (parsed.positional[0] !== undefined && !cdpMember(parsed.positional[0])) {
-      throw invalidInput(`No such cdp leaf: ${parsed.positional[0]}. \`cdp\` is invoked directly as \`capture cdp <Domain.method>\` or with \`--wait-event <Domain.event>\`.`, 'unknown_command');
+      throw schemaInput('cdp', parsed.positional[0], 'a <Domain.method> member or --wait-event <Domain.event>', '<Domain.method>');
     }
     if (parsed.waitEvent !== undefined && !cdpMember(parsed.waitEvent)) {
-      throw invalidInput(`Invalid --wait-event: ${parsed.waitEvent}. Expected \`<Domain.event>\`; \`cdp\` is invoked directly.`, 'unknown_command');
+      throw schemaInput('cdp', parsed.waitEvent, 'a <Domain.event> member', '--wait-event');
     }
     if (parsed.help) return;
-    if (parsed.positional.length === 0 && !parsed.waitEvent) throw invalidInput('cdp requires a method or --wait-event.');
+    if (parsed.positional.length === 0 && !parsed.waitEvent) throw schemaInput('cdp', '(missing)', 'a <Domain.method> positional or --wait-event <Domain.event>', '<Domain.method> or --wait-event');
     if (parsed.params !== undefined) {
       try {
         const value = JSON.parse(parsed.params) as unknown;
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('not an object');
       } catch {
-        throw invalidInput('--params must be a JSON object.');
+        throw schemaInput('cdp', parsed.params, 'a JSON-encoded params object', '--params');
       }
     }
     return;
@@ -164,29 +191,29 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
     const [min, max] = ranges[leaf];
     requireCount(values, min, max, `session ${leaf}`);
     if (leaf === 'start' && parsed.url !== undefined && parsed.target !== undefined) {
-      throw invalidInput('session start cannot combine --url and --target.');
+      throw schemaInput('session start', `--url=${parsed.url}, --target=${parsed.target}`, 'at most one target source', '--url or --target');
     }
     return;
   }
 
   if (parsed.command === 'page') {
     if (leaf === 'click' || leaf === 'type' || leaf === 'navigate') requireCount(values, 1, 1, `page ${leaf}`);
-    if (leaf === 'navigate') assertParseableUrl(values[0], 'URL');
+    if (leaf === 'navigate') assertSchemaUrl(values[0], 'page navigate', '<url>');
     if (leaf === 'scroll') {
       requireCount(values, 1, 1, 'page scroll');
-      if (parsed.to === undefined) throw invalidInput('page scroll requires --to <top|bottom|px>.');
-      assertScrollDestination(parsed.to);
+      if (parsed.to === undefined) throw schemaInput('page scroll', '(missing)', 'a --to <top|bottom|px> destination', '--to');
+      try { assertScrollDestination(parsed.to); } catch { throw schemaInput('page scroll', parsed.to, 'top, bottom, or a non-negative pixel offset', '--to'); }
     }
     if (leaf === 'exec') requireCount(values, parsed.file === undefined ? 1 : 0, parsed.file === undefined ? 1 : 0, 'page exec');
     if (leaf === 'shot' || leaf === 'elements') requireCount(values, 0, 0, `page ${leaf}`);
     if (leaf === 'shot' && parsed.viewport !== undefined) {
       const match = /^([1-9]\d*)x([1-9]\d*)$/.exec(parsed.viewport);
       if (!match || !Number.isSafeInteger(Number(match[1])) || !Number.isSafeInteger(Number(match[2]))) {
-        throw invalidInput(`Invalid --viewport: ${parsed.viewport}.`);
+        throw schemaInput('page shot', parsed.viewport, '<positive-safe-int>x<positive-safe-int>', '--viewport');
       }
     }
     if (leaf === 'shot' && parsed.colorScheme !== undefined && parsed.colorScheme !== 'dark' && parsed.colorScheme !== 'light') {
-      throw invalidInput(`Invalid --color-scheme: ${parsed.colorScheme}; expected dark or light.`);
+      throw schemaInput('page shot', parsed.colorScheme, 'dark or light', '--color-scheme');
     }
     return;
   }
@@ -206,7 +233,7 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
     else if (leaf === 'quit') requireCount(values, 0, 1, 'tab quit');
     else requireCount(values, 1, 1, `tab ${leaf}`);
     if (leaf === 'network' && values[0] !== 'offline' && values[0] !== 'online') {
-      throw invalidInput('tab network requires offline or online.');
+      throw schemaInput('tab network', values[0] ?? '(missing)', 'offline or online', '<mode>');
     }
     return;
   }
@@ -214,30 +241,32 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
   if (parsed.command === 'measure') {
     if (leaf === 'snap' || leaf === 'check' || leaf === 'sweep') requireCount(values, 0, 1, `measure ${leaf}`);
     if (leaf === 'snap' && parsed.colorScheme !== undefined && parsed.colorScheme !== 'dark' && parsed.colorScheme !== 'light') {
-      throw invalidInput(`Invalid --color-scheme: ${parsed.colorScheme}; expected dark or light.`);
+      throw schemaInput('measure snap', parsed.colorScheme, 'dark or light', '--color-scheme');
     }
     if (leaf === 'diff' || leaf === 'census') requireCount(values, 0, 0, `measure ${leaf}`);
-    if (leaf === 'diff' && (!parsed.before || !parsed.after)) throw invalidInput('measure diff requires --before and --after.');
+    if (leaf === 'diff' && (!parsed.before || !parsed.after)) throw schemaInput('measure diff', `--before=${parsed.before ?? '(missing)'}, --after=${parsed.after ?? '(missing)'}`, 'both settled snapshot references', '--before and --after');
     if (leaf === 'census' && !['color', 'font', 'spacing', 'radius', 'shadow', 'animation', 'geometry', 'media', 'queries'].includes(parsed.axis ?? '')) {
-      throw invalidInput('measure census requires a documented --axis value.');
+      throw schemaInput('measure census', parsed.axis ?? '(missing)', 'color, font, spacing, radius, shadow, animation, geometry, media, or queries', '--axis');
     }
     if (leaf === 'explain') {
       requireCount(values, 1, 1, 'measure explain');
-      if (!parsed.selector?.trim()) throw invalidInput('measure explain requires --selector.');
+      if (!parsed.selector?.trim()) throw schemaInput('measure explain', '(missing)', 'a recorded selector input', '--selector');
     }
     if (leaf === 'sweep') {
       if (!['width', 'dpr', 'zoom', 'color-scheme', 'reduced-motion'].includes(parsed.axis ?? '')) {
-        throw invalidInput('measure sweep requires a documented --axis value.');
+        throw schemaInput('measure sweep', parsed.axis ?? '(missing)', 'width, dpr, zoom, color-scheme, or reduced-motion', '--axis');
       }
-      assertSweepBounds(parsed.axis as SweepAxisName, parsed.from, parsed.to);
-      if (parsed.viewportHeight !== undefined) parsePositiveNumber(parsed.viewportHeight, 1, '--viewport-height');
+      try { assertSweepBounds(parsed.axis as SweepAxisName, parsed.from, parsed.to); } catch { throw schemaInput('measure sweep', `--from=${parsed.from ?? '(missing)'}, --to=${parsed.to ?? '(missing)'}`, `valid ${parsed.axis} bounds`, '--from and --to'); }
+      if (parsed.viewportHeight !== undefined) {
+        try { parsePositiveNumber(parsed.viewportHeight, 1, '--viewport-height'); } catch { throw schemaInput('measure sweep', parsed.viewportHeight, 'a positive number', '--viewport-height'); }
+      }
     }
     if (leaf === 'map') {
       const mapLeaf = values[0];
       if (mapLeaf === undefined) return;
       const targets = values.slice(1);
       requireCount(targets, ['focus', 'ax', 'paint'].includes(mapLeaf) ? 1 : 0, 1, `measure map ${mapLeaf}`);
-      if (mapLeaf === 'paint' && !parsed.selector?.trim()) throw invalidInput('measure map paint requires --selector.');
+      if (mapLeaf === 'paint' && !parsed.selector?.trim()) throw schemaInput('measure map paint', '(missing)', 'a recorded selector input', '--selector');
     }
     return;
   }
@@ -284,7 +313,7 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
       requireSchemaCount(values, 1, 1, 'heap retainers', '<snapshot>');
       if (parsed.node === undefined) throw schemaInput('heap retainers', '(missing)', 'a Chrome snapshot object id', '--node');
       try {
-        integer(parsed.node, '--node', 1, Number.MAX_SAFE_INTEGER, true);
+        schemaInteger(undefined, parsed.node, '--node', 1, Number.MAX_SAFE_INTEGER, true);
       } catch {
         throw schemaInput('heap retainers', parsed.node, 'a positive safe-integer Chrome snapshot object id', '--node');
       }
@@ -300,29 +329,29 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
     if (leaf === 'mask' || leaf === 'jank' || leaf === 'response') requireCount(values, 1, 1, `motion ${leaf}`);
     if (leaf === 'timeline') {
       requireCount(values, 1, 1, 'motion timeline');
-      if (!parsed.element?.trim()) throw invalidInput('motion timeline requires --element.');
+      if (!parsed.element?.trim()) throw schemaInput('motion timeline', '(missing)', 'an element selector input', '--element');
     }
     if (leaf === 'rec') {
-      if (parsed.start && parsed.stop) throw invalidInput('motion rec cannot combine --start and --stop.');
-      if (!parsed.stop && parsed.recId) throw invalidInput('motion rec accepts --rec-id only with --stop.');
+      if (parsed.start && parsed.stop) throw schemaInput('motion rec', '--start --stop', 'one lifecycle flag', '--start or --stop');
+      if (!parsed.stop && parsed.recId) throw schemaInput('motion rec', `--rec-id=${parsed.recId}`, '--rec-id only with --stop', '--rec-id');
       if (parsed.start || parsed.stop) {
         requireCount(values, 0, 0, 'motion rec lifecycle');
         if (parsed.do || parsed.duration !== undefined || (parsed.stop && parsed.viewport !== undefined)) {
-          throw invalidInput('motion rec lifecycle flags cannot be combined with one-shot flags.');
+          throw schemaInput('motion rec', 'lifecycle and one-shot arguments combined', '--start or --stop alone', '[url]|--do|--duration|--viewport');
         }
       } else {
         // The URL is optional: omitting it records the active session tab
         // (enforced downstream once session state is known — this pure
         // validator only bounds cardinality at 0..1 and checks a supplied URL).
         requireCount(values, 0, 1, 'motion rec');
-        if (!parsed.do) throw invalidInput('motion rec one-shot requires --do.');
-        if (values[0] !== undefined) assertParseableUrl(values[0], 'recording URL');
-        parseDoAction(parsed.do);
+        if (!parsed.do) throw schemaInput('motion rec', '(missing)', 'a --do action for one-shot recording', '--do');
+        if (values[0] !== undefined) assertSchemaUrl(values[0], 'motion rec', '[url]');
+        try { parseDoAction(parsed.do); } catch { throw schemaInput('motion rec', parsed.do, 'the documented --do action grammar', '--do'); }
       }
       if (parsed.viewport !== undefined) {
         const match = /^([1-9]\d*)x([1-9]\d*)$/.exec(parsed.viewport);
         if (!match || !Number.isSafeInteger(Number(match[1])) || !Number.isSafeInteger(Number(match[2]))) {
-          throw invalidInput(`Invalid --viewport: ${parsed.viewport}.`);
+          throw schemaInput('motion rec', parsed.viewport, '<positive-safe-int>x<positive-safe-int>', '--viewport');
         }
       }
     }
@@ -342,6 +371,10 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
   const rest = expandEqualsFlags(argv.slice(1));
   const positional: string[] = [];
   const parsed: Partial<ParsedArgs> = { command, positional };
+  const commandPath = syntaxCommand(argv);
+  const valueFor = (flag: string, next: string | undefined) => schemaValueFor(commandPath, flag, next);
+  const integer = (token: string, flag: string, min: number, max: number, safe = false) => schemaInteger(commandPath, token, flag, min, max, safe);
+  const durationMs = (token: string) => schemaDuration(commandPath, token);
 
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
@@ -364,7 +397,7 @@ export function parseCliSyntax(argv: string[]): ParsedArgs {
     else if (arg === '--color-scheme') { parsed.colorScheme = valueFor(arg, next); i++; }
     else if (arg === '--behavior') {
       const behavior = valueFor(arg, next);
-      if (behavior !== 'instant' && behavior !== 'smooth') throw invalidInput(`Invalid --behavior: ${behavior}. Expected instant or smooth.`);
+      if (behavior !== 'instant' && behavior !== 'smooth') throw syntaxSchemaInput(commandPath, `--behavior=${behavior}`, 'instant or smooth', '--behavior');
       parsed.behavior = behavior;
       i++;
     }
@@ -483,7 +516,7 @@ export function resolveCliContext(parsed: ParsedArgs): ParsedArgs {
     if (parsed.port === undefined && session.port !== undefined && session.port !== null) { parsed.port = session.port; parsed.portSource = 'session'; }
   }
   if (parsed.port === undefined && process.env.CDP_PORT !== undefined) {
-    parsed.port = integer(process.env.CDP_PORT, 'CDP_PORT', 1, 65535);
+    parsed.port = schemaInteger(leafCommand(parsed.command, parsed.positional), process.env.CDP_PORT, 'CDP_PORT', 1, 65535);
     parsed.portSource = 'env';
   }
   // Preserve historical stale-index cleanup once endpoint validation has

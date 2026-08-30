@@ -137,10 +137,13 @@ function section(set: TraceInsightSet, insights: readonly TraceInsight[], full: 
   return lineList([fact`Insight set ${set.id} for ${set.url}`, ...records]);
 }
 
-function noInsightSet(events: readonly object[]): { section: FactLine; json: Record<string, string | number> } {
+function noInsightSet(events: readonly object[], completion: string): { section: FactLine; json: Record<string, string | number> } {
   const navigations = events.filter((event) => (event as { name?: unknown }).name === 'navigationStart').length;
+  const recording = completion === 'complete'
+    ? `The trace was recorded successfully and finalized (completion=${completion}).`
+    : `The trace artifact was finalized with completion=${completion}.`;
   return navigations === 0
-    ? { section: text`No DevTools insight set was produced: this trace contains no navigation, and the engine produced no no-navigation insight set (including ForcedReflow), so this recording cannot yield DevTools insights.`, json: { status: 'no-insight-set', navigations, reason: 'no-navigation-engine-produced-no-no-navigation-insight-set-including-ForcedReflow' } }
+    ? { section: fact`${recording} This trace-engine analysis emitted 0 navigation-scoped insight set(s) because the trace contains no navigation. That engine scope does not describe the other performance evidence recorded in trace.json.`, json: { status: 'no-insight-set', navigations, 'trace-recording': `finalized:${completion}`, 'engine-analysis-scope': 'navigation-scoped-insight-sets', 'navigation-insight-sets': 0, reason: 'no-navigation' } }
     : { section: text`No DevTools insight set was produced for the ${navigations} recorded navigation(s), so this recording cannot yield DevTools insights.`, json: { status: 'no-insight-set', navigations, reason: 'engine-produced-no-insight-set' } };
 }
 
@@ -163,7 +166,7 @@ export async function cmdPerfInsights(parsed: ParsedArgs): Promise<void> {
     }
     const relatedEventsTotal = selected.reduce((total, set) => total + set.insights.reduce((count, insight) => count + relatedEvents(insight.fields).length, 0), 0);
     const relatedEventsRetained = [...fullByInsight.values()].reduce((total, fields) => total + fields.relatedEvents.events.length, 0);
-    const noSet = selected.length === 0 ? noInsightSet(raw.traceEvents) : undefined;
+    const noSet = selected.length === 0 ? noInsightSet(raw.traceEvents, trace.completion) : undefined;
     const result: RenderableResult = {
       tag: 'insights',
       attestation: { kind: 'trace', id: trace.id, path: trace.dir },

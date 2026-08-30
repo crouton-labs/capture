@@ -100,7 +100,12 @@ function assertRejectedBeforeEffects(args: string[], expectedFragment: string): 
   assert.equal(result.stderr, '', `${label}: diagnostics-free stderr`);
   assert.match(result.stdout, /^<error [^>]*code="invalid_input"[\s\S]*<\/error>\n$/, `${label}: one invalid_input block: ${result.stdout}`);
   assert.equal((result.stdout.match(/<error\b/g) ?? []).length, 1, `${label}: exactly one error block`);
-  assert.ok(result.stdout.includes(expectedFragment), `${label}: names the cardinality: ${result.stdout}`);
+  const cardinality = /.+ received (\d+) positional argument\(s\); expected (.+)/.exec(expectedFragment);
+  assert.ok(cardinality, `${label}: test fixture must describe cardinality`);
+  assert.ok(result.stdout.includes(`received: ${cardinality[1]} positional argument(s)`), `${label}: records the received cardinality: ${result.stdout}`);
+  assert.ok(result.stdout.includes(`expected: ${cardinality[2]} positional argument(s)`), `${label}: records the expected cardinality: ${result.stdout}`);
+  assert.ok(result.stdout.includes('field: &lt;positional&gt;'), `${label}: identifies the positional field: ${result.stdout}`);
+  assert.ok(result.stdout.includes(`Next: Run \`capture ${args[0]} ${args[1]} -h\` and read the schema before re-issuing.`), `${label}: routes to leaf help: ${result.stdout}`);
   assert.ok(!result.stdout.includes('CDP_PORT'), `${label}: env resolution never ran`);
   assert.ok(result.stalePreserved, `${label}: stale active pointer byte-identical (never resolved, never cleaned)`);
   assert.deepEqual(result.rootEntries, [], `${label}: no session artifacts created`);

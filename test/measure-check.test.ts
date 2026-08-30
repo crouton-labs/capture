@@ -333,7 +333,10 @@ test('command renders a bounded cross-kind sample with a factual rollup, while J
   for (const limit of ['0', '1.9', 'nope', 'Infinity']) {
     const invalid = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--limit', limit], { encoding: 'utf8' });
     assert.equal(invalid.status, 1, `${limit}: ${invalid.stdout}`);
-    assert.match(invalid.stdout, /Invalid --limit/);
+    assert.match(invalid.stdout, /received: --limit=/);
+    assert.match(invalid.stdout, /expected: a safe integer from 1 to 9007199254740991/);
+    assert.match(invalid.stdout, /field: --limit/);
+    assert.match(invalid.stdout, /Next: Run `capture measure check -h` and read the schema before re-issuing\./);
   }
   const customLimit = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', dir, '--for', 'all', '--limit', '3'], { encoding: 'utf8' });
   assert.equal(customLimit.status, 0);

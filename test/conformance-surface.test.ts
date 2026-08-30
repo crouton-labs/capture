@@ -383,7 +383,10 @@ test('a malformed or empty CDP_PORT is one structured invalid_input error at the
       assert.equal(result.stderr, '', `CDP_PORT=${JSON.stringify(cdpPort)}\n${transcript(result)}`);
       const attrs = errorAttributes(result.stdout);
       assert.equal(attrs.code, 'invalid_input', `CDP_PORT=${JSON.stringify(cdpPort)}\n${transcript(result)}`);
-      assert.ok(result.stdout.includes('CDP_PORT'), `CDP_PORT=${JSON.stringify(cdpPort)}\n${transcript(result)}`);
+      assert.ok(result.stdout.includes('received: CDP_PORT='), `CDP_PORT=${JSON.stringify(cdpPort)}\n${transcript(result)}`);
+      assert.ok(result.stdout.includes('expected: integer from 1 to 65535'), `CDP_PORT=${JSON.stringify(cdpPort)}\n${transcript(result)}`);
+      assert.ok(result.stdout.includes('field: CDP_PORT'), `CDP_PORT=${JSON.stringify(cdpPort)}\n${transcript(result)}`);
+      assert.ok(result.stdout.includes('Next: Run `capture tab list -h` and read the schema before re-issuing.'), `CDP_PORT=${JSON.stringify(cdpPort)}\n${transcript(result)}`);
     }
   });
 });
@@ -398,12 +401,12 @@ test('a malformed or empty CDP_PORT is one structured invalid_input error at the
 test('numeric flag domains reject out-of-range or malformed tokens as one invalid_input error at the final binary', () => {
   withIsolatedCaptureRoot((tempRoot) => {
     const cases: Array<{ args: string[]; fragment: string }> = [
-      { args: ['session', 'list', '--settle', '-1'], fragment: 'Invalid --settle' },
-      { args: ['session', 'list', '--port', '0'], fragment: 'Invalid --port' },
-      { args: ['session', 'list', '--port', '65536'], fragment: 'Invalid --port' },
-      { args: ['session', 'list', '--port', '9222junk'], fragment: 'Invalid --port' },
-      { args: ['session', 'list', '--timeout', '0'], fragment: 'Invalid --timeout' },
-      { args: ['session', 'list', '--limit', '0'], fragment: 'Invalid --limit' },
+      { args: ['session', 'list', '--settle', '-1'], fragment: 'received: --settle=-1' },
+      { args: ['session', 'list', '--port', '0'], fragment: 'received: --port=0' },
+      { args: ['session', 'list', '--port', '65536'], fragment: 'received: --port=65536' },
+      { args: ['session', 'list', '--port', '9222junk'], fragment: 'received: --port=9222junk' },
+      { args: ['session', 'list', '--timeout', '0'], fragment: 'received: --timeout=0' },
+      { args: ['session', 'list', '--limit', '0'], fragment: 'received: --limit=0' },
     ];
     for (const { args, fragment } of cases) {
       const result = run(args, tempRoot);
@@ -437,13 +440,13 @@ test('a deterministic no-browser command failure is normalized as one <error> bl
 test('surplus positionals on read-only session/page/tab/cdp leaves are one invalid_input before any effect at the final binary', () => {
   withIsolatedCaptureRoot((tempRoot) => {
     const cases: Array<{ args: string[]; fragment: string }> = [
-      { args: ['session', 'list', 'surplus'], fragment: 'session list received 1 positional argument(s); expected exactly 0' },
-      { args: ['session', 'har', 'some-id', 'surplus'], fragment: 'session har received 2 positional argument(s); expected 0..1' },
-      { args: ['session', 'view', 'some-id', 'surplus'], fragment: 'session view received 2 positional argument(s); expected exactly 1' },
-      { args: ['session', 'log', '/tmp/does-not-matter.log', 'surplus'], fragment: 'session log received 2 positional argument(s); expected exactly 1' },
-      { args: ['page', 'elements', 'surplus', '--port', '1'], fragment: 'page elements received 1 positional argument(s); expected exactly 0' },
-      { args: ['tab', 'list', 'surplus', '--port', '1'], fragment: 'tab list received 1 positional argument(s); expected exactly 0' },
-      { args: ['cdp', 'Browser.getVersion', 'Page.enable', '--port', '1'], fragment: 'cdp received 2 positional argument(s); expected 0..1' },
+      { args: ['session', 'list', 'surplus'], fragment: 'received: 1 positional argument(s) expected: exactly 0 positional argument(s)' },
+      { args: ['session', 'har', 'some-id', 'surplus'], fragment: 'received: 2 positional argument(s) expected: 0..1 positional argument(s)' },
+      { args: ['session', 'view', 'some-id', 'surplus'], fragment: 'received: 2 positional argument(s) expected: exactly 1 positional argument(s)' },
+      { args: ['session', 'log', '/tmp/does-not-matter.log', 'surplus'], fragment: 'received: 2 positional argument(s) expected: exactly 1 positional argument(s)' },
+      { args: ['page', 'elements', 'surplus', '--port', '1'], fragment: 'received: 1 positional argument(s) expected: exactly 0 positional argument(s)' },
+      { args: ['tab', 'list', 'surplus', '--port', '1'], fragment: 'received: 1 positional argument(s) expected: exactly 0 positional argument(s)' },
+      { args: ['cdp', 'Browser.getVersion', 'Page.enable', '--port', '1'], fragment: 'received: 2 positional argument(s) expected: 0..1 positional argument(s)' },
     ];
     for (const { args, fragment } of cases) {
       const result = run(args, tempRoot);

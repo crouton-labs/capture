@@ -245,6 +245,8 @@ test('motion jank reads finalized recording artifacts through the resolver and r
     assert.match(output, /Trace timestamps are relative to the first trace event/);
     assert.match(output, /long-task-records="2"/);
     assert.match(output, /pre-recording-observer-entries-excluded="0"/);
+    assert.match(output, /observer-attribution="no-call-stack-handler-or-script-style-layout-paint-attribution"/);
+    assert.match(output, /PerformanceObserver records carry no call-stack, handler, or script\/style\/layout\/paint attribution/);
     assert.match(output, /attribution inferred from rect samples bracketing/);
 
     for (const frameTotal of [0, 1, 2]) {

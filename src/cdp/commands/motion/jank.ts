@@ -7,7 +7,7 @@ const USAGE = `capture motion jank <rec> — long-task-record and layout-shift f
 
 input:
   <rec>   recording id in the active session or an absolute recording path (required; the recording must be finalized)
-output: <jank …> — long-task-record and layout-shift facts; screencast frames are change-driven, not a dropped-frame measurement; use \`capture perf trace\` for frame-timing questions. Observer and screencast timing is recorder-relative performance.now(), trace timing recorder-relative only when an explicit trace/performance baseline was retained; --json mirrors
+output: <jank …> — long-task-record and layout-shift facts. Its PerformanceObserver records carry no call-stack, handler, or script/style/layout/paint attribution; \`capture perf trace\`/\`capture perf insights\` own trace-engine attribution when a trace records it. Screencast frames are change-driven, not a dropped-frame measurement; use \`capture perf trace\` for frame-timing questions. Observer and screencast timing is recorder-relative performance.now(), trace timing recorder-relative only when an explicit trace/performance baseline was retained; --json mirrors
 effects: read-only — reads the finalized recording artifact, never drives the browser`;
 
 export async function cmdMotionJank(parsed: ParsedArgs, _args: string[]): Promise<void> {
@@ -25,6 +25,7 @@ export async function cmdMotionJank(parsed: ParsedArgs, _args: string[]): Promis
     const state = typeof meta.state === 'string' ? meta.state : 'unknown';
     const sections: FactLine[] = [fact`${analysis.timingNote}`];
 
+    sections.push(fact`PerformanceObserver records carry no call-stack, handler, or script/style/layout/paint attribution. Trace-engine attribution belongs to capture perf trace and capture perf insights when a trace records it.`);
     sections.push(fact`Page.screencastFrame is change-driven; its ${analysis.frameCount} timestamped rect sample(s) do not measure page dropped frames.`);
     if (analysis.missingFrameSampleCount > 0) sections.push(fact`${analysis.missingFrameSampleCount} screencast frame(s) have no rect timestamp sample.`);
 
@@ -65,6 +66,7 @@ export async function cmdMotionJank(parsed: ParsedArgs, _args: string[]): Promis
         'layout-shift-records-incomplete': analysis.layoutShiftsIncomplete,
         'pre-recording-observer-entries-excluded': analysis.preRecordingObserverEntriesExcluded,
         'timestamp-uncertainty': analysis.frameTimestampUncertainty,
+        'observer-attribution': 'no-call-stack-handler-or-script-style-layout-paint-attribution',
       },
       summary: fact`${analysis.longTasks.length} long-task record(s)${analysis.longTasksIncomplete ? ' (incomplete)' : ''}, ${analysis.layoutShifts.length} layout-shift record(s)${analysis.layoutShiftsIncomplete ? ' (incomplete)' : ''}; ${analysis.preRecordingObserverEntriesExcluded} pre-recording observer entr${analysis.preRecordingObserverEntriesExcluded === 1 ? 'y' : 'ies'} excluded.`,
       sections,

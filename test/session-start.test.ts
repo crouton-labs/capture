@@ -286,7 +286,7 @@ test('session start rejects a non-page target and rolls back its acquired sessio
 test('session start rejects --url with --target before endpoint resolution', () => {
   assert.throws(
     () => validateCliInvocation(parseCliSyntax(['session', 'start', '--url', 'https://example.test/', '--target', 'ABCD'])),
-    /session start cannot combine --url and --target/,
+    /received: --url=https:\/\/example\.test\/, --target=ABCD\nexpected: at most one target source\nfield: --url or --target\nNext: Run `capture session start -h` and read the schema before re-issuing\./,
   );
 });
 

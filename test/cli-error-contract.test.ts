@@ -65,6 +65,15 @@ test('source CLI renders malformed root, flag, env, numeric, and branch failures
   assertOneError(['lib', 'unknown']);
 });
 
+test('schema errors identify every missing measure diff field and route to its leaf help', () => {
+  const result = run(['measure', 'diff', '--before', 'nowhere']);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /received: --before=nowhere, --after=\(missing\)/);
+  assert.match(result.stdout, /expected: both settled snapshot references/);
+  assert.match(result.stdout, /field: --before and --after/);
+  assert.match(result.stdout, /Next: Run `capture measure diff -h` and read the schema before re-issuing\./);
+});
+
 test('the --gate rejection is thrown typed and rendered once at the root boundary', () => {
   assertOneError(['page', 'elements', '--gate']);
   assertOneError(['session', 'list', '--gate']);

@@ -158,6 +158,13 @@ test('measure leaves honor --json: a structured error renders as valid JSON with
   assert.equal(parsed.attrs.command, 'measure snap');
 });
 
+test('motion jank help and result provenance state the observer attribution boundary', async () => {
+  const { logs, exitCode } = await withCapture(() => motionMain(parseCliArgs(['motion', 'jank', '-h']), []));
+  assert.equal(exitCode, undefined);
+  assert.match(logs, /no call-stack, handler, or script\/style\/layout\/paint attribution/);
+  assert.match(logs, /capture perf trace.*capture perf insights.*trace-engine attribution/);
+});
+
 test('motion leaves also honor --json', async () => {
   const { stdout, exitCode } = await withCapture(() =>
     motionMain(parseCliArgs(['motion', 'jank', 'rec-9f31', '--json']), []),

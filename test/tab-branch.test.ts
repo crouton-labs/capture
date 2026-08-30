@@ -330,7 +330,10 @@ test('bin: `tab open` with no URL is a structured <error code="invalid_input">, 
     const result = run(['tab', 'open'], tempRoot);
     assert.equal(result.status, 1);
     assert.ok(result.stdout.includes('<error code="invalid_input"'), result.stdout);
-    assert.ok(result.stdout.includes('tab open received 0 positional argument(s); expected exactly 1'), result.stdout);
+    assert.ok(result.stdout.includes('received: 0 positional argument(s)'), result.stdout);
+    assert.ok(result.stdout.includes('expected: exactly 1 positional argument(s)'), result.stdout);
+    assert.ok(result.stdout.includes('field: &lt;positional&gt;'), result.stdout);
+    assert.ok(result.stdout.includes('Next: Run `capture tab open -h` and read the schema before re-issuing.'), result.stdout);
   });
 });
 
@@ -348,7 +351,10 @@ test('bin: `tab reset` with no URL is a structured <error code="invalid_input">,
     const result = run(['tab', 'reset'], tempRoot);
     assert.equal(result.status, 1);
     assert.ok(result.stdout.includes('<error code="invalid_input"'), result.stdout);
-    assert.ok(result.stdout.includes('tab reset received 0 positional argument(s); expected exactly 1'), result.stdout);
+    assert.ok(result.stdout.includes('received: 0 positional argument(s)'), result.stdout);
+    assert.ok(result.stdout.includes('expected: exactly 1 positional argument(s)'), result.stdout);
+    assert.ok(result.stdout.includes('field: &lt;positional&gt;'), result.stdout);
+    assert.ok(result.stdout.includes('Next: Run `capture tab reset -h` and read the schema before re-issuing.'), result.stdout);
   });
 });
 

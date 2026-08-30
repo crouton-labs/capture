@@ -9047,20 +9047,28 @@ function expandEqualsFlags(argv) {
   }
   return out;
 }
-function valueFor(flag, next) {
-  if (next === void 0 || next.startsWith("--")) throw invalidInput(`${flag} requires a value.`);
+function syntaxSchemaInput(command, received, expected, field) {
+  return command ? schemaInput(command, received, expected, field) : invalidInput(`received: ${received}
+expected: ${expected}
+field: ${field}`);
+}
+function schemaValueFor(command, flag, next) {
+  if (next === void 0 || next.startsWith("--")) throw syntaxSchemaInput(command, `${flag}=(missing)`, `a value for ${flag}`, flag);
   return next;
 }
-function integer(token2, flag, min, max, safe = false) {
-  if (!/^\d+$/.test(token2)) throw invalidInput(`Invalid ${flag}: ${token2}.`);
+function schemaInteger(command, token2, flag, min, max, safe = false) {
+  const expected = `${safe ? "a safe " : ""}integer from ${min} to ${max}`;
+  const received = `${flag}=${token2}`;
+  if (!/^\d+$/.test(token2)) throw syntaxSchemaInput(command, received, expected, flag);
   const value = Number(token2);
   if (!Number.isInteger(value) || value < min || value > max || safe && !Number.isSafeInteger(value)) {
-    throw invalidInput(`Invalid ${flag}: ${token2}.`);
+    throw syntaxSchemaInput(command, received, expected, flag);
   }
   return value;
 }
-function durationMs(token2) {
-  if (!/^(?:\d+\.?\d*|\.\d+)$/.test(token2)) throw invalidInput(`Invalid --duration: ${token2}.`);
+function schemaDuration(command, token2) {
+  const expected = "an unsigned decimal seconds value from 0 through 2147483.647";
+  if (!/^(?:\d+\.?\d*|\.\d+)$/.test(token2)) throw syntaxSchemaInput(command, `--duration=${token2}`, expected, "--duration");
   const [whole = "", fraction = ""] = token2.split(".");
   const normalizedWhole = whole.replace(/^0+/, "") || "0";
   const maxWhole = "2147483";
@@ -9068,7 +9076,7 @@ function durationMs(token2) {
   const maxFraction = "647";
   const fractionComparison = fraction.slice(0, maxFraction.length).padEnd(maxFraction.length, "0").localeCompare(maxFraction);
   if (wholeComparison > 0 || wholeComparison === 0 && (fractionComparison > 0 || fractionComparison === 0 && /[1-9]/.test(fraction.slice(maxFraction.length)))) {
-    throw invalidInput(`Invalid --duration: ${token2}.`);
+    throw syntaxSchemaInput(command, `--duration=${token2}`, expected, "--duration");
   }
   return Number(token2) * 1e3;
 }
@@ -9099,10 +9107,10 @@ function validateKnownLeaf(command, positional) {
     if (!["start", "stop"].includes(mockLeaf)) throw schemaInput("tab mock", mockLeaf, "start or stop", "<leaf>");
   }
 }
-function requireCount(values, min, max, command) {
+function requireCount(values, min, max, command, field = "<positional>") {
   if (values.length < min || values.length > max) {
-    const expected = min === max ? `exactly ${min}` : `${min}..${max}`;
-    throw invalidInput(`${command} received ${values.length} positional argument(s); expected ${expected}.`);
+    const expected = min === max ? `exactly ${min} positional argument(s)` : `${min}..${max} positional argument(s)`;
+    throw schemaInput(command, `${values.length} positional argument(s)`, expected, field);
   }
 }
 function schemaInput(command, received, expected, field) {
@@ -9110,6 +9118,25 @@ function schemaInput(command, received, expected, field) {
 expected: ${expected}
 field: ${field}
 Next: Run \`capture ${command} -h\` and read the schema before re-issuing.`);
+}
+function leafCommand(command, positional) {
+  if (command === "lighthouse" || command === "cdp") return command;
+  if (command === "tab" && positional[0] === "mock") return positional[1] ? `tab mock ${positional[1]}` : "tab mock";
+  if (command === "measure" && positional[0] === "map") return positional[1] ? `measure map ${positional[1]}` : "measure map";
+  return positional[0] ? `${command} ${positional[0]}` : command;
+}
+function syntaxCommand(argv) {
+  const command = argv[0] ?? "capture";
+  const positional = [];
+  for (let index = 1; index < argv.length; index++) {
+    const token2 = argv[index];
+    if (VALUE_FLAGS.has(token2)) {
+      index++;
+      continue;
+    }
+    if (!token2.startsWith("-")) positional.push(token2);
+  }
+  return leafCommand(command, positional);
 }
 function requireSchemaCount(values, min, max, command, field) {
   if (values.length < min || values.length > max) {
@@ -9133,19 +9160,19 @@ function validateCliInvocation(parsed) {
   if (parsed.command === "cdp") {
     requireCount(parsed.positional, 0, 1, "cdp");
     if (parsed.positional[0] !== void 0 && !cdpMember(parsed.positional[0])) {
-      throw invalidInput(`No such cdp leaf: ${parsed.positional[0]}. \`cdp\` is invoked directly as \`capture cdp <Domain.method>\` or with \`--wait-event <Domain.event>\`.`, "unknown_command");
+      throw schemaInput("cdp", parsed.positional[0], "a <Domain.method> member or --wait-event <Domain.event>", "<Domain.method>");
     }
     if (parsed.waitEvent !== void 0 && !cdpMember(parsed.waitEvent)) {
-      throw invalidInput(`Invalid --wait-event: ${parsed.waitEvent}. Expected \`<Domain.event>\`; \`cdp\` is invoked directly.`, "unknown_command");
+      throw schemaInput("cdp", parsed.waitEvent, "a <Domain.event> member", "--wait-event");
     }
     if (parsed.help) return;
-    if (parsed.positional.length === 0 && !parsed.waitEvent) throw invalidInput("cdp requires a method or --wait-event.");
+    if (parsed.positional.length === 0 && !parsed.waitEvent) throw schemaInput("cdp", "(missing)", "a <Domain.method> positional or --wait-event <Domain.event>", "<Domain.method> or --wait-event");
     if (parsed.params !== void 0) {
       try {
         const value = JSON.parse(parsed.params);
         if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
       } catch {
-        throw invalidInput("--params must be a JSON object.");
+        throw schemaInput("cdp", parsed.params, "a JSON-encoded params object", "--params");
       }
     }
     return;
@@ -9182,28 +9209,32 @@ function validateCliInvocation(parsed) {
     const [min, max] = ranges[leaf];
     requireCount(values, min, max, `session ${leaf}`);
     if (leaf === "start" && parsed.url !== void 0 && parsed.target !== void 0) {
-      throw invalidInput("session start cannot combine --url and --target.");
+      throw schemaInput("session start", `--url=${parsed.url}, --target=${parsed.target}`, "at most one target source", "--url or --target");
     }
     return;
   }
   if (parsed.command === "page") {
     if (leaf === "click" || leaf === "type" || leaf === "navigate") requireCount(values, 1, 1, `page ${leaf}`);
-    if (leaf === "navigate") assertParseableUrl(values[0], "URL");
+    if (leaf === "navigate") assertSchemaUrl(values[0], "page navigate", "<url>");
     if (leaf === "scroll") {
       requireCount(values, 1, 1, "page scroll");
-      if (parsed.to === void 0) throw invalidInput("page scroll requires --to <top|bottom|px>.");
-      assertScrollDestination(parsed.to);
+      if (parsed.to === void 0) throw schemaInput("page scroll", "(missing)", "a --to <top|bottom|px> destination", "--to");
+      try {
+        assertScrollDestination(parsed.to);
+      } catch {
+        throw schemaInput("page scroll", parsed.to, "top, bottom, or a non-negative pixel offset", "--to");
+      }
     }
     if (leaf === "exec") requireCount(values, parsed.file === void 0 ? 1 : 0, parsed.file === void 0 ? 1 : 0, "page exec");
     if (leaf === "shot" || leaf === "elements") requireCount(values, 0, 0, `page ${leaf}`);
     if (leaf === "shot" && parsed.viewport !== void 0) {
       const match = /^([1-9]\d*)x([1-9]\d*)$/.exec(parsed.viewport);
       if (!match || !Number.isSafeInteger(Number(match[1])) || !Number.isSafeInteger(Number(match[2]))) {
-        throw invalidInput(`Invalid --viewport: ${parsed.viewport}.`);
+        throw schemaInput("page shot", parsed.viewport, "<positive-safe-int>x<positive-safe-int>", "--viewport");
       }
     }
     if (leaf === "shot" && parsed.colorScheme !== void 0 && parsed.colorScheme !== "dark" && parsed.colorScheme !== "light") {
-      throw invalidInput(`Invalid --color-scheme: ${parsed.colorScheme}; expected dark or light.`);
+      throw schemaInput("page shot", parsed.colorScheme, "dark or light", "--color-scheme");
     }
     return;
   }
@@ -9220,37 +9251,47 @@ function validateCliInvocation(parsed) {
     else if (leaf === "quit") requireCount(values, 0, 1, "tab quit");
     else requireCount(values, 1, 1, `tab ${leaf}`);
     if (leaf === "network" && values[0] !== "offline" && values[0] !== "online") {
-      throw invalidInput("tab network requires offline or online.");
+      throw schemaInput("tab network", values[0] ?? "(missing)", "offline or online", "<mode>");
     }
     return;
   }
   if (parsed.command === "measure") {
     if (leaf === "snap" || leaf === "check" || leaf === "sweep") requireCount(values, 0, 1, `measure ${leaf}`);
     if (leaf === "snap" && parsed.colorScheme !== void 0 && parsed.colorScheme !== "dark" && parsed.colorScheme !== "light") {
-      throw invalidInput(`Invalid --color-scheme: ${parsed.colorScheme}; expected dark or light.`);
+      throw schemaInput("measure snap", parsed.colorScheme, "dark or light", "--color-scheme");
     }
     if (leaf === "diff" || leaf === "census") requireCount(values, 0, 0, `measure ${leaf}`);
-    if (leaf === "diff" && (!parsed.before || !parsed.after)) throw invalidInput("measure diff requires --before and --after.");
+    if (leaf === "diff" && (!parsed.before || !parsed.after)) throw schemaInput("measure diff", `--before=${parsed.before ?? "(missing)"}, --after=${parsed.after ?? "(missing)"}`, "both settled snapshot references", "--before and --after");
     if (leaf === "census" && !["color", "font", "spacing", "radius", "shadow", "animation", "geometry", "media", "queries"].includes(parsed.axis ?? "")) {
-      throw invalidInput("measure census requires a documented --axis value.");
+      throw schemaInput("measure census", parsed.axis ?? "(missing)", "color, font, spacing, radius, shadow, animation, geometry, media, or queries", "--axis");
     }
     if (leaf === "explain") {
       requireCount(values, 1, 1, "measure explain");
-      if (!parsed.selector?.trim()) throw invalidInput("measure explain requires --selector.");
+      if (!parsed.selector?.trim()) throw schemaInput("measure explain", "(missing)", "a recorded selector input", "--selector");
     }
     if (leaf === "sweep") {
       if (!["width", "dpr", "zoom", "color-scheme", "reduced-motion"].includes(parsed.axis ?? "")) {
-        throw invalidInput("measure sweep requires a documented --axis value.");
+        throw schemaInput("measure sweep", parsed.axis ?? "(missing)", "width, dpr, zoom, color-scheme, or reduced-motion", "--axis");
       }
-      assertSweepBounds(parsed.axis, parsed.from, parsed.to);
-      if (parsed.viewportHeight !== void 0) parsePositiveNumber(parsed.viewportHeight, 1, "--viewport-height");
+      try {
+        assertSweepBounds(parsed.axis, parsed.from, parsed.to);
+      } catch {
+        throw schemaInput("measure sweep", `--from=${parsed.from ?? "(missing)"}, --to=${parsed.to ?? "(missing)"}`, `valid ${parsed.axis} bounds`, "--from and --to");
+      }
+      if (parsed.viewportHeight !== void 0) {
+        try {
+          parsePositiveNumber(parsed.viewportHeight, 1, "--viewport-height");
+        } catch {
+          throw schemaInput("measure sweep", parsed.viewportHeight, "a positive number", "--viewport-height");
+        }
+      }
     }
     if (leaf === "map") {
       const mapLeaf = values[0];
       if (mapLeaf === void 0) return;
       const targets = values.slice(1);
       requireCount(targets, ["focus", "ax", "paint"].includes(mapLeaf) ? 1 : 0, 1, `measure map ${mapLeaf}`);
-      if (mapLeaf === "paint" && !parsed.selector?.trim()) throw invalidInput("measure map paint requires --selector.");
+      if (mapLeaf === "paint" && !parsed.selector?.trim()) throw schemaInput("measure map paint", "(missing)", "a recorded selector input", "--selector");
     }
     return;
   }
@@ -9295,7 +9336,7 @@ function validateCliInvocation(parsed) {
       requireSchemaCount(values, 1, 1, "heap retainers", "<snapshot>");
       if (parsed.node === void 0) throw schemaInput("heap retainers", "(missing)", "a Chrome snapshot object id", "--node");
       try {
-        integer(parsed.node, "--node", 1, Number.MAX_SAFE_INTEGER, true);
+        schemaInteger(void 0, parsed.node, "--node", 1, Number.MAX_SAFE_INTEGER, true);
       } catch {
         throw schemaInput("heap retainers", parsed.node, "a positive safe-integer Chrome snapshot object id", "--node");
       }
@@ -9310,26 +9351,30 @@ function validateCliInvocation(parsed) {
     if (leaf === "mask" || leaf === "jank" || leaf === "response") requireCount(values, 1, 1, `motion ${leaf}`);
     if (leaf === "timeline") {
       requireCount(values, 1, 1, "motion timeline");
-      if (!parsed.element?.trim()) throw invalidInput("motion timeline requires --element.");
+      if (!parsed.element?.trim()) throw schemaInput("motion timeline", "(missing)", "an element selector input", "--element");
     }
     if (leaf === "rec") {
-      if (parsed.start && parsed.stop) throw invalidInput("motion rec cannot combine --start and --stop.");
-      if (!parsed.stop && parsed.recId) throw invalidInput("motion rec accepts --rec-id only with --stop.");
+      if (parsed.start && parsed.stop) throw schemaInput("motion rec", "--start --stop", "one lifecycle flag", "--start or --stop");
+      if (!parsed.stop && parsed.recId) throw schemaInput("motion rec", `--rec-id=${parsed.recId}`, "--rec-id only with --stop", "--rec-id");
       if (parsed.start || parsed.stop) {
         requireCount(values, 0, 0, "motion rec lifecycle");
         if (parsed.do || parsed.duration !== void 0 || parsed.stop && parsed.viewport !== void 0) {
-          throw invalidInput("motion rec lifecycle flags cannot be combined with one-shot flags.");
+          throw schemaInput("motion rec", "lifecycle and one-shot arguments combined", "--start or --stop alone", "[url]|--do|--duration|--viewport");
         }
       } else {
         requireCount(values, 0, 1, "motion rec");
-        if (!parsed.do) throw invalidInput("motion rec one-shot requires --do.");
-        if (values[0] !== void 0) assertParseableUrl(values[0], "recording URL");
-        parseDoAction(parsed.do);
+        if (!parsed.do) throw schemaInput("motion rec", "(missing)", "a --do action for one-shot recording", "--do");
+        if (values[0] !== void 0) assertSchemaUrl(values[0], "motion rec", "[url]");
+        try {
+          parseDoAction(parsed.do);
+        } catch {
+          throw schemaInput("motion rec", parsed.do, "the documented --do action grammar", "--do");
+        }
       }
       if (parsed.viewport !== void 0) {
         const match = /^([1-9]\d*)x([1-9]\d*)$/.exec(parsed.viewport);
         if (!match || !Number.isSafeInteger(Number(match[1])) || !Number.isSafeInteger(Number(match[2]))) {
-          throw invalidInput(`Invalid --viewport: ${parsed.viewport}.`);
+          throw schemaInput("motion rec", parsed.viewport, "<positive-safe-int>x<positive-safe-int>", "--viewport");
         }
       }
     }
@@ -9346,6 +9391,10 @@ function parseCliSyntax(argv) {
   const rest = expandEqualsFlags(argv.slice(1));
   const positional = [];
   const parsed = { command, positional };
+  const commandPath = syntaxCommand(argv);
+  const valueFor = (flag, next) => schemaValueFor(commandPath, flag, next);
+  const integer = (token2, flag, min, max, safe = false) => schemaInteger(commandPath, token2, flag, min, max, safe);
+  const durationMs = (token2) => schemaDuration(commandPath, token2);
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
     const next = rest[i + 1];
@@ -9392,7 +9441,7 @@ function parseCliSyntax(argv) {
       i++;
     } else if (arg === "--behavior") {
       const behavior = valueFor(arg, next);
-      if (behavior !== "instant" && behavior !== "smooth") throw invalidInput(`Invalid --behavior: ${behavior}. Expected instant or smooth.`);
+      if (behavior !== "instant" && behavior !== "smooth") throw syntaxSchemaInput(commandPath, `--behavior=${behavior}`, "instant or smooth", "--behavior");
       parsed.behavior = behavior;
       i++;
     } else if (arg === "--full-page") parsed.fullPage = true;
@@ -9566,7 +9615,7 @@ function resolveCliContext(parsed) {
     }
   }
   if (parsed.port === void 0 && process.env.CDP_PORT !== void 0) {
-    parsed.port = integer(process.env.CDP_PORT, "CDP_PORT", 1, 65535);
+    parsed.port = schemaInteger(leafCommand(parsed.command, parsed.positional), process.env.CDP_PORT, "CDP_PORT", 1, 65535);
     parsed.portSource = "env";
   }
   if (!session) getActiveSession();
@@ -217756,8 +217805,8 @@ ${options.prefix}` : "\n" : options.prefix
           return hasNewProgram;
         }
         /** @internal */
-        sendPerformanceEvent(kind, durationMs2) {
-          this.projectService.sendPerformanceEvent(kind, durationMs2);
+        sendPerformanceEvent(kind, durationMs) {
+          this.projectService.sendPerformanceEvent(kind, durationMs);
         }
         detachScriptInfoFromProject(uncheckedFileName, noRemoveResolution) {
           const scriptInfoToDetach = this.projectService.getScriptInfo(uncheckedFileName);
@@ -219751,9 +219800,9 @@ ${options.prefix}` : "\n" : options.prefix
           this.eventHandler(event);
         }
         /** @internal */
-        sendPerformanceEvent(kind, durationMs2) {
+        sendPerformanceEvent(kind, durationMs) {
           if (this.performanceEventHandler) {
-            this.performanceEventHandler({ kind, durationMs: durationMs2 });
+            this.performanceEventHandler({ kind, durationMs });
           }
         }
         /** @internal */
@@ -239856,8 +239905,7 @@ async function cmdMeasureDiff(parsed, _args) {
     const result = {
       tag: "error",
       attrs: { command: "measure diff", status: "invalid_input" },
-      summary: text`This command requires --before SNAP and --after SNAP and accepts no positional target.`,
-      followUp: text`Use capture measure diff --before SNAP --after SNAP.`
+      summary: fact`received: ${parsed.positional.length} positional argument(s), --before=${parsed.before ?? "(missing)"}, --after=${parsed.after ?? "(missing)"}\nexpected: no positional target and both settled snapshot references\nfield: <positional>, --before, --after\nNext: Run \`capture measure diff -h\` and read the schema before re-issuing.`
     };
     emitResult(result, { json: parsed.json });
     process.exitCode = 1;
@@ -242854,13 +242902,13 @@ function motionHandle(handle, recId) {
 function finalFromMeta(recDir, recId) {
   const meta = JSON.parse(readPrivateFile(path35.join(recDir, "meta.json")).toString("utf8"));
   const frames2 = typeof meta.frames === "number" ? meta.frames : 0;
-  const durationMs2 = typeof meta.durationMs === "number" ? meta.durationMs : 0;
+  const durationMs = typeof meta.durationMs === "number" ? meta.durationMs : 0;
   return {
     recId,
     recDir,
     frames: frames2,
-    durationMs: durationMs2,
-    fps: durationMs2 > 0 ? Math.round(frames2 / (durationMs2 / 1e3) * 10) / 10 : 0,
+    durationMs,
+    fps: durationMs > 0 ? Math.round(frames2 / (durationMs / 1e3) * 10) / 10 : 0,
     state: meta.state === "partial" ? "partial" : meta.completion === "orphaned" ? "orphaned-finalized" : "finalized",
     eventCount: typeof meta.eventCount === "number" ? meta.eventCount : null,
     viewportRestored: typeof meta.viewportRestored === "boolean" ? meta.viewportRestored : null,
@@ -243565,14 +243613,14 @@ function createMotionMask(ref) {
     writeBinaryPrivate(outputPath, import_pngjs7.PNG.sync.write(composite2));
     const { components, labels } = connectedComponents(composite2, width, height);
     const stats = computeComponentStats(components, labels, width, height, samples, recordsByFile);
-    const durationMs2 = finiteNumber(meta.durationMs) ?? 0;
+    const durationMs = finiteNumber(meta.durationMs) ?? 0;
     const regions = components.map((component, index) => regionForComponent(
       component,
       index + 1,
       stats[index],
       frameFiles,
       recordsByFile,
-      durationMs2,
+      durationMs,
       run.start,
       allFrameFiles.length
     ));
@@ -243702,7 +243750,7 @@ function computeComponentStats(components, labels, width, height, samples, recor
     activeCentroids: activeCentroids[index]
   }));
 }
-function regionForComponent(component, index, stats, frameFiles, recordsByFile, durationMs2, runStart, totalFrames) {
+function regionForComponent(component, index, stats, frameFiles, recordsByFile, durationMs, runStart, totalFrames) {
   let x = Infinity;
   let y = Infinity;
   let right = -Infinity;
@@ -243716,8 +243764,8 @@ function regionForComponent(component, index, stats, frameFiles, recordsByFile, 
   const { attribution, activeCentroids } = stats;
   const startPair = activeCentroids[0]?.pair ?? 0;
   const endPair = activeCentroids.at(-1)?.pair ?? startPair;
-  const startMs = timestampForPair(startPair, frameFiles, recordsByFile, durationMs2, runStart, totalFrames);
-  const endMs = timestampForPair(endPair + 1, frameFiles, recordsByFile, durationMs2, runStart, totalFrames);
+  const startMs = timestampForPair(startPair, frameFiles, recordsByFile, durationMs, runStart, totalFrames);
+  const endMs = timestampForPair(endPair + 1, frameFiles, recordsByFile, durationMs, runStart, totalFrames);
   const rectDistance = attribution ? distanceForElement(attribution.element, recordsByFile) : null;
   const pixelDistance = activeCentroids.slice(1).reduce((total, center, i) => total + Math.hypot(center.cx - activeCentroids[i].cx, center.cy - activeCentroids[i].cy), 0);
   const distancePx = round2(rectDistance ?? pixelDistance);
@@ -243748,11 +243796,11 @@ function distanceForElement(target, recordsByFile) {
   if (centers.length < 2) return null;
   return centers.slice(1).reduce((total, center, i) => total + Math.hypot(center.x - centers[i].x, center.y - centers[i].y), 0);
 }
-function timestampForPair(pair, frameFiles, recordsByFile, durationMs2, runStart, totalFrames) {
+function timestampForPair(pair, frameFiles, recordsByFile, durationMs, runStart, totalFrames) {
   const record5 = recordsByFile.get(frameFiles[Math.min(pair, frameFiles.length - 1)]);
   const first = recordsByFile.get(frameFiles[0])?.screencastTimestamp;
   if (typeof record5?.screencastTimestamp === "number" && typeof first === "number") return (record5.screencastTimestamp - first) * 1e3;
-  return totalFrames > 1 ? (runStart + pair) / (totalFrames - 1) * durationMs2 : 0;
+  return totalFrames > 1 ? (runStart + pair) / (totalFrames - 1) * durationMs : 0;
 }
 function deviceRect(element, transform) {
   if (![element.x, element.y, element.width, element.height].every((value) => typeof value === "number" && Number.isFinite(value))) return null;
@@ -244272,27 +244320,27 @@ function analyzeMotionJank(input) {
   const longTasks = [];
   for (const { item, timingAvailable } of observerEntries) {
     if (item.entryType !== "longtask") continue;
-    const durationMs2 = finite2(item.duration);
-    if (durationMs2 === void 0) continue;
+    const durationMs = finite2(item.duration);
+    if (durationMs === void 0) continue;
     const startMs = timingAvailable ? observerToPerformanceMs(item, input.markers) : null;
     if (startMs === null) {
       observerNavGapUnavailable = true;
-      longTasks.push({ source: "observer", timingDomain: "unavailable", startMs: null, durationMs: durationMs2, endMs: null });
+      longTasks.push({ source: "observer", timingDomain: "unavailable", startMs: null, durationMs, endMs: null });
       continue;
     }
     if (startMs < 0) {
       preRecordingObserverEntriesExcluded++;
       continue;
     }
-    longTasks.push(longTask("observer", "recorder-performance", startMs, durationMs2));
+    longTasks.push(longTask("observer", "recorder-performance", startMs, durationMs));
   }
   for (const trace2 of traceEvents3) {
     const name = typeof trace2.name === "string" ? trace2.name : "";
-    const durationMs2 = finite2(trace2.dur);
+    const durationMs = finite2(trace2.dur);
     const timestampUs = finite2(trace2.ts);
-    if (!/(longtask|run(task|microtasks)|task)/i.test(name) || durationMs2 === void 0 || durationMs2 < 5e4 || timestampUs === void 0) continue;
+    if (!/(longtask|run(task|microtasks)|task)/i.test(name) || durationMs === void 0 || durationMs < 5e4 || timestampUs === void 0) continue;
     const timing2 = traceTime(timestampUs, input.markers, observedTraceBaselineUs);
-    if (timing2 !== null) longTasks.push(longTask("trace", timing2.domain, timing2.tMs, durationMs2 / 1e3));
+    if (timing2 !== null) longTasks.push(longTask("trace", timing2.domain, timing2.tMs, durationMs / 1e3));
   }
   const frameElementRecords = frameRecords.map(({ item, tMs }) => ({ tMs, elements: (Array.isArray(item.elements) ? item.elements : []).map(record2).filter((v) => v !== null) }));
   const layoutShifts = [];
@@ -244355,8 +244403,8 @@ function analyzeMotionJank(input) {
     timingNote
   };
 }
-function longTask(source, timingDomain, startMs, durationMs2) {
-  return { source, timingDomain, startMs, durationMs: durationMs2, endMs: startMs + durationMs2 };
+function longTask(source, timingDomain, startMs, durationMs) {
+  return { source, timingDomain, startMs, durationMs, endMs: startMs + durationMs };
 }
 function readMotionJank(ref) {
   const meta = readMeta(ref);
@@ -244387,6 +244435,7 @@ async function cmdMotionJank(parsed, _args) {
     const { analysis, meta } = readMotionJank(ref);
     const state = typeof meta.state === "string" ? meta.state : "unknown";
     const sections = [fact`${analysis.timingNote}`];
+    sections.push(fact`PerformanceObserver records carry no call-stack, handler, or script/style/layout/paint attribution. Trace-engine attribution belongs to capture perf trace and capture perf insights when a trace records it.`);
     sections.push(fact`Page.screencastFrame is change-driven; its ${analysis.frameCount} timestamped rect sample(s) do not measure page dropped frames.`);
     if (analysis.missingFrameSampleCount > 0) sections.push(fact`${analysis.missingFrameSampleCount} screencast frame(s) have no rect timestamp sample.`);
     if (analysis.longTasks.length) {
@@ -244421,7 +244470,8 @@ async function cmdMotionJank(parsed, _args) {
         "layout-shift-records": analysis.layoutShifts.length,
         "layout-shift-records-incomplete": analysis.layoutShiftsIncomplete,
         "pre-recording-observer-entries-excluded": analysis.preRecordingObserverEntriesExcluded,
-        "timestamp-uncertainty": analysis.frameTimestampUncertainty
+        "timestamp-uncertainty": analysis.frameTimestampUncertainty,
+        "observer-attribution": "no-call-stack-handler-or-script-style-layout-paint-attribution"
       },
       summary: fact`${analysis.longTasks.length} long-task record(s)${analysis.longTasksIncomplete ? " (incomplete)" : ""}, ${analysis.layoutShifts.length} layout-shift record(s)${analysis.layoutShiftsIncomplete ? " (incomplete)" : ""}; ${analysis.preRecordingObserverEntriesExcluded} pre-recording observer entr${analysis.preRecordingObserverEntriesExcluded === 1 ? "y" : "ies"} excluded.`,
       sections
@@ -244473,7 +244523,7 @@ var init_jank2 = __esm({
 
 input:
   <rec>   recording id in the active session or an absolute recording path (required; the recording must be finalized)
-output: <jank \u2026> \u2014 long-task-record and layout-shift facts; screencast frames are change-driven, not a dropped-frame measurement; use \`capture perf trace\` for frame-timing questions. Observer and screencast timing is recorder-relative performance.now(), trace timing recorder-relative only when an explicit trace/performance baseline was retained; --json mirrors
+output: <jank \u2026> \u2014 long-task-record and layout-shift facts. Its PerformanceObserver records carry no call-stack, handler, or script/style/layout/paint attribution; \`capture perf trace\`/\`capture perf insights\` own trace-engine attribution when a trace records it. Screencast frames are change-driven, not a dropped-frame measurement; use \`capture perf trace\` for frame-timing questions. Observer and screencast timing is recorder-relative performance.now(), trace timing recorder-relative only when an explicit trace/performance baseline was retained; --json mirrors
 effects: read-only \u2014 reads the finalized recording artifact, never drives the browser`;
   }
 });
@@ -244922,7 +244972,7 @@ async function waitForDocument(host) {
   }
   throw new Error("timed out waiting for the traced document to finish loading");
 }
-async function drive(host, url, action, durationMs2) {
+async function drive(host, url, action, durationMs) {
   const cdp = hostCdp(host);
   if (url) {
     await cdp("Page.enable");
@@ -244936,7 +244986,7 @@ async function drive(host, url, action, durationMs2) {
       }
     }, action);
   }
-  await new Promise((resolve12) => setTimeout(resolve12, durationMs2));
+  await new Promise((resolve12) => setTimeout(resolve12, durationMs));
 }
 function oneShotDir() {
   const dir = path39.join(CAPTURE_ROOT, `oneshot-${Date.now().toString(36)}-${crypto13.randomBytes(4).toString("hex")}`);
@@ -244977,8 +245027,8 @@ async function handleStop2(parsed) {
 async function handleOneShot2(parsed) {
   const active = getActiveSession();
   const url = parsed.positional[0];
-  const durationMs2 = parsed.duration ?? 3e3;
-  if (!Number.isFinite(durationMs2) || durationMs2 < 0) return commandError(parsed, "invalid_duration", "--duration must be a non-negative number of seconds.");
+  const durationMs = parsed.duration ?? 3e3;
+  if (!Number.isFinite(durationMs) || durationMs < 0) return commandError(parsed, "invalid_duration", "--duration must be a non-negative number of seconds.");
   if (!active?.targetId && !url) return commandError(parsed, "no_session_target", "perf trace without a URL requires an active session tab.");
   let host;
   let started;
@@ -244989,7 +245039,7 @@ async function handleOneShot2(parsed) {
     const run = async () => {
       host = await ensureHost(sessionDir2, port, targetId);
       started = await startTrace(host);
-      await drive(host, url, parsed.do, durationMs2);
+      await drive(host, url, parsed.do, durationMs);
       return stopTrace(host, started.id, started.dir);
     };
     const artifact = active ? await withSessionLifecycle(sessionDir2, run) : await run();
@@ -264138,8 +264188,8 @@ function unobserved(provenance) {
 }
 function lcpFrom(model2) {
   const insight = record3(model2.LCPBreakdown);
-  const durationMs2 = finite4(insight?.lcpMs);
-  if (durationMs2 === void 0) return unobserved(lcpProvenance());
+  const durationMs = finite4(insight?.lcpMs);
+  if (durationMs === void 0) return unobserved(lcpProvenance());
   const event = record3(insight?.lcpEvent);
   const eventData = record3(record3(event?.args)?.data);
   const requestData = record3(record3(record3(insight?.lcpRequest)?.args)?.data);
@@ -264156,7 +264206,7 @@ function lcpFrom(model2) {
   };
   return {
     status: "observed",
-    value: { durationMs: durationMs2, subpartsMs },
+    value: { durationMs, subpartsMs },
     provenance: lcpProvenance(),
     ...Object.keys(attribution).length === 0 ? {} : { attribution }
   };
@@ -264475,9 +264525,10 @@ function section2(set, insights, full2, named, fullByInsight) {
   const records = insights.length ? insights.map((insight) => full2 ? fullRecordLine(insight, fullByInsight.get(insight)) : named ? namedRecordLine(insight) : aggregateLine(insight)) : [text`No engine records matched the requested insight name.`];
   return lineList([fact`Insight set ${set.id} for ${set.url}`, ...records]);
 }
-function noInsightSet(events) {
+function noInsightSet(events, completion) {
   const navigations = events.filter((event) => event.name === "navigationStart").length;
-  return navigations === 0 ? { section: text`No DevTools insight set was produced: this trace contains no navigation, and the engine produced no no-navigation insight set (including ForcedReflow), so this recording cannot yield DevTools insights.`, json: { status: "no-insight-set", navigations, reason: "no-navigation-engine-produced-no-no-navigation-insight-set-including-ForcedReflow" } } : { section: text`No DevTools insight set was produced for the ${navigations} recorded navigation(s), so this recording cannot yield DevTools insights.`, json: { status: "no-insight-set", navigations, reason: "engine-produced-no-insight-set" } };
+  const recording = completion === "complete" ? `The trace was recorded successfully and finalized (completion=${completion}).` : `The trace artifact was finalized with completion=${completion}.`;
+  return navigations === 0 ? { section: fact`${recording} This trace-engine analysis emitted 0 navigation-scoped insight set(s) because the trace contains no navigation. That engine scope does not describe the other performance evidence recorded in trace.json.`, json: { status: "no-insight-set", navigations, "trace-recording": `finalized:${completion}`, "engine-analysis-scope": "navigation-scoped-insight-sets", "navigation-insight-sets": 0, reason: "no-navigation" } } : { section: text`No DevTools insight set was produced for the ${navigations} recorded navigation(s), so this recording cannot yield DevTools insights.`, json: { status: "no-insight-set", navigations, reason: "engine-produced-no-insight-set" } };
 }
 async function cmdPerfInsights(parsed) {
   if (parsed.help) {
@@ -264501,7 +264552,7 @@ async function cmdPerfInsights(parsed) {
     }
     const relatedEventsTotal = selected.reduce((total, set) => total + set.insights.reduce((count3, insight) => count3 + relatedEvents(insight.fields).length, 0), 0);
     const relatedEventsRetained = [...fullByInsight.values()].reduce((total, fields) => total + fields.relatedEvents.events.length, 0);
-    const noSet = selected.length === 0 ? noInsightSet(raw.traceEvents) : void 0;
+    const noSet = selected.length === 0 ? noInsightSet(raw.traceEvents, trace2.completion) : void 0;
     const result = {
       tag: "insights",
       attestation: { kind: "trace", id: trace2.id, path: trace2.dir },
