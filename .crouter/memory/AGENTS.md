@@ -7,7 +7,7 @@ short-form: capture
 surfaces:
   - on: boot
     at: content
-last-updated: 2026-08-29T16:19:28.439Z
+last-updated: 2026-08-30T22:38:36.929Z
 origin:
   created: 2026-07-10T17:23:49.216Z
   cwd: /Users/silasrhyneer/Code/cli/personal-apps
@@ -16,7 +16,7 @@ origin:
 
 # capture
 
-`@crouton-kit/capture` is a CDP browser automation and UI measurement CLI with exactly seven root nouns: `session`, `page`, `tab`, `measure`, `motion`, `cdp`, and `lib`. `page` contains `elements`, `click`, `type`, `shot`, `navigate`, `exec`, and `scroll`; `tab` contains `launch`, `quit`, `list`, `open`, `close`, `reset`, and `network` — `tab launch` starts a browser capture owns and reaps (never hand-roll a detached browser), and capture signals only browsers it started itself; traffic and external logs are read through `session har` and `session log`. Agents usually reach it as `crtr capture <args>` (verbatim forwarding).
+`@crouton-kit/capture` is a CDP browser automation and UI measurement CLI with exactly ten root nouns: `session`, `page`, `tab`, `measure`, `motion`, `perf`, `heap`, `lighthouse`, `cdp`, and `lib`. `page` holds live-tab verbs (`click`, `type`, `scroll`, `navigate`, `exec`, `repeat`, `shot`, `elements`, `inspect`); `tab` holds browser/tab plumbing plus network conditions and response mocking (`launch`, `quit`, `list`, `open`, `close`, `reset`, `network`, `mock`) — `tab launch` starts a browser capture owns and reaps (never hand-roll a detached browser), and capture signals only browsers it started itself. `measure`, `motion`, `perf` (trace → vitals/insights), and `heap` (snapshot → census/objects/retainers/diff) each own a recorded substrate: one leaf records, the rest are read-only queries over the artifact. `lighthouse` runs Lighthouse destructively against a URL and stores its report unmodified. Traffic and external logs are read through `session har` and `session log`; `session collectors` shows what is live. Agents usually reach it as `crtr capture <args>` (verbatim forwarding).
 
 When operating the CLI, run `capture -h`, then the selected branch and leaf `-h`, because built help is the executable source of truth for each noun's model and each leaf's inputs, outputs, effects, and targeting.
 
@@ -25,7 +25,7 @@ When operating the CLI, run `capture -h`, then the selected branch and leaf `-h`
 - pnpm project (`pnpm-lock.yaml`) — install with `pnpm install`.
 - `npm run build` — esbuild bundles `src/capture.ts` into one self-contained CJS executable at `bin/capture`.
 - `npm test` — `node --import tsx --test test/*.test.ts`.
-- Publish on push to `main` (`.github/workflows/publish.yml`), conventional commits — versioning is workflow-owned.
+- Publish on push to `main` (`.github/workflows/publish.yml`), conventional commits — versioning is workflow-owned. The `NPM_TOKEN` repo secret is a 90-day granular token (rotation technique: `personal-operations/npm-2fa-cli`).
 
 ## Constraints
 
