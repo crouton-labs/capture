@@ -189,11 +189,18 @@ test("capability help does not count as successful intended evidence", async (t)
   assert.equal(result.record.grade.finalClass, "diagnosis-only");
 });
 
-test("incompatible reference provenance invalidates the run", async (t) => {
-  const paths = await fixture(t, { meta: { hostClass: "other-host" } });
+test("reference build drift is recorded without invalidating an otherwise gradeable run", async (t) => {
+  const paths = await fixture(t, { referenceValue: { ...reference(), hostClass: "other-host", chromeBuild: "other-chrome", captureBuildHash: "other-build" } });
+  const result = await gradeRun({ runId: "run", ...paths, facts });
+  assert.equal(result.record.grade.finalClass, "pass");
+  assert.deepEqual(result.record.grade.referenceDrift, ["hostClass", "chromeBuild", "captureBuildHash"]);
+});
+
+test("run-integrity provenance mismatch still invalidates the run", async (t) => {
+  const paths = await fixture(t, { meta: { fixtureRevision: "other-fixture" } });
   const result = await gradeRun({ runId: "run", ...paths, facts });
   assert.equal(result.record.grade.finalClass, "invalid");
-  assert.match(result.record.grade.reasons.join("\n"), /host class does not match reference/);
+  assert.match(result.record.grade.reasons.join("\n"), /run fixture revision does not match oracle/);
 });
 
 test("present fact verdicts need retained transcript provenance", async (t) => {

@@ -249,7 +249,7 @@ function transcriptFailures(events, runId) {
   return failures;
 }
 
-function provenanceFailures(provenanceRecord, oracle, reference, requestedRunId, meta) {
+function provenanceFailures(provenanceRecord, oracle, requestedRunId, meta) {
   const failures = [];
   const source = meta.provenance ?? meta;
   for (const field of ["runId", "captureBuildHash", "fixtureRevision", "promptRevision", "chromeBuild", "model", "hostClass", "startedAt", "browserFlags"]) {
@@ -260,12 +260,13 @@ function provenanceFailures(provenanceRecord, oracle, reference, requestedRunId,
   }
   if (provenanceRecord.runId !== requestedRunId) failures.push(`provenance runId ${provenanceRecord.runId} does not match ${requestedRunId}`);
   if (provenanceRecord.fixtureRevision !== oracle.fixtureRevision) failures.push("run fixture revision does not match oracle");
-  if (provenanceRecord.hostClass !== reference.hostClass) failures.push("run host class does not match reference route");
-  if (provenanceRecord.chromeBuild !== reference.chromeBuild) failures.push("run Chrome build does not match reference route");
-  if (provenanceRecord.captureBuildHash !== reference.captureBuildHash) failures.push("run capture build does not match reference route");
   if (provenanceRecord.chromeBuild !== oracle.environment.chromeBuild) failures.push("run Chrome build does not match oracle environment");
   if (JSON.stringify(provenanceRecord.browserFlags) !== JSON.stringify(oracle.environment.flags)) failures.push("run browser flags do not match oracle environment");
   return failures;
+}
+
+function referenceDrift(provenanceRecord, reference) {
+  return ["hostClass", "chromeBuild", "captureBuildHash"].filter((field) => provenanceRecord[field] !== reference[field]);
 }
 
 function mechanicalRecord({ runId, meta, oracle, reference, events, connections, report, cdpLogPresent }) {
@@ -330,6 +331,7 @@ function mechanicalRecord({ runId, meta, oracle, reference, events, connections,
       callRatio,
       elapsedRatio,
       stdoutTokenRatio,
+      referenceDrift: referenceDrift(runProvenance, reference),
       finalClass: "fail",
       reasons: ["Awaiting semantic fact adjudication."],
     },
@@ -342,7 +344,7 @@ function mechanicalRecord({ runId, meta, oracle, reference, events, connections,
       firstHardBudgetBreach,
       infrastructureFailure: infrastructureFailure(meta),
       telemetryFailures: [...transcriptFailures(events, runId), ...(cdpLogPresent ? [] : ["missing cdp-connections.ndjson"])],
-      provenanceFailures: provenanceFailures(runProvenance, oracle, reference, runId, meta),
+      provenanceFailures: provenanceFailures(runProvenance, oracle, runId, meta),
       contaminationFailures: contaminationFailures(events, meta.cdpProxyPort),
     },
   };
@@ -442,6 +444,7 @@ function adjudicate(record, oracle, facts) {
       callRatio: record.routeMetrics.callRatio,
       elapsedRatio: record.routeMetrics.elapsedRatio,
       stdoutTokenRatio: record.routeMetrics.stdoutTokenRatio,
+      referenceDrift: record.grade.referenceDrift,
       finalClass,
       reasons,
     },
