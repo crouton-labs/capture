@@ -21,6 +21,8 @@ export interface HeapNode {
   id: number;
   selfSize: number;
   edgeCount: number;
+  /** Chrome's snapshot detachedness metadata: 0 unknown, 1 attached, 2 detached. */
+  detachedness: number;
 }
 
 export interface HeapEdge {
@@ -79,7 +81,16 @@ export interface DuplicateStringAnalysis {
 
 export interface ConstructorTotals {
   nodeCount: number;
+  /** Nodes in this total whose Chrome detachedness metadata is detached (2). */
+  detachedNodeCount: number;
   retainedSize: number;
+}
+
+export interface DetachedSnapshotNode {
+  objectId: number;
+  constructorName: string;
+  type: string;
+  detachedness: number;
 }
 
 export interface ConstructorComparison {
@@ -93,6 +104,8 @@ export interface ConstructorComparison {
 export interface SnapshotComparison {
   matching: 'Chrome snapshot node id';
   constructors: ConstructorComparison[];
+  /** After-snapshot nodes that Chrome marks detached, sorted by constructor then object id. */
+  afterDetachedNodes: DetachedSnapshotNode[];
   retainedSizeQualification: 'retained sizes are independently computed dominator-subtree sums, so constructor totals overlap and are not heap-total deltas';
 }
 
@@ -131,6 +144,7 @@ export class HeapSnapshot {
   private readonly nameIndexes: Int32Array;
   private readonly ids: Float64Array;
   private readonly selfSizes: Float64Array;
+  private readonly detachedness: Int32Array;
   private readonly edgeStarts: Int32Array;
   private readonly targets: Int32Array;
   private readonly sources: Int32Array;
@@ -146,6 +160,7 @@ export class HeapSnapshot {
     nameIndexes: Int32Array;
     ids: Float64Array;
     selfSizes: Float64Array;
+    detachedness: Int32Array;
     edgeStarts: Int32Array;
     targets: Int32Array;
     sources: Int32Array;
@@ -159,6 +174,7 @@ export class HeapSnapshot {
     this.nameIndexes = data.nameIndexes;
     this.ids = data.ids;
     this.selfSizes = data.selfSizes;
+    this.detachedness = data.detachedness;
     this.edgeStarts = data.edgeStarts;
     this.targets = data.targets;
     this.sources = data.sources;
@@ -185,6 +201,7 @@ export class HeapSnapshot {
     const nodeIdField = requiredField(meta.node_fields, 'id', 'snapshot.meta.node_fields');
     const nodeSelfSizeField = requiredField(meta.node_fields, 'self_size', 'snapshot.meta.node_fields');
     const nodeEdgeCountField = requiredField(meta.node_fields, 'edge_count', 'snapshot.meta.node_fields');
+    const nodeDetachednessField = meta.node_fields.indexOf('detachedness');
     const edgeTypeField = requiredField(meta.edge_fields, 'type', 'snapshot.meta.edge_fields');
     const edgeNameField = requiredField(meta.edge_fields, 'name_or_index', 'snapshot.meta.edge_fields');
     const edgeTargetField = requiredField(meta.edge_fields, 'to_node', 'snapshot.meta.edge_fields');
@@ -203,6 +220,7 @@ export class HeapSnapshot {
     const nameIndexes = new Int32Array(nodeCount);
     const ids = new Float64Array(nodeCount);
     const selfSizes = new Float64Array(nodeCount);
+    const detachedness = new Int32Array(nodeCount);
     const edgeStarts = new Int32Array(nodeCount + 1);
     let expectedEdges = 0;
     for (let node = 0; node < nodeCount; node += 1) {
@@ -212,6 +230,7 @@ export class HeapSnapshot {
       const id = checkedInteger(raw.nodes[offset + nodeIdField], `node ${node} id`);
       const selfSize = checkedInteger(raw.nodes[offset + nodeSelfSizeField], `node ${node} self_size`);
       const edgeCountForNode = checkedInteger(raw.nodes[offset + nodeEdgeCountField], `node ${node} edge_count`);
+      const detachednessForNode = nodeDetachednessField < 0 ? 0 : checkedInteger(raw.nodes[offset + nodeDetachednessField], `node ${node} detachedness`);
       if (typeIndex >= nodeTypes.length) throw new Error(`Heap snapshot node ${node} type index ${typeIndex} is outside snapshot.meta.node_types.`);
       if (nameIndex >= raw.strings.length) throw new Error(`Heap snapshot node ${node} name index ${nameIndex} is outside strings.`);
       if (expectedEdges + edgeCountForNode > edgeCount) throw new Error(`Heap snapshot node ${node} declares edges beyond the edges array.`);
@@ -219,6 +238,7 @@ export class HeapSnapshot {
       nameIndexes[node] = nameIndex;
       ids[node] = id;
       selfSizes[node] = selfSize;
+      detachedness[node] = detachednessForNode;
       edgeStarts[node] = expectedEdges;
       expectedEdges += edgeCountForNode;
     }
@@ -244,7 +264,7 @@ export class HeapSnapshot {
       edgeNameOrIndexes[edge] = nameOrIndex;
     }
 
-    return new HeapSnapshot({ strings: raw.strings, nodeTypes, edgeTypes, nodeTypeIndexes, nameIndexes, ids, selfSizes, edgeStarts, targets, sources, edgeTypeIndexes, edgeNameOrIndexes });
+    return new HeapSnapshot({ strings: raw.strings, nodeTypes, edgeTypes, nodeTypeIndexes, nameIndexes, ids, selfSizes, detachedness, edgeStarts, targets, sources, edgeTypeIndexes, edgeNameOrIndexes });
   }
 
   nodeAt(index: number): HeapNode {
@@ -256,6 +276,7 @@ export class HeapSnapshot {
       id: this.ids[index],
       selfSize: this.selfSizes[index],
       edgeCount: this.edgeStarts[index + 1] - this.edgeStarts[index],
+      detachedness: this.detachedness[index],
     };
   }
 
@@ -554,17 +575,20 @@ export class HeapSnapshot {
     const groupFor = (name: string): ConstructorComparison => {
       let group = groups.get(name);
       if (!group) {
-        group = { constructorName: name, added: { nodeCount: 0, retainedSize: 0 }, removed: { nodeCount: 0, retainedSize: 0 }, grown: { nodeCount: 0, retainedSize: 0 } };
+        group = { constructorName: name, added: { nodeCount: 0, detachedNodeCount: 0, retainedSize: 0 }, removed: { nodeCount: 0, detachedNodeCount: 0, retainedSize: 0 }, grown: { nodeCount: 0, detachedNodeCount: 0, retainedSize: 0 } };
         groups.set(name, group);
       }
       return group;
     };
     const matchedBefore = new Uint8Array(before.nodeCount);
+    const afterDetachedNodes: DetachedSnapshotNode[] = [];
     for (let node = 0; node < after.nodeCount; node += 1) {
+      if (after.detachedness[node] === 2) afterDetachedNodes.push({ objectId: after.ids[node], constructorName: after.strings[after.nameIndexes[node]], type: after.nodeTypes[after.nodeTypeIndexes[node]], detachedness: after.detachedness[node] });
       const beforeNode = beforeById.get(after.ids[node]);
       if (beforeNode === undefined) {
         const added = groupFor(after.strings[after.nameIndexes[node]]).added;
         added.nodeCount += 1;
+        if (after.detachedness[node] === 2) added.detachedNodeCount += 1;
         added.retainedSize += afterDominators.retainedSizes[node];
         continue;
       }
@@ -573,6 +597,7 @@ export class HeapSnapshot {
       if (increase > 0) {
         const grown = groupFor(after.strings[after.nameIndexes[node]]).grown;
         grown.nodeCount += 1;
+        if (after.detachedness[node] === 2) grown.detachedNodeCount += 1;
         grown.retainedSize += increase;
       }
     }
@@ -580,11 +605,13 @@ export class HeapSnapshot {
       if (matchedBefore[node]) continue;
       const removed = groupFor(before.strings[before.nameIndexes[node]]).removed;
       removed.nodeCount += 1;
+      if (before.detachedness[node] === 2) removed.detachedNodeCount += 1;
       removed.retainedSize += beforeDominators.retainedSizes[node];
     }
     return {
       matching: 'Chrome snapshot node id',
       constructors: [...groups.values()],
+      afterDetachedNodes: afterDetachedNodes.sort((a, b) => a.constructorName.localeCompare(b.constructorName) || a.objectId - b.objectId),
       retainedSizeQualification: 'retained sizes are independently computed dominator-subtree sums, so constructor totals overlap and are not heap-total deltas',
     };
   }

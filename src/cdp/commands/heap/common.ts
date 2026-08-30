@@ -44,7 +44,8 @@ function readHeapMeta(dir: string, ref: string): HeapMeta {
 export function resolveHeapRef(ref: string): HeapRef {
   let dir: string;
   if (path.isAbsolute(ref)) {
-    dir = assertUnderCaptureRoot(ref);
+    const resolved = assertUnderCaptureRoot(ref);
+    dir = path.basename(resolved) === 'snapshot.heapsnapshot' ? path.dirname(resolved) : resolved;
   } else {
     if (ref.includes('/') || ref.includes(path.sep)) throw captureError('invocation', 'heap_ref_invalid', 'Heap snapshot references must be a bare id or an absolute artifact path.');
     const active = getActiveSession();

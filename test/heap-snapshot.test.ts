@@ -1,10 +1,36 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
+import * as path from 'node:path';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { cmdHeapDiff } from '../src/cdp/commands/heap/diff.js';
 import { HeapSnapshot, type RawHeapSnapshot } from '../src/cdp/heap-snapshot.js';
+import type { ParsedArgs } from '../src/cdp/types.js';
+import { CAPTURE_ROOT, ensurePrivateDir, removeArtifactTree, writeJsonPrivate } from '../src/session/artifacts.js';
 
 function fixture(name: string): HeapSnapshot {
   return HeapSnapshot.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
+}
+
+function captureStdout(run: () => void): string {
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  const output: string[] = [];
+  process.stdout.write = ((chunk: unknown) => {
+    output.push(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    run();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  return output.join('');
+}
+
+function writeHeapSnapshot(dir: string, snapshot: RawHeapSnapshot): void {
+  ensurePrivateDir(dir);
+  const snapshotPath = path.join(dir, 'snapshot.heapsnapshot');
+  writeJsonPrivate(snapshotPath, snapshot);
+  writeJsonPrivate(path.join(dir, 'meta.json'), { id: path.basename(dir), kind: 'heap', completion: 'complete', files: [{ name: 'snapshot.heapsnapshot', bytes: statSync(snapshotPath).size }] });
 }
 
 function chainSnapshot(nodeCount: number): RawHeapSnapshot {
@@ -35,7 +61,7 @@ test('parser follows the fixture-declared field layout instead of fixed Chrome o
   const snapshot = fixture('heap-snapshot-before.json');
   assert.equal(snapshot.nodeCount, 7);
   assert.equal(snapshot.edgeCount, 7);
-  assert.deepEqual(snapshot.nodeAt(2), { index: 2, type: 'object', name: 'B', id: 3, selfSize: 20, edgeCount: 2 });
+  assert.deepEqual(snapshot.nodeAt(2), { index: 2, type: 'object', name: 'B', id: 3, selfSize: 20, edgeCount: 2, detachedness: 0 });
   assert.deepEqual(snapshot.edgeAt(1), { index: 1, type: 'property', nameOrIndex: 8, name: 'b', from: 0, to: 2 });
   assert.throws(() => HeapSnapshot.parse({ snapshot: { meta: { node_fields: ['type'], node_types: [['object']], edge_fields: [], edge_types: [] } }, nodes: [0], edges: [], strings: [] }), /missing required field "name"/);
 });
@@ -76,11 +102,49 @@ test('snapshot comparison matches Chrome object ids and reports added, removed, 
   assert.equal(comparison.matching, 'Chrome snapshot node id');
   assert.match(comparison.retainedSizeQualification, /overlap/);
   assert.deepEqual(comparison.constructors, [
-    { constructorName: '(root)', added: { nodeCount: 0, retainedSize: 0 }, removed: { nodeCount: 0, retainedSize: 0 }, grown: { nodeCount: 1, retainedSize: 18 } },
-    { constructorName: 'Target', added: { nodeCount: 0, retainedSize: 0 }, removed: { nodeCount: 0, retainedSize: 0 }, grown: { nodeCount: 1, retainedSize: 10 } },
-    { constructorName: 'New', added: { nodeCount: 1, retainedSize: 12 }, removed: { nodeCount: 0, retainedSize: 0 }, grown: { nodeCount: 0, retainedSize: 0 } },
-    { constructorName: 'Gone', added: { nodeCount: 0, retainedSize: 0 }, removed: { nodeCount: 1, retainedSize: 4 }, grown: { nodeCount: 0, retainedSize: 0 } },
+    { constructorName: '(root)', added: { nodeCount: 0, detachedNodeCount: 0, retainedSize: 0 }, removed: { nodeCount: 0, detachedNodeCount: 0, retainedSize: 0 }, grown: { nodeCount: 1, detachedNodeCount: 0, retainedSize: 18 } },
+    { constructorName: 'Target', added: { nodeCount: 0, detachedNodeCount: 0, retainedSize: 0 }, removed: { nodeCount: 0, detachedNodeCount: 0, retainedSize: 0 }, grown: { nodeCount: 1, detachedNodeCount: 0, retainedSize: 10 } },
+    { constructorName: 'New', added: { nodeCount: 1, detachedNodeCount: 0, retainedSize: 12 }, removed: { nodeCount: 0, detachedNodeCount: 0, retainedSize: 0 }, grown: { nodeCount: 0, detachedNodeCount: 0, retainedSize: 0 } },
+    { constructorName: 'Gone', added: { nodeCount: 0, detachedNodeCount: 0, retainedSize: 0 }, removed: { nodeCount: 1, detachedNodeCount: 0, retainedSize: 4 }, grown: { nodeCount: 0, detachedNodeCount: 0, retainedSize: 0 } },
   ]);
+  assert.deepEqual(comparison.afterDetachedNodes, []);
+});
+
+test('snapshot comparison preserves Chrome detachedness and exposes after-snapshot detached object ids', () => {
+  const before = HeapSnapshot.parse({
+    snapshot: { meta: { node_fields: ['id', 'edge_count', 'type', 'name', 'self_size', 'detachedness'], node_types: ['number', 'number', ['hidden', 'native'], 'string', 'number', 'number'], edge_fields: ['to_node', 'name_or_index', 'type'], edge_types: ['number', 'string', ['property']] }, node_count: 1, edge_count: 0 },
+    nodes: [1, 0, 0, 0, 0, 0], edges: [], strings: ['(root)', 'HTMLDocument', 'document'],
+  });
+  const after = HeapSnapshot.parse({
+    snapshot: { meta: { node_fields: ['id', 'edge_count', 'type', 'name', 'self_size', 'detachedness'], node_types: ['number', 'number', ['hidden', 'native'], 'string', 'number', 'number'], edge_fields: ['to_node', 'name_or_index', 'type'], edge_types: ['number', 'string', ['property']] }, node_count: 2, edge_count: 1 },
+    nodes: [1, 1, 0, 0, 0, 0, 7, 0, 1, 1, 32, 2], edges: [6, 2, 0], strings: ['(root)', 'HTMLDocument', 'document'],
+  });
+  const comparison = HeapSnapshot.compare(before, after);
+  assert.equal(after.nodeAt(1).detachedness, 2);
+  assert.deepEqual(comparison.constructors.find(group => group.constructorName === 'HTMLDocument')?.added, { nodeCount: 1, detachedNodeCount: 1, retainedSize: 32 });
+  assert.deepEqual(comparison.afterDetachedNodes, [{ objectId: 7, constructorName: 'HTMLDocument', type: 'native', detachedness: 2 }]);
+});
+
+test('heap diff JSON lists Chrome detached after-snapshot nodes with retainers object ids', () => {
+  const root = path.join(CAPTURE_ROOT, `heap-diff-json-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const beforeDir = path.join(root, 'heap', 'snapshots', 'before');
+  const afterDir = path.join(root, 'heap', 'snapshots', 'after');
+  const meta = { node_fields: ['id', 'edge_count', 'type', 'name', 'self_size', 'detachedness'], node_types: ['number', 'number', ['hidden', 'native'], 'string', 'number', 'number'], edge_fields: ['to_node', 'name_or_index', 'type'], edge_types: ['number', 'string', ['property']] };
+  try {
+    writeHeapSnapshot(beforeDir, { snapshot: { meta, node_count: 1, edge_count: 0 }, nodes: [1, 0, 0, 0, 0, 0], edges: [], strings: ['(root)', 'HTMLDocument', 'document'] });
+    writeHeapSnapshot(afterDir, { snapshot: { meta, node_count: 2, edge_count: 1 }, nodes: [1, 1, 0, 0, 0, 0, 7, 0, 1, 1, 32, 2], edges: [6, 2, 0], strings: ['(root)', 'HTMLDocument', 'document'] });
+
+    const rendered = JSON.parse(captureStdout(() => cmdHeapDiff({ command: 'heap', positional: [], before: beforeDir, after: afterDir, json: true } as ParsedArgs))) as { sections: Array<Record<string, unknown>> };
+    const detached = rendered.sections.find(section => 'afterDetachedNodes' in section);
+    assert.deepEqual(detached, {
+      afterDetachedNodes: [{ objectId: 7, constructor: 'HTMLDocument', type: 'native', detachedness: 2 }],
+      total: 1,
+      displayed: 1,
+      detachednessQualification: 'Chrome detachedness metadata value 2 marks these after-snapshot nodes detached.',
+    });
+  } finally {
+    removeArtifactTree(root);
+  }
 });
 
 test('a 100,000-node chain parses and computes a dominator tree without recursive traversal', () => {
