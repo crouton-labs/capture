@@ -182,6 +182,8 @@ function makeCollectorWriter(writer: RollbackWriter): { writer: SnapshotWriter; 
 
 /** One CDP operation is bounded so a page-side script or browser command that never returns cannot strand the CLI behind CDPClient's 60-second default. */
 export const SNAPSHOT_REQUEST_TIMEOUT_MS = 5_000;
+/** Scroll-topology sampling can trigger a page's own scroll handler before its next CDP read. Keep that one collector bounded, but long enough to observe the resulting renderer work. */
+export const SCROLL_COLLECTOR_REQUEST_TIMEOUT_MS = 30_000;
 
 /** A snapshot operation timed out after writing zero or more partial artifacts. */
 export class SnapshotCaptureTimeout extends Error {
@@ -199,10 +201,10 @@ export class SnapshotCaptureTimeout extends Error {
 }
 
 /** Bounds one snapshot CDP request and labels the phase that owns it. */
-function boundedClient(client: CDPClient, phase: string, partialPath: string, onTimeout?: (error: SnapshotCaptureTimeout) => void): CDPClient {
+function boundedClient(client: CDPClient, phase: string, partialPath: string, onTimeout?: (error: SnapshotCaptureTimeout) => void, requestTimeoutCapMs = SNAPSHOT_REQUEST_TIMEOUT_MS): CDPClient {
   const bounded = Object.create(client) as CDPClient;
   bounded.send = (method: string, params: Record<string, unknown> = {}, timeout = 60_000, sessionId?: string): Promise<unknown> => {
-    const timeoutMs = Math.min(timeout, SNAPSHOT_REQUEST_TIMEOUT_MS);
+    const timeoutMs = Math.min(timeout, requestTimeoutCapMs);
     let timer: NodeJS.Timeout | undefined;
     let timedOut = false;
     const markTimedOut = (error: SnapshotCaptureTimeout): void => {
@@ -403,7 +405,7 @@ export async function captureSnapshotSubstrate(options: CaptureSnapshotOptions):
             client: boundedClient(client, `collector:${collector.name}`, dir, (error) => {
               requestTimeouts += 1;
               timeoutError ??= error;
-            }),
+            }, collector.name === 'scroll' ? SCROLL_COLLECTOR_REQUEST_TIMEOUT_MS : SNAPSHOT_REQUEST_TIMEOUT_MS),
             write: collectorWriter.writer,
           });
           // A styles timeout may be caught per-record by the provenance collector,

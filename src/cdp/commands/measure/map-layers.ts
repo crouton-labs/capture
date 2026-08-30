@@ -8,7 +8,7 @@ const USAGE = `capture measure map layers [url|snap] — paint/compositor facts 
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id or absolute path is read without re-driving the browser
-output: <layer-map …> — layer bounds, compositing reasons, DOMSnapshot paint order, per-node membership, and available source provenance for layer-affecting declarations; --json mirrors
+output: <layer-map …> — layer bounds, compositing reasons, painted-node counts, per-node membership, and available source provenance for layer-affecting declarations; backend-id corpora are limited to 50 per list with omitted counts, and --json mirrors the same cap
 effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot first`;
 
 function errorResult(err: unknown): RenderableResult {

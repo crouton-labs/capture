@@ -469,7 +469,7 @@ function toContainerOut(c: ScrollContainerRaw, backendById: Map<string, number>)
 async function resolveMarkerBackendIds(client: CDPClient, markerAttr: string): Promise<Map<string, number>> {
   const map = new Map<string, number>();
   try {
-    const doc = (await client.send('DOM.getDocument', { depth: -1, pierce: false })) as { root?: { nodeId?: number } };
+    const doc = (await client.send('DOM.getDocument', { depth: 0, pierce: false })) as { root?: { nodeId?: number } };
     const rootId = doc.root?.nodeId;
     if (rootId === undefined) return map;
     const res = (await client.send('DOM.querySelectorAll', { nodeId: rootId, selector: `[${markerAttr}]` })) as { nodeIds?: number[] };

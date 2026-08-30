@@ -115,15 +115,19 @@ export interface ClickDispatch {
   readonly hitTestReceiverBackendNodeId?: number;
 }
 
-/** Facts of a dispatched scroll: resolved identity + where the container landed. */
+/** Facts of a dispatched scroll: resolved identity + the observed range traversal. */
 export interface ScrollDispatch {
   readonly backendNodeId: number;
   readonly role: string | null;
   readonly name: string | null;
   /** The requested destination: `top`, `bottom`, or a pixel offset. */
   readonly to: string;
+  /** The container's `scrollTop` before the dispatch. */
+  readonly scrollTopBefore: number;
   /** The container's `scrollTop` after the dispatch. */
   readonly scrollTop: number;
+  /** The resolved container's maximum vertical scroll offset. */
+  readonly maxScrollTop: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -489,7 +493,7 @@ export async function scrollResolved(
     const params: Record<string, unknown> = {
       objectId,
       functionDeclaration:
-        'function(to, behavior) { const root = this === document.documentElement || this === document.body; const container = root ? document.scrollingElement : this; const n = to === "top" ? 0 : to === "bottom" ? container.scrollHeight : Number(to); const top = Math.max(0, Math.min(n, container.scrollHeight - container.clientHeight)); if (container.scrollTop === top || behavior === "instant") { if (root) window.scrollTo({ top, behavior: "instant" }); else this.scrollTo({ top, behavior: "instant" }); return container.scrollTop; } return new Promise((resolve) => { const eventTarget = root ? document : this; let done = false; const finish = () => { if (done) return; done = true; clearTimeout(timeout); resolve(container.scrollTop); }; const timeout = setTimeout(finish, 5000); eventTarget.addEventListener("scrollend", finish, { once: true }); if (root) window.scrollTo({ top, behavior: "smooth" }); else this.scrollTo({ top, behavior: "smooth" }); }); }',
+        'function(to, behavior) { const root = this === document.documentElement || this === document.body; const container = root ? document.scrollingElement : this; const before = container.scrollTop; const max = Math.max(0, container.scrollHeight - container.clientHeight); const n = to === "top" ? 0 : to === "bottom" ? container.scrollHeight : Number(to); const top = Math.max(0, Math.min(n, max)); const observed = () => ({ scrollTopBefore: before, scrollTopAfter: container.scrollTop, maxScrollTop: max }); if (before === top || behavior === "instant") { if (root) window.scrollTo({ top, behavior: "instant" }); else this.scrollTo({ top, behavior: "instant" }); return observed(); } return new Promise((resolve) => { const eventTarget = root ? document : this; let done = false; const finish = () => { if (done) return; done = true; clearTimeout(timeout); resolve(observed()); }; const timeout = setTimeout(finish, 5000); eventTarget.addEventListener("scrollend", finish, { once: true }); if (root) window.scrollTo({ top, behavior: "smooth" }); else this.scrollTo({ top, behavior: "smooth" }); }); }',
       arguments: [{ value: to }, { value: opts.behavior ?? 'instant' }],
       awaitPromise: true,
       returnByValue: true,
@@ -507,15 +511,15 @@ export async function scrollResolved(
         `Scroll dispatch threw in-page: ${result.exceptionDetails.text ?? 'unknown error'}.`,
       );
     }
-    const scrollTop = result?.result?.value;
-    if (typeof scrollTop !== 'number') {
-      throw captureError('world', 'malformed_protocol', 'Scroll did not return a valid scrollTop payload.', {
+    const observed = result?.result?.value as { scrollTopBefore?: unknown; scrollTopAfter?: unknown; maxScrollTop?: unknown } | undefined;
+    if (typeof observed?.scrollTopBefore !== 'number' || typeof observed.scrollTopAfter !== 'number' || typeof observed.maxScrollTop !== 'number') {
+      throw captureError('world', 'malformed_protocol', 'Scroll did not return a valid traversed-range payload.', {
         method: 'Runtime.callFunctionOn',
         response: result,
       });
     }
 
-    return { backendNodeId, role: resolved.role, name: resolved.name, to, scrollTop };
+    return { backendNodeId, role: resolved.role, name: resolved.name, to, scrollTopBefore: observed.scrollTopBefore, scrollTop: observed.scrollTopAfter, maxScrollTop: observed.maxScrollTop };
   } catch (error) {
     primaryFailed = true;
     primaryError = error;

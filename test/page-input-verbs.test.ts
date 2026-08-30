@@ -92,7 +92,7 @@ function cssScrollHandlers(resultingScrollTop: number): Handlers {
       nodes: [{ nodeId: 'ax-111', backendDOMNodeId: 111, role: { value: 'feed' }, name: { value: 'Feed' } }],
     }),
     'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
-    'Runtime.callFunctionOn': () => ({ result: { value: resultingScrollTop } }),
+    'Runtime.callFunctionOn': () => ({ result: { value: { scrollTopBefore: 0, scrollTopAfter: resultingScrollTop, maxScrollTop: 1_000 } } }),
     'Runtime.releaseObject': () => ({}),
   };
 }
@@ -509,8 +509,9 @@ test('page scroll: --to bottom moves the container and auto-screenshots', async 
   try {
     const { stdout, exitCode } = await runCmd(() => cmdPageScroll(parsedFor(['.feed'], { to: 'bottom' }), []));
     assert.equal(exitCode, undefined);
-    assert.match(stdout, /<scrolled backend-node-id="111" role="feed" name="Feed" to="bottom" scroll-top="640">/);
-    assert.match(stdout, /scrolled feed "Feed" \(backend:111\) to bottom — scrollTop now 640/);
+    assert.match(stdout, /<scrolled backend-node-id="111" role="feed" name="Feed" to="bottom" scroll-top-before="0" scroll-top="640" max-scroll-top="1000" scroll-range-traversed="640">/);
+    assert.match(stdout, /scrolled feed "Feed" \(backend:111\) to bottom — scrollTop 0 → 640 within 0…1000/);
+    assert.match(stdout, /traversed 640 CSS px of the container's 1000 CSS px vertical range/);
     assert.match(stdout, /screenshot: \/tmp\/sess\/shots\/04-scroll\.png/);
     const scrollCall = client.calls.find((c) => c.method === 'Runtime.callFunctionOn');
     assert.ok(scrollCall, 'the scroll must drive the container in-page');
@@ -590,7 +591,7 @@ function startFakeRecorderServer(socketPath: string): {
       if (idx < 0) return;
       const req = JSON.parse(buffer.slice(0, idx)) as Record<string, unknown>;
       seen.push(req);
-      const resp = { reqId: req.reqId, ok: true, type: 'cdp', result: { result: { value: 640 } } };
+      const resp = { reqId: req.reqId, ok: true, type: 'cdp', result: { result: { value: { scrollTopBefore: 0, scrollTopAfter: 640, maxScrollTop: 1_000 } } } };
       socket.write(`${JSON.stringify(resp)}\n`);
     });
   });

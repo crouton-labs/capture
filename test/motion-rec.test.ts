@@ -369,7 +369,7 @@ const SINGLE_PANE_RESOLUTION = {
 test('one-shot scroll drives the shared scrollResolved helper and carries the action landmark', async () => {
   const recorder = stubRecorder({
     ...SINGLE_PANE_RESOLUTION,
-    'Runtime.callFunctionOn': () => ({ result: { value: 240 } }),
+    'Runtime.callFunctionOn': () => ({ result: { value: { scrollTopBefore: 0, scrollTopAfter: 240, maxScrollTop: 1_000 } } }),
   });
   await driveOneShotAction(recorder as never, 'scroll:.pane,to=bottom');
   const scrollCall = recorder.calls.find((c) => c.method === 'Runtime.callFunctionOn');
@@ -401,7 +401,7 @@ test('one-shot scroll rejects in-page exceptions and missing scroll payloads, re
   });
   await assert.rejects(
     () => driveOneShotAction(malformedRecorder as never, 'scroll:.pane,to=bottom'),
-    /valid scrollTop payload/,
+    /valid traversed-range payload/,
   );
   assert.equal(malformedRecorder.calls.filter((c) => c.method === 'Runtime.releaseObject').length, 1);
 });

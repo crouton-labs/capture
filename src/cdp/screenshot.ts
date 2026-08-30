@@ -151,6 +151,7 @@ async function viewportScopedCapture(
   includeCssViewport = false,
 ): Promise<{ png: Buffer; cssViewport?: CapturedRegion; scrollOffset?: ScrollOffset }> {
   const MAX_DIM = 1600; // headroom below Anthropic's 2000px many-image limit
+  const SCREENSHOT_REQUEST_TIMEOUT_MS = 30_000;
   let ownsDeviceMetricsOverride = false;
   let primaryFailed = false;
   let primaryError: unknown;
@@ -248,7 +249,7 @@ async function viewportScopedCapture(
     const result = (await client.send(
       'Page.captureScreenshot',
       screenshotOpts,
-      15000,
+      SCREENSHOT_REQUEST_TIMEOUT_MS,
     )) as { data?: string };
     let png = Buffer.from(result.data ?? '', 'base64');
 
@@ -261,7 +262,7 @@ async function viewportScopedCapture(
       const retry = (await client.send('Page.captureScreenshot', {
         ...screenshotOpts,
         clip: { ...clip, scale: 1 },
-      }, 15000)) as { data?: string };
+      }, SCREENSHOT_REQUEST_TIMEOUT_MS)) as { data?: string };
       png = Buffer.from(retry.data ?? '', 'base64');
       if (png.length > 0) png = downscalePngToFit(png, MAX_DIM);
     }
@@ -272,7 +273,7 @@ async function viewportScopedCapture(
       const retry = (await client.send('Page.captureScreenshot', {
         format: 'png',
         captureBeyondViewport: false,
-      }, 15000)) as { data?: string };
+      }, SCREENSHOT_REQUEST_TIMEOUT_MS)) as { data?: string };
       png = Buffer.from(retry.data ?? '', 'base64');
       if (png.length > 0) png = downscalePngToFit(png, MAX_DIM);
       // An unclipped capture covers the visual viewport itself, not the integer

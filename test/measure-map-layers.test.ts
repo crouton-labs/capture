@@ -60,7 +60,7 @@ test('measure map layers renders compositing reasons, authored provenance, paint
   assert.match(output, /Has a will-change: transform compositing hint/);
   assert.match(output, /&lt;\/layer-map&gt; follow_up: forged/);
   assert.doesNotMatch(output, /<\/layer-map> follow_up: forged/);
-  assert.match(output, /DOMSnapshot paint order \(back-to-front\): 7, 42, 43/);
+  assert.match(output, /DOMSnapshot paint order \(back-to-front\): 3 painted node\(s\); backend id\(s\): 7, 42, 43/);
   assert.match(output, /Node membership: 2 painted node\(s\); backend id\(s\): 42, 43/);
   assert.match(output, /winning declaration for `.banner` is `src\/components\/banner\.css:41:2` specificity 0-1-0/);
   assert.match(output, /nondeterminism caveat: unstable region unstable-banner/);
@@ -79,11 +79,18 @@ test('measure map layers preserves DOMSnapshot paint-order facts when LayerTree 
     styleSheetHeaders: { available: true },
   });
 
-  const json = toJsonResult(buildMeasureMapLayersResult(await resolveSnapRef(snap))) as { attrs: Record<string, unknown>; sections: string[] };
+  const json = toJsonResult(buildMeasureMapLayersResult(await resolveSnapRef(snap))) as { attrs: Record<string, unknown>; sections: Array<{ paintOrder: { paintedNodeCount: number; backendNodeIds: number[]; backendNodeIdsOmitted: number } }> };
   assert.equal(json.attrs['layer-tree'], 'unavailable');
   assert.equal(json.attrs['paint-order'], 'available');
-  assert.ok(json.sections.some((section) => section.includes('LayerTree facts unavailable: no-layertree-event-within-timeout. DOMSnapshot paint order is available.')));
-  assert.ok(json.sections.some((section) => section.includes('DOMSnapshot paint order (back-to-front): 10, 11.')));
+  assert.equal(json.attrs['painted-nodes'], 2);
+  assert.deepEqual(json.sections, [{
+    layerTree: { available: false, reason: 'no-layertree-event-within-timeout' },
+    layers: [], layersTruncated: 0,
+    paintOrder: { available: true, backendNodeIds: [10, 11], truncated: 0, paintedNodeCount: 2, backendNodeIdsOmitted: 0 },
+    layerPaintOrder: [],
+    membership: { available: false, reason: 'layertree-unavailable: no-layertree-event-within-timeout', unassignedCount: 0 },
+    styleSheetHeaders: { available: true },
+  }]);
 });
 
 test('measure map layers has structured missing-artifact recovery from the shared resolver', async () => {

@@ -28,7 +28,7 @@ input:
   --settle <ms>     network-settle window applied after the scroll (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <scrolled backend-node-id=… role=… name=…> — resolved identity, destination, the container's resulting scrollTop, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
+  <scrolled backend-node-id=… role=… name=…> — resolved identity, destination, scrollTop before/after, the container's maximum scrollTop, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
   drives the container's in-page scroll (instant by default; may trigger lazy-load network); writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
 
@@ -87,7 +87,8 @@ export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promis
 
   const { dispatch, screenshot, screenshotWarning } = outcome;
   const rows: FactLine[] = [
-    fact`scrolled ${dispatch.role ?? 'unknown'} "${dispatch.name ?? ''}" (backend:${dispatch.backendNodeId}) to ${dispatch.to} — scrollTop now ${dispatch.scrollTop}`,
+    fact`scrolled ${dispatch.role ?? 'unknown'} "${dispatch.name ?? ''}" (backend:${dispatch.backendNodeId}) to ${dispatch.to} — scrollTop ${dispatch.scrollTopBefore} → ${dispatch.scrollTop} within 0…${dispatch.maxScrollTop}`,
+    fact`traversed ${Math.abs(dispatch.scrollTop - dispatch.scrollTopBefore)} CSS px of the container's ${dispatch.maxScrollTop} CSS px vertical range`,
     fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`,
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
@@ -101,7 +102,10 @@ export async function cmdPageScroll(parsed: ParsedArgs, _args: string[]): Promis
         role: dispatch.role ?? undefined,
         name: dispatch.name ?? undefined,
         to: dispatch.to,
+        'scroll-top-before': dispatch.scrollTopBefore,
         'scroll-top': dispatch.scrollTop,
+        'max-scroll-top': dispatch.maxScrollTop,
+        'scroll-range-traversed': Math.abs(dispatch.scrollTop - dispatch.scrollTopBefore),
       },
       summary: lineList(rows),
     },

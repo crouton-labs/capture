@@ -703,7 +703,7 @@ test('focusAndType: works against a client without the recorder hook', async () 
 function scrollHandlers(resultingScrollTop: number): Record<string, (params: Record<string, unknown>) => unknown> {
   return {
     'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
-    'Runtime.callFunctionOn': () => ({ result: { value: resultingScrollTop } }),
+    'Runtime.callFunctionOn': () => ({ result: { value: { scrollTopBefore: 0, scrollTopAfter: resultingScrollTop, maxScrollTop: 1_000 } } }),
     'Runtime.releaseObject': () => ({}),
   };
 }
@@ -724,7 +724,7 @@ test('scrollResolved: resolves the node to an object and drives scrollTop with t
   const client = stubClient(scrollHandlers(640));
   const dispatch = await scrollResolved(client, RESOLVED_BUTTON, 'bottom');
 
-  assert.deepEqual(dispatch, { backendNodeId: 201, role: 'button', name: 'Send', to: 'bottom', scrollTop: 640 });
+  assert.deepEqual(dispatch, { backendNodeId: 201, role: 'button', name: 'Send', to: 'bottom', scrollTopBefore: 0, scrollTop: 640, maxScrollTop: 1_000 });
   assertReleasedExactlyOnce(client);
 
   const resolveCall = client.calls.find((c) => c.method === 'DOM.resolveNode');
@@ -834,7 +834,7 @@ test('scrollResolved: a release failure after a successful scroll surfaces as a 
   const releaseFailure = new Error('release transport failed');
   const client = stubClient({
     'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
-    'Runtime.callFunctionOn': () => ({ result: { value: 640 } }),
+    'Runtime.callFunctionOn': () => ({ result: { value: { scrollTopBefore: 0, scrollTopAfter: 640, maxScrollTop: 1_000 } } }),
     'Runtime.releaseObject': () => { throw releaseFailure; },
   });
   const error = await caught(() => scrollResolved(client, RESOLVED_BUTTON, 'bottom'));

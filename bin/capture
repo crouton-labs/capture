@@ -8548,6 +8548,7 @@ async function captureScreenshotWithCssViewport(client, viewport2, options) {
 }
 async function viewportScopedCapture(client, viewport2, options, includeCssViewport = false) {
   const MAX_DIM = 1600;
+  const SCREENSHOT_REQUEST_TIMEOUT_MS = 3e4;
   let ownsDeviceMetricsOverride = false;
   let primaryFailed = false;
   let primaryError;
@@ -8615,7 +8616,7 @@ async function viewportScopedCapture(client, viewport2, options, includeCssViewp
     const result = await client.send(
       "Page.captureScreenshot",
       screenshotOpts,
-      15e3
+      SCREENSHOT_REQUEST_TIMEOUT_MS
     );
     let png = Buffer.from(result.data ?? "", "base64");
     if (png.length === 0 && screenshotOpts.clip) {
@@ -8623,7 +8624,7 @@ async function viewportScopedCapture(client, viewport2, options, includeCssViewp
       const retry = await client.send("Page.captureScreenshot", {
         ...screenshotOpts,
         clip: { ...clip, scale: 1 }
-      }, 15e3);
+      }, SCREENSHOT_REQUEST_TIMEOUT_MS);
       png = Buffer.from(retry.data ?? "", "base64");
       if (png.length > 0) png = downscalePngToFit(png, MAX_DIM);
     }
@@ -8631,7 +8632,7 @@ async function viewportScopedCapture(client, viewport2, options, includeCssViewp
       const retry = await client.send("Page.captureScreenshot", {
         format: "png",
         captureBeyondViewport: false
-      }, 15e3);
+      }, SCREENSHOT_REQUEST_TIMEOUT_MS);
       png = Buffer.from(retry.data ?? "", "base64");
       if (png.length > 0) png = downscalePngToFit(png, MAX_DIM);
       if (png.length > 0) {
@@ -16682,7 +16683,7 @@ async function scrollResolved(client, resolved, to, opts = {}) {
   try {
     const params = {
       objectId,
-      functionDeclaration: 'function(to, behavior) { const root = this === document.documentElement || this === document.body; const container = root ? document.scrollingElement : this; const n = to === "top" ? 0 : to === "bottom" ? container.scrollHeight : Number(to); const top = Math.max(0, Math.min(n, container.scrollHeight - container.clientHeight)); if (container.scrollTop === top || behavior === "instant") { if (root) window.scrollTo({ top, behavior: "instant" }); else this.scrollTo({ top, behavior: "instant" }); return container.scrollTop; } return new Promise((resolve) => { const eventTarget = root ? document : this; let done = false; const finish = () => { if (done) return; done = true; clearTimeout(timeout); resolve(container.scrollTop); }; const timeout = setTimeout(finish, 5000); eventTarget.addEventListener("scrollend", finish, { once: true }); if (root) window.scrollTo({ top, behavior: "smooth" }); else this.scrollTo({ top, behavior: "smooth" }); }); }',
+      functionDeclaration: 'function(to, behavior) { const root = this === document.documentElement || this === document.body; const container = root ? document.scrollingElement : this; const before = container.scrollTop; const max = Math.max(0, container.scrollHeight - container.clientHeight); const n = to === "top" ? 0 : to === "bottom" ? container.scrollHeight : Number(to); const top = Math.max(0, Math.min(n, max)); const observed = () => ({ scrollTopBefore: before, scrollTopAfter: container.scrollTop, maxScrollTop: max }); if (before === top || behavior === "instant") { if (root) window.scrollTo({ top, behavior: "instant" }); else this.scrollTo({ top, behavior: "instant" }); return observed(); } return new Promise((resolve) => { const eventTarget = root ? document : this; let done = false; const finish = () => { if (done) return; done = true; clearTimeout(timeout); resolve(observed()); }; const timeout = setTimeout(finish, 5000); eventTarget.addEventListener("scrollend", finish, { once: true }); if (root) window.scrollTo({ top, behavior: "smooth" }); else this.scrollTo({ top, behavior: "smooth" }); }); }',
       arguments: [{ value: to }, { value: opts.behavior ?? "instant" }],
       awaitPromise: true,
       returnByValue: true
@@ -16695,14 +16696,14 @@ async function scrollResolved(client, resolved, to, opts = {}) {
         `Scroll dispatch threw in-page: ${result.exceptionDetails.text ?? "unknown error"}.`
       );
     }
-    const scrollTop = result?.result?.value;
-    if (typeof scrollTop !== "number") {
-      throw captureError("world", "malformed_protocol", "Scroll did not return a valid scrollTop payload.", {
+    const observed = result?.result?.value;
+    if (typeof observed?.scrollTopBefore !== "number" || typeof observed.scrollTopAfter !== "number" || typeof observed.maxScrollTop !== "number") {
+      throw captureError("world", "malformed_protocol", "Scroll did not return a valid traversed-range payload.", {
         method: "Runtime.callFunctionOn",
         response: result
       });
     }
-    return { backendNodeId: backendNodeId2, role: resolved.role, name: resolved.name, to, scrollTop };
+    return { backendNodeId: backendNodeId2, role: resolved.role, name: resolved.name, to, scrollTopBefore: observed.scrollTopBefore, scrollTop: observed.scrollTopAfter, maxScrollTop: observed.maxScrollTop };
   } catch (error4) {
     primaryFailed = true;
     primaryError = error4;
@@ -17020,7 +17021,8 @@ async function cmdPageScroll(parsed, _args) {
   }
   const { dispatch, screenshot, screenshotWarning } = outcome;
   const rows = [
-    fact`scrolled ${dispatch.role ?? "unknown"} "${dispatch.name ?? ""}" (backend:${dispatch.backendNodeId}) to ${dispatch.to} — scrollTop now ${dispatch.scrollTop}`,
+    fact`scrolled ${dispatch.role ?? "unknown"} "${dispatch.name ?? ""}" (backend:${dispatch.backendNodeId}) to ${dispatch.to} — scrollTop ${dispatch.scrollTopBefore} → ${dispatch.scrollTop} within 0…${dispatch.maxScrollTop}`,
+    fact`traversed ${Math.abs(dispatch.scrollTop - dispatch.scrollTopBefore)} CSS px of the container's ${dispatch.maxScrollTop} CSS px vertical range`,
     fact`settle: requested ${settleFacts.requestedMs}ms, waited ${settleFacts.waitedMs}ms`
   ];
   if (screenshot) rows.push(fact`screenshot: ${screenshot}`);
@@ -17033,7 +17035,10 @@ async function cmdPageScroll(parsed, _args) {
         role: dispatch.role ?? void 0,
         name: dispatch.name ?? void 0,
         to: dispatch.to,
-        "scroll-top": dispatch.scrollTop
+        "scroll-top-before": dispatch.scrollTopBefore,
+        "scroll-top": dispatch.scrollTop,
+        "max-scroll-top": dispatch.maxScrollTop,
+        "scroll-range-traversed": Math.abs(dispatch.scrollTop - dispatch.scrollTopBefore)
       },
       summary: lineList(rows)
     },
@@ -17056,7 +17061,7 @@ input:
   --settle <ms>     network-settle window applied after the scroll (default: 1000; 2500 with an active session; 0 disables)
   --no-screenshot   skip the auto-screenshot
 output:
-  <scrolled backend-node-id=\u2026 role=\u2026 name=\u2026> \u2014 resolved identity, destination, the container's resulting scrollTop, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
+  <scrolled backend-node-id=\u2026 role=\u2026 name=\u2026> \u2014 resolved identity, destination, scrollTop before/after, the container's maximum scrollTop, the measured settle (requested/waited), and either the screenshot artifact path or a warning when only that follow-up capture timed out; --json mirrors the same fields
 effects:
   drives the container's in-page scroll (instant by default; may trigger lazy-load network); writes one screenshot into the active session's shots/ sequence unless --no-screenshot`;
   }
@@ -234981,7 +234986,7 @@ function toContainerOut(c, backendById) {
 async function resolveMarkerBackendIds2(client, markerAttr) {
   const map = /* @__PURE__ */ new Map();
   try {
-    const doc = await client.send("DOM.getDocument", { depth: -1, pierce: false });
+    const doc = await client.send("DOM.getDocument", { depth: 0, pierce: false });
     const rootId = doc.root?.nodeId;
     if (rootId === void 0) return map;
     const res = await client.send("DOM.querySelectorAll", { nodeId: rootId, selector: `[${markerAttr}]` });
@@ -237922,10 +237927,10 @@ function makeCollectorWriter(writer) {
     }
   };
 }
-function boundedClient(client, phase, partialPath, onTimeout) {
+function boundedClient(client, phase, partialPath, onTimeout, requestTimeoutCapMs = SNAPSHOT_REQUEST_TIMEOUT_MS) {
   const bounded2 = Object.create(client);
   bounded2.send = (method, params = {}, timeout = 6e4, sessionId) => {
-    const timeoutMs = Math.min(timeout, SNAPSHOT_REQUEST_TIMEOUT_MS);
+    const timeoutMs = Math.min(timeout, requestTimeoutCapMs);
     let timer;
     let timedOut = false;
     const markTimedOut = (error4) => {
@@ -238059,7 +238064,7 @@ async function captureSnapshotSubstrate(options) {
             client: boundedClient(client, `collector:${collector.name}`, dir, (error4) => {
               requestTimeouts += 1;
               timeoutError ??= error4;
-            }),
+            }, collector.name === "scroll" ? SCROLL_COLLECTOR_REQUEST_TIMEOUT_MS : SNAPSHOT_REQUEST_TIMEOUT_MS),
             write: collectorWriter.writer
           });
           if (collector.name === "styles" && timeoutError) throw timeoutError;
@@ -238181,7 +238186,7 @@ async function captureSnapshotSubstrate(options) {
     await restoreAnimationsOnce();
   }
 }
-var path27, COLLECTORS, COLLECTOR_NAMES, SNAPSHOT_REQUEST_TIMEOUT_MS, SnapshotCaptureTimeout;
+var path27, COLLECTORS, COLLECTOR_NAMES, SNAPSHOT_REQUEST_TIMEOUT_MS, SCROLL_COLLECTOR_REQUEST_TIMEOUT_MS, SnapshotCaptureTimeout;
 var init_snapshot = __esm({
   "src/cdp/measure/snapshot.ts"() {
     path27 = __toESM(require("path"));
@@ -238221,6 +238226,7 @@ var init_snapshot = __esm({
     ];
     COLLECTOR_NAMES = COLLECTORS.map((collector) => collector.name);
     SNAPSHOT_REQUEST_TIMEOUT_MS = 5e3;
+    SCROLL_COLLECTOR_REQUEST_TIMEOUT_MS = 3e4;
     SnapshotCaptureTimeout = class extends Error {
       constructor(phase, method, timeoutMs, partialPath) {
         super(`snapshot capture timed out in ${phase} while waiting for ${method} after ${timeoutMs}ms; partial artifacts: ${partialPath}`);
@@ -241802,6 +241808,18 @@ effects: read-only over an existing snapshot artifact; a URL target writes one s
 });
 
 // src/cdp/measure/map-layers.ts
+function boundedIdentifiers(ids, total) {
+  const listed = ids.slice(0, INLINE_IDENTIFIER_LIMIT);
+  return { listed, omitted: Math.max(0, total - listed.length) };
+}
+function layerJson(layer) {
+  const members = boundedIdentifiers(layer.memberBackendNodeIds, layer.memberCount);
+  return {
+    ...layer,
+    memberBackendNodeIds: members.listed,
+    memberBackendNodeIdsOmitted: members.omitted
+  };
+}
 function sourceFor3(layer) {
   const provenance = layer.styleProvenance;
   if (!provenance) return void 0;
@@ -241847,8 +241865,10 @@ function formatLayer(layer, membershipAvailable, caveats) {
   else if (layer.compositingReasons.length) details.push(fact`Compositing reasons: ${layer.compositingReasons.join(", ")}`);
   else details.push(text`Compositing reasons: none reported.`);
   if (!membershipAvailable) details.push(text`Node membership was unavailable for this layer.`);
-  else if (layer.membersTruncated) details.push(fact`Node membership: ${layer.memberCount} painted node(s); first ${layer.memberBackendNodeIds.length} backend id(s): ${layer.memberBackendNodeIds.join(", ")}; ${layer.membersTruncated} additional id(s) not listed.`);
-  else details.push(fact`Node membership: ${layer.memberCount} painted node(s); backend id(s): ${layer.memberBackendNodeIds.join(", ") || "(none)"}.`);
+  else {
+    const members = boundedIdentifiers(layer.memberBackendNodeIds, layer.memberCount);
+    details.push(members.omitted ? line(fact`Node membership: ${layer.memberCount} painted node(s); first ${members.listed.length} backend id(s): `, data(members.listed.join(", ") || "(none)", 1e3), fact`; ${members.omitted} id(s) omitted.`) : line(fact`Node membership: ${layer.memberCount} painted node(s); backend id(s): `, data(members.listed.join(", ") || "(none)", 1e3), text`.`));
+  }
   if (layer.styleProvenance) {
     const provenance = layer.styleProvenance;
     details.push(line(
@@ -241875,9 +241895,9 @@ function formatLayer(layer, membershipAvailable, caveats) {
 }
 function paintOrderLine(report, caveats) {
   if (!report.paintOrder.available) return fact`DOMSnapshot paint order unavailable${report.paintOrder.reason ? `: ${report.paintOrder.reason}` : ""}.`;
-  const ids = report.paintOrder.backendNodeIds;
-  const suffix = report.paintOrder.truncated ? `; ${report.paintOrder.truncated} additional backend node id(s) not listed` : "";
-  const base = fact`DOMSnapshot paint order (back-to-front): ${ids.join(", ") || "(no painted backend nodes recorded)"}${suffix}.`;
+  const total = report.paintOrder.backendNodeIds.length + report.paintOrder.truncated;
+  const ids = boundedIdentifiers(report.paintOrder.backendNodeIds, total);
+  const base = ids.omitted ? line(fact`DOMSnapshot paint order (back-to-front): ${total} painted node(s); first ${ids.listed.length} backend id(s): `, data(ids.listed.join(", ") || "(none)", 1e3), fact`; ${ids.omitted} id(s) omitted.`) : line(fact`DOMSnapshot paint order (back-to-front): ${total} painted node(s); backend id(s): `, data(ids.listed.join(", ") || "(none)", 1e3), text`.`);
   const caveat = caveatLine3(caveats);
   return caveat ? lineList([base, caveat]) : base;
 }
@@ -241908,6 +241928,11 @@ function buildMeasureMapLayersResult(ref) {
   const layerTreeStatus = report.layerTree.available ? "available" : "unavailable";
   const paintOrderStatus = report.paintOrder.available ? "available" : "unavailable";
   const membershipStatus = report.membership.available ? "available" : "unavailable";
+  const paintedNodeCount = report.paintOrder.backendNodeIds.length + report.paintOrder.truncated;
+  const paintOrderJson = report.paintOrder.available ? { ...report.paintOrder, paintedNodeCount, ...(() => {
+    const ids = boundedIdentifiers(report.paintOrder.backendNodeIds, paintedNodeCount);
+    return { backendNodeIds: ids.listed, backendNodeIdsOmitted: ids.omitted };
+  })() } : report.paintOrder;
   const availability = report.layerTree.available ? fact`LayerTree facts available for ${report.layers.length} layer(s). DOMSnapshot paint order is ${paintOrderStatus}.` : fact`LayerTree facts unavailable${report.layerTree.reason ? `: ${report.layerTree.reason}` : ""}. DOMSnapshot paint order is ${paintOrderStatus}.`;
   const sections = [availability, paintOrderLine(report, paintOrderCaveats)];
   if (report.layersTruncated) sections.push(fact`${report.layersTruncated} compositor layer(s) were not listed because the snapshot collector capped the layer inventory.`);
@@ -241933,17 +241958,29 @@ function buildMeasureMapLayersResult(ref) {
       "layer-tree": layerTreeStatus,
       "paint-order": paintOrderStatus,
       membership: membershipStatus,
+      "painted-nodes": report.paintOrder.available ? paintedNodeCount : void 0,
       settled: meta.settled
     },
-    summary: text`Paint/compositor layer facts, DOMSnapshot paint order, node membership, and available layer-style provenance are reported from layers.json.`,
+    summary: report.paintOrder.available ? fact`Paint/compositor layer facts and ${paintedNodeCount} DOMSnapshot painted node(s) are reported from layers.json; identifier lists are limited to ${INLINE_IDENTIFIER_LIMIT} per corpus with omitted counts.` : text`Paint/compositor layer facts, DOMSnapshot paint order, node membership, and available layer-style provenance are reported from layers.json.`,
     sections,
+    jsonSections: [{
+      layerTree: report.layerTree,
+      layers: report.layers.map(layerJson),
+      layersTruncated: report.layersTruncated,
+      paintOrder: paintOrderJson,
+      layerPaintOrder: report.layerPaintOrder,
+      membership: report.membership,
+      styleSheetHeaders: report.styleSheetHeaders
+    }],
     followUp: fact`Inspect an element's cascade and stacking facts with \`capture measure explain ${ref.id} --selector <selector>\`.`
   };
 }
+var INLINE_IDENTIFIER_LIMIT;
 var init_map_layers = __esm({
   "src/cdp/measure/map-layers.ts"() {
     init_artifact();
     init_render();
+    INLINE_IDENTIFIER_LIMIT = 50;
   }
 });
 
@@ -242003,7 +242040,7 @@ var init_map_layers2 = __esm({
 
 input:
   [url|snap]   required target: a URL creates a settled snapshot first; a snapshot id or absolute path is read without re-driving the browser
-output: <layer-map \u2026> \u2014 layer bounds, compositing reasons, DOMSnapshot paint order, per-node membership, and available source provenance for layer-affecting declarations; --json mirrors
+output: <layer-map \u2026> \u2014 layer bounds, compositing reasons, painted-node counts, per-node membership, and available source provenance for layer-affecting declarations; backend-id corpora are limited to 50 per list with omitted counts, and --json mirrors the same cap
 effects: read-only over an existing snapshot artifact; a URL target writes one settled snapshot first`;
   }
 });

@@ -27,6 +27,22 @@ interface LayerFact {
   readonly rect: Rect;
 }
 
+const INLINE_IDENTIFIER_LIMIT = 50;
+
+function boundedIdentifiers(ids: readonly number[], total: number): { listed: readonly number[]; omitted: number } {
+  const listed = ids.slice(0, INLINE_IDENTIFIER_LIMIT);
+  return { listed, omitted: Math.max(0, total - listed.length) };
+}
+
+function layerJson(layer: LayerRecord): Record<string, unknown> {
+  const members = boundedIdentifiers(layer.memberBackendNodeIds, layer.memberCount);
+  return {
+    ...layer,
+    memberBackendNodeIds: members.listed,
+    memberBackendNodeIdsOmitted: members.omitted,
+  };
+}
+
 function sourceFor(layer: LayerRecord): string | undefined {
   const provenance = layer.styleProvenance;
   if (!provenance) return undefined;
@@ -75,8 +91,12 @@ function formatLayer(layer: LayerRecord, membershipAvailable: boolean, caveats: 
   else if (layer.compositingReasons.length) details.push(fact`Compositing reasons: ${layer.compositingReasons.join(', ')}`);
   else details.push(text`Compositing reasons: none reported.`);
   if (!membershipAvailable) details.push(text`Node membership was unavailable for this layer.`);
-  else if (layer.membersTruncated) details.push(fact`Node membership: ${layer.memberCount} painted node(s); first ${layer.memberBackendNodeIds.length} backend id(s): ${layer.memberBackendNodeIds.join(', ')}; ${layer.membersTruncated} additional id(s) not listed.`);
-  else details.push(fact`Node membership: ${layer.memberCount} painted node(s); backend id(s): ${layer.memberBackendNodeIds.join(', ') || '(none)'}.`);
+  else {
+    const members = boundedIdentifiers(layer.memberBackendNodeIds, layer.memberCount);
+    details.push(members.omitted
+      ? line(fact`Node membership: ${layer.memberCount} painted node(s); first ${members.listed.length} backend id(s): `, data(members.listed.join(', ') || '(none)', 1000), fact`; ${members.omitted} id(s) omitted.`)
+      : line(fact`Node membership: ${layer.memberCount} painted node(s); backend id(s): `, data(members.listed.join(', ') || '(none)', 1000), text`.`));
+  }
   if (layer.styleProvenance) {
     const provenance = layer.styleProvenance;
     details.push(line(
@@ -104,9 +124,11 @@ function formatLayer(layer: LayerRecord, membershipAvailable: boolean, caveats: 
 
 function paintOrderLine(report: LayersReport, caveats: readonly UnstableCaveat[]): FactLine {
   if (!report.paintOrder.available) return fact`DOMSnapshot paint order unavailable${report.paintOrder.reason ? `: ${report.paintOrder.reason}` : ''}.`;
-  const ids = report.paintOrder.backendNodeIds;
-  const suffix = report.paintOrder.truncated ? `; ${report.paintOrder.truncated} additional backend node id(s) not listed` : '';
-  const base = fact`DOMSnapshot paint order (back-to-front): ${ids.join(', ') || '(no painted backend nodes recorded)'}${suffix}.`;
+  const total = report.paintOrder.backendNodeIds.length + report.paintOrder.truncated;
+  const ids = boundedIdentifiers(report.paintOrder.backendNodeIds, total);
+  const base = ids.omitted
+    ? line(fact`DOMSnapshot paint order (back-to-front): ${total} painted node(s); first ${ids.listed.length} backend id(s): `, data(ids.listed.join(', ') || '(none)', 1000), fact`; ${ids.omitted} id(s) omitted.`)
+    : line(fact`DOMSnapshot paint order (back-to-front): ${total} painted node(s); backend id(s): `, data(ids.listed.join(', ') || '(none)', 1000), text`.`);
   const caveat = caveatLine(caveats);
   return caveat ? lineList([base, caveat]) : base;
 }
@@ -138,6 +160,10 @@ export function buildMeasureMapLayersResult(ref: SnapRef): RenderableResult {
   const layerTreeStatus = report.layerTree.available ? 'available' : 'unavailable';
   const paintOrderStatus = report.paintOrder.available ? 'available' : 'unavailable';
   const membershipStatus = report.membership.available ? 'available' : 'unavailable';
+  const paintedNodeCount = report.paintOrder.backendNodeIds.length + report.paintOrder.truncated;
+  const paintOrderJson = report.paintOrder.available
+    ? { ...report.paintOrder, paintedNodeCount, ...(() => { const ids = boundedIdentifiers(report.paintOrder.backendNodeIds, paintedNodeCount); return { backendNodeIds: ids.listed, backendNodeIdsOmitted: ids.omitted }; })() }
+    : report.paintOrder;
   const availability = report.layerTree.available
     ? fact`LayerTree facts available for ${report.layers.length} layer(s). DOMSnapshot paint order is ${paintOrderStatus}.`
     : fact`LayerTree facts unavailable${report.layerTree.reason ? `: ${report.layerTree.reason}` : ''}. DOMSnapshot paint order is ${paintOrderStatus}.`;
@@ -168,10 +194,22 @@ export function buildMeasureMapLayersResult(ref: SnapRef): RenderableResult {
       'layer-tree': layerTreeStatus,
       'paint-order': paintOrderStatus,
       membership: membershipStatus,
+      'painted-nodes': report.paintOrder.available ? paintedNodeCount : undefined,
       settled: meta.settled,
     },
-    summary: text`Paint/compositor layer facts, DOMSnapshot paint order, node membership, and available layer-style provenance are reported from layers.json.`,
+    summary: report.paintOrder.available
+      ? fact`Paint/compositor layer facts and ${paintedNodeCount} DOMSnapshot painted node(s) are reported from layers.json; identifier lists are limited to ${INLINE_IDENTIFIER_LIMIT} per corpus with omitted counts.`
+      : text`Paint/compositor layer facts, DOMSnapshot paint order, node membership, and available layer-style provenance are reported from layers.json.`,
     sections,
+    jsonSections: [{
+      layerTree: report.layerTree,
+      layers: report.layers.map(layerJson),
+      layersTruncated: report.layersTruncated,
+      paintOrder: paintOrderJson,
+      layerPaintOrder: report.layerPaintOrder,
+      membership: report.membership,
+      styleSheetHeaders: report.styleSheetHeaders,
+    }],
     followUp: fact`Inspect an element's cascade and stacking facts with \`capture measure explain ${ref.id} --selector <selector>\`.`,
   };
 }
