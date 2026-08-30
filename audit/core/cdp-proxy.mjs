@@ -47,10 +47,15 @@ export async function startCdpProxy({ targetPort, targetHost = "127.0.0.1", port
     };
     client.on("data", (chunk) => {
       record.bytesToBrowser += chunk.length;
-      if (!record.firstRequestLine && firstBytes.length < 16_384) {
+      // Keep accumulating past the request line: the probe marker compares these
+      // bytes against the connection total, so a request whose headers arrive in a
+      // second TCP segment must still be seen whole.
+      if (firstBytes.length < 16_384) {
         firstBytes = Buffer.concat([firstBytes, chunk]).subarray(0, 16_384);
-        const ending = firstBytes.indexOf("\r\n");
-        if (ending >= 0) record.firstRequestLine = firstBytes.subarray(0, ending).toString("latin1");
+        if (!record.firstRequestLine) {
+          const ending = firstBytes.indexOf("\r\n");
+          if (ending >= 0) record.firstRequestLine = firstBytes.subarray(0, ending).toString("latin1");
+        }
       }
     });
     browser.on("data", (chunk) => { record.bytesToClient += chunk.length; });
