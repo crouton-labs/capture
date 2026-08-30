@@ -3,6 +3,15 @@ import { appendFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 
+function isVersionOnlyHttpProbe(bytes, totalBytes) {
+  if (bytes.length !== totalBytes) return false;
+  const headerEnd = bytes.indexOf("\r\n\r\n");
+  if (headerEnd < 0 || headerEnd + 4 !== bytes.length) return false;
+  const lines = bytes.subarray(0, headerEnd).toString("latin1").split("\r\n");
+  if (lines.shift() !== "GET /json/version HTTP/1.1") return false;
+  return !lines.some((line) => /^(?:content-length|transfer-encoding|upgrade):/i.test(line));
+}
+
 /**
  * A byte-transparent TCP proxy for a Chrome DevTools endpoint. Chrome derives
  * webSocketDebuggerUrl from the inbound Host header, so forwarding that header
@@ -29,6 +38,7 @@ export async function startCdpProxy({ targetPort, targetHost = "127.0.0.1", port
       if (finalized) return;
       finalized = true;
       record.closedAt = new Date().toISOString();
+      record.versionOnlyHttpProbe = isVersionOnlyHttpProbe(firstBytes, record.bytesToBrowser);
       const write = appendFile(logPath, `${JSON.stringify(record)}\n`, "utf8").finally(() => pendingWrites.delete(write));
       pendingWrites.add(write);
     };

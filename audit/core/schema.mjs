@@ -36,7 +36,7 @@ export const CommandEventSchema = z.object({
 
 export const CdpConnectionSchema = z.object({
   connId: z.number().int().positive(), acceptedAt: IsoDate, closedAt: IsoDate, remoteAddr: z.string(), remotePort: z.number().int().nonnegative(),
-  bytesToBrowser: z.number().int().nonnegative(), bytesToClient: z.number().int().nonnegative(), firstRequestLine: z.string(),
+  bytesToBrowser: z.number().int().nonnegative(), bytesToClient: z.number().int().nonnegative(), firstRequestLine: z.string(), versionOnlyHttpProbe: z.boolean().optional(),
 });
 
 /** Coordinator-owned provenance and lifecycle state read by the grader before a run record exists. */

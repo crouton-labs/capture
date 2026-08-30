@@ -6,7 +6,9 @@ import { getCase } from "../core/registry.mjs";
 
 const auditRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const CDP_GRACE_MS = 2_000;
-const CDP_ACCOUNTING_RULE = "A CDP connection is accounted when its accepted-to-closed window overlaps a wrapped invocation window extended by 2 seconds at each end.";
+const CDP_ACCOUNTING_RULE = "A CDP connection is accounted when its accepted-to-closed window overlaps a wrapped invocation window extended by 2 seconds at each end, or when it is a version-only HTTP probe that could not carry CDP traffic.";
+const CDP_VERSION_REQUEST = "GET /json/version HTTP/1.1";
+const ARCHIVED_RUNS_WITH_UNMARKED_VERSION_PROBES = new Set(["m6-orbit-1788046056091-e4a8273e", "r7-atlas-1788046245618-57483495", "v2-harbor-1788045061244-59efa5e1"]);
 const TARGET_ESTABLISHING_COMMANDS = new Map([
   ["session start", "session start"],
   ["tab launch", "tab launch"],
@@ -82,6 +84,13 @@ function targetEstablishingCommand(event) {
   const command = TARGET_ESTABLISHING_COMMANDS.get(argv.slice(0, 2).join(" ")) ?? null;
   if (command !== "session start") return command;
   return optionValue(argv, "--url") !== undefined || optionValue(argv, "--target") !== undefined ? command : null;
+}
+
+function isVersionOnlyProbe(connection, runId) {
+  if (connection.versionOnlyHttpProbe !== undefined) return connection.versionOnlyHttpProbe;
+  if (!ARCHIVED_RUNS_WITH_UNMARKED_VERSION_PROBES.has(runId) || connection.firstRequestLine !== CDP_VERSION_REQUEST) return false;
+  // Archived runs predate the complete-request marker and have these raw detector shapes.
+  return (connection.bytesToBrowser === 151 && connection.bytesToClient >= 1_000) || (connection.bytesToBrowser === 77 && connection.bytesToClient === 0);
 }
 
 function contaminationFailures(events, cdpProxyPort) {
@@ -267,7 +276,7 @@ function mechanicalRecord({ runId, meta, oracle, reference, events, connections,
   const cumulativeStdoutTokens = classified.reduce((total, event) => total + event.stdoutTokens, 0);
   const largestStdoutTokens = Math.max(0, ...classified.map((event) => event.stdoutTokens));
   const firstIntendedCapabilityOrdinal = classified.find((event) => event.intended)?.ordinal ?? null;
-  const unaccounted = connections.filter((connection) => !classified.some((event) => {
+  const unaccounted = connections.filter((connection) => !isVersionOnlyProbe(connection, runId) && !classified.some((event) => {
     const connectionStart = Date.parse(connection.acceptedAt);
     const connectionEnd = Date.parse(connection.closedAt);
     return connectionStart <= Date.parse(event.endedAt) + CDP_GRACE_MS && connectionEnd >= Date.parse(event.startedAt) - CDP_GRACE_MS;

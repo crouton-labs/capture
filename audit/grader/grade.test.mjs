@@ -93,12 +93,29 @@ test("a correct answer reached by a wasteful route is diagnosis-only", async (t)
   assert.match(result.record.grade.reasons.join("\n"), /call ratio exceeds 2x reference \(transcript ordinals: 7\)/);
 });
 
-test("an unaccounted CDP connection invalidates an otherwise correct run", async (t) => {
-  const connection = { connId: 1, acceptedAt: "2026-01-01T00:01:00.000Z", closedAt: "2026-01-01T00:01:01.000Z", remoteAddr: "127.0.0.1", remotePort: 1, bytesToBrowser: 0, bytesToClient: 0, firstRequestLine: "GET /json/version HTTP/1.1" };
-  const paths = await fixture(t, { connections: [connection] });
-  const result = await gradeRun({ runId: "run", ...paths, facts });
-  assert.equal(result.record.grade.finalClass, "invalid");
-  assert.equal(result.record.grade.cdpAccounting.unaccounted, 1);
+test("a version-only HTTP probe does not invalidate an otherwise correct run", async (t) => {
+  for (const [bytesToBrowser, bytesToClient] of [[151, 1_141], [77, 0]]) {
+    const connection = { connId: 1, acceptedAt: "2026-01-01T00:01:00.000Z", closedAt: "2026-01-01T00:01:01.000Z", remoteAddr: "127.0.0.1", remotePort: 1, bytesToBrowser, bytesToClient, firstRequestLine: "GET /json/version HTTP/1.1", versionOnlyHttpProbe: true };
+    const paths = await fixture(t, { connections: [connection] });
+    const result = await gradeRun({ runId: "run", ...paths, facts });
+    assert.equal(result.record.grade.finalClass, "pass");
+    assert.equal(result.record.grade.cdpAccounting.unaccounted, 0);
+  }
+});
+
+test("other JSON endpoints and version requests with extra traffic remain unaccounted", async (t) => {
+  const unaccounted = [
+    ...["/json/list", "/json/new", "/json/activate/target", "/json/close/target"].map((path) => ({ bytesToBrowser: 151, bytesToClient: 1_141, firstRequestLine: `GET ${path} HTTP/1.1` })),
+    { bytesToBrowser: 151, bytesToClient: 1_141, firstRequestLine: "GET /json/version HTTP/1.1" },
+    { bytesToBrowser: 182, bytesToClient: 558, firstRequestLine: "GET /json/version HTTP/1.1" },
+    { bytesToBrowser: 151, bytesToClient: 1_141, firstRequestLine: "GET /json/version HTTP/1.1", versionOnlyHttpProbe: false },
+  ];
+  for (const connection of unaccounted) {
+    const paths = await fixture(t, { connections: [{ connId: 1, acceptedAt: "2026-01-01T00:01:00.000Z", closedAt: "2026-01-01T00:01:01.000Z", remoteAddr: "127.0.0.1", remotePort: 1, ...connection }] });
+    const result = await gradeRun({ runId: "run", ...paths, facts });
+    assert.equal(result.record.grade.finalClass, "invalid");
+    assert.equal(result.record.grade.cdpAccounting.unaccounted, 1);
+  }
 });
 
 test("a file URL in a wrapped invocation invalidates the run and appears in the worksheet", async (t) => {
