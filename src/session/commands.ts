@@ -1103,6 +1103,7 @@ function responseEndDateTime(
 }
 
 function completedTiming(e: HAREntry): FactLine {
+  if ('_resourceType' in e) return fact`WebSocket: ${e._webSocketMessages.length} frame(s) recorded`;
   const { clocks, terminal } = e._capture;
   if (terminal.kind === 'failed') {
     return fact`duration ${e.time} ms — response incomplete: failed`;

@@ -9,7 +9,7 @@
  * Ownership, registry, and reaping all live in `../../browser-process.ts`; this
  * leaf is the surface over them.
  */
-import { launchOwnedBrowser, sweepOwnedBrowsers, IDLE_REAP_MS } from '../../browser-process.js';
+import { assertPortUnbound, launchOwnedBrowser, sweepOwnedBrowsers, IDLE_REAP_MS } from '../../browser-process.js';
 import { type ParsedArgs } from '../../types.js';
 import { data, emitResult, fact, line, lineList, text, type RenderableResult } from '../../../output/render.js';
 
@@ -54,6 +54,9 @@ export async function cmdTabLaunch(parsed: ParsedArgs, _args: string[]): Promise
     return;
   }
 
+  // An explicit port must be checked before a sweep can reap an owned listener
+  // on it: this invocation must reject ambiguity, never create it by replacement.
+  if (parsed.port !== undefined) assertPortUnbound(parsed.port);
   const swept = await sweepOwnedBrowsers();
   const browser = await launchOwnedBrowser({
     url: parsed.url,

@@ -1,4 +1,5 @@
 import { CDPClient } from './client.js';
+import { CDP_LOOPBACK_HOST } from './loopback.js';
 import { detectCdpPortsAsync } from './detect.js';
 import { touchOwnedBrowser } from './browser-process.js';
 import { type CDPTarget } from './types.js';
@@ -13,7 +14,7 @@ import { type CDPTarget } from './types.js';
 export async function getBrowserClient(
   port: number,
 ): Promise<{ client: CDPClient; browserWsUrl: string }> {
-  const versionResp = await fetch(`http://localhost:${port}/json/version`);
+  const versionResp = await fetch(`http://${CDP_LOOPBACK_HOST}:${port}/json/version`);
   if (!versionResp.ok) {
     throw new Error(
       `Failed to connect to CDP on port ${port}: ${versionResp.status}`,
@@ -29,13 +30,15 @@ export async function getBrowserClient(
         `Run "capture tab list" to find a real browser endpoint, or pass --port explicitly.`,
     );
   }
-  const client = new CDPClient(version.webSocketDebuggerUrl);
+  const browserWsUrl = new URL(version.webSocketDebuggerUrl);
+  browserWsUrl.hostname = CDP_LOOPBACK_HOST;
+  const client = new CDPClient(browserWsUrl.toString());
   await client.waitReady();
   // Every browser-level connection funnels through here, which makes this the
   // one place that can tell capture's idle sweep the browser is still in use.
   // A port capture did not launch has no registry record and this is a no-op.
   touchOwnedBrowser(port);
-  return { client, browserWsUrl: version.webSocketDebuggerUrl };
+  return { client, browserWsUrl: browserWsUrl.toString() };
 }
 
 export async function listTargets(port: number): Promise<CDPTarget[]> {
@@ -59,7 +62,7 @@ export async function listTargets(port: number): Promise<CDPTarget[]> {
       title: t.title,
       url: t.url,
       type: t.type,
-      webSocketDebuggerUrl: `ws://localhost:${port}/devtools/page/${t.targetId}`,
+      webSocketDebuggerUrl: `ws://${CDP_LOOPBACK_HOST}:${port}/devtools/page/${t.targetId}`,
     }));
   } finally {
     client.close();
@@ -276,7 +279,7 @@ export async function openTab(port: number, url: string): Promise<CDPTarget> {
       title: '',
       url,
       type: 'page',
-      webSocketDebuggerUrl: `ws://localhost:${port}/devtools/page/${targetId}`,
+      webSocketDebuggerUrl: `ws://${CDP_LOOPBACK_HOST}:${port}/devtools/page/${targetId}`,
     };
   } finally {
     client.close();

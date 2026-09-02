@@ -263,6 +263,31 @@ test('session har reads the LIVE accumulating HAR of a running session, with fil
   }
 });
 
+test('session har renders WebSocket entries without HTTP timing provenance', async () => {
+  await runSession(['start']);
+  const active = getActiveSession();
+  assert.ok(active?.harId);
+  const { sessionId: id, dir } = active!;
+  const websocket: HAREntry = {
+    startedDateTime: '2026-07-12T00:00:00.000Z',
+    request: { method: 'GET', url: 'wss://api.example.com/events', headers: [] },
+    response: { status: 101, headers: [], content: {} },
+    _resourceType: 'websocket',
+    _webSocketMessages: [{ type: 'receive', time: 1783814401, opcode: 1, data: 'ready' }],
+  };
+  await appendToHarRecording(active.harId, { entries: [websocket], incompleteLifecycles: [] });
+
+  try {
+    const rendered = await runSession(['har']);
+    assert.ok(rendered.includes('GET 101'), rendered);
+    assert.ok(rendered.includes('WebSocket: 1 frame(s) recorded'), rendered);
+  } finally {
+    await runSession(['stop', id], { json: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+    clearActiveSession();
+  }
+});
+
 test('session har reports failed response completion without inventing a response end', async () => {
   await runSession(['start']);
   const active = getActiveSession();

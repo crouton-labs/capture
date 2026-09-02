@@ -3769,6 +3769,14 @@ var init_client = __esm({
   }
 });
 
+// src/cdp/loopback.ts
+var CDP_LOOPBACK_HOST;
+var init_loopback = __esm({
+  "src/cdp/loopback.ts"() {
+    CDP_LOOPBACK_HOST = "127.0.0.1";
+  }
+});
+
 // src/cdp/detect.ts
 var detect_exports = {};
 __export(detect_exports, {
@@ -3784,7 +3792,7 @@ __export(detect_exports, {
 function httpGetJson(port, path48, timeoutMs) {
   return new Promise((resolve12) => {
     const req = http.get(
-      { host: "localhost", port, path: path48, timeout: timeoutMs },
+      { host: CDP_LOOPBACK_HOST, port, path: path48, timeout: timeoutMs },
       (res) => {
         const status = res.statusCode ?? 0;
         if (status < 200 || status >= 300) {
@@ -3962,6 +3970,7 @@ var init_detect = __esm({
   "src/cdp/detect.ts"() {
     import_child_process = require("child_process");
     http = __toESM(require("http"));
+    init_loopback();
     BROWSER_PATTERNS = {
       "company.thebrowser.browser": ["arc"],
       "com.google.chrome": ["chrome", "google chrome"],
@@ -5664,7 +5673,7 @@ async function reap(record5) {
 }
 async function endpointAnswers(port) {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
+    const response = await fetch(`http://${CDP_LOOPBACK_HOST}:${port}/json/version`, {
       signal: AbortSignal.timeout(ENDPOINT_PROBE_MS)
     });
     return response.ok;
@@ -5765,12 +5774,26 @@ function devToolsPort(profileDir) {
     return null;
   }
 }
+function assertPortUnbound(port) {
+  try {
+    const output = (0, import_node_child_process2.execFileSync)("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-F", "n"], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+    if (output.trim()) {
+      throw captureError("precondition", "browser_port_in_use", `received: port ${port}; expected: no TCP listener on that port. Capture refuses to launch because the endpoint would be ambiguous across loopback address families.`);
+    }
+  } catch (error4) {
+    if (error4.status === 1) return;
+    if (error4 instanceof CaptureError && error4.descriptor.code === "browser_port_in_use") throw error4;
+    throw captureError("world", "browser_port_check_failed", `received: port ${port}; checking TCP listeners with lsof failed, so Capture cannot prove the port is unbound: ${error4 instanceof Error ? error4.message : String(error4)}`, error4);
+  }
+}
 async function launchOwnedBrowser(options) {
+  if (options.port !== void 0) assertPortUnbound(options.port);
   const executablePath = resolveBrowserExecutable(options.headless);
   const token2 = crypto2.randomBytes(8).toString("hex");
   const profileDir = ensurePrivateDir(profilePath(token2));
   const args = [
     `--remote-debugging-port=${options.port ?? 0}`,
+    `--remote-debugging-address=${CDP_LOOPBACK_HOST}`,
     `--user-data-dir=${profileDir}`,
     "--no-first-run",
     "--no-default-browser-check",
@@ -5841,6 +5864,7 @@ var init_browser_process = __esm({
     os2 = __toESM(require("node:os"));
     path2 = __toESM(require("node:path"));
     init_errors();
+    init_loopback();
     init_artifacts();
     IDLE_REAP_MS = 30 * 60 * 1e3;
     READY_TIMEOUT_MS = 15e3;
@@ -5899,7 +5923,7 @@ __export(targets_exports, {
   scoreTabUrlMatch: () => scoreTabUrlMatch
 });
 async function getBrowserClient(port) {
-  const versionResp = await fetch(`http://localhost:${port}/json/version`);
+  const versionResp = await fetch(`http://${CDP_LOOPBACK_HOST}:${port}/json/version`);
   if (!versionResp.ok) {
     throw new Error(
       `Failed to connect to CDP on port ${port}: ${versionResp.status}`
@@ -5911,10 +5935,12 @@ async function getBrowserClient(port) {
       `Port ${port} answers CDP's /json/version but has no browser-level WebSocket debugger URL \u2014 it's not a real browser (e.g. a Node/workerd inspector), so it can't host tabs. Run "capture tab list" to find a real browser endpoint, or pass --port explicitly.`
     );
   }
-  const client = new CDPClient(version.webSocketDebuggerUrl);
+  const browserWsUrl = new URL(version.webSocketDebuggerUrl);
+  browserWsUrl.hostname = CDP_LOOPBACK_HOST;
+  const client = new CDPClient(browserWsUrl.toString());
   await client.waitReady();
   touchOwnedBrowser(port);
-  return { client, browserWsUrl: version.webSocketDebuggerUrl };
+  return { client, browserWsUrl: browserWsUrl.toString() };
 }
 async function listTargets(port) {
   const { client } = await getBrowserClient(port);
@@ -5926,7 +5952,7 @@ async function listTargets(port) {
       title: t.title,
       url: t.url,
       type: t.type,
-      webSocketDebuggerUrl: `ws://localhost:${port}/devtools/page/${t.targetId}`
+      webSocketDebuggerUrl: `ws://${CDP_LOOPBACK_HOST}:${port}/devtools/page/${t.targetId}`
     }));
   } finally {
     client.close();
@@ -6071,7 +6097,7 @@ async function openTab(port, url) {
       title: "",
       url,
       type: "page",
-      webSocketDebuggerUrl: `ws://localhost:${port}/devtools/page/${targetId}`
+      webSocketDebuggerUrl: `ws://${CDP_LOOPBACK_HOST}:${port}/devtools/page/${targetId}`
     };
   } finally {
     client.close();
@@ -6081,6 +6107,7 @@ var AmbiguousPageTargetError;
 var init_targets = __esm({
   "src/cdp/targets.ts"() {
     init_client();
+    init_loopback();
     init_detect();
     init_browser_process();
     AmbiguousPageTargetError = class extends Error {
@@ -15409,6 +15436,7 @@ function responseEndDateTime(requestWallTime, requestMonotonic, terminalMonotoni
   return Number.isNaN(end.getTime()) ? null : end.toISOString();
 }
 function completedTiming(e) {
+  if ("_resourceType" in e) return fact`WebSocket: ${e._webSocketMessages.length} frame(s) recorded`;
   const { clocks, terminal: terminal2 } = e._capture;
   if (terminal2.kind === "failed") {
     return fact`duration ${e.time} ms — response incomplete: failed`;
@@ -229755,6 +229783,7 @@ async function cmdTabLaunch(parsed, _args) {
     console.log(USAGE9);
     return;
   }
+  if (parsed.port !== void 0) assertPortUnbound(parsed.port);
   const swept = await sweepOwnedBrowsers();
   const browser = await launchOwnedBrowser({
     url: parsed.url,
@@ -266843,7 +266872,7 @@ async function releaseTracing(reservation) {
 async function pageForSessionTarget(port, targetId) {
   const lighthouseRequire = (0, import_node_module.createRequire)(require.resolve("lighthouse"));
   const puppeteer = lighthouseRequire("puppeteer-core");
-  const browser = await puppeteer.connect({ browserURL: `http://localhost:${port}`, defaultViewport: null });
+  const browser = await puppeteer.connect({ browserURL: `http://${CDP_LOOPBACK_HOST}:${port}`, defaultViewport: null });
   try {
     for (const page of await browser.pages()) {
       const session = await page.target().createCDPSession();
@@ -267050,6 +267079,7 @@ var init_lighthouse = __esm({
     import_node_module = require("node:module");
     init_detect();
     init_errors();
+    init_loopback();
     init_selection();
     init_artifacts();
     init_session_context();

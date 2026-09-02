@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { detectCdpPort } from '../detect.js';
 import { captureError } from '../../errors.js';
 import { type ParsedArgs } from '../types.js';
+import { CDP_LOOPBACK_HOST } from '../loopback.js';
 import { selectRecords } from '../../output/selection.js';
 import { CAPTURE_ROOT, ensurePrivateDir, processPidBirthProvider, registerArtifactRoot, writeJsonPrivate, writePrivateFile } from '../../session/artifacts.js';
 import { getActiveSession } from '../../session-context.js';
@@ -191,7 +192,7 @@ async function releaseTracing(reservation: TracingReservation): Promise<void> {
 async function pageForSessionTarget(port: number, targetId: string): Promise<{ browser: PuppeteerBrowser; page: LighthousePage }> {
   const lighthouseRequire = createRequire(require.resolve('lighthouse'));
   const puppeteer = lighthouseRequire('puppeteer-core') as PuppeteerModule;
-  const browser = await puppeteer.connect({ browserURL: `http://localhost:${port}`, defaultViewport: null });
+  const browser = await puppeteer.connect({ browserURL: `http://${CDP_LOOPBACK_HOST}:${port}`, defaultViewport: null });
   try {
     for (const page of await browser.pages()) {
       const session = await page.target().createCDPSession();

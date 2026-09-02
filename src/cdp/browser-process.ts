@@ -35,12 +35,13 @@
  *      rather than living until reboot.
  */
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { captureError } from '../errors.js';
+import { CaptureError, captureError } from '../errors.js';
+import { CDP_LOOPBACK_HOST } from './loopback.js';
 import {
   CAPTURE_ROOT,
   assertUnderCaptureRoot,
@@ -230,7 +231,7 @@ async function reap(record: OwnedBrowser): Promise<void> {
 
 async function endpointAnswers(port: number): Promise<boolean> {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
+    const response = await fetch(`http://${CDP_LOOPBACK_HOST}:${port}/json/version`, {
       signal: AbortSignal.timeout(ENDPOINT_PROBE_MS),
     });
     return response.ok;
@@ -421,6 +422,23 @@ function devToolsPort(profileDir: string): number | null {
   }
 }
 
+/** Refuses an explicit debugging port already listened on through either
+ * address family. `lsof` exits 1 when it found no listener; every other
+ * failure is a failed precondition check, never permission to launch into an
+ * endpoint whose identity capture cannot establish. */
+export function assertPortUnbound(port: number): void {
+  try {
+    const output = execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-F', 'n'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+    if (output.trim()) {
+      throw captureError('precondition', 'browser_port_in_use', `received: port ${port}; expected: no TCP listener on that port. Capture refuses to launch because the endpoint would be ambiguous across loopback address families.`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).status === 1) return;
+    if (error instanceof CaptureError && error.descriptor.code === 'browser_port_in_use') throw error;
+    throw captureError('world', 'browser_port_check_failed', `received: port ${port}; checking TCP listeners with lsof failed, so Capture cannot prove the port is unbound: ${error instanceof Error ? error.message : String(error)}`, error);
+  }
+}
+
 export interface LaunchOptions {
   /** First page to open; `about:blank` when unset. */
   url?: string;
@@ -436,11 +454,13 @@ export interface LaunchOptions {
  * `startBridge()` applies to the bridge process it spawns.
  */
 export async function launchOwnedBrowser(options: LaunchOptions): Promise<OwnedBrowser> {
+  if (options.port !== undefined) assertPortUnbound(options.port);
   const executablePath = resolveBrowserExecutable(options.headless);
   const token = crypto.randomBytes(8).toString('hex');
   const profileDir = ensurePrivateDir(profilePath(token));
   const args = [
     `--remote-debugging-port=${options.port ?? 0}`,
+    `--remote-debugging-address=${CDP_LOOPBACK_HOST}`,
     `--user-data-dir=${profileDir}`,
     '--no-first-run',
     '--no-default-browser-check',

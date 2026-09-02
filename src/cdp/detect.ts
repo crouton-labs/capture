@@ -1,5 +1,6 @@
 import { execSync } from 'child_process';
 import * as http from 'http';
+import { CDP_LOOPBACK_HOST } from './loopback.js';
 
 /**
  * A CDP-endpoint JSON probe that CANNOT leak a socket handle. Node's built-in
@@ -21,7 +22,7 @@ function httpGetJson(
 ): Promise<unknown | null> {
   return new Promise((resolve) => {
     const req = http.get(
-      { host: 'localhost', port, path, timeout: timeoutMs },
+      { host: CDP_LOOPBACK_HOST, port, path, timeout: timeoutMs },
       (res) => {
         const status = res.statusCode ?? 0;
         if (status < 200 || status >= 300) {
