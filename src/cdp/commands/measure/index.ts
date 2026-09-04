@@ -29,7 +29,7 @@ use when a claim depends on what is rendered right now: element geometry, overfl
 </command>`;
 
 export const MEASURE_USAGE = `<command name="measure" description="enriched snapshot substrate and read-only queries">
-<model>\`snap\` drives the page (or a base snapshot) and writes one settled artifact directory; every other leaf below reads that artifact and never re-drives the browser unless its target is a URL, which first creates a snapshot. Findings exit 0 — a report, not a failure. \`--gate\` (exit 2 on findings or changes) is accepted only by check and diff.</model>
+<model>\`snap\` drives the page (or a base snapshot) and writes one settled artifact directory; every other leaf below reads that artifact and never re-drives the browser unless its target is a URL, which first creates a snapshot. Findings exit 0 — a report, not a failure. \`--gate\` (exit 2 on findings or changes) is accepted only by check and diff. \`explain\` (and \`map paint\`) take the snapshot as \`<snap>\` positionally and name the element with a required \`--selector\`, unlike every other leaf's plain \`[url|snap]\` target.</model>
 <subcommand name="snap" description="settled snapshot artifact" whenToUse="Use to capture the static rendered-page substrate that measure queries read."/>
 <subcommand name="check" description="snapshot threshold measurements" whenToUse="Use to measure selected layout and content thresholds from one snapshot."/>
 <subcommand name="diff" description="snapshot delta" whenToUse="Use to compare the measured facts from two snapshots."/>
@@ -41,7 +41,7 @@ export const MEASURE_USAGE = `<command name="measure" description="enriched snap
 </command>`;
 
 export const MEASURE_MAP_USAGE = `<command name="map" description="one facet of a snapshot's substrate">
-<model>Focus, scroll, layers, and ax accept a URL target and create a snapshot first; paint requires an existing snapshot and reads it without browser driving.</model>
+<model>Focus, scroll, layers, and ax accept a URL target and create a snapshot first; paint requires an existing snapshot (\`<snap>\`, no URL) plus a required \`--selector\` naming the element, and reads it without browser driving.</model>
 <subcommand name="focus" description="keyboard traversal order" whenToUse="Use to inspect focus order from a snapshot."/>
 <subcommand name="scroll" description="scroll-container topology" whenToUse="Use to inspect scroll containers and their relationships."/>
 <subcommand name="layers" description="paint and compositor layers" whenToUse="Use to inspect layer allocation and paint order."/>

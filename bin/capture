@@ -6011,7 +6011,9 @@ function normalizeUrlForMatch(value) {
     const path48 = url.pathname.replace(/\/+$/, "") || "/";
     return {
       full: `${url.origin}${path48}${url.search}${url.hash}`.toLowerCase(),
-      host: url.hostname.toLowerCase(),
+      // `host` (not `hostname`): two local dev servers on the same loopback
+      // address but different ports must not register as a host match.
+      host: url.host.toLowerCase(),
       path: path48.toLowerCase()
     };
   } catch {
@@ -239441,7 +239443,7 @@ function artifactEntries(dir, artifacts, listCrops) {
     if (!listCrops && name.startsWith("crops/")) continue;
     entries.push({
       name,
-      ...name === "geometry.json" && geometryCount !== void 0 ? { note: `${geometryCount} elements` } : {}
+      ...name === "geometry.json" && geometryCount !== void 0 ? { note: `${geometryCount} elements at .elements[]` } : {}
     });
   }
   if (!listCrops && crops.length) entries.push({ name: "crops/", note: `${crops.length} crops; pass --list-crops for paths` });
@@ -243994,7 +243996,7 @@ static page measurement \u2014 \`snap\` waits for the page to settle, then recor
 use when a claim depends on what is rendered right now: element geometry, overflow, clipping, stacking, computed style and where it came from, text and contrast, focus order, scroll containers, paint coverage, or the difference between two snapshots
 </command>`;
     MEASURE_USAGE = `<command name="measure" description="enriched snapshot substrate and read-only queries">
-<model>\`snap\` drives the page (or a base snapshot) and writes one settled artifact directory; every other leaf below reads that artifact and never re-drives the browser unless its target is a URL, which first creates a snapshot. Findings exit 0 \u2014 a report, not a failure. \`--gate\` (exit 2 on findings or changes) is accepted only by check and diff.</model>
+<model>\`snap\` drives the page (or a base snapshot) and writes one settled artifact directory; every other leaf below reads that artifact and never re-drives the browser unless its target is a URL, which first creates a snapshot. Findings exit 0 \u2014 a report, not a failure. \`--gate\` (exit 2 on findings or changes) is accepted only by check and diff. \`explain\` (and \`map paint\`) take the snapshot as \`<snap>\` positionally and name the element with a required \`--selector\`, unlike every other leaf's plain \`[url|snap]\` target.</model>
 <subcommand name="snap" description="settled snapshot artifact" whenToUse="Use to capture the static rendered-page substrate that measure queries read."/>
 <subcommand name="check" description="snapshot threshold measurements" whenToUse="Use to measure selected layout and content thresholds from one snapshot."/>
 <subcommand name="diff" description="snapshot delta" whenToUse="Use to compare the measured facts from two snapshots."/>
@@ -244005,7 +244007,7 @@ use when a claim depends on what is rendered right now: element geometry, overfl
 <subcommand name="map" description="one snapshot facet" whenToUse="Use to read focus, scroll, layer, accessibility, or paint facts from a snapshot."/>
 </command>`;
     MEASURE_MAP_USAGE = `<command name="map" description="one facet of a snapshot's substrate">
-<model>Focus, scroll, layers, and ax accept a URL target and create a snapshot first; paint requires an existing snapshot and reads it without browser driving.</model>
+<model>Focus, scroll, layers, and ax accept a URL target and create a snapshot first; paint requires an existing snapshot (\`<snap>\`, no URL) plus a required \`--selector\` naming the element, and reads it without browser driving.</model>
 <subcommand name="focus" description="keyboard traversal order" whenToUse="Use to inspect focus order from a snapshot."/>
 <subcommand name="scroll" description="scroll-container topology" whenToUse="Use to inspect scroll containers and their relationships."/>
 <subcommand name="layers" description="paint and compositor layers" whenToUse="Use to inspect layer allocation and paint order."/>

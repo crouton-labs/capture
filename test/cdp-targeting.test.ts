@@ -79,6 +79,26 @@ test('URL matching prefers the exact requested page over same-host login pages',
   assert.ok(exact > login);
 });
 
+test('URL matching never treats two loopback dev servers on different ports as the same host', () => {
+  // Regression for an evidence-integrity bug: `measure snap
+  // http://127.0.0.1:45999/` scored a match against an unrelated already-open
+  // tab at `http://127.0.0.1:57581/` because host comparison ignored the
+  // port, so "same host, same root path" alone was enough to win with no
+  // better candidate present — and the snapshot silently captured the wrong
+  // page. Distinct ports on the same loopback address are distinct origins.
+  const differentPortSameRoot = scoreTabUrlMatch(
+    'http://127.0.0.1:57581/',
+    'http://127.0.0.1:45999/',
+  );
+  assert.equal(differentPortSameRoot, 0);
+
+  const samePortSameRoot = scoreTabUrlMatch(
+    'http://127.0.0.1:45999/',
+    'http://127.0.0.1:45999/',
+  );
+  assert.equal(samePortSameRoot, 100);
+});
+
 test('explicit ports stay explicit when target resolution falls back to a port list', async () => {
   const calls: number[] = [];
   const resolved = await findTabByIdInPorts('tab-2', [1111, 2222, 3333], async (port, targetId) => {

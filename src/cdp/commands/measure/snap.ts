@@ -83,7 +83,7 @@ function artifactEntries(dir: string, artifacts: readonly string[], listCrops: b
     if (!listCrops && name.startsWith('crops/')) continue;
     entries.push({
       name,
-      ...(name === 'geometry.json' && geometryCount !== undefined ? { note: `${geometryCount} elements` } : {}),
+      ...(name === 'geometry.json' && geometryCount !== undefined ? { note: `${geometryCount} elements at .elements[]` } : {}),
     });
   }
   if (!listCrops && crops.length) entries.push({ name: 'crops/', note: `${crops.length} crops; pass --list-crops for paths` });

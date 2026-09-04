@@ -155,7 +155,9 @@ function normalizeUrlForMatch(value: string): { full: string; host: string; path
     const path = url.pathname.replace(/\/+$/, '') || '/';
     return {
       full: `${url.origin}${path}${url.search}${url.hash}`.toLowerCase(),
-      host: url.hostname.toLowerCase(),
+      // `host` (not `hostname`): two local dev servers on the same loopback
+      // address but different ports must not register as a host match.
+      host: url.host.toLowerCase(),
       path: path.toLowerCase(),
     };
   } catch {
