@@ -13,12 +13,13 @@ rationale: A privacy-oriented review treated ordinary form text and
   secret-shaped identifiers as disclosure risks, but Silas explicitly rejected
   the entire redaction premise for Capture rather than merely choosing
   ordinary-text retention.
-last-updated: 2026-08-28T21:43:09.298Z
+last-updated: 2026-09-05T06:28:20.403Z
 origin:
   created: 2026-07-12T19:41:32.731Z
   cwd: /Users/silasrhyneer/Code/cli/crouter
   node: mri4g3we-48b5b151
 ---
+
 
 # Capture does not redact browser evidence
 
@@ -28,7 +29,7 @@ Sanitizing control characters or enforcing structural output boundaries is still
 
 ## The one carve-out: credential values in rendered HAR URLs and headers
 
-Silas explicitly overrode the rule for rendered `session har` output: credential-like query/fragment parameter values render as `REDACTED`, and credential-valued headers render as `redacted · <N> chars`. Its reason is transcript hygiene, not a threat model: a dashboard token pasted into an agent's context and terminal scrollback outlives the debugging session.
+One rule is overridden for rendered `session har` output: credential-like query/fragment parameter values render as `REDACTED`, and credential-valued headers render as `redacted · <N> chars`. Its reason is transcript hygiene, not a threat model: a dashboard token pasted into an agent's context and terminal scrollback outlives the debugging session.
 
 The boundary is exact, and everything about it exists to keep the evidence intact:
 

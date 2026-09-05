@@ -7,12 +7,13 @@ short-form: capture
 surfaces:
   - on: boot
     at: content
-last-updated: 2026-08-30T22:38:36.929Z
+last-updated: 2026-09-05T06:28:20.521Z
 origin:
   created: 2026-07-10T17:23:49.216Z
   cwd: /Users/silasrhyneer/Code/cli/personal-apps
   node: mrf6atx6-61642ac6
 ---
+
 
 # capture
 
@@ -29,6 +30,6 @@ When operating the CLI, run `capture -h`, then the selected branch and leaf `-h`
 
 ## Constraints
 
-- Bundle runtime dependencies into `bin/capture` by default. One decided exception (Silas, 2026-08-29): Lighthouse ships as a normal npm dependency loaded at runtime, because it reads its audits, locales, and report assets package-relative and cannot be bundled — the binary is no longer fully standalone, and that tradeoff is accepted.
+- Bundle runtime dependencies into `bin/capture` by default. One decided exception: Lighthouse ships as a normal npm dependency loaded at runtime, because it reads its audits, locales, and report assets package-relative and cannot be bundled — the binary is no longer fully standalone, and that tradeoff is accepted.
 - When changing `vault/libs/`, fix the source in northlight-vault and run `vault/sync.sh`, because this directory is a synchronized source fork.
 - Before changing an output schema or measurement command, read `taste/measuring-stick-not-coach`, because capture reports measurements plus factual provenance and leaves interpretation to its caller.
