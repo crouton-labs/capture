@@ -16225,7 +16225,10 @@ output:
   timing state (an out-of-order request clock also names its violation, e.g.
   invalid_clock_order/terminal_before_request). The path attribute is the HAR
   file's absolute path \u2014 the full-fidelity pointer, which holds every record
-  including the ones this list bounds away. \`--body\` writes one complete body to
+  including the ones this list bounds away. A live HAR file is line-delimited
+  JSON (NDJSON): one header record followed by entry batches; read it one line
+  at a time. A stopped session's bundled har.json is one ordinary JSON document.
+  \`--body\` writes one complete body to
   \`--out\` instead of listing rows; it refuses an ambiguous, absent, or truncated
   body rather than writing a partial result. --json mirrors the same fields.
   Credential-like query parameter values (key, token, secret, signature, auth,
