@@ -12,7 +12,7 @@ process.env.CRTR_NODE_ID = `u04-rollback-${process.pid}-${Date.now()}`;
 import { sessionMain, __setSessionStartWorld, type SessionStartWorld } from '../src/session/commands.js';
 import { getActiveSession, clearActiveSession, setActiveSession } from '../src/session-context.js';
 import { CAPTURE_ROOT } from '../src/session/artifacts.js';
-import { startBridge } from '../src/cdp/bridge/spawn.js';
+import { bridgeSocketPath, startBridge, stopBridge } from '../src/cdp/bridge/spawn.js';
 import { createHarRecording } from '../src/har-manager.js';
 import type { CDPTarget, ParsedArgs } from '../src/cdp/types.js';
 
@@ -317,7 +317,43 @@ test('success: a fully successful start invokes no cleanup', async () => {
   }
 });
 
-// --- Direct proof: plain startBridge self-reaps its child on readiness timeout ---
+// --- Direct proofs for detached bridge startup ---
+
+test('startBridge uses a short socket path for a long session directory', async () => {
+  const fixture = path.join(os.tmpdir(), `u04-bridge-ready-${process.pid}-${Date.now()}.cjs`);
+  const sessionRoot = path.join(CAPTURE_ROOT, `u04-bridge-${'x'.repeat(120)}-${Date.now()}`);
+  let bridge: { socketPath: string; pid: number } | undefined;
+  const origArgv1 = process.argv[1];
+  fs.mkdirSync(sessionRoot, { recursive: true });
+  fs.writeFileSync(fixture, `const socket = process.argv[process.argv.indexOf('--socket') + 1];\nrequire('net').createServer().listen(socket, () => process.send?.({ type: 'bridge-ready' }));\nsetInterval(() => {}, 1e9);\n`);
+  process.argv[1] = fixture;
+  try {
+    bridge = await startBridge(sessionRoot, 65500, 400);
+    assert.equal(bridge.socketPath, bridgeSocketPath(sessionRoot));
+    assert.ok(Buffer.byteLength(bridge.socketPath) < 104, bridge.socketPath);
+    assert.ok(fs.lstatSync(bridge.socketPath).isSocket(), 'bridge socket bound');
+  } finally {
+    process.argv[1] = origArgv1;
+    stopBridge(bridge?.pid, bridge?.socketPath);
+    try { fs.rmSync(sessionRoot, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { fs.unlinkSync(fixture); } catch { /* best effort */ }
+  }
+});
+
+test('startBridge surfaces a child startup error without waiting for readiness timeout', async () => {
+  const fixture = path.join(os.tmpdir(), `u04-bridge-error-${process.pid}-${Date.now()}.cjs`);
+  const sessionRoot = fs.mkdtempSync(path.join(CAPTURE_ROOT, 'u04-bridge-'));
+  const origArgv1 = process.argv[1];
+  fs.writeFileSync(fixture, `process.send?.({ type: 'bridge-error', error: 'fixture CDP connection failed' });\n`);
+  process.argv[1] = fixture;
+  try {
+    await assert.rejects(startBridge(sessionRoot, 65500, 200), /fixture CDP connection failed/);
+  } finally {
+    process.argv[1] = origArgv1;
+    try { fs.rmSync(sessionRoot, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { fs.unlinkSync(fixture); } catch { /* best effort */ }
+  }
+});
 
 test('startBridge reaps its child before rejecting when the socket never appears', async () => {
   // A fixture that ignores argv, writes its own pid, and never creates a
@@ -337,7 +373,7 @@ test('startBridge reaps its child before rejecting when the socket never appears
       err = e;
     }
     assert.ok(err instanceof Error, 'startBridge must reject on readiness timeout');
-    assert.ok(/did not come up within/.test((err as Error).message), (err as Error).message);
+    assert.ok(/did not report readiness within/.test((err as Error).message), (err as Error).message);
     // The child actually launched (proves there was a live process to reap).
     assert.ok(fs.existsSync(pidFile), 'the bridge child launched before the timeout');
     const childPid = Number(fs.readFileSync(pidFile, 'utf8'));
