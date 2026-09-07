@@ -391,7 +391,26 @@ export async function clickResolved(
   const dispatchY = Math.round(y);
   let hitTestReceiverBackendNodeId: number | undefined;
   if (opts.inspectHitTest) {
-    const hitTest = (await client.send('DOM.getNodeForLocation', { x: dispatchX, y: dispatchY })) as { backendNodeId?: unknown };
+    let hitTest: { backendNodeId?: unknown };
+    try {
+      hitTest = (await client.send('DOM.getNodeForLocation', { x: dispatchX, y: dispatchY })) as { backendNodeId?: unknown };
+    } catch (error) {
+      const noNodeMessage = 'No node found at given location';
+      const heldClientMessage = `collector-host CDP call "DOM.getNodeForLocation" failed: ${noNodeMessage}`;
+      if (!(error instanceof Error) || (error.message !== noNodeMessage && error.message !== heldClientMessage)) throw error;
+      throw captureError(
+        'world',
+        'target_not_clickable',
+        `DOM.getNodeForLocation found no node at x=${dispatchX} y=${dispatchY} for resolved target backend:${backendNodeId}.`,
+        {
+          method: 'DOM.getNodeForLocation',
+          point: { x: dispatchX, y: dispatchY },
+          attempted: { backendNodeId, role: resolved.role, name: resolved.name },
+          reason: 'no_node_at_location',
+          error,
+        },
+      );
+    }
     if (typeof hitTest.backendNodeId !== 'number' || !Number.isSafeInteger(hitTest.backendNodeId) || hitTest.backendNodeId <= 0) {
       throw captureError(
         'world',
