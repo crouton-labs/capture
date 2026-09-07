@@ -170,13 +170,14 @@ export function scoreTabUrlMatch(tabUrl: string, requestedUrl: string): number {
   const requested = normalizeUrlForMatch(requestedUrl);
 
   if (tab && requested) {
+    const sameHost = tab.host !== '' && tab.host === requested.host;
     if (tab.full === requested.full) return 100;
-    if (tab.host === requested.host && tab.path === requested.path) return 95;
-    if (tab.host === requested.host && tab.path.startsWith(requested.path)) return 90;
-    if (tab.host === requested.host && requested.path.startsWith(tab.path)) return 85;
-    if (tab.host === requested.host) return 70;
+    if (sameHost && tab.path === requested.path) return 95;
+    if (sameHost && tab.path.startsWith(requested.path)) return 90;
+    if (sameHost && requested.path.startsWith(tab.path)) return 85;
+    if (sameHost) return 70;
     if (tab.full.includes(requested.full)) return 60;
-    if (tab.full.includes(requested.host)) return 50;
+    if (requested.host && tab.full.includes(requested.host)) return 50;
     if (requested.full.includes(tab.full)) return 40;
     return 0;
   }

@@ -99,6 +99,15 @@ test('URL matching never treats two loopback dev servers on different ports as t
   assert.equal(samePortSameRoot, 100);
 });
 
+test('URL matching does not treat different file paths as a host match', () => {
+  const score = scoreTabUrlMatch(
+    'file:///tmp/capture/unrelated.html',
+    'file:///tmp/capture/requested.html',
+  );
+
+  assert.equal(score, 0);
+});
+
 test('explicit ports stay explicit when target resolution falls back to a port list', async () => {
   const calls: number[] = [];
   const resolved = await findTabByIdInPorts('tab-2', [1111, 2222, 3333], async (port, targetId) => {
