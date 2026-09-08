@@ -400,6 +400,36 @@ test('session start reports no responsive existing page when Target.createTarget
   process.exitCode = 0;
 });
 
+test('session start adopts an Electron-style localhost page when its loopback URL cannot be opened', async () => {
+  const out = captureStdout();
+  let id: string | undefined;
+  let dir: string | undefined;
+  __setSessionStartWorld({
+    openTab: async () => { throw new Error('Not supported'); },
+    async findResponsivePageTabByUrl(port, url) {
+      assert.equal(port, 9225);
+      assert.equal(url, 'http://127.0.0.1:3369');
+      return { id: 'ELECTRON', title: 'Gateway', url: 'http://localhost:3369/', type: 'page' };
+    },
+  });
+  try {
+    await sessionMain(sessionArgs(['start'], { url: 'http://127.0.0.1:3369', port: 9225 }), []);
+    const active = getActiveSession();
+    assert.ok(active, 'the responsive existing Electron page should be adopted');
+    id = active.sessionId;
+    dir = active.dir;
+    assert.equal(active.targetId, 'ELECTRON');
+    assert.equal(active.url, 'http://localhost:3369/');
+    assert.match(out.logs.join(''), /tab ELECTRON adopted at http:\/\/localhost:3369\//);
+  } finally {
+    __setSessionStartWorld();
+    out.restore();
+    if (id) await stopSilently(id);
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    clearActiveSession();
+  }
+});
+
 test('session start --url file: opens a tab and stop bundles shots (not a11y)', liveChromeOpts, async () => {
   const { proc, port } = await spawnHeadlessChrome();
   const file = path.join(CAPTURE_ROOT, `session-start-${process.pid}-${Date.now()}.html`);

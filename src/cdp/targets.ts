@@ -149,15 +149,17 @@ export async function findUnambiguousPageTabInPorts(
   return candidates[0] ?? null;
 }
 
-function normalizeUrlForMatch(value: string): { full: string; host: string; path: string } | null {
+function normalizeUrlForMatch(value: string): { full: string; origin: string; path: string } | null {
   try {
     const url = new URL(value);
     const path = url.pathname.replace(/\/+$/, '') || '/';
+    const hostname = url.hostname.toLowerCase();
+    // Electron may expose a localhost page when the caller uses its equivalent IPv4 loopback URL.
+    const loopback = hostname === 'localhost' || hostname === '127.0.0.1';
+    const port = url.port || (url.protocol === 'http:' ? '80' : url.protocol === 'https:' ? '443' : '');
     return {
       full: `${url.origin}${path}${url.search}${url.hash}`.toLowerCase(),
-      // `host` (not `hostname`): two local dev servers on the same loopback
-      // address but different ports must not register as a host match.
-      host: url.host.toLowerCase(),
+      origin: `${url.protocol}//${loopback ? 'loopback' : hostname}:${port}`,
       path: path.toLowerCase(),
     };
   } catch {
@@ -171,14 +173,11 @@ export function scoreTabUrlMatch(tabUrl: string, requestedUrl: string): number {
 
   if (tab && requested) {
     if (tab.full === requested.full) return 100;
-    if (tab.host === requested.host && tab.path === requested.path) return 95;
-    if (tab.host === requested.host && tab.path.startsWith(requested.path)) return 90;
-    if (tab.host === requested.host && requested.path.startsWith(tab.path)) return 85;
-    if (tab.host === requested.host) return 70;
-    if (tab.full.includes(requested.full)) return 60;
-    if (tab.full.includes(requested.host)) return 50;
-    if (requested.full.includes(tab.full)) return 40;
-    return 0;
+    if (tab.origin !== requested.origin) return 0;
+    if (tab.path === requested.path) return 95;
+    if (tab.path.startsWith(requested.path)) return 90;
+    if (requested.path.startsWith(tab.path)) return 85;
+    return 70;
   }
 
   const tabLower = tabUrl.toLowerCase();

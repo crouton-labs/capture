@@ -79,6 +79,15 @@ test('URL matching prefers the exact requested page over same-host login pages',
   assert.ok(exact > login);
 });
 
+test('URL matching preserves same-origin scores and recognizes localhost and IPv4 loopback aliases', () => {
+  const requested = 'http://127.0.0.1:3369/products';
+  assert.equal(scoreTabUrlMatch(requested, requested), 100);
+  assert.equal(scoreTabUrlMatch('http://localhost:3369/products', requested), 95);
+  assert.equal(scoreTabUrlMatch('http://localhost:3369/products/detail', requested), 90);
+  assert.equal(scoreTabUrlMatch('http://localhost:3369/products', 'http://127.0.0.1:3369/products/detail'), 85);
+  assert.equal(scoreTabUrlMatch('http://localhost:3369/sign-in', requested), 70);
+});
+
 test('URL matching never treats two loopback dev servers on different ports as the same host', () => {
   // Regression for an evidence-integrity bug: `measure snap
   // http://127.0.0.1:45999/` scored a match against an unrelated already-open
@@ -91,6 +100,35 @@ test('URL matching never treats two loopback dev servers on different ports as t
     'http://127.0.0.1:45999/',
   );
   assert.equal(differentPortSameRoot, 0);
+
+  const differentPortByAlias = scoreTabUrlMatch(
+    'http://localhost:57581/',
+    'http://127.0.0.1:45999/',
+  );
+  assert.equal(differentPortByAlias, 0);
+
+  const differentDefaultPortByAlias = scoreTabUrlMatch(
+    'https://localhost/',
+    'http://127.0.0.1/',
+  );
+  assert.equal(differentDefaultPortByAlias, 0);
+
+  assert.equal(
+    scoreTabUrlMatch('https://localhost:443/', 'http://127.0.0.1:443/'),
+    0,
+  );
+  assert.equal(
+    scoreTabUrlMatch('http://localhost:443/', 'https://127.0.0.1:443/'),
+    0,
+  );
+  assert.equal(
+    scoreTabUrlMatch('https://example.test:443/', 'http://example.test:443/'),
+    0,
+  );
+  assert.equal(
+    scoreTabUrlMatch('https://localhost:443/?next=http://127.0.0.1:443/', 'http://127.0.0.1:443/'),
+    0,
+  );
 
   const samePortSameRoot = scoreTabUrlMatch(
     'http://127.0.0.1:45999/',
