@@ -12,7 +12,7 @@ export interface CollectorRow { id: string; kind: CollectorKind; dir: string; cl
 export interface HostSnapshot { collectors: readonly CollectorRow[]; reservations: readonly ClaimReservation[]; }
 export interface HostIdentity { pid: number; birth: PidBirth; targetId: string; }
 
-interface LiveCollector { row: CollectorRow; collector: Collector; startedAt: string; losses: Array<{ reason: string; detail?: Record<string, unknown> }>; stopping: boolean; }
+interface LiveCollector { row: CollectorRow; collector: Collector; startedAt: string; losses: Array<{ reason: string; detail?: Record<string, unknown> }>; stopping: boolean; draining?: Promise<{ completion: Completion; outcome: DrainOutcome }>; }
 
 export class CollectorHost {
   private readonly live = new Map<string, LiveCollector>();
@@ -131,7 +131,12 @@ export class CollectorHost {
     return files;
   }
 
-  private async drainOne(live: LiveCollector, cause: DrainCause): Promise<{ completion: Completion; outcome: DrainOutcome }> {
+  private drainOne(live: LiveCollector, cause: DrainCause): Promise<{ completion: Completion; outcome: DrainOutcome }> {
+    if (!live.draining) live.draining = this.drain(live, cause);
+    return live.draining;
+  }
+
+  private async drain(live: LiveCollector, cause: DrainCause): Promise<{ completion: Completion; outcome: DrainOutcome }> {
     const outcome = await live.collector.drain(cause);
     unlinkPrivateFile(path.join(live.row.dir, 'collecting.json'));
     const files = this.finalizedFiles(live.row.dir);
@@ -163,9 +168,10 @@ export class CollectorHost {
   }
 
   async teardown(trigger: DrainCause['trigger'] = 'session-stop'): Promise<TeardownOutcome[]> {
-    const stopping = this.cutoff(this.live.values());
+    const liveCollectors = [...this.live.values()];
+    this.cutoff(liveCollectors);
     const outcomes: TeardownOutcome[] = [];
-    for (const live of stopping) {
+    for (const live of liveCollectors) {
       try {
         const drained = await this.drainOne(live, { trigger, clientUsable: this.clientUsable });
         outcomes.push({ status: 'drained', id: live.row.id, kind: live.row.kind, completion: drained.completion, dir: live.row.dir });

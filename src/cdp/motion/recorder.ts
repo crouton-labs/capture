@@ -100,7 +100,7 @@ export async function stopComposedRecorder(opts: { sessionDir: string; recId?: s
     const host = await liveHost(opts.sessionDir);
     const row = motionHandle(host, recId);
     if (!row) throw new Error(`No live motion collector named "${recId}".`);
-    const response = await sendHostRequest(host.socketPath, { type: 'collector-stop', nonce: host.nonce, id: recId }, 30_000);
+    const response = await sendHostRequest(host.socketPath, { type: 'collector-stop', nonce: host.nonce, id: recId }, 120_000);
     if (!response.ok) throw new Error(response.error ?? 'collector host refused to stop motion recording');
     if (getActiveSession()?.dir === opts.sessionDir && getActiveRecId() === recId) await clearActiveRecId();
     return finalFromMeta(row.dir, recId);

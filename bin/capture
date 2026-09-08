@@ -231610,7 +231610,11 @@ var init_core = __esm({
         walk2("");
         return files;
       }
-      async drainOne(live, cause) {
+      drainOne(live, cause) {
+        if (!live.draining) live.draining = this.drain(live, cause);
+        return live.draining;
+      }
+      async drain(live, cause) {
         const outcome = await live.collector.drain(cause);
         unlinkPrivateFile(path24.join(live.row.dir, "collecting.json"));
         const files = this.finalizedFiles(live.row.dir);
@@ -231640,9 +231644,10 @@ var init_core = __esm({
         return { completion: drained.completion, summary: drained.outcome.summary, files: drained.outcome.files };
       }
       async teardown(trigger = "session-stop") {
-        const stopping = this.cutoff(this.live.values());
+        const liveCollectors = [...this.live.values()];
+        this.cutoff(liveCollectors);
         const outcomes = [];
-        for (const live of stopping) {
+        for (const live of liveCollectors) {
           try {
             const drained = await this.drainOne(live, { trigger, clientUsable: this.clientUsable });
             outcomes.push({ status: "drained", id: live.row.id, kind: live.row.kind, completion: drained.completion, dir: live.row.dir });
@@ -244114,7 +244119,7 @@ async function stopComposedRecorder(opts) {
     const host = await liveHost(opts.sessionDir);
     const row = motionHandle(host, recId);
     if (!row) throw new Error(`No live motion collector named "${recId}".`);
-    const response = await sendHostRequest(host.socketPath, { type: "collector-stop", nonce: host.nonce, id: recId }, 3e4);
+    const response = await sendHostRequest(host.socketPath, { type: "collector-stop", nonce: host.nonce, id: recId }, 12e4);
     if (!response.ok) throw new Error(response.error ?? "collector host refused to stop motion recording");
     if (getActiveSession()?.dir === opts.sessionDir && getActiveRecId() === recId) await clearActiveRecId();
     return finalFromMeta(row.dir, recId);
