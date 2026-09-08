@@ -391,10 +391,10 @@ const START_USAGE = `capture session start [--url <url> | --target <tab-id>] [--
 
 input:
   --url <url>       Absolute URL to open in a fresh tab through CDP's
-                    Target.createTarget. Some endpoints, including Electron,
-                    expose existing tabs but reject Target.createTarget; on
-                    those endpoints --url cannot be used. Conflicts with
-                    --target.
+                    Target.createTarget. If an endpoint, including Electron,
+                    rejects Target.createTarget, capture adopts the matching
+                    existing page target that answers a screenshot. Conflicts
+                    with --target.
   --target <tab-id>  Existing page tab to adopt. Resolves a full target id or
                     an unambiguous prefix of at least four characters at the
                     selected CDP endpoint; start fails if it does not resolve.
@@ -563,6 +563,7 @@ export interface SessionStartWorld {
   detectCdpPort(): Promise<number | { port: number; app: string; selectionReason: string }>;
   openTab(port: number, url: string): Promise<CDPTarget>;
   findTabById(port: number, targetId: string): Promise<CDPTarget | null>;
+  findResponsivePageTabByUrl?(port: number, url: string): Promise<CDPTarget | null>;
   closeTarget(port: number, targetId: string): Promise<void>;
   /** Attach to the freshly-opened tab and wait for load; returns page-load-timed-out. */
   awaitTabReady(target: CDPTarget, url: string): Promise<boolean>;
@@ -587,6 +588,10 @@ const productionStartWorld: SessionStartWorld = {
   async findTabById(port, targetId) {
     const { findTabById } = await import('../cdp/targets.js');
     return findTabById(port, targetId);
+  },
+  async findResponsivePageTabByUrl(port, url) {
+    const { findResponsivePageTabByUrl } = await import('../cdp/targets.js');
+    return findResponsivePageTabByUrl(port, url);
   },
   async closeTarget(port, targetId) {
     const { closeTarget } = await import('../cdp/targets.js');
@@ -692,6 +697,7 @@ async function start(parsed: ParsedArgs): Promise<void> {
     let bridgeSocket: string | null = null;
     let bridgePid: number | null = null;
     let cdpPort: number | null = null;
+    let targetWasOpened = false;
     let selectedBrowser: string | null = null;
     let endpointSelectionReason: string | null = null;
 
@@ -723,22 +729,28 @@ async function start(parsed: ParsedArgs): Promise<void> {
       }
 
       if (url) {
+        let opened = false;
         try {
           target = await startWorld.openTab(cdpPort!, url);
+          opened = true;
+          targetWasOpened = true;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          if (message.toLowerCase().includes('not supported')) {
+          if (!message.toLowerCase().includes('not supported')) throw error;
+          target = await startWorld.findResponsivePageTabByUrl?.(cdpPort!, url) ?? null;
+          if (!target) {
             throw worldFailure(
-              `Target.createTarget is unsupported on port ${cdpPort}. Use an existing tab: \`capture tab list --port ${cdpPort}\`, then \`capture session start --target <target-id> --port ${cdpPort}\`.`,
+              `Target.createTarget is unsupported on port ${cdpPort}, and no matching existing page target answered a screenshot. Run \`capture tab list --port ${cdpPort}\` to inspect its targets.`,
               error,
             );
           }
-          throw error;
         }
-        const openedPort = cdpPort!;
-        const openedTargetId = target.id;
-        acquired.push({ label: 'opened target', release: () => startWorld.closeTarget(openedPort, openedTargetId) });
-        pageLoadTimedOut = await startWorld.awaitTabReady(target, url);
+        if (opened) {
+          const openedPort = cdpPort!;
+          const openedTargetId = target.id;
+          acquired.push({ label: 'opened target', release: () => startWorld.closeTarget(openedPort, openedTargetId) });
+          pageLoadTimedOut = await startWorld.awaitTabReady(target, url);
+        }
       }
 
       // Hold a CDP browser connection open for the session's lifetime so
@@ -778,7 +790,7 @@ async function start(parsed: ParsedArgs): Promise<void> {
     }
 
     const rows: FactLine[] = [fact`bundle dir: ${dir}`];
-    if (target) rows.push(url ? fact`tab ${target.id} opened at ${url}` : fact`tab ${target.id} adopted at ${target.url}`);
+    if (target) rows.push(targetWasOpened ? fact`tab ${target.id} opened at ${url}` : fact`tab ${target.id} adopted at ${target.url}`);
     if (cdpPort !== null) rows.push(
       parsed.portSource === 'env'
         ? fact`CDP endpoint on port ${cdpPort} selected from ambient CDP_PORT; --port overrides endpoint selection and --target overrides tab selection.`

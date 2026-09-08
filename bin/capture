@@ -5910,6 +5910,7 @@ var targets_exports = {};
 __export(targets_exports, {
   AmbiguousPageTargetError: () => AmbiguousPageTargetError,
   closeTarget: () => closeTarget,
+  findResponsivePageTabByUrl: () => findResponsivePageTabByUrl,
   findTab: () => findTab,
   findTabById: () => findTabById,
   findTabByIdAcrossEndpoints: () => findTabByIdAcrossEndpoints,
@@ -6048,6 +6049,25 @@ function resolveSearchPorts(endpoints, preferredPort) {
 async function findTabByIdAcrossEndpoints(targetId, preferredPort) {
   const ports = resolveSearchPorts(await detectCdpPortsAsync(), preferredPort);
   return findTabByIdInPorts(targetId, ports);
+}
+async function findResponsivePageTabByUrl(port, url) {
+  const pages = (await listTargets(port)).filter((target) => target.type === "page");
+  const scores = pages.map((target) => scoreTabUrlMatch(target.url, url));
+  const bestScore = Math.max(0, ...scores);
+  if (bestScore === 0) return null;
+  for (const target of pages.filter((_, index) => scores[index] === bestScore)) {
+    if (!target.webSocketDebuggerUrl) continue;
+    const client = new CDPClient(target.webSocketDebuggerUrl);
+    try {
+      await client.waitReady();
+      await client.send("Page.captureScreenshot", { format: "png" }, 5e3);
+      return target;
+    } catch {
+    } finally {
+      client.close();
+    }
+  }
+  return null;
 }
 async function findTabByUrlAcrossEndpoints(url, preferredPort) {
   const ports = resolveSearchPorts(await detectCdpPortsAsync(), preferredPort);
@@ -15140,6 +15160,7 @@ async function start(parsed) {
     let bridgeSocket = null;
     let bridgePid = null;
     let cdpPort = null;
+    let targetWasOpened = false;
     let selectedBrowser = null;
     let endpointSelectionReason = null;
     try {
@@ -15166,22 +15187,28 @@ async function start(parsed) {
         }
       }
       if (url) {
+        let opened = false;
         try {
           target = await startWorld.openTab(cdpPort, url);
+          opened = true;
+          targetWasOpened = true;
         } catch (error4) {
           const message = error4 instanceof Error ? error4.message : String(error4);
-          if (message.toLowerCase().includes("not supported")) {
+          if (!message.toLowerCase().includes("not supported")) throw error4;
+          target = await startWorld.findResponsivePageTabByUrl?.(cdpPort, url) ?? null;
+          if (!target) {
             throw worldFailure(
-              `Target.createTarget is unsupported on port ${cdpPort}. Use an existing tab: \`capture tab list --port ${cdpPort}\`, then \`capture session start --target <target-id> --port ${cdpPort}\`.`,
+              `Target.createTarget is unsupported on port ${cdpPort}, and no matching existing page target answered a screenshot. Run \`capture tab list --port ${cdpPort}\` to inspect its targets.`,
               error4
             );
           }
-          throw error4;
         }
-        const openedPort = cdpPort;
-        const openedTargetId = target.id;
-        acquired.push({ label: "opened target", release: () => startWorld.closeTarget(openedPort, openedTargetId) });
-        pageLoadTimedOut = await startWorld.awaitTabReady(target, url);
+        if (opened) {
+          const openedPort = cdpPort;
+          const openedTargetId = target.id;
+          acquired.push({ label: "opened target", release: () => startWorld.closeTarget(openedPort, openedTargetId) });
+          pageLoadTimedOut = await startWorld.awaitTabReady(target, url);
+        }
       }
       if (hold) {
         const bridge = await startWorld.startBridge(dir, cdpPort);
@@ -15211,7 +15238,7 @@ async function start(parsed) {
       return;
     }
     const rows = [fact`bundle dir: ${dir}`];
-    if (target) rows.push(url ? fact`tab ${target.id} opened at ${url}` : fact`tab ${target.id} adopted at ${target.url}`);
+    if (target) rows.push(targetWasOpened ? fact`tab ${target.id} opened at ${url}` : fact`tab ${target.id} adopted at ${target.url}`);
     if (cdpPort !== null) rows.push(
       parsed.portSource === "env" ? fact`CDP endpoint on port ${cdpPort} selected from ambient CDP_PORT; --port overrides endpoint selection and --target overrides tab selection.` : parsed.port !== void 0 ? fact`CDP endpoint on port ${cdpPort} selected by explicit --port; --port overrides endpoint selection and --target overrides tab selection.` : fact`${selectedBrowser ?? "CDP endpoint"} on port ${cdpPort} auto-selected because it ${endpointSelectionReason ?? "was selected by automatic endpoint detection"}; capture-launched browser recency does not affect selection. --port overrides endpoint selection and --target overrides tab selection.`
     );
@@ -16128,10 +16155,10 @@ use when collecting or reading the traffic, logs, and artifacts of scoped work a
 
 input:
   --url <url>       Absolute URL to open in a fresh tab through CDP's
-                    Target.createTarget. Some endpoints, including Electron,
-                    expose existing tabs but reject Target.createTarget; on
-                    those endpoints --url cannot be used. Conflicts with
-                    --target.
+                    Target.createTarget. If an endpoint, including Electron,
+                    rejects Target.createTarget, capture adopts the matching
+                    existing page target that answers a screenshot. Conflicts
+                    with --target.
   --target <tab-id>  Existing page tab to adopt. Resolves a full target id or
                     an unambiguous prefix of at least four characters at the
                     selected CDP endpoint; start fails if it does not resolve.
@@ -16276,6 +16303,10 @@ effects:
       async findTabById(port, targetId) {
         const { findTabById: findTabById2 } = await Promise.resolve().then(() => (init_targets(), targets_exports));
         return findTabById2(port, targetId);
+      },
+      async findResponsivePageTabByUrl(port, url) {
+        const { findResponsivePageTabByUrl: findResponsivePageTabByUrl2 } = await Promise.resolve().then(() => (init_targets(), targets_exports));
+        return findResponsivePageTabByUrl2(port, url);
       },
       async closeTarget(port, targetId) {
         const { closeTarget: closeTarget2 } = await Promise.resolve().then(() => (init_targets(), targets_exports));

@@ -205,6 +205,28 @@ export async function findTabByIdAcrossEndpoints(
   return findTabByIdInPorts(targetId, ports);
 }
 
+export async function findResponsivePageTabByUrl(port: number, url: string): Promise<CDPTarget | null> {
+  const pages = (await listTargets(port)).filter((target) => target.type === 'page');
+  const scores = pages.map((target) => scoreTabUrlMatch(target.url, url));
+  const bestScore = Math.max(0, ...scores);
+  if (bestScore === 0) return null;
+
+  for (const target of pages.filter((_, index) => scores[index] === bestScore)) {
+    if (!target.webSocketDebuggerUrl) continue;
+    const client = new CDPClient(target.webSocketDebuggerUrl);
+    try {
+      await client.waitReady();
+      await client.send('Page.captureScreenshot', { format: 'png' }, 5_000);
+      return target;
+    } catch {
+      // Electron can expose a page target that never answers screenshot requests.
+    } finally {
+      client.close();
+    }
+  }
+  return null;
+}
+
 export async function findTabByUrlAcrossEndpoints(
   url: string,
   preferredPort?: number,

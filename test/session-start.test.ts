@@ -377,12 +377,13 @@ test('session start failure emits start_failed, sets exitCode 1, and leaves no s
   assert.equal(getActiveSession(), null);
 });
 
-test('session start directs unsupported Target.createTarget endpoints to --target adoption', async () => {
+test('session start reports no responsive existing page when Target.createTarget is unsupported', async () => {
   const out = captureStdout();
   __setSessionStartWorld({
     createHar: async () => 'fake-har',
     deleteHar: async () => {},
     openTab: async () => { throw new Error('Not supported'); },
+    findResponsivePageTabByUrl: async () => null,
   });
   try {
     await sessionMain(sessionArgs(['start'], { url: 'http://localhost:3069/', port: 9333 }), []);
@@ -393,9 +394,8 @@ test('session start directs unsupported Target.createTarget endpoints to --targe
 
   const text = out.logs.join('');
   assert.match(text, /Target\.createTarget/);
-  assert.match(text, /Target\.createTarget is unsupported on port 9333/);
+  assert.match(text, /Target\.createTarget is unsupported on port 9333, and no matching existing page target answered a screenshot/);
   assert.match(text, /capture tab list --port 9333/);
-  assert.match(text, /capture session start --target &lt;target-id&gt; --port 9333/);
   assert.equal(getActiveSession(), null);
   process.exitCode = 0;
 });
