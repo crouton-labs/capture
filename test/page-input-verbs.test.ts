@@ -230,6 +230,44 @@ test('page click: `ax:…` substring-resolves a single match and dispatches at t
   }
 });
 
+test('page click: direct and recorder-routed no-node hit-test rejections report the attempted point and fresh candidates without dispatching input', async () => {
+  for (const message of [
+    'No node found at given location',
+    'collector-host CDP call "DOM.getNodeForLocation" failed: No node found at given location',
+  ]) {
+    let axReads = 0;
+    const client = stubClient({
+      ...clickDispatchHandlers(),
+      'Accessibility.enable': () => ({}),
+      'Accessibility.disable': () => ({}),
+      'Accessibility.getFullAXTree': () => ({
+        nodes: axReads++ === 0
+          ? AX_NODES
+          : [
+              { nodeId: '1', backendDOMNodeId: 100, role: { value: 'RootWebArea' }, name: { value: 'Fixture' } },
+              { nodeId: '9', backendDOMNodeId: 205, role: { value: 'button' }, name: { value: 'Send later replacement' } },
+            ],
+      }),
+      'DOM.getNodeForLocation': () => { throw new Error(message); },
+    });
+    const deps = installDeps(client);
+    try {
+      const { stdout, exitCode } = await runCmd(() => cmdPageClick(parsedFor(['ax:later']), []));
+      assert.equal(exitCode, 1);
+      assert.match(stdout, /<error command="page click" code="target_not_clickable">/);
+      assert.doesNotMatch(stdout, /internal_error/);
+      assert.match(stdout, /DOM\.getNodeForLocation found no node at attempted x=20 y=15 for target `ax:later`/);
+      assert.match(stdout, /attempted, not confirmed live: button "Send later" — backend:202/);
+      assert.match(stdout, /current candidates:\nbutton "Send later replacement" — backend:205/);
+      assert.equal(axReads, 2, 'the original selector is freshly resolved for candidates');
+      assert.equal(client.calls.filter((call) => call.method === 'Input.dispatchMouseEvent').length, 0);
+      assert.deepEqual(deps.shots, []);
+    } finally {
+      deps.restore();
+    }
+  }
+});
+
 test('page click: renders the MEASURED settle facts (waited != requested), never the requested option', async () => {
   const client = stubClient({ ...axHandlers(), ...clickDispatchHandlers() });
   const deps = installDeps(client, { session: true }); // requested 2500 -> fake waited 2507
