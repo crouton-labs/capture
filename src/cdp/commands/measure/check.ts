@@ -1,6 +1,6 @@
 import { type ParsedArgs } from '../../types.js';
 import { selectRecords } from '../../../output/selection.js';
-import { resolveSnapRef, readGeometry, readMeta, type ArtifactResolutionError } from '../../../output/artifact.js';
+import { ArtifactResolutionError, resolveSnapRef, readGeometry, readMeta, type SnapRef } from '../../../output/artifact.js';
 import { resolveSelectorInput } from '../../../output/selector.js';
 import { capped, data, emitResult, fact, line, text, formatCoordinate, formatFindings, type FactLine, type FindingInput, type RenderableResult } from '../../../output/render.js';
 import { captureMeasureSnap } from './snap.js';
@@ -89,11 +89,12 @@ export async function cmdMeasureCheck(parsed: ParsedArgs, _args: string[]): Prom
     process.exitCode = 1;
     return;
   }
+  const target = parsed.positional[0];
+  let ref: SnapRef | undefined;
   try {
-    const target = parsed.positional[0];
     if (!target) throw new Error('missing snapshot target; pass a snapshot id/path or URL');
     const checks = parseChecks(parsed.for);
-    const ref = await resolveSnapRef(target, { onUrl: async (url) => captureMeasureSnap({ ...parsed, positional: [url] }, url) });
+    ref = await resolveSnapRef(target, { onUrl: async (url) => captureMeasureSnap({ ...parsed, positional: [url] }, url) });
     const report = checkSnapshot(ref, checks);
     const scopedElements = parsed.selector
       ? resolveSelectorInput(readGeometry<{ elements?: Array<{ id: string; selector?: string; backendNodeId?: number | null }> }>(ref).elements ?? [], parsed.selector)
@@ -150,13 +151,15 @@ export async function cmdMeasureCheck(parsed: ParsedArgs, _args: string[]): Prom
     emitResult(result, { json: parsed.json });
     if (parsed.gate && findings.length) process.exitCode = 2;
   } catch (err) {
-    const resolution = err as Partial<ArtifactResolutionError>;
-    const detail = err instanceof Error ? err.message : 'unknown artifact read failure';
+    const detail = err instanceof Error ? err.message : 'unknown check computation failure';
+    const artifactFailure = err instanceof ArtifactResolutionError;
     emitResult({
       tag: 'error',
-      attrs: { command: 'measure check', status: resolution.name === 'ArtifactResolutionError' ? 'artifact_unavailable' : 'check_failed' },
-      summary: fact`Measure check could not read the requested artifact: ${detail}`,
-      followUp: text`Create a settled snapshot with capture measure snap <url>, then pass its id or absolute path.`,
+      attrs: { command: 'measure check', status: artifactFailure ? 'artifact_unavailable' : 'check_failed' },
+      summary: artifactFailure
+        ? fact`Measure check could not read the requested artifact: ${detail}`
+        : fact`Measure check could not compute measurements for ${ref ? `snapshot ${ref.id} at ${ref.dir}` : `the requested input ${target ?? '(missing)'}`}: ${detail}`,
+      followUp: artifactFailure ? text`Create a settled snapshot with capture measure snap <url>, then pass its id or absolute path.` : undefined,
     }, { json: parsed.json });
     process.exitCode = 1;
   }
