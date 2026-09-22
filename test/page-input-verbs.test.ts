@@ -230,6 +230,43 @@ test('page click: `ax:…` substring-resolves a single match and dispatches at t
   }
 });
 
+test('page click: re-resolves the target after scrolling before it dispatches', async () => {
+  let backendNodeId = 202;
+  let axReads = 0;
+  const client = stubClient({
+    'Accessibility.enable': () => ({}),
+    'Accessibility.disable': () => ({}),
+    'Accessibility.getFullAXTree': () => {
+      axReads += 1;
+      return {
+        nodes: AX_NODES.map((node) =>
+          node.nodeId === '6' ? { ...node, backendDOMNodeId: backendNodeId } : node,
+        ),
+      };
+    },
+    'DOM.scrollIntoViewIfNeeded': (params) => {
+      assert.equal(params.backendNodeId, 202, 'the initially resolved target is scrolled into view');
+      backendNodeId = 302;
+      return {};
+    },
+    'DOM.getBoxModel': (params) => {
+      assert.equal(params.backendNodeId, 302, 'the dispatch uses the target after the page update');
+      return { model: { content: [10, 10, 30, 10, 30, 20, 10, 20] } };
+    },
+    'DOM.getNodeForLocation': () => ({ backendNodeId: 302 }),
+    'Input.dispatchMouseEvent': () => ({}),
+  });
+  const deps = installDeps(client);
+  try {
+    const { stdout, exitCode } = await runCmd(() => cmdPageClick(parsedFor(['ax:later']), []));
+    assert.equal(exitCode, undefined);
+    assert.match(stdout, /<clicked backend-node-id="302" role="button" name="Send later">/);
+    assert.equal(axReads, 2, 'the target is read again after scrolling');
+  } finally {
+    deps.restore();
+  }
+});
+
 test('page click: renders the MEASURED settle facts (waited != requested), never the requested option', async () => {
   const client = stubClient({ ...axHandlers(), ...clickDispatchHandlers() });
   const deps = installDeps(client, { session: true }); // requested 2500 -> fake waited 2507

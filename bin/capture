@@ -16984,9 +16984,20 @@ async function axIdentityFor(client, backendNodeId2) {
     return { role: null, name: null };
   }
 }
+async function clickLiveTarget(client, input, opts = {}) {
+  const initial = await resolveLiveTarget(client, input);
+  if (!initial.ok) return initial;
+  await client.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: initial.backendNodeId });
+  const current = await resolveLiveTarget(client, input);
+  if (!current.ok) return current;
+  return dispatchResolvedClick(client, current, opts);
+}
 async function clickResolved(client, resolved, opts = {}) {
+  await client.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: resolved.backendNodeId });
+  return dispatchResolvedClick(client, resolved, opts);
+}
+async function dispatchResolvedClick(client, resolved, opts) {
   const { backendNodeId: backendNodeId2 } = resolved;
-  await client.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: backendNodeId2 });
   const boxResponse = await client.send("DOM.getBoxModel", { backendNodeId: backendNodeId2 });
   const quad = boxResponse?.model?.content;
   if (!isContentQuad(quad)) {
@@ -17219,9 +17230,9 @@ async function cmdPageClick(parsed, _args) {
     { settleMs: settle },
     async (client) => {
       const live = client;
-      const resolved = await resolveLiveTarget(live, target);
-      if (!resolved.ok) return { failure: resolved };
-      const dispatch2 = await clickResolved(live, resolved, { inspectHitTest: true });
+      const clicked = await clickLiveTarget(live, target, { inspectHitTest: true });
+      if ("ok" in clicked) return { failure: clicked };
+      const dispatch2 = clicked;
       const screenshotResult = await capturePageInputScreenshot(client, "click", target, parsed.noScreenshot, parsed.out);
       return { dispatch: dispatch2, ...screenshotResult };
     }

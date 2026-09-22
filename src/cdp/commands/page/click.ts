@@ -14,8 +14,7 @@ import { withPageAction } from '../../connection.js';
 import { autoScreenshot } from '../../screenshot.js';
 import { getActiveSession } from '../../../session-context.js';
 import {
-  resolveLiveTarget,
-  clickResolved,
+  clickLiveTarget,
   type LiveClient,
   type ResolutionFailure,
 } from '../../../interact.js';
@@ -206,9 +205,9 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
     { settleMs: settle },
     async (client) => {
       const live = client as unknown as LiveClient;
-      const resolved = await resolveLiveTarget(live, target);
-      if (!resolved.ok) return { failure: resolved } as const;
-      const dispatch = await clickResolved(live, resolved, { inspectHitTest: true });
+      const clicked = await clickLiveTarget(live, target, { inspectHitTest: true });
+      if ('ok' in clicked) return { failure: clicked } as const;
+      const dispatch = clicked;
       const screenshotResult = await capturePageInputScreenshot(client, 'click', target, parsed.noScreenshot, parsed.out);
       return { dispatch, ...screenshotResult } as const;
     },
