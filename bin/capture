@@ -8730,6 +8730,7 @@ async function viewportScopedCapture(client, viewport2, options, includeCssViewp
     } catch (error4) {
       if (options?.crop) throw error4;
     }
+    await options?.beforeCapture?.();
     const result = await client.send(
       "Page.captureScreenshot",
       screenshotOpts,
@@ -17014,7 +17015,18 @@ async function dispatchResolvedClick(client, resolved, opts) {
   const dispatchY = Math.round(y);
   let hitTestReceiverBackendNodeId;
   if (opts.inspectHitTest) {
-    const hitTest = await client.send("DOM.getNodeForLocation", { x: dispatchX, y: dispatchY });
+    const metrics = await client.send("Page.getLayoutMetrics");
+    const viewport2 = metrics.cssVisualViewport;
+    if (!viewport2 || !Number.isFinite(viewport2.pageX) || !Number.isFinite(viewport2.pageY)) {
+      throw captureError("world", "malformed_protocol", "Page.getLayoutMetrics returned no valid CSS visual viewport.", {
+        method: "Page.getLayoutMetrics",
+        response: metrics
+      });
+    }
+    const hitTest = await client.send("DOM.getNodeForLocation", {
+      x: Math.round(x + viewport2.pageX),
+      y: Math.round(y + viewport2.pageY)
+    });
     if (typeof hitTest.backendNodeId !== "number" || !Number.isSafeInteger(hitTest.backendNodeId) || hitTest.backendNodeId <= 0) {
       throw captureError(
         "world",
@@ -229050,6 +229062,29 @@ async function pageBorderRect(client, backendNodeId2) {
   }
   return { ...rect3, x: rect3.x + pageX, y: rect3.y + pageY };
 }
+async function finishColorTransitions(client) {
+  const tree = await client.send("Page.getFrameTree");
+  if (!tree.frameTree) throw new Error("Page.getFrameTree returned no frames for color-scheme capture.");
+  const frames2 = [tree.frameTree];
+  for (const frame of frames2) {
+    frames2.push(...frame.childFrames ?? []);
+    const world2 = await client.send("Page.createIsolatedWorld", {
+      frameId: frame.frame.id,
+      worldName: "capture-color-scheme"
+    });
+    if (world2.executionContextId === void 0) throw new Error(`No execution context for frame ${frame.frame.id}.`);
+    const result = await client.send("Runtime.evaluate", {
+      contextId: world2.executionContextId,
+      expression: `(() => {
+        document.getAnimations({ subtree: true })
+          .filter(animation => animation instanceof CSSTransition)
+          .forEach(transition => transition.finish());
+      })()`,
+      returnByValue: true
+    });
+    if (!result.result || result.exceptionDetails) throw new Error(`Could not finish CSS transitions in frame ${frame.frame.id}: ${result.exceptionDetails?.text ?? "page evaluation failed"}`);
+  }
+}
 async function cmdPageShot(parsed, _args) {
   if (parsed.help) {
     console.log(USAGE6);
@@ -229153,7 +229188,12 @@ async function cmdPageShot(parsed, _args) {
       } else if (requestedCrop) {
         cropProvenance = { source: "coordinates", requested: requestedCrop, zoom };
       }
-      const screenshot = await captureScreenshotWithCssViewport(client, viewport2, { fullPage: parsed.fullPage, crop: requestedCrop, zoom });
+      const screenshot = await captureScreenshotWithCssViewport(client, viewport2, {
+        fullPage: parsed.fullPage,
+        crop: requestedCrop,
+        zoom,
+        ...colorScheme ? { beforeCapture: () => finishColorTransitions(client) } : {}
+      });
       const outPath = await resolveOutPath(parsed);
       writeScreenshot(outPath, screenshot.png);
       return { path: outPath, bytes: screenshot.png.length, dimensions: pngDimensions(screenshot.png), cssViewport: screenshot.cssViewport, scrollOffset: screenshot.scrollOffset, crop: cropProvenance };
@@ -229184,7 +229224,7 @@ var init_shot = __esm({
 input:
   --viewport <WxH>  transient device-metrics override for this capture; grammar: <positive-safe-int>x<positive-safe-int>, exact lowercase x with no whitespace \u2014 preset names are not accepted. Absent \u2192 no emulation, the browser's actual current viewport is captured
   --full-page       transient override to the full scrollable content height for this capture
-  --color-scheme <dark|light>  transient prefers-color-scheme override for this capture; cleared afterward
+  --color-scheme <dark|light>  transient prefers-color-scheme override for this capture; CSS transitions finish before the shot; cleared afterward
   --crop <x,y,w,h>  capture this page-coordinate CSS-pixel rect, intersected with the live visual viewport; x/y may be fractional, w/h must be positive
   --crop-selector <sel>  resolve exactly one live target (bare CSS takes precedence; exact accessible name applies when CSS finds none; ax:<name>, axid:<id>, or backend:<id>), scroll it into view, then crop its border box and surroundings
   --pad <px>        nonnegative integer CSS pixels added on every side of --crop-selector (default: 0; not accepted with --crop)
@@ -229196,7 +229236,7 @@ input:
 output:
   <screenshot path=\u2026 width=\u2026 height=\u2026 css-width=\u2026 css-height=\u2026 css-x=\u2026 css-y=\u2026 css-to-image-x=\u2026 css-to-image-y=\u2026 effective-downscale-x=\u2026 effective-downscale-y=\u2026 scroll-x=\u2026 scroll-y=\u2026 emulation=none|viewport|full-page color-scheme=dark|light> \u2014 saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, visual-viewport scroll offset at capture, any effective downscale below 1 image px/CSS px, byte size, crop provenance, and any requested transient emulation
 effects:
-  no flags: none \u2014 the capture reads the viewport as-is, with zero Emulation.* calls. Sessionless captures write one bundle under --artifact-dir when supplied; --out writes only its caller-owned PNG. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture \u2014 two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; a selector crop reports its requested and delivered regions when its padded box cannot fit. An empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
+  no flags: none \u2014 the capture reads the viewport as-is, with zero Emulation.* calls. Sessionless captures write one bundle under --artifact-dir when supplied; --out writes only its caller-owned PNG. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture \u2014 two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override, finishes CSS transitions before capture, and clears the override afterward. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; a selector crop reports its requested and delivered regions when its padded box cannot fit. An empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
     deps4 = { withConnection, nextStepPath, createOneshotSession };
     PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
     LEGIBILITY_SCALE_THRESHOLD = 0.5;

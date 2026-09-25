@@ -412,7 +412,17 @@ async function dispatchResolvedClick(
   const dispatchY = Math.round(y);
   let hitTestReceiverBackendNodeId: number | undefined;
   if (opts.inspectHitTest) {
-    const hitTest = (await client.send('DOM.getNodeForLocation', { x: dispatchX, y: dispatchY })) as { backendNodeId?: unknown };
+    // The box quad and mouse dispatch use viewport coordinates; DOM.getNodeForLocation uses page coordinates.
+    const metrics = (await client.send('Page.getLayoutMetrics')) as { cssVisualViewport?: { pageX: number; pageY: number } };
+    const viewport = metrics.cssVisualViewport;
+    if (!viewport || !Number.isFinite(viewport.pageX) || !Number.isFinite(viewport.pageY)) {
+      throw captureError('world', 'malformed_protocol', 'Page.getLayoutMetrics returned no valid CSS visual viewport.', {
+        method: 'Page.getLayoutMetrics', response: metrics,
+      });
+    }
+    const hitTest = (await client.send('DOM.getNodeForLocation', {
+      x: Math.round(x + viewport.pageX), y: Math.round(y + viewport.pageY),
+    })) as { backendNodeId?: unknown };
     if (typeof hitTest.backendNodeId !== 'number' || !Number.isSafeInteger(hitTest.backendNodeId) || hitTest.backendNodeId <= 0) {
       throw captureError(
         'world',

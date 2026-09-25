@@ -39,7 +39,7 @@ const USAGE = `capture page shot — capture a PNG of the tab as it is right now
 input:
   --viewport <WxH>  transient device-metrics override for this capture; grammar: <positive-safe-int>x<positive-safe-int>, exact lowercase x with no whitespace — preset names are not accepted. Absent → no emulation, the browser's actual current viewport is captured
   --full-page       transient override to the full scrollable content height for this capture
-  --color-scheme <dark|light>  transient prefers-color-scheme override for this capture; cleared afterward
+  --color-scheme <dark|light>  transient prefers-color-scheme override for this capture; CSS transitions finish before the shot; cleared afterward
   --crop <x,y,w,h>  capture this page-coordinate CSS-pixel rect, intersected with the live visual viewport; x/y may be fractional, w/h must be positive
   --crop-selector <sel>  resolve exactly one live target (bare CSS takes precedence; exact accessible name applies when CSS finds none; ax:<name>, axid:<id>, or backend:<id>), scroll it into view, then crop its border box and surroundings
   --pad <px>        nonnegative integer CSS pixels added on every side of --crop-selector (default: 0; not accepted with --crop)
@@ -51,7 +51,7 @@ input:
 output:
   <screenshot path=… width=… height=… css-width=… css-height=… css-x=… css-y=… css-to-image-x=… css-to-image-y=… effective-downscale-x=… effective-downscale-y=… scroll-x=… scroll-y=… emulation=none|viewport|full-page color-scheme=dark|light> — saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, visual-viewport scroll offset at capture, any effective downscale below 1 image px/CSS px, byte size, crop provenance, and any requested transient emulation
 effects:
-  no flags: none — the capture reads the viewport as-is, with zero Emulation.* calls. Sessionless captures write one bundle under --artifact-dir when supplied; --out writes only its caller-owned PNG. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture — two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override and clears it after the capture. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; a selector crop reports its requested and delivered regions when its padded box cannot fit. An empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
+  no flags: none — the capture reads the viewport as-is, with zero Emulation.* calls. Sessionless captures write one bundle under --artifact-dir when supplied; --out writes only its caller-owned PNG. --viewport/--full-page applies a transient Emulation.setDeviceMetricsOverride (~150ms re-layout wait) and clears it after the capture — two page-observable resizes. --color-scheme applies a transient Emulation.setEmulatedMedia prefers-color-scheme override, finishes CSS transitions before capture, and clears the override afterward. --crop-selector scrolls its resolved target into view. CSS crops are intersected with the source visual viewport; a selector crop reports its requested and delivered regions when its padded box cannot fit. An empty intersection fails without writing an image. --crop/--crop-selector cannot be combined with --full-page.`;
 
 // ---------------------------------------------------------------------------
 // Test-injectable dependency seam (the CDP-stub test pattern; the capture
@@ -273,6 +273,31 @@ async function pageBorderRect(client: CDPClient, backendNodeId: number): Promise
 // page shot
 // ---------------------------------------------------------------------------
 
+async function finishColorTransitions(client: CDPClient): Promise<void> {
+  type FrameTree = { frame: { id: string }; childFrames?: FrameTree[] };
+  const tree = (await client.send('Page.getFrameTree')) as { frameTree?: FrameTree };
+  if (!tree.frameTree) throw new Error('Page.getFrameTree returned no frames for color-scheme capture.');
+  const frames = [tree.frameTree];
+  for (const frame of frames) {
+    frames.push(...(frame.childFrames ?? []));
+    const world = (await client.send('Page.createIsolatedWorld', {
+      frameId: frame.frame.id,
+      worldName: 'capture-color-scheme',
+    })) as { executionContextId?: number };
+    if (world.executionContextId === undefined) throw new Error(`No execution context for frame ${frame.frame.id}.`);
+    const result = (await client.send('Runtime.evaluate', {
+      contextId: world.executionContextId,
+      expression: `(() => {
+        document.getAnimations({ subtree: true })
+          .filter(animation => animation instanceof CSSTransition)
+          .forEach(transition => transition.finish());
+      })()`,
+      returnByValue: true,
+    })) as { result?: object; exceptionDetails?: { text?: string } };
+    if (!result.result || result.exceptionDetails) throw new Error(`Could not finish CSS transitions in frame ${frame.frame.id}: ${result.exceptionDetails?.text ?? 'page evaluation failed'}`);
+  }
+}
+
 export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
     console.log(USAGE);
@@ -384,7 +409,10 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
       } else if (requestedCrop) {
         cropProvenance = { source: 'coordinates', requested: requestedCrop, zoom };
       }
-      const screenshot = await captureScreenshotWithCssViewport(client, viewport, { fullPage: parsed.fullPage, crop: requestedCrop, zoom });
+      const screenshot = await captureScreenshotWithCssViewport(client, viewport, {
+        fullPage: parsed.fullPage, crop: requestedCrop, zoom,
+        ...(colorScheme ? { beforeCapture: () => finishColorTransitions(client) } : {}),
+      });
       const outPath = await resolveOutPath(parsed);
       writeScreenshot(outPath, screenshot.png);
       return { path: outPath, bytes: screenshot.png.length, dimensions: pngDimensions(screenshot.png), cssViewport: screenshot.cssViewport, scrollOffset: screenshot.scrollOffset, crop: cropProvenance } as const;

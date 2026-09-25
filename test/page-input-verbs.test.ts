@@ -75,6 +75,7 @@ function clickDispatchHandlers(): Handlers {
       return {};
     },
     'DOM.getBoxModel': () => ({ model: { content: [10, 10, 30, 10, 30, 20, 10, 20] } }),
+    'Page.getLayoutMetrics': () => ({ cssVisualViewport: { pageX: 0, pageY: 0 } }),
     'DOM.getNodeForLocation': () => ({ backendNodeId }),
     'Input.dispatchMouseEvent': () => ({}),
     'Input.insertText': () => ({}),
@@ -253,6 +254,7 @@ test('page click: re-resolves the target after scrolling before it dispatches', 
       assert.equal(params.backendNodeId, 302, 'the dispatch uses the target after the page update');
       return { model: { content: [10, 10, 30, 10, 30, 20, 10, 20] } };
     },
+    'Page.getLayoutMetrics': () => ({ cssVisualViewport: { pageX: 0, pageY: 0 } }),
     'DOM.getNodeForLocation': () => ({ backendNodeId: 302 }),
     'Input.dispatchMouseEvent': () => ({}),
   });
