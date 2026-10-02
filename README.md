@@ -217,3 +217,5 @@ The CLI is designed to be read by a model: errors are structured, every error ca
 ## License
 
 MIT
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.
