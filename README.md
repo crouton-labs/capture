@@ -1,4 +1,12 @@
-# capture
+# capture — a browser automation command line for agents, built on the Chrome DevTools Protocol
+
+![capture](https://raw.githubusercontent.com/crouton-labs/capture/main/assets/banner.svg)
+
+<p align="center">
+  <a href="https://github.com/crouton-labs/capture/actions/workflows/freshness.yml"><img alt="ci" src="https://img.shields.io/github/actions/workflow/status/crouton-labs/capture/freshness.yml?branch=main&label=ci"></a>
+  <a href="https://www.npmjs.com/package/@crouton-kit/capture"><img alt="npm" src="https://img.shields.io/npm/v/@crouton-kit/capture?label=npm"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue"></a>
+</p>
 
 **Browser automation that measures instead of guessing.** A CDP command line built for agents.
 
