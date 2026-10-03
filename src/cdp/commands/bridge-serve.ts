@@ -23,16 +23,21 @@ export async function cmdBridgeServe(parsed: ParsedArgs, _args: string[]): Promi
     );
   }
 
-  if (parsed.positional[0] === 'host') {
-    const sessionDir = parsed.positional[1];
-    if (!parsed.target || !sessionDir || parsed.port === undefined) {
-      throw invalidInput('Usage: capture __bridge-serve --socket <path> --port <cdpPort> --target <tabId> host <sessionDir>', 'bridge_serve_usage');
+  try {
+    if (parsed.positional[0] === 'host') {
+      const sessionDir = parsed.positional[1];
+      if (!parsed.target || !sessionDir || parsed.port === undefined) {
+        throw invalidInput('Usage: capture __bridge-serve --socket <path> --port <cdpPort> --target <tabId> host <sessionDir>', 'bridge_serve_usage');
+      }
+      await runCollectorHost({ socketPath: parsed.socket, port: parsed.port, targetId: parsed.target, sessionDir });
+    } else {
+      await runBridgeServer(parsed.socket, parsed.port);
     }
-    await runCollectorHost({ socketPath: parsed.socket, port: parsed.port, targetId: parsed.target, sessionDir });
-    return;
+    process.send?.({ type: 'bridge-ready' });
+  } catch (error) {
+    process.send?.({ type: 'bridge-error', error: error instanceof Error ? error.message : String(error) });
+    throw error;
   }
-
-  await runBridgeServer(parsed.socket, parsed.port);
   // Deliberately does not exit: the open Unix socket server and the live
   // browser websocket keep this detached process alive until `session stop`
   // sends it SIGTERM.
