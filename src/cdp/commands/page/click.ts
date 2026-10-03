@@ -18,7 +18,10 @@ import {
   clickResolved,
   type LiveClient,
   type ResolutionFailure,
+  type ResolvedTarget,
+  type TargetCandidate,
 } from '../../../interact.js';
+import { CaptureError } from '../../../errors.js';
 import {
   emitResult,
   fact,
@@ -164,6 +167,70 @@ export function emitResolutionError(parsed: ParsedArgs, command: string, failure
   process.exitCode = 1;
 }
 
+interface HitTestNoNodePoint {
+  readonly x: number;
+  readonly y: number;
+}
+
+function hitTestNoNodePoint(error: unknown): HitTestNoNodePoint | null {
+  if (!(error instanceof CaptureError) || error.descriptor.kind !== 'world' || error.descriptor.code !== 'target_not_clickable') return null;
+  const cause = error.descriptor.cause;
+  if (cause === null || typeof cause !== 'object') return null;
+  const record = cause as Record<string, unknown>;
+  const point = record.point;
+  if (record.method !== 'DOM.getNodeForLocation' || record.reason !== 'no_node_at_location' || point === null || typeof point !== 'object') return null;
+  const coordinates = point as Record<string, unknown>;
+  if (typeof coordinates.x !== 'number' || typeof coordinates.y !== 'number') return null;
+  return { x: coordinates.x, y: coordinates.y };
+}
+
+function refreshedCandidates(refreshed: ResolvedTarget | ResolutionFailure): readonly TargetCandidate[] {
+  if (refreshed.ok) return [{ backendNodeId: refreshed.backendNodeId, role: refreshed.role, name: refreshed.name }];
+  if (refreshed.code === 'no-match' || refreshed.code === 'ambiguous') return refreshed.candidates;
+  return [];
+}
+
+function emitHitTestNoNodeError(
+  parsed: ParsedArgs,
+  target: string,
+  attempted: ResolvedTarget,
+  point: HitTestNoNodePoint,
+  refreshed: ResolvedTarget | ResolutionFailure,
+): void {
+  const candidates = refreshedCandidates(refreshed);
+  const candidateRows = candidates.map((candidate) =>
+    line(data(candidate.role ?? 'unknown'), text` "`, data(candidate.name ?? ''), text`" — backend:`, data(candidate.backendNodeId)),
+  );
+  emitResult(
+    {
+      tag: 'error',
+      attrs: { command: 'page click', code: 'target_not_clickable' },
+      summary: fact`DOM.getNodeForLocation found no node at attempted x=${point.x} y=${point.y} for target \`${target}\`.`,
+      sections: [
+        fact`attempted, not confirmed live: ${attempted.role ?? 'unknown'} "${attempted.name ?? ''}" — backend:${attempted.backendNodeId}`,
+        candidateRows.length === 0
+          ? text`current candidates: none`
+          : lineList([text`current candidates:`, ...candidateRows]),
+      ],
+      jsonSections: [{
+        method: 'DOM.getNodeForLocation',
+        selector: target,
+        point,
+        attempted: {
+          backendNodeId: attempted.backendNodeId,
+          role: attempted.role,
+          name: attempted.name,
+          status: 'not_confirmed_live',
+        },
+        candidates,
+      }],
+      followUp: text`Run \`capture page elements\` to list live targets with their backend:<id> keys.`,
+    },
+    { json: parsed.json },
+  );
+  process.exitCode = 1;
+}
+
 // ---------------------------------------------------------------------------
 // page click
 // ---------------------------------------------------------------------------
@@ -208,14 +275,24 @@ export async function cmdPageClick(parsed: ParsedArgs, _args: string[]): Promise
       const live = client as unknown as LiveClient;
       const resolved = await resolveLiveTarget(live, target);
       if (!resolved.ok) return { failure: resolved } as const;
-      const dispatch = await clickResolved(live, resolved, { inspectHitTest: true });
-      const screenshotResult = await capturePageInputScreenshot(client, 'click', target, parsed.noScreenshot, parsed.out);
-      return { dispatch, ...screenshotResult } as const;
+      try {
+        const dispatch = await clickResolved(live, resolved, { inspectHitTest: true });
+        const screenshotResult = await capturePageInputScreenshot(client, 'click', target, parsed.noScreenshot, parsed.out);
+        return { dispatch, ...screenshotResult } as const;
+      } catch (error) {
+        const point = hitTestNoNodePoint(error);
+        if (point === null) throw error;
+        return { hitTestNoNode: { attempted: resolved, point, refreshed: await resolveLiveTarget(live, target) } } as const;
+      }
     },
   );
 
   if ('failure' in outcome) {
     return emitResolutionError(parsed, 'page click', outcome.failure);
+  }
+  if ('hitTestNoNode' in outcome) {
+    const { attempted, point, refreshed } = outcome.hitTestNoNode;
+    return emitHitTestNoNodeError(parsed, target, attempted, point, refreshed);
   }
 
   const { dispatch, screenshot, screenshotWarning } = outcome;
