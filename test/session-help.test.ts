@@ -8,6 +8,7 @@ const fs = require('node:fs') as typeof import('node:fs');
 
 const HELP_TEXT = '<command name="session" description="the artifact container: records HTTP traffic and bundles artifacts for one page">';
 const HAR_HELP_TEXT = 'capture session har [<session-id>]';
+const LIVE_HAR_FORMAT_HELP_TEXT = 'A live HAR file is line-delimited\n  JSON (NDJSON): one header record followed by entry batches; read it one line\n  at a time.';
 const LOG_HELP_TEXT = 'capture session log <path>';
 
 function patchFs(): () => void {
@@ -72,6 +73,7 @@ test('session help flags are read-only for all session subcommands', async () =>
     const output = logs.join('\n');
     assert.ok(output.includes(HELP_TEXT));
     assert.ok(output.includes(HAR_HELP_TEXT));
+    assert.ok(output.includes(LIVE_HAR_FORMAT_HELP_TEXT));
     assert.ok(output.includes(LOG_HELP_TEXT));
     assert.ok(output.includes('<subcommand name="har"'));
     assert.ok(output.includes('<subcommand name="log"'));
