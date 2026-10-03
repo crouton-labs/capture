@@ -60,7 +60,7 @@ Input:
   --timeout <ms>               one-shot method-response and event-wait timeout (default ${DEFAULT_TIMEOUT_MS}ms). WebSocket connection setup is separately bounded to 5000ms.
 
 Connection lifetime:
-  Unless --browser routes through a held session, each invocation opens an isolated CDP connection and closes it when the command exits. Domain enables and remote object handles (objectIds) are connection-scoped, so a later one-shot invocation cannot use either. A multi-step protocol sequence needs connection state that survives between its calls.
+  Unless --browser routes through a held session, each invocation opens an isolated CDP connection and closes it when the command exits. Domain enables and remote object handles (objectIds) are connection-scoped, so a later one-shot invocation cannot use either. New-document script registrations are also connection-scoped: a script registered by one-shot \`Page.addScriptToEvaluateOnNewDocument\` does not survive the command. To keep one across navigations, use \`capture cdp --browser --target <tab-id> Page.addScriptToEvaluateOnNewDocument --params '<json>'\` with an active held session and no explicit \`--port\`. A multi-step protocol sequence needs connection state that survives between its calls.
 
 Output:
   <cdp-result method=… wait-event=… scope=…> — the protocol result and/or awaited event as an escaped, length-capped JSON payload. --json mirrors the same block with the payload at full fidelity.
