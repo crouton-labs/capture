@@ -93,6 +93,44 @@ function makeSnap(id: string, opts: { geometry: unknown; styles: unknown; layers
   return { kind: 'snap', id, dir: d };
 }
 
+test('hit-test preserves unavailable comparisons instead of treating them as clean or non-descendant receivers', () => {
+  const ref = makeSnap('snap-hit-test-unavailable', {
+    geometry: { elements: [
+      { id: 'empty', selector: '.empty', backendNodeId: 1, rect: { x: 0, y: 0, width: 10, height: 10 } },
+      { id: 'unavailable', selector: '.unavailable', backendNodeId: 2, rect: { x: 20, y: 0, width: 10, height: 10 } },
+      { id: 'unresolved', selector: '.unresolved', backendNodeId: 3, rect: { x: 40, y: 0, width: 10, height: 10 } },
+      { id: 'absent', selector: '.absent', backendNodeId: 4, rect: { x: 60, y: 0, width: 10, height: 10 } },
+      { id: 'joined', selector: '.joined', backendNodeId: 5, rect: { x: 80, y: 0, width: 10, height: 10 } },
+    ] },
+    styles: { elements: [] },
+  });
+  fs.writeFileSync(path.join(ref.dir, 'hittest.json'), JSON.stringify({ available: true, elements: [
+    { id: 'hit-empty', selector: '.empty', backendNodeId: 1, points: [{ result: { x: 1, y: 2, stack: [], topReceiver: null, stackUnavailable: false } }] },
+    { id: 'hit-unavailable', selector: '.unavailable', backendNodeId: 2, points: [{ result: { x: 21, y: 2, stack: [], topReceiver: null, stackUnavailable: true } }] },
+    { id: 'hit-unresolved', selector: '.unresolved', backendNodeId: 3, points: [{ result: { x: 41, y: 2, stack: [{ selector: '.unknown', tag: 'div', backendNodeId: null, identityUnresolved: true, opacity: 1 }], topReceiver: { selector: '.unknown', tag: 'div', backendNodeId: null, identityUnresolved: true }, stackUnavailable: false } }] },
+    { id: 'hit-absent', selector: '.absent', backendNodeId: 4, points: [{ result: { x: 61, y: 2, stack: [{ selector: '.missing', tag: 'div', backendNodeId: 99, opacity: 1 }], topReceiver: { selector: '.missing', tag: 'div', backendNodeId: 99 }, stackUnavailable: false } }] },
+    { id: 'hit-joined', selector: '.joined', backendNodeId: 5, points: [{ result: { x: 81, y: 2, stack: [{ selector: '.joined', tag: 'div', backendNodeId: 5, opacity: 1 }], topReceiver: { selector: '.joined', tag: 'div', backendNodeId: 5 }, stackUnavailable: false } }] },
+  ] }));
+
+  const findings = checkSnapshot(ref, ['hit-test']).findings;
+  assert.equal(findings.length, 4);
+  assert.match(findings.find((finding) => finding.selector === '.empty')?.detail ?? '', /empty hit-test stack/);
+  assert.match(findings.find((finding) => finding.selector === '.unavailable')?.detail ?? '', /unavailable hit-test stack/);
+  assert.match(findings.find((finding) => finding.selector === '.unresolved')?.detail ?? '', /unresolved identity/);
+  assert.match(findings.find((finding) => finding.selector === '.absent')?.detail ?? '', /absent from geometry\.json/);
+  assert.equal(findings.some((finding) => /non-descendant/.test(finding.detail)), false);
+});
+
+test('check computation failures retain the resolved artifact and do not prescribe a new snapshot', () => {
+  const ref = makeSnap('snap-hit-test-invalid-json', { geometry: { elements: [] }, styles: { elements: [] } });
+  fs.writeFileSync(path.join(ref.dir, 'hittest.json'), JSON.stringify({ available: true, elements: null }));
+  const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/capture.ts', 'measure', 'check', ref.dir, '--for', 'hit-test'], { encoding: 'utf8' });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /<error command="measure check" status="check_failed">/);
+  assert.match(result.stdout, new RegExp(`snapshot ${ref.id} at ${ref.dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.doesNotMatch(result.stdout, /Create a settled snapshot/);
+});
+
 test('contrast composites transparent descendants over the opaque ancestor background and names that source', () => {
   const ref = makeSnap('snap-composited-contrast', {
     geometry: { elements: [

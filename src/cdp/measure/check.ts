@@ -5,6 +5,7 @@ import { PNG } from 'pngjs';
 import type { SnapRef, Rect } from '../../output/artifact.js';
 import { artifactExists, artifactPath, readAnimation, readForms, readGeometry, readHittest, readMeta, readText, unstableRegionsFor, annotateUnstableFacts } from '../../output/artifact.js';
 import { writeBinaryPrivate } from '../../session/artifacts.js';
+import type { HittestJson, HitTestPointResult } from './collectors/hittest.js';
 
 export const CHECK_NAMES = ['overlap', 'offscreen', 'overflow', 'tap-targets', 'contrast', 'hit-test', 'truncation', 'forms', 'media', 'animation'] as const;
 export type CheckName = (typeof CHECK_NAMES)[number];
@@ -221,6 +222,23 @@ function finding(kind: CheckName, element: GeometryElement | undefined, detail: 
 function isSelfOrDescendant(target: GeometryElement, receiver: GeometryElement): boolean {
   if (target.backendNodeId != null && target.backendNodeId === receiver.backendNodeId) return true;
   return target.domPath !== undefined && receiver.domPath !== undefined && receiver.domPath.startsWith(`${target.domPath}/`);
+}
+
+function hitTestStackProvenance(point: HitTestPointResult): string | undefined {
+  return point.stack.map((member) => `${member.selector ?? member.pointerEvents ?? 'element'}${member.opacity === 0 ? ' opacity 0' : ''}`).join(', ') || undefined;
+}
+
+function hitTestFinding(target: GeometryElement, point: HitTestPointResult, elements: GeometryElement[]): Omit<CheckFinding, 'caveats'> | undefined {
+  const provenance = hitTestStackProvenance(point);
+  if (point.stackUnavailable) return finding('hit-test', target, `${label(target)} sampled point (${point.x},${point.y}) has an unavailable hit-test stack; targetability comparison is unavailable`, provenance);
+  const receiver = point.topReceiver;
+  if (!receiver) return finding('hit-test', target, `${label(target)} sampled point (${point.x},${point.y}) has an empty hit-test stack; targetability comparison is unavailable`, provenance);
+  const receiverLabel = receiver.selector ?? receiver.tag;
+  if (receiver.identityUnresolved || receiver.backendNodeId === null) return finding('hit-test', target, `${label(target)} sampled point (${point.x},${point.y}) resolves to receiver ${receiverLabel} with unresolved identity; targetability comparison is unavailable`, provenance);
+  const receiverElement = elements.find((element) => element.backendNodeId === receiver.backendNodeId);
+  if (!receiverElement) return finding('hit-test', target, `${label(target)} sampled point (${point.x},${point.y}) resolves to receiver ${receiverLabel} (backend:${receiver.backendNodeId}), which is absent from geometry.json; targetability comparison is unavailable`, provenance);
+  if (isSelfOrDescendant(target, receiverElement)) return undefined;
+  return finding('hit-test', target, `${label(target)} sampled point (${point.x},${point.y}) resolves to non-descendant receiver ${receiverLabel}`, provenance);
 }
 
 interface Rgba { readonly red: number; readonly green: number; readonly blue: number; readonly alpha: number }
@@ -442,17 +460,14 @@ export function checkSnapshot(ref: SnapRef, requested: readonly CheckName[]): { 
     }
   }
   if (selected.has('hit-test')) {
-    const hit = readHittest<{ elements?: Array<{ selector?: string; backendNodeId?: number | null; points?: Array<{ result?: { topReceiver?: { selector?: string; backendNodeId?: number | null } | null; x?: number; y?: number; stack?: Array<{ selector?: string; pointerEvents?: string; opacity?: number }> } }> }> }>(ref);
-    for (const sample of hit.elements ?? []) {
-      const e = elements.find((x) => (sample.backendNodeId != null && x.backendNodeId === sample.backendNodeId) || (sample.selector && x.selector === sample.selector));
-      if (!e) continue;
-      const point = sample.points?.find((p) => {
-        const receiver = p.result?.topReceiver;
-        const receiverElement = receiver && elements.find((x) => receiver.backendNodeId != null && x.backendNodeId === receiver.backendNodeId);
-        return receiverElement !== undefined && !isSelfOrDescendant(e, receiverElement);
-      })?.result;
-      if (!point?.topReceiver) continue;
-      findings.push(finding('hit-test', e, `${label(e)} sampled point (${point.x},${point.y}) resolves to non-descendant receiver ${point.topReceiver.selector ?? 'unidentified element'}`, point.stack?.map((x) => `${x.selector ?? x.pointerEvents ?? 'element'}${x.opacity === 0 ? ' opacity 0' : ''}`).join(', ')));
+    const hit = readHittest<HittestJson>(ref);
+    if (hit.available === false) {
+      findings.push(finding('hit-test', undefined, `Hit-test collection was unavailable (${hit.unavailableReason ?? 'unknown reason'}); no sampled points were available for comparison`));
+    } else for (const sample of hit.elements) {
+      const element = elements.find((candidate) => (sample.backendNodeId != null && candidate.backendNodeId === sample.backendNodeId) || (sample.selector && candidate.selector === sample.selector));
+      if (!element) continue;
+      const observation = sample.points.map((point) => hitTestFinding(element, point.result, elements)).find((finding): finding is Omit<CheckFinding, 'caveats'> => finding !== undefined);
+      if (observation) findings.push(observation);
     }
   }
   if (selected.has('truncation')) for (const t of readText<{ elements?: Array<{ selector?: string; backendNodeId?: number | null; truncated?: boolean; scrollWidth?: number; clientWidth?: number }> }>(ref).elements ?? []) if (t.truncated) {
