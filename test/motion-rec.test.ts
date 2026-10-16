@@ -190,6 +190,7 @@ test('cmdMotionRec one-shot waits for readiness, applies/restores viewport, reco
       ['Accessibility.getPartialAXTree', null],
       ['DOM.scrollIntoViewIfNeeded', null],
       ['DOM.getBoxModel', null],
+      ['Page.captureScreenshot', null],
       ['Input.dispatchMouseEvent', 'click:button.send'],
       ['Input.dispatchMouseEvent', null],
     ], 'the target resolves through the unified live grammar before the marked dispatch');

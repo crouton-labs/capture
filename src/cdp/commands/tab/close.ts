@@ -17,6 +17,7 @@ const USAGE = `capture tab close — close one explicitly identified background 
 
 input:
   <target>        required — full tab target id or an unambiguous 8-character prefix
+  --target <id>   same as <target>; only an explicit flag counts, never the session's tab or CDP_TARGET
   --port <port>   CDP endpoint (default: the auto-discovered preferred endpoint)
 
 output: <tab-closed port=… target=…> — the closed tab's full target id and last observed URL.
@@ -36,9 +37,9 @@ export async function cmdTabClose(parsed: ParsedArgs, _args: string[]): Promise<
     return;
   }
 
-  const target = parsed.positional[0];
+  const target = parsed.positional[0] ?? (parsed.targetSource === 'flag' ? parsed.target : undefined);
   if (!target) {
-    throw invalidInput('received: no target; expected: capture tab close <target> [--port <port>].', 'missing_argument');
+    throw invalidInput('received: no target; expected: capture tab close <target> (or --target <id>) [--port <port>].', 'missing_argument');
   }
   if (target.length < 8) {
     throw invalidInput(`received: target ${target}; expected: a full target id or an unambiguous prefix of at least 8 characters.`, 'target_prefix_too_short');

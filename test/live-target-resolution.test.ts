@@ -575,12 +575,13 @@ function dispatchHandlers(): Record<string, (params: Record<string, unknown>) =>
   return {
     'DOM.scrollIntoViewIfNeeded': () => ({}),
     'DOM.getBoxModel': () => ({ model: { content: [10, 10, 30, 10, 30, 20, 10, 20] } }),
+    'Page.captureScreenshot': () => ({ data: '' }),
     'Input.dispatchMouseEvent': () => ({}),
     'Input.insertText': () => ({}),
   };
 }
 
-test('clickResolved: scrollIntoView → box model → press/release at the content-quad center', async () => {
+test('clickResolved: scrollIntoView → box model → 1x1 frame capture → press/release at the content-quad center', async () => {
   const client = stubClient(dispatchHandlers());
   const dispatch = await clickResolved(client, RESOLVED_BUTTON);
 
@@ -590,6 +591,7 @@ test('clickResolved: scrollIntoView → box model → press/release at the conte
   assert.deepEqual(methods, [
     'DOM.scrollIntoViewIfNeeded',
     'DOM.getBoxModel',
+    'Page.captureScreenshot',
     'Input.dispatchMouseEvent',
     'Input.dispatchMouseEvent',
   ]);
@@ -600,6 +602,12 @@ test('clickResolved: scrollIntoView → box model → press/release at the conte
       ['mousePressed', 20, 15],
       ['mouseReleased', 20, 15],
     ],
+  );
+  const frame = client.calls.find((c) => c.method === 'Page.captureScreenshot');
+  assert.deepEqual(
+    frame?.params.clip,
+    { x: 0, y: 0, width: 1, height: 1, scale: 1 },
+    'a 1x1 capture makes a background Arc tab paint, so it accepts the mouse events that follow',
   );
   assert.ok(client.calls.every((c) => c.mark === undefined), 'an unmarked click never touches the marked lane');
 });
@@ -614,6 +622,7 @@ test('clickResolved: an initiating-press mark rides the marked lane; the release
     [
       ['DOM.scrollIntoViewIfNeeded', null],
       ['DOM.getBoxModel', null],
+      ['Page.captureScreenshot', null],
       ['Input.dispatchMouseEvent', 'click:ax:Send'],
       ['Input.dispatchMouseEvent', null],
     ],
@@ -637,6 +646,7 @@ test('clickResolved: a marked click degrades to plain send when the transport ha
   assert.deepEqual(client.calls.map((c) => c.method), [
     'DOM.scrollIntoViewIfNeeded',
     'DOM.getBoxModel',
+    'Page.captureScreenshot',
     'Input.dispatchMouseEvent',
     'Input.dispatchMouseEvent',
   ]);
