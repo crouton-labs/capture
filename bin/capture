@@ -3781,6 +3781,7 @@ var init_loopback = __esm({
 var detect_exports = {};
 __export(detect_exports, {
   BROWSER_PATTERNS: () => BROWSER_PATTERNS,
+  describeCdpPort: () => describeCdpPort,
   detectCdpEndpoint: () => detectCdpEndpoint,
   detectCdpPort: () => detectCdpPort,
   detectCdpPortsAsync: () => detectCdpPortsAsync,
@@ -3911,24 +3912,29 @@ function identifyBrowserBundleId(browser, processName) {
   }
   return "unknown";
 }
+async function describeEndpoint(port, processNames2) {
+  const probe = await probeCdpPort(port);
+  if (!probe) return null;
+  const processName = processNames2.get(port);
+  return {
+    port,
+    app: processName ?? probe.app,
+    bundleId: identifyBrowserBundleId(probe.browser, processName),
+    isElectron: probe.isElectron,
+    hasPageTarget: probe.hasPageTarget
+  };
+}
+async function describeCdpPort(port) {
+  return describeEndpoint(port, getListeningProcessNames());
+}
 async function detectCdpPortsAsync() {
   const ports = getLocalhostListeningPorts();
   const processNames2 = getListeningProcessNames();
   const results = [];
-  const probes = ports.map(async (port) => {
-    const probe = await probeCdpPort(port);
-    if (probe) {
-      const processName = processNames2.get(port);
-      results.push({
-        port,
-        app: processName ?? probe.app,
-        bundleId: identifyBrowserBundleId(probe.browser, processName),
-        isElectron: probe.isElectron,
-        hasPageTarget: probe.hasPageTarget
-      });
-    }
-  });
-  await Promise.all(probes);
+  await Promise.all(ports.map(async (port) => {
+    const endpoint = await describeEndpoint(port, processNames2);
+    if (endpoint) results.push(endpoint);
+  }));
   return results;
 }
 function pickPreferredEndpointWithReason(endpoints, defaultBrowser) {
@@ -15129,6 +15135,15 @@ function rejectSurplusPositionals(parsed, leaf, max, usage) {
   process.exitCode = 1;
   return true;
 }
+async function tabStillListed(port, targetId) {
+  await new Promise((resolve12) => setTimeout(resolve12, 250));
+  try {
+    const found = await startWorld.findTabById(port, targetId);
+    return found !== null && found.type === "page";
+  } catch {
+    return false;
+  }
+}
 async function start(parsed) {
   if (parsed.help) {
     console.log(START_USAGE);
@@ -15207,6 +15222,21 @@ async function start(parsed) {
           const openedTargetId = target.id;
           acquired.push({ label: "opened target", release: () => startWorld.closeTarget(openedPort, openedTargetId) });
           pageLoadTimedOut = await startWorld.awaitTabReady(target, url);
+          if (!await tabStillListed(cdpPort, target.id)) {
+            const lostId = target.id;
+            await startWorld.closeTarget(cdpPort, lostId).catch(() => void 0);
+            acquired.pop();
+            target = await startWorld.openTab(cdpPort, url);
+            const retryPort = cdpPort;
+            const retryId = target.id;
+            acquired.push({ label: "opened target", release: () => startWorld.closeTarget(retryPort, retryId) });
+            pageLoadTimedOut = await startWorld.awaitTabReady(target, url);
+            if (!await tabStillListed(cdpPort, target.id)) {
+              throw worldFailure(
+                `Port ${cdpPort} drops tabs created over CDP (${retryId} vanished twice). Use \`capture tab open ${url} --port ${cdpPort}\`, then \`capture session start --port ${cdpPort} --target <id>\`.`
+              );
+            }
+          }
         }
       }
       if (hold) {
@@ -16423,6 +16453,14 @@ async function connectForCommand(parsed) {
   const tab = resolved?.tab ?? null;
   if (!tab) {
     const query = parsed.target ?? parsed.url;
+    if (parsed.targetSource === "session" && activeSession2) {
+      const where = activeSession2.port ? ` on port ${activeSession2.port}` : "";
+      throw captureError(
+        "precondition",
+        "target_unavailable",
+        `Session ${activeSession2.sessionId}'s tab ${query}${where} is no longer listed \u2014 the browser closed or dropped it. Open a replacement with \`capture tab reset <url>${activeSession2.port ? ` --port ${activeSession2.port}` : ""}\` (repoints this session at it), or pick a live tab with \`capture tab list\` and pass \`--target <id>\`.`
+      );
+    }
     throw captureError(
       "precondition",
       "target_unavailable",
@@ -229960,6 +229998,9 @@ effects: SIGTERM (then SIGKILL if needed) to capture-launched browsers only, ver
 });
 
 // src/cdp/commands/tab/list.ts
+function endpointNote(app) {
+  return app !== void 0 && /^arc$/i.test(app.trim()) ? ARC_ENDPOINT_NOTE : void 0;
+}
 function buildTabsResult(endpoints, unreachable) {
   const totalTabs = endpoints.reduce((n, ep) => n + ep.pages.length, 0);
   let summary = endpoints.length === 0 && unreachable.length === 0 ? text`0 CDP endpoints found listening on localhost.` : fact`${totalTabs} page tab(s) on ${endpoints.length} reachable CDP endpoint(s).`;
@@ -229978,7 +230019,8 @@ function buildTabsResult(endpoints, unreachable) {
     const rows = ep.pages.map(
       (t) => line(text`  `, data(t.id.slice(0, 8)), text`  "`, data(t.title, 120), text`"  `, data(t.url, 300))
     );
-    return lineList([header, ...rows]);
+    const note = endpointNote(ep.app);
+    return lineList([header, ...rows, ...note ? [note] : []]);
   });
   if (unreachable.length > 0) {
     sections.push(
@@ -230021,8 +230063,10 @@ async function cmdTabList(parsed, _args) {
   if (parsed.port) {
     try {
       const targets = await listTargets(parsed.port);
+      const described = await describeCdpPort(parsed.port).catch(() => null);
       reachable.push({
         port: parsed.port,
+        ...described ? { app: described.app } : {},
         preferred: false,
         ...owned.has(parsed.port) ? { ownedPid: owned.get(parsed.port).pid } : {},
         pages: targets.filter((t) => t.type === "page").map((t) => ({ id: t.id, title: t.title, url: t.url }))
@@ -230054,7 +230098,7 @@ async function cmdTabList(parsed, _args) {
   }
   emitResult(buildTabsResult(reachable, unreachable), { json: parsed.json });
 }
-var USAGE11;
+var USAGE11, ARC_ENDPOINT_NOTE;
 var init_list = __esm({
   "src/cdp/commands/tab/list.ts"() {
     init_detect();
@@ -230068,6 +230112,7 @@ input:
 
 output: <tabs endpoints=\u2026 tabs=\u2026> \u2014 one section per reachable endpoint (port, app, page-tab count, preferred marker, and a capture-owned pid marker on any browser \`tab launch\` started) listing each page tab's target id (first 8 chars, enough for --target), title, and url; an endpoint that failed the tab fetch is an endpoints-unreachable fact, never a silent omission.
 effects: probes local CDP endpoints over HTTP/WebSocket; no page-observable writes. Also sweeps capture-launched browsers, stopping any that have exited, stopped answering CDP, or gone idle \u2014 browsers capture did not start are never signalled.`;
+    ARC_ENDPOINT_NOTE = text`  note: Arc exposes only tabs opened over CDP as page targets; the tabs in its windows are not listed. Open one with "capture tab open <url> --port <port>", then "capture session start --port <port> --target <id>".`;
   }
 });
 

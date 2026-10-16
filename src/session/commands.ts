@@ -660,6 +660,17 @@ interface Acquisition {
   release(): Promise<void> | void;
 }
 
+/** True when the port's target list still contains this page target. */
+async function tabStillListed(port: number, targetId: string): Promise<boolean> {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  try {
+    const found = await startWorld.findTabById(port, targetId);
+    return found !== null && found.type === 'page';
+  } catch {
+    return false;
+  }
+}
+
 async function start(parsed: ParsedArgs): Promise<void> {
   if (parsed.help) {
     console.log(START_USAGE);
@@ -750,6 +761,24 @@ async function start(parsed: ParsedArgs): Promise<void> {
           const openedTargetId = target.id;
           acquired.push({ label: 'opened target', release: () => startWorld.closeTarget(openedPort, openedTargetId) });
           pageLoadTimedOut = await startWorld.awaitTabReady(target, url);
+          // Some browsers (Arc) acknowledge Target.createTarget and then drop the
+          // page. Reporting that tab as the session's target would leave every
+          // later command pointing at nothing, so confirm it is still listed.
+          if (!await tabStillListed(cdpPort!, target.id)) {
+            const lostId = target.id;
+            await startWorld.closeTarget(cdpPort!, lostId).catch(() => undefined);
+            acquired.pop();
+            target = await startWorld.openTab(cdpPort!, url);
+            const retryPort = cdpPort!;
+            const retryId = target.id;
+            acquired.push({ label: 'opened target', release: () => startWorld.closeTarget(retryPort, retryId) });
+            pageLoadTimedOut = await startWorld.awaitTabReady(target, url);
+            if (!await tabStillListed(cdpPort!, target.id)) {
+              throw worldFailure(
+                `Port ${cdpPort} drops tabs created over CDP (${retryId} vanished twice). Use \`capture tab open ${url} --port ${cdpPort}\`, then \`capture session start --port ${cdpPort} --target <id>\`.`,
+              );
+            }
+          }
         }
       }
 

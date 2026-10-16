@@ -419,3 +419,24 @@ test('connectForCommand: lazily publishes {targetId, port} as one atomic patch f
     else process.env.CDP_PORT = prevEnv;
   }
 });
+
+test('connectForCommand: a vanished session tab names the session and points at tab reset', async () => {
+  const h = installSeams({
+    getActiveSession: () => sessionState({ sessionId: 'sess-gone', port: 54833 }),
+    resolveTab: async () => null,
+  });
+  try {
+    await assert.rejects(
+      connectForCommand(parsedFor({ target: 'DEADBEEF', targetSource: 'session' })),
+      (err: unknown) => {
+        assert.ok(err instanceof CaptureError);
+        assert.equal(err.descriptor.code, 'target_unavailable');
+        assert.match(err.descriptor.message, /Session sess-gone's tab DEADBEEF on port 54833 is no longer listed/);
+        assert.match(err.descriptor.message, /capture tab reset <url> --port 54833/);
+        return true;
+      },
+    );
+  } finally {
+    h.restore();
+  }
+});
