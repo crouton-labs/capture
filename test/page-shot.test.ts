@@ -79,7 +79,11 @@ function captureHandlers(png: Buffer, opts: { emulation?: boolean; media?: boole
     handlers['Emulation.setDeviceMetricsOverride'] = () => ({});
     handlers['Emulation.clearDeviceMetricsOverride'] = () => ({});
   }
-  if (opts.media) handlers['Emulation.setEmulatedMedia'] = () => ({});
+  if (opts.media) {
+    handlers['Emulation.setEmulatedMedia'] = () => ({});
+    handlers['Page.getFrameTree'] = () => ({ frameTree: { frame: { id: 'frame-1' } } });
+    handlers['Page.createIsolatedWorld'] = () => ({ executionContextId: 1 });
+  }
   return handlers;
 }
 

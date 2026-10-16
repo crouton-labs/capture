@@ -31,7 +31,7 @@ export interface ScreenshotCrop {
   readonly height: number;
 }
 
-type ScreenshotOptions = { fullPage?: boolean; crop?: ScreenshotCrop; zoom?: number };
+type ScreenshotOptions = { fullPage?: boolean; crop?: ScreenshotCrop; zoom?: number; beforeCapture?: () => Promise<void> };
 
 /** A region is reportable only if every number is finite and its size is positive; anything else would produce a fabricated scale. */
 function validRegion(region: CapturedRegion): CapturedRegion | undefined {
@@ -246,6 +246,7 @@ async function viewportScopedCapture(
       // Capture without downscaling when the optional metrics probe is unavailable.
     }
 
+    await options?.beforeCapture?.();
     const result = (await client.send(
       'Page.captureScreenshot',
       screenshotOpts,

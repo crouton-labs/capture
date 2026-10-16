@@ -199,27 +199,34 @@ export interface CdpEndpoint {
   hasPageTarget: boolean;
 }
 
+async function describeEndpoint(port: number, processNames: Map<number, string>): Promise<CdpEndpoint | null> {
+  const probe = await probeCdpPort(port);
+  if (!probe) return null;
+  const processName = processNames.get(port);
+  return {
+    port,
+    app: processName ?? probe.app,
+    bundleId: identifyBrowserBundleId(probe.browser, processName),
+    isElectron: probe.isElectron,
+    hasPageTarget: probe.hasPageTarget,
+  };
+}
+
+/** Identifies the app serving one known CDP port (null when it is not a CDP browser). */
+export async function describeCdpPort(port: number): Promise<CdpEndpoint | null> {
+  return describeEndpoint(port, getListeningProcessNames());
+}
+
 export async function detectCdpPortsAsync(): Promise<CdpEndpoint[]> {
   const ports = getLocalhostListeningPorts();
   const processNames = getListeningProcessNames();
   const results: CdpEndpoint[] = [];
 
   // Probe ports in parallel for speed
-  const probes = ports.map(async (port) => {
-    const probe = await probeCdpPort(port);
-    if (probe) {
-      const processName = processNames.get(port);
-      results.push({
-        port,
-        app: processName ?? probe.app,
-        bundleId: identifyBrowserBundleId(probe.browser, processName),
-        isElectron: probe.isElectron,
-        hasPageTarget: probe.hasPageTarget,
-      });
-    }
-  });
-
-  await Promise.all(probes);
+  await Promise.all(ports.map(async (port) => {
+    const endpoint = await describeEndpoint(port, processNames);
+    if (endpoint) results.push(endpoint);
+  }));
   return results;
 }
 

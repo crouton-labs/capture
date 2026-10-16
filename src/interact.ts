@@ -352,23 +352,44 @@ async function axIdentityFor(
 // ---------------------------------------------------------------------------
 
 /**
- * Clicks a resolved target: scroll into view → box model → center-point
- * `Input.dispatchMouseEvent` press/release pair. When the caller supplies
+ * Resolves a live target, scrolls it into view, then resolves it again before
+ * dispatching a center-point `Input.dispatchMouseEvent` press/release pair. When the caller supplies
  * `opts.mark` and the transport records landmarks
  * ({@link LiveClient.sendMarked}), the INITIATING PRESS alone carries the
  * label — one logical click is one landmark, never two (the release and every
  * incidental call stay unmarked). Without a marked lane the press degrades to
  * a plain `send` (nothing is recording landmarks).
  */
+export async function clickLiveTarget(
+  client: LiveClient,
+  input: string,
+  opts: { mark?: string; inspectHitTest?: boolean; includeHitTestReceiver?: boolean } = {},
+): Promise<ClickDispatch | ResolutionFailure> {
+  const initial = await resolveLiveTarget(client, input);
+  if (!initial.ok) return initial;
+
+  await client.send('DOM.scrollIntoViewIfNeeded', { backendNodeId: initial.backendNodeId });
+
+  const current = await resolveLiveTarget(client, input);
+  if (!current.ok) return current;
+  return dispatchResolvedClick(client, current, opts);
+}
+
 export async function clickResolved(
   client: LiveClient,
   resolved: ResolvedTarget,
   opts: { mark?: string; inspectHitTest?: boolean; includeHitTestReceiver?: boolean } = {},
 ): Promise<ClickDispatch> {
+  await client.send('DOM.scrollIntoViewIfNeeded', { backendNodeId: resolved.backendNodeId });
+  return dispatchResolvedClick(client, resolved, opts);
+}
+
+async function dispatchResolvedClick(
+  client: LiveClient,
+  resolved: ResolvedTarget,
+  opts: { mark?: string; inspectHitTest?: boolean; includeHitTestReceiver?: boolean },
+): Promise<ClickDispatch> {
   const { backendNodeId } = resolved;
-
-  await client.send('DOM.scrollIntoViewIfNeeded', { backendNodeId });
-
   const boxResponse = (await client.send('DOM.getBoxModel', { backendNodeId })) as
     | { model?: { content?: unknown } }
     | undefined;
@@ -391,7 +412,17 @@ export async function clickResolved(
   const dispatchY = Math.round(y);
   let hitTestReceiverBackendNodeId: number | undefined;
   if (opts.inspectHitTest) {
-    const hitTest = (await client.send('DOM.getNodeForLocation', { x: dispatchX, y: dispatchY })) as { backendNodeId?: unknown };
+    // The box quad and mouse dispatch use viewport coordinates; DOM.getNodeForLocation uses page coordinates.
+    const metrics = (await client.send('Page.getLayoutMetrics')) as { cssVisualViewport?: { pageX: number; pageY: number } };
+    const viewport = metrics.cssVisualViewport;
+    if (!viewport || !Number.isFinite(viewport.pageX) || !Number.isFinite(viewport.pageY)) {
+      throw captureError('world', 'malformed_protocol', 'Page.getLayoutMetrics returned no valid CSS visual viewport.', {
+        method: 'Page.getLayoutMetrics', response: metrics,
+      });
+    }
+    const hitTest = (await client.send('DOM.getNodeForLocation', {
+      x: Math.round(x + viewport.pageX), y: Math.round(y + viewport.pageY),
+    })) as { backendNodeId?: unknown };
     if (typeof hitTest.backendNodeId !== 'number' || !Number.isSafeInteger(hitTest.backendNodeId) || hitTest.backendNodeId <= 0) {
       throw captureError(
         'world',

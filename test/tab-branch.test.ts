@@ -382,3 +382,10 @@ test('bin: each tab leaf -h is the D6 leaf shape — summary/input/output/effect
     }
   });
 });
+
+test('tab list: an Arc endpoint carries a note that its ordinary tabs are not page targets', () => {
+  const arc = renderResult(buildTabsResult([{ port: 54833, app: 'Arc', preferred: true, pages: [] }], []));
+  assert.match(arc, /note: Arc exposes only tabs opened over CDP/);
+  const chrome = renderResult(buildTabsResult([{ port: 9222, app: 'Google Chrome', preferred: true, pages: [] }], []));
+  assert.ok(!chrome.includes('note: Arc'), chrome);
+});

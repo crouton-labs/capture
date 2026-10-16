@@ -204,6 +204,14 @@ export async function connectForCommand(
 
   if (!tab) {
     const query = parsed.target ?? parsed.url;
+    if (parsed.targetSource === 'session' && activeSession) {
+      const where = activeSession.port ? ` on port ${activeSession.port}` : '';
+      throw captureError(
+        'precondition',
+        'target_unavailable',
+        `Session ${activeSession.sessionId}'s tab ${query}${where} is no longer listed — the browser closed or dropped it. Open a replacement with \`capture tab reset <url>${activeSession.port ? ` --port ${activeSession.port}` : ''}\` (repoints this session at it), or pick a live tab with \`capture tab list\` and pass \`--target <id>\`.`,
+      );
+    }
     throw captureError(
       'precondition',
       'target_unavailable',

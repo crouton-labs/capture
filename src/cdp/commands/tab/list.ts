@@ -8,6 +8,7 @@
  * (titles, URLs, app names, target ids) flows through `data()`/`fact` (I-9).
  */
 import {
+  describeCdpPort,
   detectCdpPortsAsync,
   getDefaultBrowserId,
   pickPreferredEndpoint,
@@ -58,6 +59,13 @@ export interface UnreachableEndpoint {
   reason: string;
 }
 
+/** Arc lists only the tabs created over CDP: its ordinary tabs are not page targets. */
+const ARC_ENDPOINT_NOTE: FactLine = text`  note: Arc exposes only tabs opened over CDP as page targets; the tabs in its windows are not listed. Open one with "capture tab open <url> --port <port>", then "capture session start --port <port> --target <id>".`;
+
+function endpointNote(app: string | undefined): FactLine | undefined {
+  return app !== undefined && /^arc$/i.test(app.trim()) ? ARC_ENDPOINT_NOTE : undefined;
+}
+
 /** Pure `<tabs>` result builder — exported for tests. */
 export function buildTabsResult(
   endpoints: readonly EndpointTabs[],
@@ -85,7 +93,8 @@ export function buildTabsResult(
     const rows = ep.pages.map((t) =>
       line(text`  `, data(t.id.slice(0, 8)), text`  "`, data(t.title, 120), text`"  `, data(t.url, 300)),
     );
-    return lineList([header, ...rows]);
+    const note = endpointNote(ep.app);
+    return lineList([header, ...rows, ...(note ? [note] : [])]);
   });
 
   if (unreachable.length > 0) {
@@ -137,8 +146,10 @@ export async function cmdTabList(parsed: ParsedArgs, _args: string[]): Promise<v
   if (parsed.port) {
     try {
       const targets = await listTargets(parsed.port);
+      const described = await describeCdpPort(parsed.port).catch(() => null);
       reachable.push({
         port: parsed.port,
+        ...(described ? { app: described.app } : {}),
         preferred: false,
         ...(owned.has(parsed.port) ? { ownedPid: owned.get(parsed.port)!.pid } : {}),
         pages: targets

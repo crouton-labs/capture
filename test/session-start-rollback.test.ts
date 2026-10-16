@@ -358,3 +358,46 @@ test('startBridge reaps its child before rejecting when the socket never appears
     try { fs.unlinkSync(pidFile); } catch { /* best effort */ }
   }
 });
+
+test('start: a created tab that vanishes from the target list is retried once, then adopted', async () => {
+  resetScope();
+  const foreign = seedForeignPointer();
+  const before = new Set(fs.existsSync(CAPTURE_ROOT) ? fs.readdirSync(CAPTURE_ROOT) : []);
+  const { calls, world } = baseWorld();
+  let opened = 0;
+  world.openTab = async (_p, url) => { opened += 1; calls.openTab.push(url); return { id: `TAB${opened}`, title: '', url, type: 'page' }; };
+  world.findTabById = async (_p, id) => (id === 'TAB1' ? null : { id, title: '', url: 'u', type: 'page' });
+  __setSessionStartWorld(world);
+  try {
+    const res = await runStart({ url: 'https://example.test/', port: 9222 });
+    assert.equal(res.exitCode, undefined, res.out);
+    assert.equal(calls.openTab.length, 2, 'retried exactly once');
+    assert.deepEqual(calls.closeTarget.map((c) => c.targetId), ['TAB1'], 'only the vanished attempt is closed');
+    assert.ok(res.out.includes('TAB2'), res.out);
+    assert.ok(!res.out.includes('TAB1'), 'the dead tab is never reported as the session target');
+  } finally {
+    __setSessionStartWorld();
+    resetScope();
+    fs.unlinkSync(foreign.path);
+    void before;
+  }
+});
+
+test('start: a browser that keeps dropping created tabs fails loudly and points at tab open', async () => {
+  resetScope();
+  const foreign = seedForeignPointer();
+  const before = new Set(fs.existsSync(CAPTURE_ROOT) ? fs.readdirSync(CAPTURE_ROOT) : []);
+  const { calls, world } = baseWorld();
+  world.findTabById = async () => null;
+  __setSessionStartWorld(world);
+  try {
+    const res = await runStart({ url: 'https://example.test/', port: 9222 });
+    assertCleanFailure(res, before, foreign);
+    assert.equal(calls.openTab.length, 2);
+    assert.match(res.out, /capture tab open https:\/\/example\.test\/ --port 9222/);
+    assert.match(res.out, /session start --port 9222 --target/);
+  } finally {
+    __setSessionStartWorld();
+    fs.unlinkSync(foreign.path);
+  }
+});
