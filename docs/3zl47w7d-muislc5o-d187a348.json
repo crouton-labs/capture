@@ -1,0 +1,37 @@
+{
+  "created_at": "2026-09-05T06:28:16.602Z",
+  "deleted_at": null,
+  "extensions": null,
+  "id": "3zl47w7d-muislc5o-d187a348",
+  "kind": "knowledge",
+  "lint_ignore": null,
+  "name": "taste/measuring-stick-not-coach",
+  "preview": "When designing or reviewing any capture output surface — verdicts, checks, diffs, or new verification commands — this knowledge should be read because capture's output shape must stay a measuring stick, not a coach, and this line keeps getting re-litigated.",
+  "privacy": "public",
+  "revisions": [
+    {
+      "author": null,
+      "body": "# Capture is a measuring stick, not a coach\n\nTwo first principles govern capture's verification surface:\n\n**1. Report measurements, never judgments or prescriptions.** Output states facts about the rendered page — geometry, computed styles, provenance (which rule won and from where), motion numbers, diffs. It never says \"this is wrong\", \"this needs to change\", or grades the result against a predicted outcome (the `--expect` predict-then-compare design was rejected on this ground). The agent reading the output owns all interpretation and judgment; the tool's job is to transcode pixels/motion/cascade into numbers the agent can reason over. Factual causal provenance (e.g. \"rule A wins over rule B by specificity, from file:line\") is measurement; \"edit rule A\" is coaching and is out.\n\n**2. Design general primitives, not today's failure modes.** Don't index the command surface or checks on the currently-common AI-agent UI mistakes — as models improve, old failure modes disappear and new, previously untackleable ones become relevant. Failure-mode research motivates *which measurements matter*, but the surface itself must be general instruments (snapshot, geometry facts, style census, diff, motion timeline) that stay useful as the failure distribution shifts.\n",
+      "body_hash": "677472d87c313a048b63f892f8507c07f70e6e6e268f75b8b7d77cb39e41facc",
+      "created_at": "2026-09-05T06:28:16.602Z",
+      "links": [],
+      "number": 1,
+      "parents": [],
+      "rationale": "Strip no-quotes-in-memories: dropped dated 'Silas ruled/Silas set' attribution from frontmatter and body, restated as current design rule.",
+      "rev_id": "c0a088f7-621e-4b6d-8dc5-68958bdcdfd4"
+    }
+  ],
+  "rules": [
+    {
+      "deliver": "preview",
+      "if": null,
+      "match": null,
+      "match_frontmatter": null,
+      "on": "boot",
+      "position": 0
+    }
+  ],
+  "summary": "Capture reports measurements, never diagnoses or prescriptions; design general primitives, not today's failure modes.",
+  "unlisted": false,
+  "why_it_exists": "The measure/motion design draft graded results against an --expect prediction and emitted coaching lines ('fix the winning rule', 'cause candidate: X', 'fixes ordered by blast radius'); Silas rejected the whole posture, not just the grammar."
+}

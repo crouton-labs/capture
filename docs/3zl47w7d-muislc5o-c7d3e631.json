@@ -1,0 +1,50 @@
+{
+  "created_at": "2026-08-28T21:43:09.304Z",
+  "deleted_at": null,
+  "extensions": null,
+  "id": "3zl47w7d-muislc5o-c7d3e631",
+  "kind": "knowledge",
+  "lint_ignore": null,
+  "name": "taste/no-redaction",
+  "preview": "When designing or changing Capture collection, artifacts, output, or identity handling, this knowledge should be read because Capture must preserve the browser evidence agents need rather than redact it for a security threat model the CLI does not have.",
+  "privacy": "public",
+  "revisions": [
+    {
+      "author": null,
+      "body": "# Capture does not redact browser evidence\n\nCapture is a local agent debugging instrument. Security and artifact disclosure are not product concerns for this CLI, so collection, artifacts, selectors, form values, accessibility names, IDs, protocol payloads, and rendered output must preserve the captured browser evidence rather than redact, pseudonymize, hash, or withhold it.\n\nSanitizing control characters or enforcing structural output boundaries is still correct because that protects the result protocol, not secrets. Do not let a security/privacy threat model destroy stable identity, joins, or debugging content.\n\n## The one carve-out: credential values in rendered HAR URLs and headers\n\nSilas explicitly overrode the rule for rendered `session har` output: credential-like query/fragment parameter values render as `REDACTED`, and credential-valued headers render as `redacted · <N> chars`. Its reason is transcript hygiene, not a threat model: a dashboard token pasted into an agent's context and terminal scrollback outlives the debugging session.\n\nThe boundary is exact, and everything about it exists to keep the evidence intact:\n\n- Collection, the live NDJSON store, and bundled `har.json` are untouched — full fidelity.\n- `--filter-url` matches the URL as captured, so the real value still selects the row.\n- Names, ordering, and every non-credential value render verbatim, so a row still joins to its artifact record.\n- Matching is on the parameter or header name only; no value is ever inspected.\n\nDo not extend this to bodies, form values, or any other rendered content, and do not generalize it into a privacy posture — it is one narrow, user-directed exception to the rule above.\n",
+      "body_hash": "82572538775fdb4778509bced6c7c1266b8f125e70e328ade352aa8d742d7eae",
+      "created_at": "2026-08-28T21:43:09.304Z",
+      "links": [],
+      "number": 1,
+      "parents": [],
+      "rationale": "session har now redacts credential-valued rendered headers as well as credential query values",
+      "rev_id": "7ccd16d4-b34c-4dd7-bdca-7f4107e130fb"
+    },
+    {
+      "author": null,
+      "body": "# Capture does not redact browser evidence\n\nCapture is a local agent debugging instrument. Security and artifact disclosure are not product concerns for this CLI, so collection, artifacts, selectors, form values, accessibility names, IDs, protocol payloads, and rendered output must preserve the captured browser evidence rather than redact, pseudonymize, hash, or withhold it.\n\nSanitizing control characters or enforcing structural output boundaries is still correct because that protects the result protocol, not secrets. Do not let a security/privacy threat model destroy stable identity, joins, or debugging content.\n\n## The one carve-out: credential values in rendered HAR URLs and headers\n\nOne rule is overridden for rendered `session har` output: credential-like query/fragment parameter values render as `REDACTED`, and credential-valued headers render as `redacted · <N> chars`. Its reason is transcript hygiene, not a threat model: a dashboard token pasted into an agent's context and terminal scrollback outlives the debugging session.\n\nThe boundary is exact, and everything about it exists to keep the evidence intact:\n\n- Collection, the live NDJSON store, and bundled `har.json` are untouched — full fidelity.\n- `--filter-url` matches the URL as captured, so the real value still selects the row.\n- Names, ordering, and every non-credential value render verbatim, so a row still joins to its artifact record.\n- Matching is on the parameter or header name only; no value is ever inspected.\n\nDo not extend this to bodies, form values, or any other rendered content, and do not generalize it into a privacy posture — it is one narrow, user-directed exception to the rule above.\n",
+      "body_hash": "dd53d05850b5a6d5f615d4c155f1210ed6d6baafbf9b779e52413ca8aacd7a3c",
+      "created_at": "2026-09-05T06:28:20.404Z",
+      "links": [],
+      "number": 2,
+      "parents": [
+        "7ccd16d4-b34c-4dd7-bdca-7f4107e130fb"
+      ],
+      "rationale": "Strip no-quotes-in-memories: dropped 'Silas explicitly overrode' attribution, restated as current rule.",
+      "rev_id": "44e11955-9c3b-4cca-8892-35e400b9056e"
+    }
+  ],
+  "rules": [
+    {
+      "deliver": "preview",
+      "if": null,
+      "match": null,
+      "match_frontmatter": null,
+      "on": "boot",
+      "position": 0
+    }
+  ],
+  "summary": "Capture does not redact captured browser evidence, with one carve-out: credential-like query values are masked where a URL is RENDERED.",
+  "unlisted": false,
+  "why_it_exists": "A privacy-oriented review treated ordinary form text and secret-shaped identifiers as disclosure risks, but Silas explicitly rejected the entire redaction premise for Capture rather than merely choosing ordinary-text retention."
+}

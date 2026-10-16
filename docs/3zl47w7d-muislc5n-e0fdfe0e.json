@@ -1,0 +1,63 @@
+{
+  "created_at": "2026-08-29T16:19:28.441Z",
+  "deleted_at": null,
+  "extensions": null,
+  "id": "3zl47w7d-muislc5n-e0fdfe0e",
+  "kind": "knowledge",
+  "lint_ignore": null,
+  "name": "AGENTS",
+  "preview": "When working in capture, this knowledge should be read because its esbuild single-bundle build and publish-on-main rules keep changes buildable and stop a hand-bumped version from colliding with CI.",
+  "privacy": "public",
+  "revisions": [
+    {
+      "author": null,
+      "body": "# capture\n\n`@crouton-kit/capture` is a CDP browser automation and UI measurement CLI with exactly seven root nouns: `session`, `page`, `tab`, `measure`, `motion`, `cdp`, and `lib`. `page` contains `elements`, `click`, `type`, `shot`, `navigate`, `exec`, and `scroll`; `tab` contains `launch`, `quit`, `list`, `open`, `close`, `reset`, and `network` — `tab launch` starts a browser capture owns and reaps (never hand-roll a detached browser), and capture signals only browsers it started itself; traffic and external logs are read through `session har` and `session log`. Agents usually reach it as `crtr capture <args>` (verbatim forwarding).\n\nWhen operating the CLI, run `capture -h`, then the selected branch and leaf `-h`, because built help is the executable source of truth for each noun's model and each leaf's inputs, outputs, effects, and targeting.\n\n## Dev loop\n\n- pnpm project (`pnpm-lock.yaml`) — install with `pnpm install`.\n- `npm run build` — esbuild bundles `src/capture.ts` into one self-contained CJS executable at `bin/capture`.\n- `npm test` — `node --import tsx --test test/*.test.ts`.\n- Publish on push to `main` (`.github/workflows/publish.yml`), conventional commits — versioning is workflow-owned.\n\n## Constraints\n\n- Bundle runtime dependencies into `bin/capture` by default. One decided exception (Silas, 2026-08-29): Lighthouse ships as a normal npm dependency loaded at runtime, because it reads its audits, locales, and report assets package-relative and cannot be bundled — the binary is no longer fully standalone, and that tradeoff is accepted.\n- When changing `vault/libs/`, fix the source in northlight-vault and run `vault/sync.sh`, because this directory is a synchronized source fork.\n- Before changing an output schema or measurement command, read `taste/measuring-stick-not-coach`, because capture reports measurements plus factual provenance and leaves interpretation to its caller.\n",
+      "body_hash": "14f3b9ae3f5204fe1977c5b00cba45daad7f7853b4d0b43bc39efcd2f37bb84d",
+      "created_at": "2026-08-29T16:19:28.441Z",
+      "links": [],
+      "number": 1,
+      "parents": [],
+      "rationale": "Silas decided (2026-08-29) Lighthouse ships as a normal npm dependency, relaxing the fully-standalone-bundle constraint; the constraint bullet as written would steer future agents to reject that packaging.",
+      "rev_id": "d1168e51-3185-4c03-bd89-f225a12a71ed"
+    },
+    {
+      "author": null,
+      "body": "# capture\n\n`@crouton-kit/capture` is a CDP browser automation and UI measurement CLI with exactly ten root nouns: `session`, `page`, `tab`, `measure`, `motion`, `perf`, `heap`, `lighthouse`, `cdp`, and `lib`. `page` holds live-tab verbs (`click`, `type`, `scroll`, `navigate`, `exec`, `repeat`, `shot`, `elements`, `inspect`); `tab` holds browser/tab plumbing plus network conditions and response mocking (`launch`, `quit`, `list`, `open`, `close`, `reset`, `network`, `mock`) — `tab launch` starts a browser capture owns and reaps (never hand-roll a detached browser), and capture signals only browsers it started itself. `measure`, `motion`, `perf` (trace → vitals/insights), and `heap` (snapshot → census/objects/retainers/diff) each own a recorded substrate: one leaf records, the rest are read-only queries over the artifact. `lighthouse` runs Lighthouse destructively against a URL and stores its report unmodified. Traffic and external logs are read through `session har` and `session log`; `session collectors` shows what is live. Agents usually reach it as `crtr capture <args>` (verbatim forwarding).\n\nWhen operating the CLI, run `capture -h`, then the selected branch and leaf `-h`, because built help is the executable source of truth for each noun's model and each leaf's inputs, outputs, effects, and targeting.\n\n## Dev loop\n\n- pnpm project (`pnpm-lock.yaml`) — install with `pnpm install`.\n- `npm run build` — esbuild bundles `src/capture.ts` into one self-contained CJS executable at `bin/capture`.\n- `npm test` — `node --import tsx --test test/*.test.ts`.\n- Publish on push to `main` (`.github/workflows/publish.yml`), conventional commits — versioning is workflow-owned. The `NPM_TOKEN` repo secret is a 90-day granular token (rotation technique: `personal-operations/npm-2fa-cli`).\n\n## Constraints\n\n- Bundle runtime dependencies into `bin/capture` by default. One decided exception (Silas, 2026-08-29): Lighthouse ships as a normal npm dependency loaded at runtime, because it reads its audits, locales, and report assets package-relative and cannot be bundled — the binary is no longer fully standalone, and that tradeoff is accepted.\n- When changing `vault/libs/`, fix the source in northlight-vault and run `vault/sync.sh`, because this directory is a synchronized source fork.\n- Before changing an output schema or measurement command, read `taste/measuring-stick-not-coach`, because capture reports measurements plus factual provenance and leaves interpretation to its caller.\n",
+      "body_hash": "93c2a68fa3a6e4054b5588fe8e4feedc2ef58e82fbd29314d01a4626da5188d3",
+      "created_at": "2026-08-30T22:38:36.930Z",
+      "links": [],
+      "number": 2,
+      "parents": [
+        "d1168e51-3185-4c03-bd89-f225a12a71ed"
+      ],
+      "rationale": "Phase 6 landed perf, heap, lighthouse, tab mock, page inspect/repeat — the seven-noun surface description was stale; also recorded the NPM_TOKEN rotation pointer.",
+      "rev_id": "c233c8f6-0b2a-4c19-9d3c-9d83124086d7"
+    },
+    {
+      "author": null,
+      "body": "# capture\n\n`@crouton-kit/capture` is a CDP browser automation and UI measurement CLI with exactly ten root nouns: `session`, `page`, `tab`, `measure`, `motion`, `perf`, `heap`, `lighthouse`, `cdp`, and `lib`. `page` holds live-tab verbs (`click`, `type`, `scroll`, `navigate`, `exec`, `repeat`, `shot`, `elements`, `inspect`); `tab` holds browser/tab plumbing plus network conditions and response mocking (`launch`, `quit`, `list`, `open`, `close`, `reset`, `network`, `mock`) — `tab launch` starts a browser capture owns and reaps (never hand-roll a detached browser), and capture signals only browsers it started itself. `measure`, `motion`, `perf` (trace → vitals/insights), and `heap` (snapshot → census/objects/retainers/diff) each own a recorded substrate: one leaf records, the rest are read-only queries over the artifact. `lighthouse` runs Lighthouse destructively against a URL and stores its report unmodified. Traffic and external logs are read through `session har` and `session log`; `session collectors` shows what is live. Agents usually reach it as `crtr capture <args>` (verbatim forwarding).\n\nWhen operating the CLI, run `capture -h`, then the selected branch and leaf `-h`, because built help is the executable source of truth for each noun's model and each leaf's inputs, outputs, effects, and targeting.\n\n## Dev loop\n\n- pnpm project (`pnpm-lock.yaml`) — install with `pnpm install`.\n- `npm run build` — esbuild bundles `src/capture.ts` into one self-contained CJS executable at `bin/capture`.\n- `npm test` — `node --import tsx --test test/*.test.ts`.\n- Publish on push to `main` (`.github/workflows/publish.yml`), conventional commits — versioning is workflow-owned. The `NPM_TOKEN` repo secret is a 90-day granular token (rotation technique: `personal-operations/npm-2fa-cli`).\n\n## Constraints\n\n- Bundle runtime dependencies into `bin/capture` by default. One decided exception: Lighthouse ships as a normal npm dependency loaded at runtime, because it reads its audits, locales, and report assets package-relative and cannot be bundled — the binary is no longer fully standalone, and that tradeoff is accepted.\n- When changing `vault/libs/`, fix the source in northlight-vault and run `vault/sync.sh`, because this directory is a synchronized source fork.\n- Before changing an output schema or measurement command, read `taste/measuring-stick-not-coach`, because capture reports measurements plus factual provenance and leaves interpretation to its caller.\n",
+      "body_hash": "fd1f078cd6749468bdd307f9850456ce11498f1146e6d9038d17099663eb4a88",
+      "created_at": "2026-09-05T06:28:20.522Z",
+      "links": [],
+      "number": 3,
+      "parents": [
+        "c233c8f6-0b2a-4c19-9d3c-9d83124086d7"
+      ],
+      "rationale": "Strip no-quotes-in-memories: dropped dated '(Silas, 2026-08-29)' attribution, kept the exception and its reason.",
+      "rev_id": "c178a742-4857-498b-869a-05a817e32873"
+    }
+  ],
+  "rules": [
+    {
+      "deliver": "content",
+      "if": null,
+      "match": null,
+      "match_frontmatter": null,
+      "on": "boot",
+      "position": 0
+    }
+  ],
+  "summary": "capture",
+  "unlisted": false,
+  "why_it_exists": null
+}
