@@ -231328,6 +231328,10 @@ Effects: local reads only; no CDP connection. Dev checkout required.`
 });
 
 // src/cdp/commands/cdp.ts
+function oneShotEmulationNote(method, oneShot) {
+  if (!oneShot || !method?.startsWith("Emulation.")) return void 0;
+  return fact`${method} applied only to this command's CDP connection, which has now closed, so the override is already gone. For a viewport, pass --viewport <WxH> to \`capture page shot\` or \`capture measure snap\`; to keep an override across commands, start a held session (\`capture session start --hold\`) and send it with \`capture cdp --browser --target <tabId>\`.`;
+}
 function emitCdpResult(opts) {
   const sections = [];
   const payloadCap = (payload) => opts.json ? payload.length : GENEROUS_RESULT_CAP2;
@@ -231348,7 +231352,8 @@ function emitCdpResult(opts) {
         scope: opts.scope,
         target: opts.target
       },
-      sections
+      sections,
+      followUp: oneShotEmulationNote(opts.method, opts.oneShot)
     },
     { json: opts.json }
   );
@@ -231478,7 +231483,8 @@ async function runBrowserScope(method, params, parsed, timeoutMs, deps23 = DEFAU
       target: flagTarget,
       result,
       event,
-      json: parsed.json
+      json: parsed.json,
+      oneShot: true
     });
   } catch (err) {
     if (err instanceof CaptureError) throw err;
@@ -231494,6 +231500,7 @@ async function runBrowserScope(method, params, parsed, timeoutMs, deps23 = DEFAU
 }
 async function runPageScope(method, params, parsed, timeoutMs, connect = connectForCommand) {
   const { client } = await connect(parsed);
+  const oneShot = !isMotionHeldClient(client);
   try {
     let result;
     let event;
@@ -231517,7 +231524,8 @@ async function runPageScope(method, params, parsed, timeoutMs, connect = connect
       target: parsed.target,
       result,
       event,
-      json: parsed.json
+      json: parsed.json,
+      oneShot
     });
   } finally {
     client.close();
@@ -231566,6 +231574,7 @@ Input:
 
 Connection lifetime:
   Unless --browser routes through a held session, each invocation opens an isolated CDP connection and closes it when the command exits. Domain enables and remote object handles (objectIds) are connection-scoped, so a later one-shot invocation cannot use either. A multi-step protocol sequence needs connection state that survives between its calls.
+  Emulation.* overrides (device metrics, media, timezone, ...) are connection-scoped too: a one-shot call returns success and the override is gone when the command exits, and the result carries a follow_up saying so. Use --viewport on \`capture page shot\` / \`capture measure snap\`, or a held session with --browser --target <tabId>, to keep one.
 
 Output:
   <cdp-result method=\u2026 wait-event=\u2026 scope=\u2026> \u2014 the protocol result and/or awaited event as an escaped, length-capped JSON payload. --json mirrors the same block with the payload at full fidelity.
@@ -240259,7 +240268,8 @@ function checkSnapshot(ref, requested) {
       if (!e) continue;
       const point = sample.points?.find((p) => {
         const receiver = p.result?.topReceiver;
-        const receiverElement = receiver && elements.find((x) => receiver.backendNodeId != null && x.backendNodeId === receiver.backendNodeId);
+        if (!receiver) return false;
+        const receiverElement = elements.find((x) => receiver.backendNodeId != null && x.backendNodeId === receiver.backendNodeId);
         return receiverElement !== void 0 && !isSelfOrDescendant(e, receiverElement);
       })?.result;
       if (!point?.topReceiver) continue;
@@ -240437,11 +240447,12 @@ async function cmdMeasureCheck(parsed, _args) {
   } catch (err) {
     const resolution = err;
     const detail = err instanceof Error ? err.message : "unknown artifact read failure";
+    const unresolved = resolution.name === "ArtifactResolutionError";
     emitResult({
       tag: "error",
-      attrs: { command: "measure check", status: resolution.name === "ArtifactResolutionError" ? "artifact_unavailable" : "check_failed" },
-      summary: fact`Measure check could not read the requested artifact: ${detail}`,
-      followUp: text`Create a settled snapshot with capture measure snap <url>, then pass its id or absolute path.`
+      attrs: { command: "measure check", status: unresolved ? "artifact_unavailable" : "check_failed" },
+      summary: unresolved ? fact`Measure check could not read the requested artifact: ${detail}` : fact`Measure check failed while measuring the snapshot: ${detail}`,
+      followUp: unresolved ? text`Create a settled snapshot with capture measure snap <url>, then pass its id or absolute path.` : text`The snapshot resolved; this is an internal capture check error, not a missing snapshot. Narrow --for to the checks you need, and report the error with the snapshot path.`
     }, { json: parsed.json });
     process.exitCode = 1;
   }

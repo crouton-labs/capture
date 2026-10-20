@@ -494,3 +494,35 @@ test('cdp -h states the at-least-one-of input constraint and the inline --params
   assert.match(helpText, /Effects:/);
   assert.doesNotMatch(helpText, /Example/i, 'D6 leaf help carries no examples');
 });
+
+test('one-shot page Emulation.* call succeeds but carries a follow_up that the override already reverted', async () => {
+  const client = stubClient({ 'Emulation.setDeviceMetricsOverride': () => ({}) });
+  const parsed = parsedArgs({ positional: ['Emulation.setDeviceMetricsOverride'], json: true });
+  const { exitCode, stdout } = await withCapturedOutput(() =>
+    runPageScope('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: true }, parsed, 1000, stubConnect(client)),
+  );
+  assert.equal(exitCode, undefined);
+  const output = JSON.parse(stdout) as { followUp?: string };
+  assert.match(output.followUp ?? '', /Emulation\.setDeviceMetricsOverride applied only to this command's CDP connection/);
+  assert.match(output.followUp ?? '', /--viewport <WxH>/);
+  assert.match(output.followUp ?? '', /session start --hold/);
+});
+
+test('one-shot non-Emulation call carries no emulation follow_up', async () => {
+  const client = stubClient({ 'Runtime.evaluate': () => ({ result: { value: 2 } }) });
+  const parsed = parsedArgs({ positional: ['Runtime.evaluate'], json: true });
+  const { stdout } = await withCapturedOutput(() =>
+    runPageScope('Runtime.evaluate', { expression: '1 + 1' }, parsed, 1000, stubConnect(client)),
+  );
+  assert.equal((JSON.parse(stdout) as { followUp?: string }).followUp, undefined);
+});
+
+test('held-bridge Emulation.* call carries no revert follow_up (the override persists on the held connection)', async () => {
+  await withHeldSession(async () => {
+    const parsed = parsedArgs({ positional: ['Emulation.setDeviceMetricsOverride'], browser: true, target: 'explicit-target', targetSource: 'flag', json: true });
+    const { stdout } = await withCapturedOutput(() =>
+      runBrowserScope('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: true }, parsed, 1000, bridgeDeps(() => {})),
+    );
+    assert.equal((JSON.parse(stdout) as { followUp?: string }).followUp, undefined);
+  });
+});
