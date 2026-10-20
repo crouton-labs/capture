@@ -30,6 +30,7 @@ import {
   capped,
   data,
   emitResult,
+  fact,
   line,
   text,
   type FactLine,
@@ -61,6 +62,7 @@ Input:
 
 Connection lifetime:
   Unless --browser routes through a held session, each invocation opens an isolated CDP connection and closes it when the command exits. Domain enables and remote object handles (objectIds) are connection-scoped, so a later one-shot invocation cannot use either. A multi-step protocol sequence needs connection state that survives between its calls.
+  Emulation.* overrides (device metrics, media, timezone, ...) are connection-scoped too: a one-shot call returns success and the override is gone when the command exits, and the result carries a follow_up saying so. Use --viewport on \`capture page shot\` / \`capture measure snap\`, or a held session with --browser --target <tabId>, to keep one.
 
 Output:
   <cdp-result method=… wait-event=… scope=…> — the protocol result and/or awaited event as an escaped, length-capped JSON payload. --json mirrors the same block with the payload at full fidelity.
@@ -107,6 +109,19 @@ export interface CdpResultOptions {
   result?: unknown;
   event?: unknown;
   json?: boolean;
+  /** True when the method ran on a connection that closes as this command exits. */
+  oneShot?: boolean;
+}
+
+/**
+ * Follow-up for an `Emulation.*` override sent over a one-shot connection.
+ * Chrome scopes emulation overrides to the CDP session that set them, so the
+ * call succeeds and then reverts the moment the command exits — the next
+ * `page shot` sees the original viewport. Exported for `test/cdp-command.test.ts`.
+ */
+export function oneShotEmulationNote(method: string | undefined, oneShot: boolean | undefined): FactLine | undefined {
+  if (!oneShot || !method?.startsWith('Emulation.')) return undefined;
+  return fact`${method} applied only to this command's CDP connection, which has now closed, so the override is already gone. For a viewport, pass --viewport <WxH> to \`capture page shot\` or \`capture measure snap\`; to keep an override across commands, start a held session (\`capture session start --hold\`) and send it with \`capture cdp --browser --target <tabId>\`.`;
 }
 
 /**
@@ -135,6 +150,7 @@ export function emitCdpResult(opts: CdpResultOptions): void {
         target: opts.target,
       },
       sections,
+      followUp: oneShotEmulationNote(opts.method, opts.oneShot),
     },
     { json: opts.json },
   );
@@ -314,6 +330,7 @@ export async function runBrowserScope(
       result,
       event,
       json: parsed.json,
+      oneShot: true,
     });
   } catch (err) {
     if (err instanceof CaptureError) throw err;
@@ -344,6 +361,9 @@ export async function runPageScope(
   connect: (parsed: ParsedArgs) => Promise<{ client: CdpScopeClient }> = connectForCommand,
 ): Promise<void> {
   const { client } = await connect(parsed);
+  // A recorder-held client rides the collector host's persistent target
+  // connection; every other page client closes in the `finally` below.
+  const oneShot = !isMotionHeldClient(client);
   try {
     let result: unknown;
     let event: unknown;
@@ -382,6 +402,7 @@ export async function runPageScope(
       result,
       event,
       json: parsed.json,
+      oneShot,
     });
   } finally {
     client.close();

@@ -152,11 +152,16 @@ export async function cmdMeasureCheck(parsed: ParsedArgs, _args: string[]): Prom
   } catch (err) {
     const resolution = err as Partial<ArtifactResolutionError>;
     const detail = err instanceof Error ? err.message : 'unknown artifact read failure';
+    const unresolved = resolution.name === 'ArtifactResolutionError';
     emitResult({
       tag: 'error',
-      attrs: { command: 'measure check', status: resolution.name === 'ArtifactResolutionError' ? 'artifact_unavailable' : 'check_failed' },
-      summary: fact`Measure check could not read the requested artifact: ${detail}`,
-      followUp: text`Create a settled snapshot with capture measure snap <url>, then pass its id or absolute path.`,
+      attrs: { command: 'measure check', status: unresolved ? 'artifact_unavailable' : 'check_failed' },
+      summary: unresolved
+        ? fact`Measure check could not read the requested artifact: ${detail}`
+        : fact`Measure check failed while measuring the snapshot: ${detail}`,
+      followUp: unresolved
+        ? text`Create a settled snapshot with capture measure snap <url>, then pass its id or absolute path.`
+        : text`The snapshot resolved; this is an internal capture check error, not a missing snapshot. Narrow --for to the checks you need, and report the error with the snapshot path.`,
     }, { json: parsed.json });
     process.exitCode = 1;
   }
