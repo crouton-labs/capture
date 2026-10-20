@@ -130,6 +130,7 @@ test('every surplus/missing page/tab positional is one invalid_input before any 
   assertRejectedBeforeEffects(['tab', 'open', 'https://a.example/', 'https://b.example/'], 'tab open received 2 positional argument(s); expected exactly 1');
   assertRejectedBeforeEffects(['tab', 'close'], 'tab close received 0 positional argument(s); expected exactly 1');
   assertRejectedBeforeEffects(['tab', 'close', 'first', 'second'], 'tab close received 2 positional argument(s); expected exactly 1');
+  assertRejectedBeforeEffects(['tab', 'close', 'first', 'second', '--target', 'first'], 'tab close received 2 positional argument(s); expected 0..1');
   assertRejectedBeforeEffects(['tab', 'reset'], 'tab reset received 0 positional argument(s); expected exactly 1');
   assertRejectedBeforeEffects(['tab', 'reset', 'https://a.example/', 'extra'], 'tab reset received 2 positional argument(s); expected exactly 1');
   assertRejectedBeforeEffects(['tab', 'network'], 'tab network received 0 positional argument(s); expected exactly 1');

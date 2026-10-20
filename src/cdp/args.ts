@@ -272,6 +272,16 @@ export function validateCliInvocation(parsed: ParsedArgs): void {
     // `quit` takes an optional port; every other tab leaf names exactly one.
     if (leaf === 'launch' || leaf === 'list') requireCount(values, 0, 0, `tab ${leaf}`);
     else if (leaf === 'quit') requireCount(values, 0, 1, 'tab quit');
+    // `tab close` names its tab either positionally or with an explicit
+    // --target flag (the form every follow_up line teaches). Only the flag
+    // counts here: session/CDP_TARGET defaults are hydrated later and must
+    // never choose which tab a destructive close removes.
+    else if (leaf === 'close' && parsed.target !== undefined) {
+      requireCount(values, 0, 1, 'tab close');
+      if (values.length === 1 && values[0] !== parsed.target) {
+        throw schemaInput('tab close', `<target>=${values[0]}, --target=${parsed.target}`, 'one tab: the positional <target> or --target, not two different ids', '<target> or --target');
+      }
+    }
     else requireCount(values, 1, 1, `tab ${leaf}`);
     if (leaf === 'network' && values[0] !== 'offline' && values[0] !== 'online') {
       throw schemaInput('tab network', values[0] ?? '(missing)', 'offline or online', '<mode>');

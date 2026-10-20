@@ -107,7 +107,39 @@ function spillWholeResult(payload: string, artifactDir?: string): string {
 
 interface EvalResult {
   result?: { value?: unknown };
-  exceptionDetails?: { exception?: { description?: string } };
+  exceptionDetails?: ExceptionDetails;
+}
+
+interface ExceptionDetails {
+  text?: string;
+  exception?: {
+    type?: string;
+    subtype?: string;
+    className?: string;
+    value?: unknown;
+    description?: string;
+    preview?: { properties?: Array<{ name: string; value?: string }>; overflow?: boolean };
+  };
+}
+
+/**
+ * Describes what the page threw. An Error carries its message and stack in
+ * `description`; a thrown string, number, or plain object does not, so its
+ * value (or its preview's properties) is named instead of falling back to a
+ * bare "Object" or "Unknown error".
+ */
+function describePageException(details: ExceptionDetails): string {
+  const exception = details.exception;
+  if (!exception) return details.text ?? 'Unknown error';
+  if (exception.subtype === 'error' && exception.description) return exception.description;
+  if (exception.type === 'undefined') return 'undefined';
+  if ('value' in exception) return JSON.stringify(exception.value);
+  const properties = exception.preview?.properties;
+  if (exception.type === 'object' && properties) {
+    const fields = properties.map((p) => `${p.name}: ${p.value ?? '?'}`).join(', ');
+    return `${exception.className ?? 'Object'} {${fields}${exception.preview?.overflow ? ', …' : ''}}`;
+  }
+  return exception.description ?? details.text ?? 'Unknown error';
 }
 
 /** The structural client surface the focus/evaluation scope drives — the
@@ -316,7 +348,7 @@ export async function cmdPageExec(parsed: ParsedArgs, _args: string[]): Promise<
   }
 
   if (evalResult.exceptionDetails) {
-    const description = evalResult.exceptionDetails.exception?.description ?? 'Unknown error';
+    const description = describePageException(evalResult.exceptionDetails);
     return emitExecError(
       parsed,
       'exec_exception',

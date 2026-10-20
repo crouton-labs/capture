@@ -347,6 +347,31 @@ test('page exec: a page exception is a structured exec_exception error', async (
   }
 });
 
+test('page exec: a thrown non-Error value is named instead of "Unknown error" or "Object"', async () => {
+  const cases: Array<{ exception: Record<string, unknown>; expected: string }> = [
+    { exception: { type: 'string', value: 'str' }, expected: 'the page threw during execution: "str"' },
+    { exception: { type: 'undefined' }, expected: 'the page threw during execution: undefined' },
+    {
+      exception: {
+        type: 'object', className: 'Object', description: 'Object',
+        preview: { properties: [{ name: 'code', type: 'number', value: '42' }], overflow: false },
+      },
+      expected: 'the page threw during execution: Object {code: 42}',
+    },
+  ];
+  for (const c of cases) {
+    const client = stubClient(execHandlers({ exceptionDetails: { text: 'Uncaught (in promise)', exception: c.exception } }));
+    const deps = installDeps(client);
+    try {
+      const { stdout, exitCode } = await runCmd(() => cmdPageExec(parsedFor(['throw x']), []));
+      assert.equal(exitCode, 1);
+      assert.ok(stdout.includes(c.expected), stdout);
+    } finally {
+      deps.restore();
+    }
+  }
+});
+
 test('page exec: missing code, code+--file together, and an unreadable --file are structured errors before any CDP call', async () => {
   const cases: Array<{ positional: string[]; flags: Partial<ParsedArgs>; code: string }> = [
     { positional: [], flags: {}, code: 'invalid_input' },

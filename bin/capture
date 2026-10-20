@@ -9413,7 +9413,12 @@ function validateCliInvocation(parsed) {
     }
     if (leaf === "launch" || leaf === "list") requireCount(values, 0, 0, `tab ${leaf}`);
     else if (leaf === "quit") requireCount(values, 0, 1, "tab quit");
-    else requireCount(values, 1, 1, `tab ${leaf}`);
+    else if (leaf === "close" && parsed.target !== void 0) {
+      requireCount(values, 0, 1, "tab close");
+      if (values.length === 1 && values[0] !== parsed.target) {
+        throw schemaInput("tab close", `<target>=${values[0]}, --target=${parsed.target}`, "one tab: the positional <target> or --target, not two different ids", "<target> or --target");
+      }
+    } else requireCount(values, 1, 1, `tab ${leaf}`);
     if (leaf === "network" && values[0] !== "offline" && values[0] !== "online") {
       throw schemaInput("tab network", values[0] ?? "(missing)", "offline or online", "<mode>");
     }
@@ -17075,6 +17080,7 @@ async function dispatchResolvedClick(client, resolved, opts) {
     }
     if (hitTest.backendNodeId !== backendNodeId2 || opts.includeHitTestReceiver) hitTestReceiverBackendNodeId = hitTest.backendNodeId;
   }
+  await presentFrameBeforeInput(client);
   const pressParams = { type: "mousePressed", x: dispatchX, y: dispatchY, button: "left", clickCount: 1 };
   if (opts.mark !== void 0 && client.sendMarked) {
     await client.sendMarked("Input.dispatchMouseEvent", pressParams, opts.mark);
@@ -17090,6 +17096,12 @@ async function dispatchResolvedClick(client, resolved, opts) {
     y: dispatchY,
     ...hitTestReceiverBackendNodeId === void 0 ? {} : { hitTestReceiverBackendNodeId }
   };
+}
+async function presentFrameBeforeInput(client) {
+  await client.send("Page.captureScreenshot", {
+    format: "png",
+    clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 }
+  });
 }
 async function typeText(client, text2) {
   await client.send("Input.insertText", { text: text2 });
@@ -228715,6 +228727,19 @@ function spillWholeResult(payload, artifactDir) {
   writePrivateFile(filePath, payload);
   return filePath;
 }
+function describePageException(details) {
+  const exception = details.exception;
+  if (!exception) return details.text ?? "Unknown error";
+  if (exception.subtype === "error" && exception.description) return exception.description;
+  if (exception.type === "undefined") return "undefined";
+  if ("value" in exception) return JSON.stringify(exception.value);
+  const properties = exception.preview?.properties;
+  if (exception.type === "object" && properties) {
+    const fields = properties.map((p) => `${p.name}: ${p.value ?? "?"}`).join(", ");
+    return `${exception.className ?? "Object"} {${fields}${exception.preview?.overflow ? ", \u2026" : ""}}`;
+  }
+  return exception.description ?? details.text ?? "Unknown error";
+}
 function isRequestTimeout(error4) {
   return error4 instanceof Error && /CDP request timeout \(\d+ms\): Runtime\.evaluate|collector-host CDP call "Runtime\.evaluate" failed: CDP request timeout/.test(error4.message);
 }
@@ -228860,7 +228885,7 @@ async function cmdPageExec(parsed, _args) {
     );
   }
   if (evalResult.exceptionDetails) {
-    const description = evalResult.exceptionDetails.exception?.description ?? "Unknown error";
+    const description = describePageException(evalResult.exceptionDetails);
     return emitExecError(
       parsed,
       "exec_exception",
@@ -230199,9 +230224,9 @@ async function cmdTabClose(parsed, _args) {
     console.log(USAGE13);
     return;
   }
-  const target = parsed.positional[0];
+  const target = parsed.positional[0] ?? (parsed.targetSource === "flag" ? parsed.target : void 0);
   if (!target) {
-    throw invalidInput("received: no target; expected: capture tab close <target> [--port <port>].", "missing_argument");
+    throw invalidInput("received: no target; expected: capture tab close <target> (or --target <id>) [--port <port>].", "missing_argument");
   }
   if (target.length < 8) {
     throw invalidInput(`received: target ${target}; expected: a full target id or an unambiguous prefix of at least 8 characters.`, "target_prefix_too_short");
@@ -230267,6 +230292,7 @@ var init_close = __esm({
 
 input:
   <target>        required \u2014 full tab target id or an unambiguous 8-character prefix
+  --target <id>   same as <target>; only an explicit flag counts, never the session's tab or CDP_TARGET
   --port <port>   CDP endpoint (default: the auto-discovered preferred endpoint)
 
 output: <tab-closed port=\u2026 target=\u2026> \u2014 the closed tab's full target id and last observed URL.

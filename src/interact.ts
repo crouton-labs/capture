@@ -434,6 +434,8 @@ async function dispatchResolvedClick(
     if (hitTest.backendNodeId !== backendNodeId || opts.includeHitTestReceiver) hitTestReceiverBackendNodeId = hitTest.backendNodeId;
   }
 
+  await presentFrameBeforeInput(client);
+
   const pressParams = { type: 'mousePressed', x: dispatchX, y: dispatchY, button: 'left', clickCount: 1 };
   if (opts.mark !== undefined && client.sendMarked) {
     await client.sendMarked('Input.dispatchMouseEvent', pressParams, opts.mark);
@@ -450,6 +452,21 @@ async function dispatchResolvedClick(
     y: dispatchY,
     ...(hitTestReceiverBackendNodeId === undefined ? {} : { hitTestReceiverBackendNodeId }),
   };
+}
+
+/**
+ * Makes the renderer produce a frame before mouse input is dispatched. Arc does
+ * not paint a tab opened with `Target.createTarget({ background: true })` until
+ * something asks for a frame, and until it paints, `Input.dispatchMouseEvent`
+ * returns success while delivering no events to the page. A 1x1 clipped capture
+ * is the cheapest request that forces that frame. Chrome, which already paints
+ * background targets, only pays the capture.
+ */
+async function presentFrameBeforeInput(client: LiveClient): Promise<void> {
+  await client.send('Page.captureScreenshot', {
+    format: 'png',
+    clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 },
+  });
 }
 
 /** Types text into the currently focused element via CDP `Input.insertText`. */

@@ -346,6 +346,19 @@ test('bin: `tab close` rejects a destructive target prefix shorter than eight ch
   });
 });
 
+test('bin: `tab close --target` names the tab like the positional; two different ids are refused before probing CDP', () => {
+  withTempRoot((tempRoot) => {
+    const short = run(['tab', 'close', '--target', 'ABCD', '--port', '65535'], tempRoot);
+    assert.equal(short.status, 1);
+    assert.ok(short.stdout.includes('<error code="target_prefix_too_short"'), 'the --target id reaches the same prefix check as a positional: ' + short.stdout);
+
+    const conflict = run(['tab', 'close', 'ABCDEFGH', '--target', '12345678', '--port', '65535'], tempRoot);
+    assert.equal(conflict.status, 1);
+    assert.ok(conflict.stdout.includes('<error code="invalid_input"'), conflict.stdout);
+    assert.ok(conflict.stdout.includes('not two different ids'), conflict.stdout);
+  });
+});
+
 test('bin: `tab reset` with no URL is a structured <error code="invalid_input">, exit 1', () => {
   withTempRoot((tempRoot) => {
     const result = run(['tab', 'reset'], tempRoot);
