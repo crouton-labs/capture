@@ -82,6 +82,7 @@ class FakeClient {
       return { nodes: [{ nodeId: 'ax-201', backendDOMNodeId: 201, role: { value: 'button' }, name: { value: 'Send' } }] };
     }
     if (method === 'DOM.getBoxModel') return { model: { content: [10, 20, 30, 20, 30, 40, 10, 40] } };
+    if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: 800, clientHeight: 600 } };
     return {};
   }
   on(): void {}
@@ -190,6 +191,7 @@ test('cmdMotionRec one-shot waits for readiness, applies/restores viewport, reco
       ['Accessibility.getPartialAXTree', null],
       ['DOM.scrollIntoViewIfNeeded', null],
       ['DOM.getBoxModel', null],
+      ['Page.getLayoutMetrics', null],
       ['Page.captureScreenshot', null],
       ['Input.dispatchMouseEvent', 'click:button.send'],
       ['Input.dispatchMouseEvent', null],
@@ -433,6 +435,7 @@ test('one-shot click:ax:<name> resolves by case-insensitive substring over live 
       ],
     }),
     'DOM.getBoxModel': () => ({ model: { content: [0, 0, 10, 0, 10, 10, 0, 10] } }),
+    'Page.getLayoutMetrics': () => ({ cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: 800, clientHeight: 600 } }),
   });
   await driveOneShotAction(recorder as never, 'click:ax:send');
   const boxCall = recorder.calls.find((c) => c.method === 'DOM.getBoxModel');

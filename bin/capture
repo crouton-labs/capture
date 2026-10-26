@@ -17321,7 +17321,8 @@ function settleAxMatches(kind, input, rawMatches) {
 }
 async function resolveBareTarget(client, input, selector) {
   const css = await resolveLiveCss(client, input, selector);
-  if (css.ok || css.code === "ambiguous") return css;
+  if (css.ok && !(CSS_TYPE_SELECTOR.test(selector) && !await hasLayoutBox(client, css.backendNodeId))) return css;
+  if (!css.ok && css.code === "ambiguous") return css;
   const normalized2 = normalizeAccessibleName(input);
   if (!normalized2) return css;
   const matches2 = (await readFullAXTree(client)).filter(
@@ -17329,6 +17330,52 @@ async function resolveBareTarget(client, input, selector) {
   );
   const ax = settleAxMatches("ax", input, matches2);
   return ax.ok || ax.code === "ambiguous" ? ax : css;
+}
+async function hasLayoutBox(client, backendNodeId2) {
+  try {
+    const response = await client.send("DOM.getBoxModel", { backendNodeId: backendNodeId2 });
+    return isContentQuad(response?.model?.content);
+  } catch (error4) {
+    if (isNoLayoutError(error4)) return false;
+    throw error4;
+  }
+}
+function isNoLayoutError(error4) {
+  return error4 instanceof Error && /Node does not have a layout object|Could not compute box model/.test(error4.message);
+}
+function notClickable(backendNodeId2, detail, cause) {
+  throw captureError("world", "target_not_clickable", `Resolved target backend:${backendNodeId2} ${detail}`, cause);
+}
+function viewportClickPoint(quad, width, height) {
+  const points = [[quad[0], quad[1]], [quad[2], quad[3]], [quad[4], quad[5]], [quad[6], quad[7]]];
+  const cx = points.reduce((sum, p) => sum + p[0], 0) / 4;
+  const cy = points.reduce((sum, p) => sum + p[1], 0) / 4;
+  if (cx >= 0 && cx < width && cy >= 0 && cy < height) return { x: cx, y: cy };
+  const edges = [
+    { inside: (p) => p[0] >= 0, cut: (a, b) => [0, a[1] + (b[1] - a[1]) * (0 - a[0]) / (b[0] - a[0])] },
+    { inside: (p) => p[0] <= width, cut: (a, b) => [width, a[1] + (b[1] - a[1]) * (width - a[0]) / (b[0] - a[0])] },
+    { inside: (p) => p[1] >= 0, cut: (a, b) => [a[0] + (b[0] - a[0]) * (0 - a[1]) / (b[1] - a[1]), 0] },
+    { inside: (p) => p[1] <= height, cut: (a, b) => [a[0] + (b[0] - a[0]) * (height - a[1]) / (b[1] - a[1]), height] }
+  ];
+  let polygon = points;
+  for (const edge of edges) {
+    const input = polygon;
+    polygon = [];
+    input.forEach((current, i) => {
+      const previous = input[(i + input.length - 1) % input.length];
+      if (edge.inside(current)) {
+        if (!edge.inside(previous)) polygon.push(edge.cut(previous, current));
+        polygon.push(current);
+      } else if (edge.inside(previous)) {
+        polygon.push(edge.cut(previous, current));
+      }
+    });
+    if (polygon.length === 0) return null;
+  }
+  if (polygon.length < 3) return null;
+  const x = polygon.reduce((sum, p) => sum + p[0], 0) / polygon.length;
+  const y = polygon.reduce((sum, p) => sum + p[1], 0) / polygon.length;
+  return x >= 0 && x < width && y >= 0 && y < height ? { x, y } : null;
 }
 async function resolveLiveCss(client, input, selector) {
   await client.send("DOM.enable");
@@ -17404,18 +17451,32 @@ async function axIdentityFor(client, backendNodeId2) {
 async function clickLiveTarget(client, input, opts = {}) {
   const initial = await resolveLiveTarget(client, input);
   if (!initial.ok) return initial;
-  await client.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: initial.backendNodeId });
+  await scrollIntoView(client, initial.backendNodeId);
   const current = await resolveLiveTarget(client, input);
   if (!current.ok) return current;
   return dispatchResolvedClick(client, current, opts);
 }
 async function clickResolved(client, resolved, opts = {}) {
-  await client.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: resolved.backendNodeId });
+  await scrollIntoView(client, resolved.backendNodeId);
   return dispatchResolvedClick(client, resolved, opts);
+}
+async function scrollIntoView(client, backendNodeId2) {
+  try {
+    await client.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: backendNodeId2 });
+  } catch (error4) {
+    if (isNoLayoutError(error4)) notClickable(backendNodeId2, "has no layout box to scroll to (hidden, detached, or not rendered).", error4);
+    throw error4;
+  }
 }
 async function dispatchResolvedClick(client, resolved, opts) {
   const { backendNodeId: backendNodeId2 } = resolved;
-  const boxResponse = await client.send("DOM.getBoxModel", { backendNodeId: backendNodeId2 });
+  let boxResponse;
+  try {
+    boxResponse = await client.send("DOM.getBoxModel", { backendNodeId: backendNodeId2 });
+  } catch (error4) {
+    if (isNoLayoutError(error4)) notClickable(backendNodeId2, "has no layout box to click (hidden, detached, or not rendered).", error4);
+    throw error4;
+  }
   const quad = boxResponse?.model?.content;
   if (!isContentQuad(quad)) {
     throw captureError(
@@ -17425,24 +17486,39 @@ async function dispatchResolvedClick(client, resolved, opts) {
       { method: "DOM.getBoxModel", response: boxResponse }
     );
   }
-  const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
-  const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
+  const metrics = await client.send("Page.getLayoutMetrics");
+  const viewport2 = metrics.cssVisualViewport;
+  if (!viewport2 || ![viewport2.pageX, viewport2.pageY, viewport2.clientWidth, viewport2.clientHeight].every(Number.isFinite)) {
+    throw captureError("world", "malformed_protocol", "Page.getLayoutMetrics returned no valid CSS visual viewport.", {
+      method: "Page.getLayoutMetrics",
+      response: metrics
+    });
+  }
+  const point = viewportClickPoint(quad, viewport2.clientWidth, viewport2.clientHeight);
+  if (point === null) {
+    notClickable(
+      backendNodeId2,
+      `is outside the ${viewport2.clientWidth}x${viewport2.clientHeight} viewport after scrolling it into view (a fixed or clipped element the page cannot scroll to).`,
+      { method: "DOM.getBoxModel", response: boxResponse }
+    );
+  }
+  const { x, y } = point;
   const dispatchX = Math.round(x);
   const dispatchY = Math.round(y);
   let hitTestReceiverBackendNodeId;
   if (opts.inspectHitTest) {
-    const metrics = await client.send("Page.getLayoutMetrics");
-    const viewport2 = metrics.cssVisualViewport;
-    if (!viewport2 || !Number.isFinite(viewport2.pageX) || !Number.isFinite(viewport2.pageY)) {
-      throw captureError("world", "malformed_protocol", "Page.getLayoutMetrics returned no valid CSS visual viewport.", {
-        method: "Page.getLayoutMetrics",
-        response: metrics
+    let hitTest;
+    try {
+      hitTest = await client.send("DOM.getNodeForLocation", {
+        x: Math.round(x + viewport2.pageX),
+        y: Math.round(y + viewport2.pageY)
       });
+    } catch (error4) {
+      if (error4 instanceof Error && error4.message.includes("No node found at given location")) {
+        notClickable(backendNodeId2, `has no element at its click point x=${dispatchX} y=${dispatchY}; nothing there can receive the click.`, error4);
+      }
+      throw error4;
     }
-    const hitTest = await client.send("DOM.getNodeForLocation", {
-      x: Math.round(x + viewport2.pageX),
-      y: Math.round(y + viewport2.pageY)
-    });
     if (typeof hitTest.backendNodeId !== "number" || !Number.isSafeInteger(hitTest.backendNodeId) || hitTest.backendNodeId <= 0) {
       throw captureError(
         "world",
@@ -17555,7 +17631,7 @@ async function scrollResolved(client, resolved, to, opts = {}) {
     }
   }
 }
-var ACCEPTED_LIVE_PREFIXES, CANDIDATE_LIMIT;
+var ACCEPTED_LIVE_PREFIXES, CANDIDATE_LIMIT, CSS_TYPE_SELECTOR;
 var init_interact = __esm({
   "src/interact.ts"() {
     init_a11y();
@@ -17564,6 +17640,7 @@ var init_interact = __esm({
     init_selector();
     ACCEPTED_LIVE_PREFIXES = ["css", "ax:", "axid:", "backend:"];
     CANDIDATE_LIMIT = 10;
+    CSS_TYPE_SELECTOR = /^[A-Za-z][A-Za-z0-9-]*$/;
   }
 });
 

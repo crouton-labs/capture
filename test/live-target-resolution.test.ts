@@ -255,6 +255,7 @@ test('a bare exact accessible link name resolves after CSS finds no live element
 test('a bare target prefers a CSS match over an exact accessible-name match', async () => {
   const client = stubClient({
     ...cssHandlers([13]),
+    'DOM.getBoxModel': () => ({ model: { content: [10, 10, 30, 10, 30, 20, 10, 20] } }),
     'Accessibility.enable': () => ({}),
     'Accessibility.disable': () => ({}),
     'Accessibility.getFullAXTree': () => ({
@@ -575,6 +576,7 @@ function dispatchHandlers(): Record<string, (params: Record<string, unknown>) =>
   return {
     'DOM.scrollIntoViewIfNeeded': () => ({}),
     'DOM.getBoxModel': () => ({ model: { content: [10, 10, 30, 10, 30, 20, 10, 20] } }),
+    'Page.getLayoutMetrics': () => ({ cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: 800, clientHeight: 600 } }),
     'Page.captureScreenshot': () => ({ data: '' }),
     'Input.dispatchMouseEvent': () => ({}),
     'Input.insertText': () => ({}),
@@ -591,6 +593,7 @@ test('clickResolved: scrollIntoView → box model → 1x1 frame capture → pres
   assert.deepEqual(methods, [
     'DOM.scrollIntoViewIfNeeded',
     'DOM.getBoxModel',
+    'Page.getLayoutMetrics',
     'Page.captureScreenshot',
     'Input.dispatchMouseEvent',
     'Input.dispatchMouseEvent',
@@ -622,6 +625,7 @@ test('clickResolved: an initiating-press mark rides the marked lane; the release
     [
       ['DOM.scrollIntoViewIfNeeded', null],
       ['DOM.getBoxModel', null],
+      ['Page.getLayoutMetrics', null],
       ['Page.captureScreenshot', null],
       ['Input.dispatchMouseEvent', 'click:ax:Send'],
       ['Input.dispatchMouseEvent', null],
@@ -646,6 +650,7 @@ test('clickResolved: a marked click degrades to plain send when the transport ha
   assert.deepEqual(client.calls.map((c) => c.method), [
     'DOM.scrollIntoViewIfNeeded',
     'DOM.getBoxModel',
+    'Page.getLayoutMetrics',
     'Page.captureScreenshot',
     'Input.dispatchMouseEvent',
     'Input.dispatchMouseEvent',
@@ -872,4 +877,39 @@ test('scrollResolved: dual scroll and release failures retain primary and cleanu
   assert.equal(error.errors[1].descriptor.code, 'scroll_object_release_failed');
   assert.equal(error.errors[1].descriptor.cause, releaseFailure);
   assert.equal(client.calls.filter((c) => c.method === 'Runtime.releaseObject').length, 1);
+});
+
+test('a one-word accessible name that is also a tag selector skips a CSS match with no layout box (<title> vs textbox "Title")', async () => {
+  const client = stubClient({
+    ...cssHandlers([13]),
+    'DOM.getBoxModel': () => { throw new Error('Node does not have a layout object'); },
+    'Accessibility.enable': () => ({}),
+    'Accessibility.disable': () => ({}),
+    'Accessibility.getFullAXTree': () => ({
+      nodes: [{ nodeId: '5', backendDOMNodeId: 204, role: { value: 'textbox' }, name: { value: 'Title' } }],
+    }),
+  });
+  const result = await resolveLiveTarget(client, 'Title');
+  assert.deepEqual(result, { ok: true, kind: 'ax', backendNodeId: 204, role: 'textbox', name: 'Title' });
+});
+
+test('clickResolved: an element taller than the viewport is clicked at the center of its visible part, not its off-screen center', async () => {
+  const client = stubClient({
+    ...dispatchHandlers(),
+    'DOM.getBoxModel': () => ({ model: { content: [0, 100, 200, 100, 200, 1300, 0, 1300] } }),
+  });
+  const dispatch = await clickResolved(client, RESOLVED_BUTTON);
+  assert.deepEqual([dispatch.x, dispatch.y], [100, 350]);
+});
+
+test('clickResolved: an element wholly outside the viewport after scrolling is a typed target_not_clickable failure with no input', async () => {
+  const client = stubClient({
+    ...dispatchHandlers(),
+    'DOM.getBoxModel': () => ({ model: { content: [10, 700, 30, 700, 30, 720, 10, 720] } }),
+  });
+  const error = await caught(() => clickResolved(client, RESOLVED_BUTTON));
+  assert.ok(error instanceof CaptureError);
+  assert.equal(error.descriptor.code, 'target_not_clickable');
+  assert.match(error.descriptor.message, /outside the 800x600 viewport/);
+  assert.equal(client.calls.filter((c) => c.method === 'Input.dispatchMouseEvent').length, 0);
 });
