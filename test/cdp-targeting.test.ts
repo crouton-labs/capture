@@ -227,3 +227,13 @@ test('openTab fails loudly when Target.createTarget returns no targetId', () => 
     /returned no targetId/,
   );
 });
+
+test('a selector that matched nothing while an endpoint failed to list is that failure, not "no such tab"', async () => {
+  await assert.rejects(
+    () => findTabByIdInPorts('tab-9', [1111, 2222], async (port) => {
+      if (port === 1111) throw new Error('CDP request timeout (10000ms): Target.getTargets');
+      return null;
+    }),
+    /could not list their tabs \(port 1111: CDP request timeout/,
+  );
+});

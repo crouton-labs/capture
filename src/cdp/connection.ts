@@ -97,6 +97,42 @@ export async function applyActiveSessionNetworkConditions(
   });
 }
 
+
+// ---------------------------------------------------------------------------
+// Command deadline — a page that stops answering CDP (blocked main thread,
+// throttled background tab) never replies to anything, so every wait on it
+// must be bounded by capture itself.
+// ---------------------------------------------------------------------------
+
+/** Bound on connecting to a tab and starting its collectors when the caller declares no `--timeout`. */
+export const DEFAULT_SETUP_DEADLINE_MS = 30_000;
+
+/** The deadline for connecting a page command to its tab: the declared `--timeout`, else the default. */
+function setupDeadlineMs(parsed: ParsedArgs): number {
+  return parsed.timeoutMs ?? DEFAULT_SETUP_DEADLINE_MS;
+}
+
+/**
+ * Races `work` against `ms`. On expiry it rejects with `command_deadline_exceeded`
+ * naming the phase; the caller's `finally` closes the client, which rejects the
+ * abandoned work's pending requests.
+ */
+async function withinDeadline<T>(ms: number, phase: string, work: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(captureError(
+      'world',
+      'command_deadline_exceeded',
+      `${phase} did not finish within ${ms}ms — the tab is not answering CDP (its main thread may be blocked, or the tab throttled). Raise --timeout to wait longer.`,
+    )), ms);
+  });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Builds a short, human-readable label for this command invocation, used to
  * tag every marked (`Input.dispatch*`) CDP call the recorder-held adapter
@@ -251,7 +287,7 @@ export async function connectForCommand(
     await client.waitReady();
     // Reissue the session's persisted offline/online state on this fresh
     // connection — network emulation belongs to a connection, not the tab.
-    await applyActiveSessionNetworkConditions(client, seams.getActiveSession(), tab.id);
+    await withinDeadline(setupDeadlineMs(parsed), 'Restoring the session network state', applyActiveSessionNetworkConditions(client, seams.getActiveSession(), tab.id));
     return { client, tab };
   } catch (err) {
     client.close();
@@ -339,9 +375,9 @@ export async function withConnection<T>(
   opts: { settle?: number } = {},
 ): Promise<T> {
   const { client, tab } = await connectForCommand(parsed);
-  const collectors = await startCollectors(parsed, client);
 
   try {
+    const collectors = await withinDeadline(setupDeadlineMs(parsed), 'Starting page collectors', startCollectors(parsed, client));
     const result = await fn(client, tab);
 
     if (collectors.harRecorder && parsed.har) {
@@ -400,9 +436,9 @@ export async function withPageAction<T>(
   fn: (client: CDPClient, tab: CDPTarget) => Promise<T>,
 ): Promise<{ result: T; settle: SettleFacts }> {
   const { client, tab } = await connectForCommand(parsed);
-  const collectors = await startCollectors(parsed, client);
 
   try {
+    const collectors = await withinDeadline(setupDeadlineMs(parsed), 'Starting page collectors', startCollectors(parsed, client));
     // Action callback first — a rejection here claims no settle.
     const result = await fn(client, tab);
 

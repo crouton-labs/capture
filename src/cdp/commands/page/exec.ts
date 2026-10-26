@@ -177,7 +177,7 @@ async function focusScopedEvaluate(client: ExecClient, expression: string, evalu
     // Emulate focus so network requests the code triggers aren't deferred
     // by the browser, without foregrounding the tab.
     ownsFocusOverride = true;
-    await client.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    await client.send('Emulation.setFocusEmulationEnabled', { enabled: true }, evaluationTimeoutMs);
     try {
       return (await client.send('Runtime.evaluate', {
         expression,
@@ -201,7 +201,7 @@ async function focusScopedEvaluate(client: ExecClient, expression: string, evalu
   } finally {
     if (ownsFocusOverride) {
       try {
-        await client.send('Emulation.setFocusEmulationEnabled', { enabled: false });
+        await client.send('Emulation.setFocusEmulationEnabled', { enabled: false }, evaluationTimeoutMs);
       } catch (error) {
         const cleanupError = captureError(
           'cleanup',

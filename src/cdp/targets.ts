@@ -3,6 +3,10 @@ import { CDP_LOOPBACK_HOST } from './loopback.js';
 import { detectCdpPortsAsync } from './detect.js';
 import { touchOwnedBrowser } from './browser-process.js';
 import { type CDPTarget } from './types.js';
+import { captureError } from '../errors.js';
+
+/** A browser that accepts the connection but never answers `/json/version` or `Target.getTargets` must fail the command, not stall it. */
+const BROWSER_PROBE_TIMEOUT_MS = 10_000;
 
 /**
  * Connects to the BROWSER-level CDP websocket (not a page/tab target).
@@ -14,7 +18,7 @@ import { type CDPTarget } from './types.js';
 export async function getBrowserClient(
   port: number,
 ): Promise<{ client: CDPClient; browserWsUrl: string }> {
-  const versionResp = await fetch(`http://${CDP_LOOPBACK_HOST}:${port}/json/version`);
+  const versionResp = await fetch(`http://${CDP_LOOPBACK_HOST}:${port}/json/version`, { signal: AbortSignal.timeout(BROWSER_PROBE_TIMEOUT_MS) });
   if (!versionResp.ok) {
     throw new Error(
       `Failed to connect to CDP on port ${port}: ${versionResp.status}`,
@@ -46,8 +50,8 @@ export async function listTargets(port: number): Promise<CDPTarget[]> {
 
   try {
     // Enable target discovery to get all targets including pages
-    await client.send('Target.setDiscoverTargets', { discover: true });
-    const result = (await client.send('Target.getTargets')) as {
+    await client.send('Target.setDiscoverTargets', { discover: true }, BROWSER_PROBE_TIMEOUT_MS);
+    const result = (await client.send('Target.getTargets', {}, BROWSER_PROBE_TIMEOUT_MS)) as {
       targetInfos: Array<{
         targetId: string;
         type: string;
@@ -109,19 +113,36 @@ export async function findTabById(
   return null;
 }
 
+/**
+ * A selector that matched nothing while some endpoint failed to list its tabs
+ * is not "no such tab": the failure is the answer. `tab list` reports the same
+ * failure as an unreachable endpoint, so the two commands name the same fact.
+ */
+function unlistedTargetError(query: string, failures: ReadonlyArray<{ port: number; error: unknown }>): Error {
+  const detail = failures.map(({ port, error }) => `port ${port}: ${error instanceof Error ? error.message : String(error)}`).join('; ');
+  return captureError(
+    'precondition',
+    'target_unavailable',
+    `No tab found for "${query}", and ${failures.length} endpoint(s) could not list their tabs (${detail}). Run "capture tab list" to see which endpoints answer.`,
+    failures[0]?.error,
+  );
+}
+
 export async function findTabByIdInPorts(
   targetId: string,
   ports: number[],
   finder: (port: number, targetId: string) => Promise<CDPTarget | null> = findTabById,
 ): Promise<{ port: number; tab: CDPTarget } | null> {
+  const failures: Array<{ port: number; error: unknown }> = [];
   for (const port of ports) {
     try {
       const tab = await finder(port, targetId);
       if (tab) return { port, tab };
-    } catch {
-      // Skip endpoints that fail or are ambiguous on a different port.
+    } catch (error) {
+      failures.push({ port, error });
     }
   }
+  if (failures.length > 0) throw unlistedTargetError(targetId, failures);
   return null;
 }
 
@@ -138,14 +159,17 @@ export async function findUnambiguousPageTabInPorts(
   lister: (port: number) => Promise<CDPTarget[]> = listTargets,
 ): Promise<{ port: number; tab: CDPTarget } | null> {
   const candidates: Array<{ port: number; tab: CDPTarget }> = [];
+  const failures: Array<{ port: number; error: unknown }> = [];
   for (const port of ports) {
     try {
       for (const tab of await lister(port)) if (tab.type === 'page') candidates.push({ port, tab });
-    } catch {
-      // An unavailable endpoint cannot supply a target.
+    } catch (error) {
+      failures.push({ port, error });
     }
   }
   if (candidates.length > 1) throw new AmbiguousPageTargetError(candidates);
+  // One page tab on a reachable endpoint is only "the" tab when no other endpoint hid a second one.
+  if (candidates.length === 0 && failures.length > 0) throw unlistedTargetError('(any page tab)', failures);
   return candidates[0] ?? null;
 }
 
@@ -232,6 +256,7 @@ export async function findTabByUrlAcrossEndpoints(
 ): Promise<{ port: number; tab: CDPTarget } | null> {
   const ports = resolveSearchPorts(await detectCdpPortsAsync(), preferredPort);
   let best: { port: number; tab: CDPTarget; score: number } | null = null;
+  const failures: Array<{ port: number; error: unknown }> = [];
 
   for (const port of ports) {
     try {
@@ -243,12 +268,14 @@ export async function findTabByUrlAcrossEndpoints(
           best = { port, tab, score };
         }
       }
-    } catch {
-      // Skip endpoints that fail to respond.
+    } catch (error) {
+      failures.push({ port, error });
     }
   }
 
-  return best ? { port: best.port, tab: best.tab } : null;
+  if (best) return { port: best.port, tab: best.tab };
+  if (failures.length > 0) throw unlistedTargetError(url, failures);
+  return null;
 }
 
 export function requireTargetId(

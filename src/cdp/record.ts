@@ -111,5 +111,11 @@ export async function navigateAndWait(
   // Refresh target info — find by ID to avoid returning a different tab with same URL
   const targets = await listTargets(port);
   const refreshed = targets.find((t) => t.id === tab.id);
-  return refreshed ?? tab;
+  // Some browsers (Arc) acknowledge Target.createTarget and then drop the page.
+  // Reporting an id the browser no longer lists hands the caller a target every
+  // later command rejects, so the open itself fails instead.
+  if (!refreshed) {
+    throw new Error(`the browser accepted the new tab ${tab.id} but no longer lists it — it dropped the tab. Open it again.`);
+  }
+  return refreshed;
 }
