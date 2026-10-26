@@ -49,7 +49,10 @@ json('hittest.json', { elements: [
   // A descendant receives .parent's point, which is targetable rather than an occlusion.
   { selector: '.parent', backendNodeId: 3, selfHitCount: 0, selfHitTotal: 1, points: [{ result: { x: 10, y: 50, topReceiver: { selector: '.child', backendNodeId: 4 }, stack: [{ selector: '.child', pointerEvents: 'auto' }] } }] },
   // Direct sibling .b receives .a's point, which is a non-descendant receiver.
-  { selector: '.a', backendNodeId: 1, selfHitCount: 0, selfHitTotal: 1, points: [{ result: { x: 90, y: 20, topReceiver: { selector: '.b', backendNodeId: 2 }, stack: [{ selector: '.b', pointerEvents: 'auto' }] } }] },
+  // Its first point has an empty hit stack, which the collector records as `topReceiver: null`; check must skip it and still read the second point.
+  { selector: '.a', backendNodeId: 1, selfHitCount: 0, selfHitTotal: 2, points: [{ result: { x: 90, y: 250, stack: [], topReceiver: null } }, { result: { x: 90, y: 20, topReceiver: { selector: '.b', backendNodeId: 2 }, stack: [{ selector: '.b', pointerEvents: 'auto' }] } }] },
+  // Every point of .b falls outside the viewport (null receivers only): no finding, no crash.
+  { selector: '.b', backendNodeId: 2, selfHitCount: 0, selfHitTotal: 1, points: [{ result: { x: 90, y: 300, stack: [], topReceiver: null } }] },
 ] });
 json('text.json', { elements: [{ selector: '.a', truncated: true, scrollWidth: 130, clientWidth: 100 }] });
 json('forms.json', { controls: [] });
