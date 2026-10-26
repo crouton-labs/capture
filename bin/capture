@@ -18263,6 +18263,37 @@ function buildNavigatedResult(f) {
     sections
   };
 }
+async function navigateClient(client, url) {
+  const routed = isMotionHeldClient(client);
+  const armed = { cancel: () => {
+  } };
+  const work = routed ? navigateViaRecorder(client, url) : navigateDirect(client, url, armed);
+  let raced;
+  try {
+    raced = await raceNavDeadline(work);
+  } catch (err) {
+    if (err instanceof CaptureError) throw err;
+    throw captureError(
+      "world",
+      "navigate_failed",
+      `${err instanceof Error ? err.message : String(err)} \u2014 check the URL is absolute and a CDP-enabled browser is running (probe: capture tab list).`,
+      err
+    );
+  }
+  if (raced.completed) {
+    return { ...raced.core, deadlineExceeded: false, routed, tabUrl: url };
+  }
+  armed.cancel();
+  return {
+    loadOutcome: "bounded-timeout",
+    documentOutcome: { kind: "not-observed" },
+    loaderId: void 0,
+    bounced: false,
+    deadlineExceeded: true,
+    routed,
+    tabUrl: url
+  };
+}
 async function cmdPageNavigate(parsed, _args) {
   if (parsed.help) {
     console.log(USAGE4);
@@ -18279,37 +18310,7 @@ async function cmdPageNavigate(parsed, _args) {
   const { result: core, settle: settleFacts } = await withPageAction(
     { ...parsed, command: "navigate" },
     { settleMs: settle },
-    async (client, _tab) => {
-      const routed = isMotionHeldClient(client);
-      const armed = { cancel: () => {
-      } };
-      const work = routed ? navigateViaRecorder(client, url) : navigateDirect(client, url, armed);
-      let raced;
-      try {
-        raced = await raceNavDeadline(work);
-      } catch (err) {
-        if (err instanceof CaptureError) throw err;
-        throw captureError(
-          "world",
-          "navigate_failed",
-          `${err instanceof Error ? err.message : String(err)} \u2014 check the URL is absolute and a CDP-enabled browser is running (probe: capture tab list).`,
-          err
-        );
-      }
-      if (raced.completed) {
-        return { ...raced.core, deadlineExceeded: false, routed, tabUrl: url };
-      }
-      armed.cancel();
-      return {
-        loadOutcome: "bounded-timeout",
-        documentOutcome: { kind: "not-observed" },
-        loaderId: void 0,
-        bounced: false,
-        deadlineExceeded: true,
-        routed,
-        tabUrl: url
-      };
-    }
+    async (client, _tab) => navigateClient(client, url)
   );
   emitResult(
     buildNavigatedResult({
@@ -240002,10 +240003,26 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
   const snapId = generateSnapId();
   let snapDir;
   let allocatedRoot;
-  const connectionArgs = targetRef && isUrlRef(targetRef) ? { ...parsed, url: targetRef, target: void 0, viewport: viewport2?.label } : !parsed.target && !active?.targetId && baseUrl ? { ...parsed, url: baseUrl, viewport: viewport2?.label } : { ...parsed, viewport: viewport2?.label };
+  const navigateTo = targetRef && isUrlRef(targetRef) ? targetRef : void 0;
+  const connectionArgs = navigateTo ? { ...parsed, url: void 0, viewport: viewport2?.label } : !parsed.target && !active?.targetId && baseUrl ? { ...parsed, url: baseUrl, viewport: viewport2?.label } : { ...parsed, viewport: viewport2?.label };
+  let ownedTab;
+  if (navigateTo && !connectionArgs.target && !active) {
+    const port = parsed.port ?? await detectCdpPort();
+    const opened = await openTab(port, "about:blank");
+    ownedTab = { port, id: opened.id };
+    connectionArgs.port = port;
+    connectionArgs.target = opened.id;
+  }
   try {
     let artifacts = [];
     await withConnection(connectionArgs, async (client, tab) => {
+      let snapUrl = tab.url || baseUrl;
+      if (navigateTo) {
+        await navigateClient(client, navigateTo);
+        const href = await client.send("Runtime.evaluate", { expression: "location.href", returnByValue: true });
+        if (typeof href.result?.value !== "string") throw new Error(`could not read the tab URL after navigating to ${navigateTo}`);
+        snapUrl = href.result.value;
+      }
       await withAppliedColorScheme(client, colorScheme, async () => withAppliedViewport(client, viewport2, async () => {
         const oneshot = active ? void 0 : createOneshotSession("measure", parsed.artifactDir);
         const destination = active ? path29.join(active.dir, "measure", "snaps") : oneshot.artifactsDir;
@@ -240013,7 +240030,7 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
         allocatedRoot = active ? snapDir : oneshot.dir;
         const result = await captureSnapshotSubstrate({
           target: { client, tabId: tab.id },
-          url: tab.url || baseUrl,
+          url: snapUrl,
           path: snapDir,
           snapId,
           settleTimeout: parsed.settleTimeout ?? DEFAULT_SETTLE_TIMEOUT_MS,
@@ -240034,6 +240051,8 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
   } catch (err) {
     if (allocatedRoot && !(err instanceof SnapshotCaptureTimeout)) removeArtifactTree(allocatedRoot);
     throw err;
+  } finally {
+    if (ownedTab) await closeTarget(ownedTab.port, ownedTab.id);
   }
 }
 function buildSnapshotResult(captured) {
@@ -240181,6 +240200,9 @@ var init_snap = __esm({
     path29 = __toESM(require("path"));
     import_crypto2 = require("crypto");
     init_connection();
+    init_detect();
+    init_targets();
+    init_navigate();
     init_held_client();
     init_viewport();
     init_color_scheme();
@@ -240196,7 +240218,7 @@ var init_snap = __esm({
     USAGE16 = `capture measure snap [url|snap] \u2014 drive the page and write one settled snapshot substrate directory
 
 input:
-  [url|snap]                  a URL drives the page fresh; a snap id or absolute path re-captures states over that base snapshot. Outside a session a URL writes under a private one-shot session; with an active session, snapshots are written under it and later resolve by snap id
+  [url|snap]                  a URL is loaded fresh before capture: the active session's tab (or the --target tab) is navigated to it, so that tab ends on the URL; with no session and no --target, a new tab is opened on the browser (--port), loaded, captured and closed. A snap id or absolute path re-captures states over that base snapshot. Outside a session a URL writes under a private one-shot session; with an active session, snapshots are written under it and later resolve by snap id
   --freeze-animations         pause CSS/WAAPI animation before capture
   --settle-timeout <ms>       override the default 5000ms settle wait
   --capture-unsettled         write the full substrate despite non-settlement, marking unstable regions
@@ -240209,7 +240231,7 @@ input:
   --color-scheme <dark|light> temporarily capture under this prefers-color-scheme value; cleared afterward
   --artifact-dir <path>      root for this sessionless snapshot bundle; ignored when an active session owns the snapshot
 output: <snapshot id=\u2026 path=\u2026> \u2014 the settled artifact directory (geometry, styles, hit-test, text, forms, animation, ax, queries, focus, scroll, layers; per-element crops with --pixels) every other measure/motion query leaf reads instead of re-driving the browser; --json mirrors
-effects: drives the target page to capture; writes one snapshot artifact directory under the active session or, when sessionless, a one-shot bundle under --artifact-dir. --color-scheme transiently applies Emulation.setEmulatedMedia and clears it after capture.`;
+effects: with a URL, navigates the session or --target tab to it (the same navigation \`page navigate\` performs, recorder-routed during a live recording) before capture. Drives the target page to capture; writes one snapshot artifact directory under the active session or, when sessionless, a one-shot bundle under --artifact-dir. --color-scheme transiently applies Emulation.setEmulatedMedia and clears it after capture.`;
   }
 });
 

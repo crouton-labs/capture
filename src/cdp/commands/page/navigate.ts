@@ -280,6 +280,52 @@ function buildNavigatedResult(f: NavigatedFacts): RenderableResult {
   };
 }
 
+/**
+ * Navigates the tab behind `client` to `url` and reports the navigation's
+ * facts. The one navigation path for every command that drives a tab to a URL:
+ * recorder-routed when the client is the active recording's held connection,
+ * direct otherwise. Exceeding the nav deadline is reported, not thrown; a raw
+ * dispatch failure is re-tagged `navigate_failed`.
+ */
+export async function navigateClient(client: CDPClient, url: string) {
+  const routed = isMotionHeldClient(client);
+  // Holder for the direct path's currently-armed load wait, so an
+  // outer-deadline abandonment can cancel it (clearing its inner timer).
+  const armed = { cancel: () => {} };
+  const work = routed
+    ? navigateViaRecorder(client as unknown as MotionHeldClient, url)
+    : navigateDirect(client, url, armed);
+  let raced: Awaited<ReturnType<typeof raceNavDeadline>>;
+  try {
+    raced = await raceNavDeadline(work);
+  } catch (err) {
+    // A raw navigation dispatch failure — tag it. Typed capture errors
+    // (recorder/targeting) pass through unmodified.
+    if (err instanceof CaptureError) throw err;
+    throw captureError(
+      'world',
+      'navigate_failed',
+      `${err instanceof Error ? err.message : String(err)} — check the URL is absolute and a CDP-enabled browser is running (probe: capture tab list).`,
+      err,
+    );
+  }
+  if (raced.completed) {
+    return { ...raced.core, deadlineExceeded: false, routed, tabUrl: url };
+  }
+  // Deadline elapsed before the nav phase completed — cancel the armed
+  // load wait and report partial facts (load unconfirmed) rather than throwing.
+  armed.cancel();
+  return {
+    loadOutcome: 'bounded-timeout' as const,
+    documentOutcome: { kind: 'not-observed' } as const,
+    loaderId: undefined,
+    bounced: false,
+    deadlineExceeded: true,
+    routed,
+    tabUrl: url,
+  };
+}
+
 export async function cmdPageNavigate(parsed: ParsedArgs, _args: string[]): Promise<void> {
   if (parsed.help) {
     console.log(USAGE);
@@ -318,44 +364,7 @@ export async function cmdPageNavigate(parsed: ParsedArgs, _args: string[]): Prom
   const { result: core, settle: settleFacts } = await withPageAction(
     { ...parsed, command: 'navigate' },
     { settleMs: settle },
-    async (client, _tab) => {
-      const routed = isMotionHeldClient(client);
-      // Holder for the direct path's currently-armed load wait, so an
-      // outer-deadline abandonment can cancel it (clearing its inner timer).
-      const armed = { cancel: () => {} };
-      const work = routed
-        ? navigateViaRecorder(client as unknown as MotionHeldClient, url)
-        : navigateDirect(client, url, armed);
-      let raced: Awaited<ReturnType<typeof raceNavDeadline>>;
-      try {
-        raced = await raceNavDeadline(work);
-      } catch (err) {
-        // A raw navigation dispatch failure — tag it. Typed capture errors
-        // (recorder/targeting) pass through unmodified.
-        if (err instanceof CaptureError) throw err;
-        throw captureError(
-          'world',
-          'navigate_failed',
-          `${err instanceof Error ? err.message : String(err)} — check the URL is absolute and a CDP-enabled browser is running (probe: capture tab list).`,
-          err,
-        );
-      }
-      if (raced.completed) {
-        return { ...raced.core, deadlineExceeded: false, routed, tabUrl: url };
-      }
-      // Deadline elapsed before the nav phase completed — cancel the armed
-      // load wait and report partial facts (load unconfirmed) rather than throwing.
-      armed.cancel();
-      return {
-        loadOutcome: 'bounded-timeout' as const,
-        documentOutcome: { kind: 'not-observed' } as const,
-        loaderId: undefined,
-        bounced: false,
-        deadlineExceeded: true,
-        routed,
-        tabUrl: url,
-      };
-    },
+    async (client, _tab) => navigateClient(client, url),
   );
 
   emitResult(
