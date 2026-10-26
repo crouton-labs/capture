@@ -625,7 +625,10 @@ export function resolveCliContext(parsed: ParsedArgs): ParsedArgs {
     // A session target is inseparable from the endpoint that created it.
     // Prefer that endpoint over ambient CDP_PORT, but retain an explicit
     // --port override for deliberate multi-browser work.
-    if (parsed.port === undefined && session.port !== undefined && session.port !== null) { parsed.port = session.port; parsed.portSource = 'session'; }
+    // `tab list` is the discovery probe: without --port it lists every
+    // localhost endpoint, so the session's endpoint must not narrow it.
+    const discoveringEndpoints = parsed.command === 'tab' && parsed.positional[0] === 'list';
+    if (parsed.port === undefined && !discoveringEndpoints && session.port !== undefined && session.port !== null) { parsed.port = session.port; parsed.portSource = 'session'; }
   }
   refuseUnownedEndpoint(parsed, sessionStart);
   if (parsed.port === undefined && process.env.CDP_PORT !== undefined) {

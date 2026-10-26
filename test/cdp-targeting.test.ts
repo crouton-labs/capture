@@ -87,6 +87,27 @@ test('a node with CRTR_NODE_ID and no session, --port or --target is refused eve
   }
 });
 
+test('tab list without --port keeps discovering every endpoint while a session holds one port', async () => {
+  const { setActiveSession, clearActiveSession } = await import('../src/session-context.js');
+  const saved = { node: process.env.CRTR_NODE_ID, port: process.env.CDP_PORT };
+  const dir = fs.mkdtempSync(path.join(CAPTURE_ROOT, 'tab-list-session-'));
+  try {
+    process.env.CRTR_NODE_ID = 'tab-list-session-node';
+    delete process.env.CDP_PORT;
+    await setActiveSession({ sessionId: 'sess-list', dir, harId: null, targetId: 'session-target', stepCount: 0, port: 49561 });
+    assert.equal(resolveCliContext(parseCliArgs(['tab', 'list'])).port, undefined, 'the session endpoint must not narrow discovery');
+    assert.equal(resolveCliContext(parseCliArgs(['tab', 'list', '--port', '9222'])).port, 9222);
+    assert.equal(resolveCliContext(parseCliArgs(['tab', 'open', 'https://example.com'])).port, 49561, 'other tab leaves still inherit the session endpoint');
+  } finally {
+    clearActiveSession();
+    for (const [key, value] of [['CRTR_NODE_ID', saved.node], ['CDP_PORT', saved.port]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('URL matching prefers the exact requested page over same-host login pages', () => {
   const exact = scoreTabUrlMatch(
     'https://account.godaddy.com/products',
