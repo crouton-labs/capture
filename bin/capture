@@ -14433,6 +14433,15 @@ var init_motion = __esm({
             ...candidateSampleTruncated === void 0 ? {} : { candidateSampleTruncated }
           });
         } catch (err) {
+          appendNdjsonPrivate(this.rectsPath, {
+            frame: frameIndex,
+            file: frameName,
+            cssToDevice: null,
+            screencastTimestamp: params.metadata?.timestamp ?? null,
+            screencastTimestampPrecision: "frame-metadata",
+            recordedAtWallClockMs: Date.now(),
+            elements: null
+          });
           this.appendEvent({
             kind: "error",
             message: `rect sample failed for frame ${frameIndex}: ${err instanceof Error ? err.message : String(err)}`
@@ -245798,7 +245807,8 @@ function artifactLoss(events) {
 function analyzeMotionJank(input) {
   const frameRecords = input.rects.map(record2).filter((item) => item !== null).map((item) => ({ item, tMs: frameTime(item, input.markers) })).filter((item) => item.tMs !== null).sort((a, b) => a.tMs - b.tMs);
   const frames2 = frameRecords.map(({ item, tMs }, index) => ({ frame: finite2(item.frame) ?? index, tMs }));
-  const missingFrameSampleCount = missingFrameSamples(frames2);
+  const sampledFrameRecords = frameRecords.filter(({ item }) => item.elements !== null);
+  const missingFrameSampleCount = missingFrameSamples(frames2) + frameRecords.length - sampledFrameRecords.length;
   const traceEvents3 = flattenTraceEvents(input.events);
   const observedTraceBaselineUs = traceEvents3.map((event) => finite2(event.ts)).filter((ts2) => ts2 !== void 0).sort((a, b) => a - b)[0];
   const observerEntries = observerRecords(input.events);
@@ -245829,7 +245839,7 @@ function analyzeMotionJank(input) {
     const timing2 = traceTime(timestampUs, input.markers, observedTraceBaselineUs);
     if (timing2 !== null) longTasks.push(longTask("trace", timing2.domain, timing2.tMs, durationMs / 1e3));
   }
-  const frameElementRecords = frameRecords.map(({ item, tMs }) => ({ tMs, elements: (Array.isArray(item.elements) ? item.elements : []).map(record2).filter((v) => v !== null) }));
+  const frameElementRecords = sampledFrameRecords.map(({ item, tMs }) => ({ tMs, elements: (Array.isArray(item.elements) ? item.elements : []).map(record2).filter((v) => v !== null) }));
   const layoutShifts = [];
   for (const { item, timingAvailable } of observerEntries) {
     if (item.entryType !== "layout-shift") continue;
@@ -245924,7 +245934,7 @@ async function cmdMotionJank(parsed, _args) {
     const sections = [fact`${analysis.timingNote}`];
     sections.push(fact`PerformanceObserver records carry no call-stack, handler, or script/style/layout/paint attribution. Trace-engine attribution belongs to capture perf trace and capture perf insights when a trace records it.`);
     sections.push(fact`Page.screencastFrame is change-driven; its ${analysis.frameCount} timestamped rect sample(s) do not measure page dropped frames.`);
-    if (analysis.missingFrameSampleCount > 0) sections.push(fact`${analysis.missingFrameSampleCount} screencast frame(s) have no rect timestamp sample.`);
+    if (analysis.missingFrameSampleCount > 0) sections.push(fact`${analysis.missingFrameSampleCount} screencast frame(s) have no successful rect sample.`);
     if (analysis.longTasks.length) {
       sections.push(lineList(analysis.longTasks.map((task, index) => formatLongTask(task, index))));
     } else {

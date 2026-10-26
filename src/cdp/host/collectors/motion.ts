@@ -154,7 +154,8 @@ export interface FrameRectsRecord {
    */
   screencastTimestampPrecision: 'frame-metadata';
   recordedAtWallClockMs: number;
-  elements: SampledRect[];
+  /** Null means the rect sample failed; [] means sampling succeeded with no elements. */
+  elements: SampledRect[] | null;
   /** The sampler reached its element cap before examining every remaining DOM candidate. */
   elementSampleTruncated?: true;
   /** The sampler exhausted its geometry-read budget while DOM candidates remained. */
@@ -1074,8 +1075,16 @@ export class RecorderSession {
         ...(candidateSampleTruncated === undefined ? {} : { candidateSampleTruncated }),
       } satisfies FrameRectsRecord);
     } catch (err) {
-      // A failed rect sample for one frame shouldn't take the recorder down;
-      // the frame PNG above is already written regardless.
+      // Preserve the frame's timestamp without claiming its DOM was sampled.
+      appendNdjsonPrivate(this.rectsPath, {
+        frame: frameIndex,
+        file: frameName,
+        cssToDevice: null,
+        screencastTimestamp: params.metadata?.timestamp ?? null,
+        screencastTimestampPrecision: 'frame-metadata',
+        recordedAtWallClockMs: Date.now(),
+        elements: null,
+      } satisfies FrameRectsRecord);
       this.appendEvent({
         kind: 'error',
         message: `rect sample failed for frame ${frameIndex}: ${err instanceof Error ? err.message : String(err)}`,

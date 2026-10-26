@@ -260,7 +260,9 @@ export function analyzeMotionJank(input: { rects: readonly unknown[]; events: re
     .filter((item): item is { item: UnknownRecord; tMs: number } => item.tMs !== null)
     .sort((a, b) => a.tMs - b.tMs);
   const frames: JankFrame[] = frameRecords.map(({ item, tMs }, index) => ({ frame: finite(item.frame) ?? index, tMs }));
-  const missingFrameSampleCount = missingFrameSamples(frames);
+  // A retained row with `elements: null` carries a timestamp but its rect sample failed.
+  const sampledFrameRecords = frameRecords.filter(({ item }) => item.elements !== null);
+  const missingFrameSampleCount = missingFrameSamples(frames) + frameRecords.length - sampledFrameRecords.length;
 
   const traceEvents = flattenTraceEvents(input.events);
   const observedTraceBaselineUs = traceEvents.map((event) => finite(event.ts)).filter((ts): ts is number => ts !== undefined).sort((a, b) => a - b)[0];
@@ -293,7 +295,7 @@ export function analyzeMotionJank(input: { rects: readonly unknown[]; events: re
     if (timing !== null) longTasks.push(longTask('trace', timing.domain, timing.tMs, durationMs / 1000));
   }
 
-  const frameElementRecords = frameRecords.map(({ item, tMs }) => ({ tMs, elements: (Array.isArray(item.elements) ? item.elements : []).map(record).filter((v): v is UnknownRecord => v !== null) }));
+  const frameElementRecords = sampledFrameRecords.map(({ item, tMs }) => ({ tMs, elements: (Array.isArray(item.elements) ? item.elements : []).map(record).filter((v): v is UnknownRecord => v !== null) }));
   const layoutShifts: LayoutShiftFact[] = [];
   for (const { item, timingAvailable } of observerEntries) {
     if (item.entryType !== 'layout-shift') continue;

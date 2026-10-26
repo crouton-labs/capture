@@ -27,7 +27,7 @@ export async function cmdMotionJank(parsed: ParsedArgs, _args: string[]): Promis
 
     sections.push(fact`PerformanceObserver records carry no call-stack, handler, or script/style/layout/paint attribution. Trace-engine attribution belongs to capture perf trace and capture perf insights when a trace records it.`);
     sections.push(fact`Page.screencastFrame is change-driven; its ${analysis.frameCount} timestamped rect sample(s) do not measure page dropped frames.`);
-    if (analysis.missingFrameSampleCount > 0) sections.push(fact`${analysis.missingFrameSampleCount} screencast frame(s) have no rect timestamp sample.`);
+    if (analysis.missingFrameSampleCount > 0) sections.push(fact`${analysis.missingFrameSampleCount} screencast frame(s) have no successful rect sample.`);
 
     if (analysis.longTasks.length) {
       sections.push(lineList(analysis.longTasks.map((task, index) => formatLongTask(task, index))));
