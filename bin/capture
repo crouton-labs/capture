@@ -240004,7 +240004,7 @@ async function captureMeasureSnap(parsed, targetRef = parsed.positional[0], view
   let snapDir;
   let allocatedRoot;
   const navigateTo = targetRef && isUrlRef(targetRef) ? targetRef : void 0;
-  const connectionArgs = navigateTo ? { ...parsed, url: void 0, viewport: viewport2?.label } : !parsed.target && !active?.targetId && baseUrl ? { ...parsed, url: baseUrl, viewport: viewport2?.label } : { ...parsed, viewport: viewport2?.label };
+  const connectionArgs = navigateTo ? { ...parsed, url: void 0, target: parsed.target ?? active?.targetId, viewport: viewport2?.label } : !parsed.target && !active?.targetId && baseUrl ? { ...parsed, url: baseUrl, viewport: viewport2?.label } : { ...parsed, viewport: viewport2?.label };
   let ownedTab;
   if (navigateTo && !connectionArgs.target && !active) {
     const port = parsed.port ?? await detectCdpPort();

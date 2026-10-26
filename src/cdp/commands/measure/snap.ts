@@ -282,7 +282,7 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
   // tab, or the tab at its recorded URL.
   const navigateTo = targetRef && isUrlRef(targetRef) ? targetRef : undefined;
   const connectionArgs: ParsedArgs = navigateTo
-    ? { ...parsed, url: undefined, viewport: viewport?.label }
+    ? { ...parsed, url: undefined, target: parsed.target ?? active?.targetId, viewport: viewport?.label }
     : !parsed.target && !active?.targetId && baseUrl
       ? { ...parsed, url: baseUrl, viewport: viewport?.label }
       : { ...parsed, viewport: viewport?.label };
