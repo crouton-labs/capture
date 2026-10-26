@@ -4,6 +4,9 @@ import { randomBytes } from 'crypto';
 
 import { type ParsedArgs } from '../../types.js';
 import { withConnection } from '../../connection.js';
+import { detectCdpPort } from '../../detect.js';
+import { closeTarget, openTab } from '../../targets.js';
+import { navigateClient } from '../page/navigate.js';
 import { isMotionHeldClient } from '../../host/held-client.js';
 import { parseViewport, type Viewport } from '../../viewport.js';
 import { parseColorScheme, withAppliedColorScheme, type ColorScheme } from '../../color-scheme.js';
@@ -29,7 +32,7 @@ import {
 const USAGE = `capture measure snap [url|snap] — drive the page and write one settled snapshot substrate directory
 
 input:
-  [url|snap]                  a URL drives the page fresh; a snap id or absolute path re-captures states over that base snapshot. Outside a session a URL writes under a private one-shot session; with an active session, snapshots are written under it and later resolve by snap id
+  [url|snap]                  a URL is loaded fresh before capture: the active session's tab (or the --target tab) is navigated to it, so that tab ends on the URL; with no session and no --target, a new tab is opened on the browser (--port), loaded, captured and closed. A snap id or absolute path re-captures states over that base snapshot. Outside a session a URL writes under a private one-shot session; with an active session, snapshots are written under it and later resolve by snap id
   --freeze-animations         pause CSS/WAAPI animation before capture
   --settle-timeout <ms>       override the default 5000ms settle wait
   --capture-unsettled         write the full substrate despite non-settlement, marking unstable regions
@@ -42,7 +45,7 @@ input:
   --color-scheme <dark|light> temporarily capture under this prefers-color-scheme value; cleared afterward
   --artifact-dir <path>      root for this sessionless snapshot bundle; ignored when an active session owns the snapshot
 output: <snapshot id=… path=…> — the settled artifact directory (geometry, styles, hit-test, text, forms, animation, ax, queries, focus, scroll, layers; per-element crops with --pixels) every other measure/motion query leaf reads instead of re-driving the browser; --json mirrors
-effects: drives the target page to capture; writes one snapshot artifact directory under the active session or, when sessionless, a one-shot bundle under --artifact-dir. --color-scheme transiently applies Emulation.setEmulatedMedia and clears it after capture.`;
+effects: with a URL, navigates the session or --target tab to it (the same navigation \`page navigate\` performs, recorder-routed during a live recording) before capture. Drives the target page to capture; writes one snapshot artifact directory under the active session or, when sessionless, a one-shot bundle under --artifact-dir. --color-scheme transiently applies Emulation.setEmulatedMedia and clears it after capture.`;
 
 interface SnapshotMetaForBase {
   readonly url?: string | null;
@@ -273,18 +276,35 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
   let snapDir: string | undefined;
   let allocatedRoot: string | undefined;
 
-  // A positional URL is an explicit alternate target, matching --url's
-  // existing connection semantics. A base snapshot uses the active tab when
-  // available; otherwise its recorded URL identifies the tab to re-capture.
-  const connectionArgs: ParsedArgs = targetRef && isUrlRef(targetRef)
-    ? { ...parsed, url: targetRef, target: undefined, viewport: viewport?.label }
+  // A positional URL is loaded into the session's (or --target's) tab, the
+  // same way `perf trace <url>` does. With neither, a tab this command opens
+  // and closes carries the load. A base snapshot instead re-captures the active
+  // tab, or the tab at its recorded URL.
+  const navigateTo = targetRef && isUrlRef(targetRef) ? targetRef : undefined;
+  const connectionArgs: ParsedArgs = navigateTo
+    ? { ...parsed, url: undefined, viewport: viewport?.label }
     : !parsed.target && !active?.targetId && baseUrl
       ? { ...parsed, url: baseUrl, viewport: viewport?.label }
       : { ...parsed, viewport: viewport?.label };
+  let ownedTab: { port: number; id: string } | undefined;
+  if (navigateTo && !connectionArgs.target && !active) {
+    const port = parsed.port ?? await detectCdpPort();
+    const opened = await openTab(port, 'about:blank');
+    ownedTab = { port, id: opened.id };
+    connectionArgs.port = port;
+    connectionArgs.target = opened.id;
+  }
 
   try {
     let artifacts: readonly string[] = [];
     await withConnection(connectionArgs, async (client, tab) => {
+      let snapUrl = tab.url || baseUrl;
+      if (navigateTo) {
+        await navigateClient(client, navigateTo);
+        const href = (await client.send('Runtime.evaluate', { expression: 'location.href', returnByValue: true })) as { result?: { value?: unknown } };
+        if (typeof href.result?.value !== 'string') throw new Error(`could not read the tab URL after navigating to ${navigateTo}`);
+        snapUrl = href.result.value;
+      }
       await withAppliedColorScheme(client, colorScheme, async () => withAppliedViewport(client, viewport, async () => {
         const oneshot = active ? undefined : createOneshotSession('measure', parsed.artifactDir);
         const destination = active ? path.join(active.dir, 'measure', 'snaps') : oneshot!.artifactsDir;
@@ -292,7 +312,7 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
         allocatedRoot = active ? snapDir : oneshot!.dir;
         const result = await captureSnapshotSubstrate({
           target: { client, tabId: tab.id },
-          url: tab.url || baseUrl,
+          url: snapUrl,
           path: snapDir,
           snapId,
           settleTimeout: parsed.settleTimeout ?? DEFAULT_SETTLE_TIMEOUT_MS,
@@ -314,6 +334,8 @@ export async function captureMeasureSnap(parsed: ParsedArgs, targetRef = parsed.
   } catch (err) {
     if (allocatedRoot && !(err instanceof SnapshotCaptureTimeout)) removeArtifactTree(allocatedRoot);
     throw err;
+  } finally {
+    if (ownedTab) await closeTarget(ownedTab.port, ownedTab.id);
   }
 }
 

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { closeChrome, spawnHeadlessChrome, type ChromeFixture } from './fixtures/chrome.js';
 import * as fs from 'node:fs';
-import * as http from 'node:http';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { CDPClient } from '../src/cdp/client.js';
 import { CAPTURE_ROOT, ensurePrivateDir, processPidBirthProvider, writeJsonPrivate } from '../src/session/artifacts.js';
@@ -19,7 +19,6 @@ import { CaptureError } from '../src/errors.js';
 const scope = `measure-snap-test-${process.pid}-${Date.now()}`;
 const secret = 'hunter2-should-not-appear';
 let chrome: ChromeFixture | undefined;
-let server: http.Server | undefined;
 let cdpPort = 0;
 let pageUrl = '';
 let targetId = '';
@@ -42,15 +41,15 @@ async function waitFor(url: string): Promise<void> {
   throw new Error(`Timed out waiting for ${url}: ${String(last)}`);
 }
 
-async function startFixtureServer(): Promise<number> {
-  server = http.createServer((_req, res) => {
-    res.writeHead(200, { 'content-type': 'text/html' });
-    res.end(`<!doctype html><button>Measure</button><input type="password" value="${secret}">`);
-  });
-  await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== 'string');
-  return address.port;
+// A file:// page, not an HTTP server in this process: `measure snap <url>` now
+// loads the URL, and spawnSync blocks this process's event loop, so an
+// in-process server could never answer it.
+function writeFixturePage(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'measure-snap-fixture-'));
+  cleanupRoots.add(dir);
+  const file = path.join(dir, 'measure-snap-fixture.html');
+  fs.writeFileSync(file, `<!doctype html><button>Measure</button><input type="password" value="${secret}">`);
+  return `file://${file}`;
 }
 
 async function startChrome(): Promise<void> {
@@ -107,11 +106,10 @@ function runCapture(args: string[]) {
 
 before(async () => {
   process.env.CRTR_NODE_ID = scope;
-  const port = await startFixtureServer();
-  pageUrl = `http://127.0.0.1:${port}/measure-snap-fixture`;
+  pageUrl = writeFixturePage();
   if (!LIVE_CHROME) {
     // Real-Chrome tests are gated with liveChromeOpts; the deterministic
-    // tests need only the fixture server plus a plausible (unconnected) port
+    // tests need only the fixture page plus a plausible (unconnected) port
     // for input-validation paths that reject before any CDP contact.
     cdpPort = 22000 + Math.floor(Math.random() * 1000);
     return;
@@ -127,7 +125,6 @@ after(async () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
   await chrome?.close();
-  server?.close();
 });
 
 test('measure snap writes one-shot and active-session substrates, including a hover state artifact', liveChromeOpts, async () => {
@@ -374,7 +371,7 @@ test('viewport request preserves a foreign DPR2 override without allocating arti
   try {
     await client.send('Emulation.setDeviceMetricsOverride', { width: 444, height: 333, deviceScaleFactor: 2, mobile: false });
     assert.deepEqual(await readViewport(), { width: 444, height: 333, dpr: 2 });
-    const rejected = runCapture(['measure', 'snap', pageUrl, '--port', String(cdpPort), '--viewport', '321x222', '--json']);
+    const rejected = runCapture(['measure', 'snap', pageUrl, '--port', String(cdpPort), '--target', targetId, '--viewport', '321x222', '--json']);
     assert.equal(rejected.status, 1);
     const result = JSON.parse(rejected.stdout) as { attrs: { status: string } };
     assert.equal(result.attrs.status, 'viewport_unavailable');
