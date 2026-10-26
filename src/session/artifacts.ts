@@ -266,6 +266,10 @@ export function createPrivateFile(filePath: string, data: string | Buffer = ''):
 }); }
 function readFd(fd: number): Buffer { const chunks: Buffer[] = []; const chunk = Buffer.allocUnsafe(65536); for (;;) { const n = fs.readSync(fd, chunk, 0, chunk.length, null); if (!n) return Buffer.concat(chunks); chunks.push(Buffer.from(chunk.subarray(0, n))); } }
 export function readPrivateFile(filePath: string): Buffer { return pinnedParent(filePath, name => { const fd = openRegular(name, fs.constants.O_RDONLY); let value: Buffer | undefined; let primary: unknown; try { value = readFd(fd); } catch (error) { primary = error; } try { closeDescriptor(fd, 'artifact-temp-close'); } catch (closeError) { if (primary) combineFailure(primary, closeError, 'private artifact read failed'); throw closeError; } if (primary) throw primary; return value!; }); }
+/** Streams a contained, no-follow private file to `onChunk` in bounded slices, so a caller can
+ * process an artifact larger than V8's maximum string or Buffer length. The slice is reused: copy
+ * anything kept past the callback. */
+export function readPrivateFileChunks(filePath: string, onChunk: (chunk: Buffer) => void): void { pinnedParent(filePath, name => { const fd = openRegular(name, fs.constants.O_RDONLY); let primary: unknown; try { const chunk = Buffer.allocUnsafe(1 << 20); for (;;) { const n = fs.readSync(fd, chunk, 0, chunk.length, null); if (!n) break; onChunk(chunk.subarray(0, n)); } } catch (error) { primary = error; } try { closeDescriptor(fd, 'artifact-temp-close'); } catch (closeError) { if (primary) combineFailure(primary, closeError, 'private artifact read failed'); throw closeError; } if (primary) throw primary; }); }
 /** Opens a contained, no-follow, append descriptor the caller owns and must close.
  * Reuses the pinned-parent transaction and fchmod-on-descriptor private mode, so a
  * planted symlink at the final component fails the open (O_NOFOLLOW) and the target's

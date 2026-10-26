@@ -26,6 +26,7 @@
  */
 
 import crypto from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
 import * as path from 'path';
 
 import {
@@ -34,7 +35,8 @@ import {
   CAPTURE_ROOT,
   createPrivateFile,
   ensurePrivateDir,
-  readPrivateFile,
+  openPrivateChunkWriter,
+  readPrivateFileChunks,
   unlinkPrivateFile,
 } from './session/artifacts.js';
 
@@ -958,42 +960,132 @@ export async function createHarRecording(sessionDir: string = CAPTURE_ROOT): Pro
   }
 }
 
-export async function readHarRecording(id: string): Promise<HarFile> {
-  const target = harFilePath(id);
-  const source = `live HAR recording ${target}`;
-  let raw: string;
+/**
+ * Walks a live store's NDJSON records in file order without ever holding the
+ * whole file as one string or Buffer — a long session's store can exceed V8's
+ * maximum string length. `visit` receives each parsed record with its zero-based
+ * line index (record 0 is the header). Fails closed exactly as a whole-file
+ * read would: an empty store, an empty line, a line that is not JSON, or an
+ * unterminated trailing record.
+ */
+function forEachStoreRecord(target: string, source: string, visit: (record: unknown, index: number) => void): void {
+  const decoder = new StringDecoder('utf8');
+  let pending = '';
+  let index = 0;
+  let totalBytes = 0;
+  const handle = (line: string): void => {
+    if (line.length === 0) fail(source, `store line ${index + 1}`, 'is empty');
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      return fail(source, `store line ${index + 1}`, 'is not valid JSON');
+    }
+    visit(record, index);
+    index += 1;
+  };
   try {
-    raw = readPrivateFile(target).toString('utf8');
+    readPrivateFileChunks(target, (chunk) => {
+      totalBytes += chunk.length;
+      pending += decoder.write(chunk);
+      let from = 0;
+      for (let newline = pending.indexOf('\n', from); newline !== -1; newline = pending.indexOf('\n', from)) {
+        handle(pending.slice(from, newline));
+        from = newline + 1;
+      }
+      pending = pending.slice(from);
+    });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       throw new Error(`live HAR recording is missing — cannot read: ${target}`, { cause: error });
     }
     throw error;
   }
-  if (raw.length === 0) fail(source, 'store', 'is empty — a live HAR store always begins with its header record');
-  if (!raw.endsWith('\n')) fail(source, 'store', 'ends with an unterminated record — the store is corrupt');
-  const lines = raw.slice(0, -1).split('\n');
-  const parseLine = (line: string, index: number): unknown => {
-    if (line.length === 0) fail(source, `store line ${index + 1}`, 'is empty');
-    try {
-      return JSON.parse(line);
-    } catch {
-      return fail(source, `store line ${index + 1}`, 'is not valid JSON');
-    }
-  };
+  if (totalBytes === 0) fail(source, 'store', 'is empty — a live HAR store always begins with its header record');
+  if (pending.length > 0 || decoder.end().length > 0) fail(source, 'store', 'ends with an unterminated record — the store is corrupt');
+}
 
-  const header = vStoreHeader(parseLine(lines[0], 0), source);
+export async function readHarRecording(id: string): Promise<HarFile> {
+  const target = harFilePath(id);
+  const source = `live HAR recording ${target}`;
+  let header: HarStoreHeader | undefined;
   const entries: HAREntry[] = [];
   const incompleteLifecycles: IncompleteLifecycle[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const batch = validateHarAppendBatch(parseLine(lines[i], i), `${source} line ${i + 1}`);
-    entries.push(...batch.entries);
-    incompleteLifecycles.push(...batch.incompleteLifecycles);
-  }
+  forEachStoreRecord(target, source, (record, index) => {
+    if (index === 0) {
+      header = vStoreHeader(record, source);
+      return;
+    }
+    const batch = validateHarAppendBatch(record, `${source} line ${index + 1}`);
+    for (const entry of batch.entries) entries.push(entry);
+    for (const lifecycle of batch.incompleteLifecycles) incompleteLifecycles.push(lifecycle);
+  });
   return {
-    log: { version: '1.2', creator: header.creator, entries },
+    log: { version: '1.2', creator: header!.creator, entries },
     incompleteLifecycles,
   };
+}
+
+/** Batches many small writes into ~1 MiB writes to the chunk writer. */
+function bufferedWriter(writer: { write(data: string): void }): { write(data: string): void; flush(): void } {
+  let buffered = '';
+  const flush = (): void => {
+    if (buffered.length === 0) return;
+    writer.write(buffered);
+    buffered = '';
+  };
+  return {
+    write(data) {
+      buffered += data;
+      if (buffered.length >= 1 << 20) flush();
+    },
+    flush,
+  };
+}
+
+/**
+ * Writes the finalized `HarFile` for a live store to `destination`, streaming one
+ * validated batch at a time so neither the store nor the output is ever one
+ * giant string. The output is the same `HarFile` document `readHarRecording`
+ * returns, serialised compactly (two passes over the store: entries, then incomplete lifecycles). It is published atomically: on any failure
+ * nothing is left at `destination`.
+ */
+export function exportHarRecording(id: string, destination: string): { entryCount: number } {
+  const target = harFilePath(id);
+  const source = `live HAR recording ${target}`;
+  const writer = openPrivateChunkWriter(destination);
+  const out = bufferedWriter(writer);
+  try {
+    let entryCount = 0;
+    forEachStoreRecord(target, source, (record, index) => {
+      if (index === 0) {
+        const header = vStoreHeader(record, source);
+        out.write(`{"log":{"version":"1.2","creator":${JSON.stringify(header.creator)},"entries":[`);
+        return;
+      }
+      for (const entry of validateHarAppendBatch(record, `${source} line ${index + 1}`).entries) {
+        out.write(`${entryCount === 0 ? '' : ','}${JSON.stringify(entry)}`);
+        entryCount += 1;
+      }
+    });
+    out.write(']},"incompleteLifecycles":[');
+    let lifecycleCount = 0;
+    forEachStoreRecord(target, source, (record, index) => {
+      if (index === 0) return;
+      for (const lifecycle of validateHarAppendBatch(record, `${source} line ${index + 1}`).incompleteLifecycles) {
+        out.write(`${lifecycleCount === 0 ? '' : ','}${JSON.stringify(lifecycle)}`);
+        lifecycleCount += 1;
+      }
+    });
+    out.write(']');
+    out.write('}');
+    out.flush();
+    writer.commit();
+    return { entryCount };
+  } catch (error) {
+    writer.discard();
+    throw error;
+  }
 }
 
 export async function appendToHarRecording(id: string, batch: HarAppendBatch): Promise<void> {

@@ -3,6 +3,7 @@ import * as path from 'path';
 import {
   createHarRecording,
   readHarRecording,
+  exportHarRecording,
   deleteHarRecording,
   harFilePath,
   validateHarFile,
@@ -66,6 +67,8 @@ interface BundleManifest {
   url: string | null;
   shots: Array<{ name: string; path: string }>;
   har: { id: string; path: string; entryCount: number } | null;
+  /** Set only when the HAR could not be exported at stop: the failure, and that the live store was kept. */
+  harExportError?: string;
   logs: Array<{ name: string; path: string; lines: number }>;
   reports: Array<{ id: string; path: string; url: string; finalUrl: string; preset: 'mobile' | 'desktop'; categories: string[]; lighthouse: string | null; axe: string | null }>;
   other: Array<{ name: string; path: string }>;
@@ -97,7 +100,8 @@ function isBundleManifest(value: unknown): value is BundleManifest {
       && typeof (record.har as Record<string, unknown>).id === 'string'
       && typeof (record.har as Record<string, unknown>).path === 'string'
       && typeof (record.har as Record<string, unknown>).entryCount === 'number');
-  return typeof record.id === 'string'
+  return (record.harExportError === undefined || typeof record.harExportError === 'string')
+    && typeof record.id === 'string'
     && typeof record.startedAt === 'string'
     && typeof record.stoppedAt === 'string'
     && typeof record.duration === 'number'
@@ -430,7 +434,9 @@ Output:
 effects:
   Kills log tailers, tears down the held CDP bridge, finalizes any live
   recorder, collects every artifact into bundle.json, and clears the active
-  capture context.`;
+  capture context. The HAR is streamed into har.json; if it cannot be exported
+  the session is still finalized, bundle.json records the error, and the live
+  HAR store is kept.`;
 
 const LIST_USAGE = `capture session list — list active and stopped capture sessions.
 
@@ -1519,7 +1525,9 @@ async function har(parsed: ParsedArgs): Promise<void> {
 function bundleRows(manifest: BundleManifest): FactLine[] {
   return [
     fact`shots: ${manifest.shots.length}`,
-    manifest.har ? fact`har: ${manifest.har.entryCount} entries — ${manifest.har.path}` : fact`har: 0 entries`,
+    manifest.har
+      ? fact`har: ${manifest.har.entryCount} entries — ${manifest.har.path}`
+      : manifest.harExportError ? fact`har: export failed — ${manifest.harExportError}` : fact`har: 0 entries`,
     fact`logs: ${manifest.logs.length}`,
     fact`lighthouse reports: ${manifest.reports.length}`,
     fact`measure snaps: ${manifest.snaps.length}`,
@@ -1586,7 +1594,7 @@ async function stop(parsed: ParsedArgs): Promise<void> {
         // The bundle commit is authoritative even if the committing process
         // died before post-commit cleanup. Complete those idempotent steps
         // without ever replacing the immutable manifest.
-        if (session.harId) {
+        if (session.harId && manifest.har) {
           try { await deleteHarRecording(session.harId); }
           catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
         }
@@ -1622,12 +1630,19 @@ async function stop(parsed: ParsedArgs): Promise<void> {
         ? fs.readdirSync(shotsDir).filter(name => name.endsWith('.png') || name.endsWith('.jpg')).map(name => ({ name, path: path.join(shotsDir, name) }))
         : [];
 
+      // A HAR that cannot be exported must not leave the session active: the
+      // bundle is still committed, names the failure, and the live store stays
+      // on disk as the only copy of the traffic.
       let har: BundleManifest['har'] = null;
+      let harExportError: string | undefined;
       if (session.harId) {
-        const harData = await readHarRecording(session.harId);
         const harPath = path.join(session.dir, 'har.json');
-        writeJsonPrivate(harPath, harData);
-        har = { id: session.harId, path: harPath, entryCount: harData.log.entries.length };
+        try {
+          const { entryCount } = exportHarRecording(session.harId, harPath);
+          har = { id: session.harId, path: harPath, entryCount };
+        } catch (error) {
+          harExportError = `${error instanceof Error ? error.message : String(error)}; the live HAR store was kept at ${harFilePath(session.harId)}`;
+        }
       }
 
       const logsDir = path.join(session.dir, 'logs');
@@ -1656,6 +1671,7 @@ async function stop(parsed: ParsedArgs): Promise<void> {
         url: session.url ?? null,
         shots,
         har,
+        ...(harExportError === undefined ? {} : { harExportError }),
         logs,
         reports,
         other,
@@ -1668,7 +1684,7 @@ async function stop(parsed: ParsedArgs): Promise<void> {
       // The immutable bundle is the commit point. Live HAR deletion, stopped
       // metadata, and pointer compare-clear are strictly post-commit.
       writeJsonPrivate(bundlePath, manifest);
-      if (session.harId) await deleteHarRecording(session.harId);
+      if (har) await deleteHarRecording(har.id);
       await updateSessionState(session.dir, { stoppedAt, stopping: false });
       clearActiveSessionIf(id);
       committed = true;
@@ -1757,7 +1773,7 @@ function sectionRows(manifest: BundleManifest, key: SectionKey): FactLine[] {
     case 'har':
       return manifest.har
         ? [fact`har.json — ${manifest.har.entryCount} entries — ${manifest.har.path}`]
-        : [];
+        : manifest.harExportError ? [fact`har export failed — ${manifest.harExportError}`] : [];
     case 'logs':
       return manifest.logs.map((l) => fact`${l.name} — ${l.lines} lines — ${l.path}`);
     case 'reports':
