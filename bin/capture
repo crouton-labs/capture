@@ -5654,8 +5654,12 @@ function forgetRecordFile(file) {
   }
 }
 function stillOurs(record5) {
+  return processOwnership(record5) === "ours";
+}
+function processOwnership(record5) {
   const observed = processPidBirthProvider.read(record5.pid);
-  return observed.status === "found" && sameBirth(observed.identity, record5.birth);
+  if (observed.status === "unknown") return "unknown";
+  return observed.status === "found" && sameBirth(observed.identity, record5.birth) ? "ours" : "gone";
 }
 function removeProfile(profileDir) {
   fs2.rmSync(assertUnderCaptureRoot(profileDir), { recursive: true, force: true });
@@ -5677,26 +5681,33 @@ async function reap(record5) {
   forgetRecordFile(recordPath(record5.token));
   removeProfile(record5.profileDir);
 }
-async function endpointAnswers(port) {
+async function probeEndpoint(port) {
   try {
     const response = await fetch(`http://${CDP_LOOPBACK_HOST}:${port}/json/version`, {
       signal: AbortSignal.timeout(ENDPOINT_PROBE_MS)
     });
-    return response.ok;
-  } catch {
-    return false;
+    return response.ok ? "up" : "down";
+  } catch (error4) {
+    const code = error4.cause?.code;
+    return code === "ECONNREFUSED" ? "down" : "unknown";
   }
+}
+async function endpointAnswers(port) {
+  return await probeEndpoint(port) === "up";
 }
 async function sweepOwnedBrowsers() {
   const reaped = [];
   for (const record5 of readOwnedBrowsers()) {
-    if (!stillOurs(record5)) {
+    const ownership2 = processOwnership(record5);
+    if (ownership2 === "unknown") continue;
+    if (ownership2 === "gone") {
       forgetRecordFile(recordPath(record5.token));
       removeProfile(record5.profileDir);
       reaped.push({ port: record5.port, pid: record5.pid, reason: "exited" });
       continue;
     }
-    if (record5.port === null || !await endpointAnswers(record5.port)) {
+    if (record5.port === null && Date.now() - Date.parse(record5.startedAt) <= READY_TIMEOUT_MS + ENDPOINT_PROBE_MS) continue;
+    if (record5.port === null || await probeEndpoint(record5.port) === "down") {
       await reap(record5);
       reaped.push({ port: record5.port, pid: record5.pid, reason: "unreachable" });
       continue;
@@ -230406,7 +230417,7 @@ function buildBrowserLaunchedResult(browser, swept) {
       line(text`mode `, data(browser.headless ? "headless" : "headed"))
     ])
   ];
-  if (swept > 0) sections.push(fact`swept ${swept} previously-launched browser(s) that had exited, stopped answering CDP, or gone idle.`);
+  if (swept > 0) sections.push(fact`swept ${swept} previously-launched browser(s) that had exited, refused CDP connections, or gone idle.`);
   return {
     tag: "browser-launched",
     attrs: { port: browser.port, pid: browser.pid, headless: browser.headless },
@@ -230454,7 +230465,7 @@ input:
   --headed        run with a visible window instead of headless
 
 output: <browser-launched port=\u2026 pid=\u2026> \u2014 the port to pass as --port (or CDP_PORT), the pid capture owns, and the executable that answered with its provenance (CAPTURE_BROWSER, puppeteer-cache, or system).
-effects: spawns a detached browser with a private profile under CAPTURE_ROOT, and registers it as capture-owned. Capture stops it on \`capture tab quit\`, or on the first later capture invocation once it has been unused for ${IDLE_REAP_MS / 6e4} minutes; a browser capture did not start is never signalled. Also sweeps previously-launched browsers that have exited, stopped answering CDP, or gone idle.`;
+effects: spawns a detached browser with a private profile under CAPTURE_ROOT, and registers it as capture-owned. Capture stops it on \`capture tab quit\`, or on the first later capture invocation once it has been unused for ${IDLE_REAP_MS / 6e4} minutes; a browser capture did not start is never signalled. Also sweeps previously-launched browsers that have exited, refused CDP connections, or gone idle.`;
   }
 });
 
@@ -230632,7 +230643,7 @@ input:
   --port <port>   probe one endpoint only, instead of discovering every localhost CDP endpoint; an active session's endpoint does not narrow it (CDP_PORT still pins one endpoint)
 
 output: <tabs endpoints=\u2026 tabs=\u2026> \u2014 one section per reachable endpoint (port, app, page-tab count, preferred marker, and a capture-owned pid marker on any browser \`tab launch\` started) listing each page tab's target id (first 8 chars, enough for --target), title, and url; an endpoint that failed the tab fetch is an endpoints-unreachable fact, never a silent omission.
-effects: probes local CDP endpoints over HTTP/WebSocket; no page-observable writes. Also sweeps capture-launched browsers, stopping any that have exited, stopped answering CDP, or gone idle \u2014 browsers capture did not start are never signalled.`;
+effects: probes local CDP endpoints over HTTP/WebSocket; no page-observable writes. Also sweeps capture-launched browsers, stopping any that have exited, refused CDP connections, or gone idle \u2014 browsers capture did not start are never signalled.`;
     ARC_ENDPOINT_NOTE = text`  note: Arc exposes only tabs opened over CDP as page targets; the tabs in its windows are not listed. Open one with "capture tab open <url> --port <port>", then "capture session start --port <port> --target <id>".`;
   }
 });

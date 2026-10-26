@@ -191,8 +191,16 @@ function forgetRecordFile(file: string): void {
  * ONLY gate that authorizes a signal; an `unknown` read (a provider that could
  * not answer) is deliberately NOT a kill authorization. */
 function stillOurs(record: OwnedBrowser): boolean {
+  return processOwnership(record) === 'ours';
+}
+
+/** `gone` — the process exited, or its pid was recycled by a stranger; `unknown` —
+ * the provider could not answer (e.g. its `sysctl` read timed out on a loaded
+ * host), which says nothing about whether the browser is alive. */
+function processOwnership(record: OwnedBrowser): 'ours' | 'gone' | 'unknown' {
   const observed = processPidBirthProvider.read(record.pid);
-  return observed.status === 'found' && sameBirth(observed.identity, record.birth);
+  if (observed.status === 'unknown') return 'unknown';
+  return observed.status === 'found' && sameBirth(observed.identity, record.birth) ? 'ours' : 'gone';
 }
 
 /**
@@ -229,15 +237,24 @@ async function reap(record: OwnedBrowser): Promise<void> {
   removeProfile(record.profileDir);
 }
 
-async function endpointAnswers(port: number): Promise<boolean> {
+/** `up` — answered; `down` — the connection was refused or the answer was an
+ * error, so nothing is serving CDP there; `unknown` — no answer within the probe
+ * window or the request failed some other way. A browser starved of CPU on a
+ * loaded host answers slowly, so `unknown` is never evidence it is unusable. */
+async function probeEndpoint(port: number): Promise<'up' | 'down' | 'unknown'> {
   try {
     const response = await fetch(`http://${CDP_LOOPBACK_HOST}:${port}/json/version`, {
       signal: AbortSignal.timeout(ENDPOINT_PROBE_MS),
     });
-    return response.ok;
-  } catch {
-    return false;
+    return response.ok ? 'up' : 'down';
+  } catch (error) {
+    const code = (error as { cause?: { code?: unknown } }).cause?.code;
+    return code === 'ECONNREFUSED' ? 'down' : 'unknown';
   }
+}
+
+async function endpointAnswers(port: number): Promise<boolean> {
+  return (await probeEndpoint(port)) === 'up';
 }
 
 /**
@@ -249,7 +266,12 @@ async function endpointAnswers(port: number): Promise<boolean> {
 export async function sweepOwnedBrowsers(): Promise<ReapedBrowser[]> {
   const reaped: ReapedBrowser[] = [];
   for (const record of readOwnedBrowsers()) {
-    if (!stillOurs(record)) {
+    const ownership = processOwnership(record);
+    // An unreadable process identity proves nothing: removing the profile of a
+    // browser that is in fact running would pull its user-data-dir out from
+    // under it. Leave the record for a sweep that can read it.
+    if (ownership === 'unknown') continue;
+    if (ownership === 'gone') {
       // Crashed, or SIGKILLed by someone else. Nothing to signal — just drop
       // the claim and the profile it left behind.
       forgetRecordFile(recordPath(record.token));
@@ -257,7 +279,11 @@ export async function sweepOwnedBrowsers(): Promise<ReapedBrowser[]> {
       reaped.push({ port: record.port, pid: record.pid, reason: 'exited' });
       continue;
     }
-    if (record.port === null || !(await endpointAnswers(record.port))) {
+    // A record with no port is a launch in flight in another capture process
+    // (the registry is shared by every agent on the host), not a dead browser —
+    // until the launch's own readiness deadline has passed.
+    if (record.port === null && Date.now() - Date.parse(record.startedAt) <= READY_TIMEOUT_MS + ENDPOINT_PROBE_MS) continue;
+    if (record.port === null || (await probeEndpoint(record.port)) === 'down') {
       await reap(record);
       reaped.push({ port: record.port, pid: record.pid, reason: 'unreachable' });
       continue;
