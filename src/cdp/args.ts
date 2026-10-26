@@ -1,5 +1,6 @@
-import { invalidInput } from '../errors.js';
+import { captureError, invalidInput } from '../errors.js';
 import { getActiveSession } from '../session-context.js';
+import { isUrlRef } from '../output/artifact.js';
 import { type ParsedArgs } from './types.js';
 import { assertParseableUrl, assertScrollDestination, assertSweepBounds, parsePositiveNumber, parseDoAction, type SweepAxisName } from './leaf-grammar.js';
 
@@ -558,6 +559,50 @@ function needsEndpointResolution(parsed: ParsedArgs): boolean {
 }
 
 /**
+ * False only for leaves that never open a CDP connection: `tab list` (the probe
+ * that finds a port to pass), and the leaves that read a recorded artifact by
+ * id or path. A leaf that also takes a URL (`measure check`, `measure census`,
+ * `measure map ax|focus|layers|scroll`) reaches a browser only when it is given
+ * one. Everything not named here counts as reaching a browser, so a new leaf is
+ * guarded until it is listed.
+ */
+function mayReachBrowser(parsed: ParsedArgs): boolean {
+  const [leaf, sub] = parsed.positional;
+  switch (parsed.command) {
+    case 'tab': return leaf !== 'list';
+    case 'motion': return leaf === 'rec';
+    case 'perf': return leaf === 'trace';
+    case 'heap': return leaf === 'snapshot';
+    case 'measure': {
+      if (leaf === 'diff' || leaf === 'explain' || leaf === 'text' || (leaf === 'map' && sub === 'paint')) return false;
+      if (leaf === 'check' || leaf === 'census' || leaf === 'map') return parsed.url !== undefined || parsed.positional.some(isUrlRef);
+      return true;
+    }
+    default: return true;
+  }
+}
+
+/**
+ * A node (`CRTR_NODE_ID` set) may only drive a browser it chose: an explicit
+ * `--port` or `--target`, or the port/tab recorded by its own active session.
+ * Otherwise `CDP_PORT`, `CDP_TARGET` and localhost auto-discovery would accept
+ * whatever browser is there, which can be another node's signed-in browser.
+ * `session start` is the way to choose one, and `tab list` only lists, so
+ * neither is refused. With no `CRTR_NODE_ID` (a person at a shell) nothing here
+ * applies.
+ */
+function refuseUnownedEndpoint(parsed: ParsedArgs, sessionStart: boolean): void {
+  if (!process.env.CRTR_NODE_ID?.trim() || sessionStart || !mayReachBrowser(parsed)) return;
+  if (parsed.port !== undefined || parsed.targetSource === 'flag' || parsed.targetSource === 'session') return;
+  const command = leafCommand(parsed.command, parsed.positional);
+  throw captureError(
+    'precondition',
+    'no_owned_browser',
+    `\`capture ${command}\` was not run: this node (CRTR_NODE_ID) has no browser of its own. With no --port, no --target and no active session holding a browser, capture will not use CDP_PORT, CDP_TARGET or auto-discovery, because the browser it found could belong to another node. Do one of: (1) \`capture session start --url <url>\` to open and hold your own browser tab, or \`capture tab launch\` then \`capture session start --port <port>\`; (2) pass \`--port <port>\` (see \`capture tab list\`); (3) pass \`--target <tabId>\`.`,
+  );
+}
+
+/**
  * Hydrates endpoint/session defaults only after pure invocation validation
  * succeeds. Endpoint precedence is `explicit flag > session endpoint > env`:
  * the active session is hydrated FIRST, and the ambient `CDP_PORT` token is
@@ -582,6 +627,7 @@ export function resolveCliContext(parsed: ParsedArgs): ParsedArgs {
     // --port override for deliberate multi-browser work.
     if (parsed.port === undefined && session.port !== undefined && session.port !== null) { parsed.port = session.port; parsed.portSource = 'session'; }
   }
+  refuseUnownedEndpoint(parsed, sessionStart);
   if (parsed.port === undefined && process.env.CDP_PORT !== undefined) {
     parsed.port = schemaInteger(leafCommand(parsed.command, parsed.positional), process.env.CDP_PORT, 'CDP_PORT', 1, 65535);
     parsed.portSource = 'env';

@@ -9095,6 +9095,347 @@ var init_console_recorder = __esm({
   }
 });
 
+// src/output/artifact.ts
+function isUrlRef(ref) {
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(ref);
+}
+function stripTrailingSep(p) {
+  return p.length > 1 && (p.endsWith("/") || p.endsWith(path5.sep)) ? p.slice(0, -1) : p;
+}
+function resolveRefFromPath(ref, config3) {
+  const resolved = assertUnderCaptureRoot(stripTrailingSep(ref));
+  const metaPath = path5.join(resolved, "meta.json");
+  if (!fs5.existsSync(metaPath)) {
+    throw new ArtifactResolutionError(
+      ref,
+      [resolved],
+      `no ${config3.label} found at this path (missing meta.json)`,
+      config3.creatingCommand
+    );
+  }
+  return { kind: config3.kind, id: path5.basename(resolved), dir: resolved };
+}
+function resolveRefFromId(ref, config3) {
+  const active = getActiveSession();
+  if (!active) {
+    throw new ArtifactResolutionError(
+      ref,
+      [],
+      `no active capture session \u2014 a bare id resolves against the active session's ${config3.idSegments.join("/")} directory`,
+      `capture session start (then re-run), or pass the absolute ${config3.label} path printed by ${config3.creatingCommand}`
+    );
+  }
+  const dir = path5.join(active.dir, ...config3.idSegments, ref);
+  const resolved = assertUnderCaptureRoot(dir);
+  const metaPath = path5.join(resolved, "meta.json");
+  if (!fs5.existsSync(metaPath)) {
+    throw new ArtifactResolutionError(
+      ref,
+      [resolved],
+      `no ${config3.label} named ${JSON.stringify(ref)} found in the active session (${active.sessionId})`,
+      config3.creatingCommand
+    );
+  }
+  return { kind: config3.kind, id: ref, dir: resolved };
+}
+function rejectRelativePath(ref) {
+  if (!path5.isAbsolute(ref) && (ref.includes("/") || ref.includes(path5.sep))) {
+    throw new ArtifactResolutionError(
+      ref,
+      [],
+      "relative paths are not accepted \u2014 pass an absolute artifact path (as printed by the capturing command) or a bare id"
+    );
+  }
+}
+async function resolveSnapRef(ref, options = {}) {
+  if (isUrlRef(ref)) {
+    if (!options.onUrl) {
+      throw new ArtifactResolutionError(ref, [], "this command does not accept a URL target \u2014 pass a snapshot id or path instead");
+    }
+    const result = await options.onUrl(ref);
+    return { kind: "snap", id: result.id, dir: assertUnderCaptureRoot(result.dir) };
+  }
+  if (path5.isAbsolute(ref)) return resolveRefFromPath(ref, SNAP_CONFIG);
+  rejectRelativePath(ref);
+  return resolveRefFromId(ref, SNAP_CONFIG);
+}
+function resolveRecRef(ref) {
+  if (isUrlRef(ref)) {
+    throw new ArtifactResolutionError(
+      ref,
+      [],
+      "a recording ref cannot be a URL \u2014 record one first with `capture motion rec <url> --do <action>` or `--start`/`--stop`"
+    );
+  }
+  if (path5.isAbsolute(ref)) return resolveRefFromPath(ref, REC_CONFIG);
+  rejectRelativePath(ref);
+  return resolveRefFromId(ref, REC_CONFIG);
+}
+function resolveTraceRef(ref) {
+  if (isUrlRef(ref)) {
+    throw new ArtifactResolutionError(ref, [], "a trace ref cannot be a URL \u2014 record one first with `capture perf trace <url>` or `--start`/`--stop`");
+  }
+  const resolved = path5.isAbsolute(ref) ? resolveRefFromPath(ref, TRACE_CONFIG) : (rejectRelativePath(ref), resolveRefFromId(ref, TRACE_CONFIG));
+  let meta;
+  try {
+    meta = JSON.parse(readPrivateFile(path5.join(resolved.dir, "meta.json")).toString("utf8"));
+  } catch (error4) {
+    throw new ArtifactResolutionError(ref, [path5.join(resolved.dir, "meta.json")], `could not read trace metadata: ${error4 instanceof Error ? error4.message : String(error4)}`, TRACE_CONFIG.creatingCommand);
+  }
+  const completion = meta.completion;
+  if (completion !== "complete" && completion !== "partial" && completion !== "orphaned") {
+    throw new ArtifactResolutionError(ref, [path5.join(resolved.dir, "meta.json")], "trace metadata has no valid completion state", TRACE_CONFIG.creatingCommand);
+  }
+  const inventory = meta.files;
+  const inventoryMalformed = !Array.isArray(inventory);
+  const inventoryMismatch = !inventoryMalformed && inventory.some((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return true;
+    const item = entry;
+    const name = item.name;
+    const bytes = item.bytes;
+    if (typeof name !== "string" || typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 0 || name.includes(path5.sep)) return true;
+    try {
+      return fs5.statSync(path5.join(resolved.dir, name)).size !== bytes;
+    } catch {
+      return true;
+    }
+  });
+  const truncatedReason = inventoryMalformed ? "artifact_inventory_missing_or_malformed" : inventoryMismatch ? "artifact_inventory_mismatch" : void 0;
+  return { ...resolved, completion: truncatedReason ? "truncated" : completion, ...truncatedReason ? { reason: truncatedReason } : typeof meta.reason === "string" ? { reason: meta.reason } : {} };
+}
+function creatingCommandFor(filename) {
+  return CREATING_COMMAND_BY_FILE[filename];
+}
+function artifactPath(ref, filename, opts = {}) {
+  const filePath = assertUnderCaptureRoot(path5.join(ref.dir, filename));
+  const mustExist = opts.mustExist ?? true;
+  if (mustExist && !fs5.existsSync(filePath)) {
+    throw new ArtifactResolutionError(
+      ref.id,
+      [filePath],
+      `${filename} is not present in ${ref.kind === "snap" ? "snapshot" : ref.kind === "rec" ? "recording" : "trace"} ${ref.id}`,
+      creatingCommandFor(filename)
+    );
+  }
+  return filePath;
+}
+function artifactExists(ref, filename) {
+  return fs5.existsSync(assertUnderCaptureRoot(path5.join(ref.dir, filename)));
+}
+function readJsonArtifactFile(ref, filename) {
+  const filePath = artifactPath(ref, filename);
+  let raw;
+  try {
+    raw = fs5.readFileSync(filePath, "utf-8");
+  } catch (err) {
+    throw new ArtifactResolutionError(
+      ref.id,
+      [filePath],
+      `could not read ${filename}: ${err instanceof Error ? err.message : String(err)}`,
+      creatingCommandFor(filename)
+    );
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new ArtifactResolutionError(
+      ref.id,
+      [filePath],
+      `${filename} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      creatingCommandFor(filename)
+    );
+  }
+}
+function readNdjsonArtifactFile(ref, filename) {
+  const filePath = artifactPath(ref, filename);
+  let raw;
+  try {
+    raw = fs5.readFileSync(filePath, "utf-8");
+  } catch (err) {
+    throw new ArtifactResolutionError(
+      ref.id,
+      [filePath],
+      `could not read ${filename}: ${err instanceof Error ? err.message : String(err)}`,
+      creatingCommandFor(filename)
+    );
+  }
+  const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+  return lines.map((line4, i) => {
+    try {
+      return JSON.parse(line4);
+    } catch (err) {
+      throw new ArtifactResolutionError(
+        ref.id,
+        [filePath],
+        `${filename} line ${i + 1} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+        creatingCommandFor(filename)
+      );
+    }
+  });
+}
+function assertKind(ref, kind, fnName) {
+  if (ref.kind !== kind) {
+    throw new TypeError(`${fnName} expects a ${kind} ref, got a ${ref.kind} ref (${ref.id})`);
+  }
+}
+function readMeta(ref) {
+  return readJsonArtifactFile(ref, "meta.json");
+}
+function readGeometry(ref) {
+  assertKind(ref, "snap", "readGeometry");
+  return readJsonArtifactFile(ref, "geometry.json");
+}
+function readStyles(ref) {
+  assertKind(ref, "snap", "readStyles");
+  return readJsonArtifactFile(ref, "styles.json");
+}
+function readHittest(ref) {
+  assertKind(ref, "snap", "readHittest");
+  return readJsonArtifactFile(ref, "hittest.json");
+}
+function readText(ref) {
+  assertKind(ref, "snap", "readText");
+  return readJsonArtifactFile(ref, "text.json");
+}
+function readForms(ref) {
+  assertKind(ref, "snap", "readForms");
+  return readJsonArtifactFile(ref, "forms.json");
+}
+function readAnimation(ref) {
+  assertKind(ref, "snap", "readAnimation");
+  return readJsonArtifactFile(ref, "animation.json");
+}
+function readAx(ref) {
+  assertKind(ref, "snap", "readAx");
+  return readJsonArtifactFile(ref, "ax.json");
+}
+function readQueries(ref) {
+  assertKind(ref, "snap", "readQueries");
+  return readJsonArtifactFile(ref, "queries.json");
+}
+function readFocus(ref) {
+  assertKind(ref, "snap", "readFocus");
+  return readJsonArtifactFile(ref, "focus.json");
+}
+function readScroll(ref) {
+  assertKind(ref, "snap", "readScroll");
+  return readJsonArtifactFile(ref, "scroll.json");
+}
+function readLayers(ref) {
+  assertKind(ref, "snap", "readLayers");
+  return readJsonArtifactFile(ref, "layers.json");
+}
+function readStates(ref) {
+  assertKind(ref, "snap", "readStates");
+  return readJsonArtifactFile(ref, "states.json");
+}
+function readPixels(ref) {
+  assertKind(ref, "snap", "readPixels");
+  return readJsonArtifactFile(ref, "pixels.json");
+}
+function readMedia(ref) {
+  assertKind(ref, "snap", "readMedia");
+  return readJsonArtifactFile(ref, "media.json");
+}
+function readRects(ref) {
+  assertKind(ref, "rec", "readRects");
+  return readNdjsonArtifactFile(ref, "rects.jsonl");
+}
+function readEvents(ref) {
+  assertKind(ref, "rec", "readEvents");
+  return readNdjsonArtifactFile(ref, "events.jsonl");
+}
+function readMarkers(ref) {
+  assertKind(ref, "rec", "readMarkers");
+  return readJsonArtifactFile(ref, "markers.json");
+}
+function unstableRegionsFor(ref) {
+  const geometry = readGeometry(ref);
+  return geometry.unstableRegions ?? [];
+}
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+function annotateUnstableFacts(facts, regions) {
+  return facts.map((fact4) => {
+    const caveats = [];
+    for (const region of regions) {
+      const byElement = fact4.elementId !== void 0 && (region.elementIds?.includes(fact4.elementId) ?? false);
+      const byRect = fact4.rect !== void 0 && region.rect !== void 0 && rectsOverlap(fact4.rect, region.rect);
+      if (byElement || byRect) {
+        caveats.push({ regionId: region.id, selector: region.selector, reason: region.reason });
+      }
+    }
+    return { fact: fact4, caveats };
+  });
+}
+var fs5, path5, ArtifactResolutionError, SNAP_CONFIG, REC_CONFIG, TRACE_CONFIG, CREATING_COMMAND_BY_FILE;
+var init_artifact = __esm({
+  "src/output/artifact.ts"() {
+    fs5 = __toESM(require("fs"));
+    path5 = __toESM(require("path"));
+    init_artifacts();
+    init_session_context();
+    ArtifactResolutionError = class extends Error {
+      ref;
+      searched;
+      creatingCommand;
+      constructor(ref, searched, detail, creatingCommand) {
+        const parts = [`could not resolve ref ${JSON.stringify(ref)}: ${detail}`];
+        if (searched.length) parts.push(`looked at: ${searched.join(", ")}`);
+        if (creatingCommand) parts.push(`create it with: ${creatingCommand}`);
+        super(parts.join(" \u2014 "));
+        this.name = "ArtifactResolutionError";
+        this.ref = ref;
+        this.searched = searched;
+        this.creatingCommand = creatingCommand;
+      }
+    };
+    SNAP_CONFIG = {
+      kind: "snap",
+      idSegments: ["measure", "snaps"],
+      creatingCommand: "capture measure snap",
+      label: "snapshot"
+    };
+    REC_CONFIG = {
+      kind: "rec",
+      idSegments: ["motion", "recs"],
+      creatingCommand: "capture motion rec",
+      label: "recording"
+    };
+    TRACE_CONFIG = {
+      kind: "trace",
+      idSegments: ["perf", "traces"],
+      creatingCommand: "capture perf trace",
+      label: "trace"
+    };
+    CREATING_COMMAND_BY_FILE = {
+      "geometry.json": "capture measure snap",
+      "styles.json": "capture measure snap",
+      "hittest.json": "capture measure snap",
+      "text.json": "capture measure snap",
+      "forms.json": "capture measure snap",
+      "animation.json": "capture measure snap",
+      "ax.json": "capture measure snap",
+      "media.json": "capture measure snap",
+      "queries.json": "capture measure snap",
+      "focus.json": "capture measure snap",
+      "scroll.json": "capture measure snap",
+      "layers.json": "capture measure snap",
+      "states.json": "capture measure snap --state <state>",
+      "churn.json": "capture measure snap (written only when the page did not settle)",
+      "pixels.json": "capture measure snap --pixels",
+      "dom.html": "capture measure snap",
+      "screenshot.png": "capture measure snap",
+      "meta.json": "capture measure snap (or capture motion rec for a recording)",
+      "rects.jsonl": "capture motion rec",
+      "events.jsonl": "capture motion rec",
+      "markers.json": "capture motion rec",
+      "trace.json": "capture perf trace"
+    };
+  }
+});
+
 // src/cdp/leaf-grammar.ts
 function isParseableUrl(value) {
   try {
@@ -9793,6 +10134,36 @@ function needsEndpointResolution(parsed) {
   if (parsed.command === "tab" && (parsed.positional[0] === "launch" || parsed.positional[0] === "quit")) return false;
   return true;
 }
+function mayReachBrowser(parsed) {
+  const [leaf, sub] = parsed.positional;
+  switch (parsed.command) {
+    case "tab":
+      return leaf !== "list";
+    case "motion":
+      return leaf === "rec";
+    case "perf":
+      return leaf === "trace";
+    case "heap":
+      return leaf === "snapshot";
+    case "measure": {
+      if (leaf === "diff" || leaf === "explain" || leaf === "text" || leaf === "map" && sub === "paint") return false;
+      if (leaf === "check" || leaf === "census" || leaf === "map") return parsed.url !== void 0 || parsed.positional.some(isUrlRef);
+      return true;
+    }
+    default:
+      return true;
+  }
+}
+function refuseUnownedEndpoint(parsed, sessionStart) {
+  if (!process.env.CRTR_NODE_ID?.trim() || sessionStart || !mayReachBrowser(parsed)) return;
+  if (parsed.port !== void 0 || parsed.targetSource === "flag" || parsed.targetSource === "session") return;
+  const command = leafCommand(parsed.command, parsed.positional);
+  throw captureError(
+    "precondition",
+    "no_owned_browser",
+    `\`capture ${command}\` was not run: this node (CRTR_NODE_ID) has no browser of its own. With no --port, no --target and no active session holding a browser, capture will not use CDP_PORT, CDP_TARGET or auto-discovery, because the browser it found could belong to another node. Do one of: (1) \`capture session start --url <url>\` to open and hold your own browser tab, or \`capture tab launch\` then \`capture session start --port <port>\`; (2) pass \`--port <port>\` (see \`capture tab list\`); (3) pass \`--target <tabId>\`.`
+  );
+}
 function resolveCliContext(parsed) {
   if (!needsEndpointResolution(parsed)) return parsed;
   const sessionStart = parsed.command === "session" && parsed.positional[0] === "start";
@@ -9808,6 +10179,7 @@ function resolveCliContext(parsed) {
       parsed.portSource = "session";
     }
   }
+  refuseUnownedEndpoint(parsed, sessionStart);
   if (parsed.port === void 0 && process.env.CDP_PORT !== void 0) {
     parsed.port = schemaInteger(leafCommand(parsed.command, parsed.positional), process.env.CDP_PORT, "CDP_PORT", 1, 65535);
     parsed.portSource = "env";
@@ -9824,6 +10196,7 @@ var init_args = __esm({
   "src/cdp/args.ts"() {
     init_errors();
     init_session_context();
+    init_artifact();
     init_leaf_grammar();
     VALUE_FLAGS = /* @__PURE__ */ new Set([
       "--port",
@@ -9909,7 +10282,7 @@ var init_gate_guard = __esm({
 
 // src/session/coordinator.ts
 function scopeLifecycleLockPath() {
-  return path5.join(CAPTURE_ROOT, `.session-lifecycle-${process.env.CRTR_NODE_ID ?? "default"}`);
+  return path6.join(CAPTURE_ROOT, `.session-lifecycle-${process.env.CRTR_NODE_ID ?? "default"}`);
 }
 async function withSessionScopeLifecycle(action) {
   const lock = await acquirePrivateLock(scopeLifecycleLockPath(), {
@@ -9923,10 +10296,10 @@ async function withSessionScopeLifecycle(action) {
   }
 }
 function statePath(sessionDir2) {
-  return path5.join(assertUnderCaptureRoot(sessionDir2), ".operations.json");
+  return path6.join(assertUnderCaptureRoot(sessionDir2), ".operations.json");
 }
 function lockPath(sessionDir2) {
-  return path5.join(assertUnderCaptureRoot(sessionDir2), ".operations.lock");
+  return path6.join(assertUnderCaptureRoot(sessionDir2), ".operations.lock");
 }
 function isBirth(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -9985,7 +10358,7 @@ async function admitSessionOperation(sessionDir2) {
   };
 }
 async function beginSessionStop(sessionDir2) {
-  const stopLock = await acquirePrivateLock(path5.join(assertUnderCaptureRoot(sessionDir2), ".stop.lock"), {
+  const stopLock = await acquirePrivateLock(path6.join(assertUnderCaptureRoot(sessionDir2), ".stop.lock"), {
     acquireTimeoutMs: 12e4,
     leaseMs: 1e3
   });
@@ -10025,7 +10398,7 @@ async function beginSessionStop(sessionDir2) {
   };
 }
 async function withSessionLifecycle(sessionDir2, action, seams2 = {}) {
-  const lock = await acquirePrivateLock(path5.join(assertUnderCaptureRoot(sessionDir2), ".lifecycle.lock"), {
+  const lock = await acquirePrivateLock(path6.join(assertUnderCaptureRoot(sessionDir2), ".lifecycle.lock"), {
     acquireTimeoutMs: seams2.acquireTimeoutMs ?? 3e4,
     leaseMs: seams2.leaseMs ?? 3e4,
     pidBirthProvider: seams2.pidBirthProvider,
@@ -10039,11 +10412,11 @@ async function withSessionLifecycle(sessionDir2, action, seams2 = {}) {
     lock.release();
   }
 }
-var crypto3, path5;
+var crypto3, path6;
 var init_coordinator = __esm({
   "src/session/coordinator.ts"() {
     crypto3 = __toESM(require("node:crypto"));
-    path5 = __toESM(require("node:path"));
+    path6 = __toESM(require("node:path"));
     init_errors();
     init_artifacts();
   }
@@ -10589,15 +10962,15 @@ function vStoreHeader(value, source) {
   return { format: "capture-live-har-ndjson", version: 1, creator: { name: "capture", version } };
 }
 function harFilePath(id) {
-  if (path6.isAbsolute(id)) return assertUnderCaptureRoot(id);
-  if (path6.basename(id) === id) return assertUnderCaptureRoot(path6.resolve(CAPTURE_ROOT, id));
-  if (id.endsWith(".json") && id.includes(path6.sep)) return assertUnderCaptureRoot(id);
-  return assertUnderCaptureRoot(path6.resolve(id));
+  if (path7.isAbsolute(id)) return assertUnderCaptureRoot(id);
+  if (path7.basename(id) === id) return assertUnderCaptureRoot(path7.resolve(CAPTURE_ROOT, id));
+  if (id.endsWith(".json") && id.includes(path7.sep)) return assertUnderCaptureRoot(id);
+  return assertUnderCaptureRoot(path7.resolve(id));
 }
 async function createHarRecording(sessionDir2 = CAPTURE_ROOT) {
-  const sessionAbsolute = path6.resolve(sessionDir2);
+  const sessionAbsolute = path7.resolve(sessionDir2);
   assertUnderCaptureRoot(sessionAbsolute);
-  const harDir = path6.join(sessionAbsolute, ".har");
+  const harDir = path7.join(sessionAbsolute, ".har");
   ensurePrivateDir(harDir);
   const header = {
     format: "capture-live-har-ndjson",
@@ -10607,7 +10980,7 @@ async function createHarRecording(sessionDir2 = CAPTURE_ROOT) {
   const headerLine = `${JSON.stringify(header)}
 `;
   for (; ; ) {
-    const candidate = path6.join(harDir, `${token()}.json`);
+    const candidate = path7.join(harDir, `${token()}.json`);
     try {
       createPrivateFile(candidate, headerLine);
     } catch (error4) {
@@ -10670,39 +11043,39 @@ async function appendToHarRecording(id, batch) {
 async function deleteHarRecording(id) {
   unlinkPrivateFile(harFilePath(id));
 }
-var import_node_crypto, path6, MAX_BODY_BYTES, HAR_DIR;
+var import_node_crypto, path7, MAX_BODY_BYTES, HAR_DIR;
 var init_har_manager = __esm({
   "src/har-manager.ts"() {
     import_node_crypto = __toESM(require("node:crypto"));
-    path6 = __toESM(require("path"));
+    path7 = __toESM(require("path"));
     init_artifacts();
     MAX_BODY_BYTES = 262144;
-    HAR_DIR = path6.join(CAPTURE_ROOT, ".har");
+    HAR_DIR = path7.join(CAPTURE_ROOT, ".har");
   }
 });
 
 // src/cdp/bridge/spawn.ts
 function bridgeSocketPath(sessionDir2) {
-  return path7.join(sessionDir2, "bridge.sock");
+  return path8.join(sessionDir2, "bridge.sock");
 }
 function collectorSocketDir() {
   const dir = "/tmp/capture-sockets";
   try {
-    fs5.mkdirSync(dir, { mode: 448 });
+    fs6.mkdirSync(dir, { mode: 448 });
   } catch (error4) {
     if (error4.code !== "EEXIST") throw error4;
   }
-  const stat = fs5.lstatSync(dir);
+  const stat = fs6.lstatSync(dir);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`collector socket directory is not a real directory: ${dir}`);
   if (typeof process.getuid === "function" && stat.uid !== process.getuid()) throw new Error(`collector socket directory is not owned by this user: ${dir}`);
-  fs5.chmodSync(dir, 448);
+  fs6.chmodSync(dir, 448);
   return dir;
 }
 function shortSocketName(scopeDir) {
-  return crypto5.createHash("sha1").update(path7.resolve(scopeDir)).digest("hex").slice(0, 16);
+  return crypto5.createHash("sha1").update(path8.resolve(scopeDir)).digest("hex").slice(0, 16);
 }
 function collectorHostSocketPath(sessionDir2) {
-  return path7.join(collectorSocketDir(), `host-${shortSocketName(sessionDir2)}.sock`);
+  return path8.join(collectorSocketDir(), `host-${shortSocketName(sessionDir2)}.sock`);
 }
 async function startBridge(sessionDir2, port, timeoutMs = 5e3) {
   const socketPath = bridgeSocketPath(sessionDir2);
@@ -10718,7 +11091,7 @@ async function startBridge(sessionDir2, port, timeoutMs = 5e3) {
     throw new Error("Failed to spawn CDP bridge process.");
   }
   const start2 = Date.now();
-  while (!fs5.existsSync(socketPath)) {
+  while (!fs6.existsSync(socketPath)) {
     if (Date.now() - start2 > timeoutMs) {
       stopBridge(pid, socketPath);
       throw new Error(
@@ -10734,7 +11107,7 @@ async function startCollectorHost(socketPath, port, targetId, sessionDir2, timeo
   child.unref();
   if (!child.pid) throw new Error("Failed to spawn collector host process.");
   const started = Date.now();
-  while (!fs5.existsSync(socketPath)) {
+  while (!fs6.existsSync(socketPath)) {
     if (Date.now() - started > timeoutMs) {
       stopBridge(child.pid, socketPath);
       throw new Error(`Collector host (pid ${child.pid}) did not come up within ${timeoutMs}ms.`);
@@ -10752,18 +11125,18 @@ function stopBridge(pid, socketPath) {
   }
   if (socketPath) {
     try {
-      if (fs5.lstatSync(socketPath).isSocket()) fs5.unlinkSync(socketPath);
+      if (fs6.lstatSync(socketPath).isSocket()) fs6.unlinkSync(socketPath);
     } catch {
     }
   }
 }
-var import_child_process2, crypto5, fs5, path7;
+var import_child_process2, crypto5, fs6, path8;
 var init_spawn = __esm({
   "src/cdp/bridge/spawn.ts"() {
     import_child_process2 = require("child_process");
     crypto5 = __toESM(require("crypto"));
-    fs5 = __toESM(require("fs"));
-    path7 = __toESM(require("path"));
+    fs6 = __toESM(require("fs"));
+    path8 = __toESM(require("path"));
   }
 });
 
@@ -10783,7 +11156,7 @@ function socketDir(create) {
 }
 function socketPathForToken(token2, createDir) {
   if (!LOG_TAILER_SOCKET_TOKEN.test(token2)) throw new Error("invalid log tailer socket token");
-  return path8.join(socketDir(createDir), `${token2}.sock`);
+  return path9.join(socketDir(createDir), `${token2}.sock`);
 }
 function requireRegisteredLogTailer(value) {
   const record5 = parseRegisteredLogTailer(value);
@@ -10804,23 +11177,23 @@ function ownership(record5, provider) {
   return observed.status === "found" && sameBirth(observed.identity, record5.birth) ? "same" : "gone";
 }
 function socketIdentity(socketPath) {
-  const stat = fs6.lstatSync(socketPath, { bigint: true });
+  const stat = fs7.lstatSync(socketPath, { bigint: true });
   if (!stat.isSocket()) throw new Error(`log tailer control path is not a socket: ${socketPath}`);
   return { dev: stat.dev.toString(), ino: stat.ino.toString() };
 }
 function unlinkRecordedSocket(record5) {
   let current;
   try {
-    current = fs6.lstatSync(record5.socketPath, { bigint: true });
+    current = fs7.lstatSync(record5.socketPath, { bigint: true });
   } catch (error4) {
     if (error4.code === "ENOENT") return;
     throw error4;
   }
   if (!current.isSocket() || current.dev.toString() !== record5.socketDev || current.ino.toString() !== record5.socketIno) return;
-  fs6.unlinkSync(record5.socketPath);
+  fs7.unlinkSync(record5.socketPath);
 }
 function closeOwnedFd(fd) {
-  if (fd !== void 0) fs6.closeSync(fd);
+  if (fd !== void 0) fs7.closeSync(fd);
   return void 0;
 }
 function awaitChildExit(child, timeoutMs) {
@@ -10907,8 +11280,8 @@ function awaitReadiness(child, timeoutMs) {
   });
 }
 async function startSessionLogTailer(options) {
-  const logsDir = ensurePrivateDir(path8.join(options.sessionDir, "logs"));
-  const destPath = path8.join(logsDir, `${options.name}.log`);
+  const logsDir = ensurePrivateDir(path9.join(options.sessionDir, "logs"));
+  const destPath = path9.join(logsDir, `${options.name}.log`);
   const socketToken = crypto6.randomBytes(8).toString("hex");
   const socketPath = socketPathForToken(socketToken, true);
   const nonce = crypto6.randomBytes(24).toString("hex");
@@ -11133,7 +11506,7 @@ function nonceMatches(expected, candidate) {
 }
 function writeReadiness(message) {
   try {
-    fs6.writeSync(READINESS_FD, message);
+    fs7.writeSync(READINESS_FD, message);
     return true;
   } catch {
     return false;
@@ -11263,7 +11636,7 @@ async function runLogTailer(argv) {
     const owned = ownedSocket;
     orphanCheck = setInterval(() => {
       try {
-        const current = fs6.lstatSync(ownedSocketPath, { bigint: true });
+        const current = fs7.lstatSync(ownedSocketPath, { bigint: true });
         if (current.isSocket() && current.dev.toString() === owned.dev && current.ino.toString() === owned.ino) return;
       } catch (error4) {
         if (error4.code !== "ENOENT") return;
@@ -11284,7 +11657,7 @@ async function runLogTailer(argv) {
     });
     reader.on("line", (line4) => {
       try {
-        fs6.writeSync(1, `${(/* @__PURE__ */ new Date()).toISOString()} ${line4}
+        fs7.writeSync(1, `${(/* @__PURE__ */ new Date()).toISOString()} ${line4}
 `);
       } catch {
         requestStop?.("fatal");
@@ -11301,7 +11674,7 @@ async function runLogTailer(argv) {
     if (!writeReadiness("ready\n")) throw new Error("parent closed the readiness channel");
     ready = true;
     try {
-      fs6.closeSync(READINESS_FD);
+      fs7.closeSync(READINESS_FD);
     } catch {
     }
     confirmDeadline = setTimeout(() => {
@@ -11336,7 +11709,7 @@ async function runLogTailer(argv) {
     if (socketPath && ownedSocket) {
       try {
         const current = socketIdentity(socketPath);
-        if (current.dev === ownedSocket.dev && current.ino === ownedSocket.ino) fs6.unlinkSync(socketPath);
+        if (current.dev === ownedSocket.dev && current.ino === ownedSocket.ino) fs7.unlinkSync(socketPath);
       } catch (error4) {
         if (error4.code !== "ENOENT") exitCode = 1;
       }
@@ -11344,14 +11717,14 @@ async function runLogTailer(argv) {
     process.exitCode = exitCode;
   }
 }
-var import_node_child_process3, crypto6, fs6, net2, path8, readline, READINESS_FD, WORKER_MS, CONTROL_MESSAGE_LIMIT, WORKER_CHILD_EXIT_TIMEOUT_MS, productionWorld, world;
+var import_node_child_process3, crypto6, fs7, net2, path9, readline, READINESS_FD, WORKER_MS, CONTROL_MESSAGE_LIMIT, WORKER_CHILD_EXIT_TIMEOUT_MS, productionWorld, world;
 var init_log_tailer = __esm({
   "src/session/log-tailer.ts"() {
     import_node_child_process3 = require("node:child_process");
     crypto6 = __toESM(require("node:crypto"));
-    fs6 = __toESM(require("node:fs"));
+    fs7 = __toESM(require("node:fs"));
     net2 = __toESM(require("node:net"));
-    path8 = __toESM(require("node:path"));
+    path9 = __toESM(require("node:path"));
     readline = __toESM(require("node:readline"));
     init_errors();
     init_artifacts();
@@ -11373,16 +11746,16 @@ var init_log_tailer = __esm({
 
 // src/cdp/host/collectors/heap.ts
 function reconstructHeapSnapshot(dir) {
-  const snapshot = path9.join(dir, "snapshot.heapsnapshot");
-  if (!fs7.existsSync(snapshot)) return { summary: { bytes: 0 }, files: [] };
-  const bytes = fs7.statSync(snapshot).size;
+  const snapshot = path10.join(dir, "snapshot.heapsnapshot");
+  if (!fs8.existsSync(snapshot)) return { summary: { bytes: 0 }, files: [] };
+  const bytes = fs8.statSync(snapshot).size;
   return { summary: { bytes }, files: [{ name: "snapshot.heapsnapshot", bytes }] };
 }
-var fs7, path9, HeapCollector;
+var fs8, path10, HeapCollector;
 var init_heap = __esm({
   "src/cdp/host/collectors/heap.ts"() {
-    fs7 = __toESM(require("node:fs"));
-    path9 = __toESM(require("node:path"));
+    fs8 = __toESM(require("node:fs"));
+    path10 = __toESM(require("node:path"));
     HeapCollector = class {
       kind = "heap";
       claims = ["heap-snapshot"];
@@ -11571,10 +11944,10 @@ function matchRule(rules, request) {
 function headerEntries(headers2) {
   return Object.entries(headers2).map(([name, value]) => ({ name, value }));
 }
-var path10, MAX_BODY_BYTES2, RESOURCE_TYPES, FAIL_REASONS, InterceptCollector;
+var path11, MAX_BODY_BYTES2, RESOURCE_TYPES, FAIL_REASONS, InterceptCollector;
 var init_intercept = __esm({
   "src/cdp/host/collectors/intercept.ts"() {
-    path10 = __toESM(require("node:path"));
+    path11 = __toESM(require("node:path"));
     init_artifacts();
     MAX_BODY_BYTES2 = 10 * 1024 * 1024;
     RESOURCE_TYPES = /* @__PURE__ */ new Set(["Document", "Stylesheet", "Image", "Media", "Font", "Script", "TextTrack", "XHR", "Fetch", "Prefetch", "EventSource", "WebSocket", "Manifest", "SignedExchange", "Ping", "CSPViolationReport", "Preflight", "Other"]);
@@ -11607,8 +11980,8 @@ var init_intercept = __esm({
         if (!config3) throw new Error("intercept collector has no rule configuration");
         this.context = context;
         this.ruleMatches = Array.from({ length: config3.rules.length }, () => 0);
-        writePrivateFile(path10.join(context.dir, "rules.json"), config3.source);
-        writePrivateFile(path10.join(context.dir, "interceptions.jsonl"), "");
+        writePrivateFile(path11.join(context.dir, "rules.json"), config3.source);
+        writePrivateFile(path11.join(context.dir, "interceptions.jsonl"), "");
         context.client.on("Fetch.requestPaused", this.onPaused);
         try {
           await context.client.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] });
@@ -11816,10 +12189,10 @@ async function runBridgeServer(socketPath, port) {
   installProcessCleanup(cleanup, client);
 }
 function prepareSocketPath(socketPath) {
-  fs8.mkdirSync(path11.dirname(socketPath), { recursive: true });
+  fs9.mkdirSync(path12.dirname(socketPath), { recursive: true });
   try {
-    if (!fs8.lstatSync(socketPath).isSocket()) throw new Error(`socket path is not a Unix socket: ${socketPath}`);
-    fs8.unlinkSync(socketPath);
+    if (!fs9.lstatSync(socketPath).isSocket()) throw new Error(`socket path is not a Unix socket: ${socketPath}`);
+    fs9.unlinkSync(socketPath);
   } catch (error4) {
     if (error4.code !== "ENOENT") throw error4;
   }
@@ -11850,7 +12223,7 @@ function closeNdjsonSocket(server2, socketPath) {
   } catch {
   }
   try {
-    if (fs8.lstatSync(socketPath).isSocket()) fs8.unlinkSync(socketPath);
+    if (fs9.lstatSync(socketPath).isSocket()) fs9.unlinkSync(socketPath);
   } catch {
   }
 }
@@ -11873,12 +12246,12 @@ async function resolvePort(port) {
   const { detectCdpPort: detectCdpPort2 } = await Promise.resolve().then(() => (init_detect(), detect_exports));
   return detectCdpPort2();
 }
-var fs8, net3, path11, EventBroker;
+var fs9, net3, path12, EventBroker;
 var init_server = __esm({
   "src/cdp/bridge/server.ts"() {
-    fs8 = __toESM(require("fs"));
+    fs9 = __toESM(require("fs"));
     net3 = __toESM(require("net"));
-    path11 = __toESM(require("path"));
+    path12 = __toESM(require("path"));
     init_targets();
     EventBroker = class {
       constructor(client) {
@@ -13429,11 +13802,11 @@ function buildTakeRectElementsExpression(nonce, frameIndex) {
 function buildTakeResizeTargetsExpression(nonce, seq) {
   return `(function(){var k='__captureRecorder_'+${JSON.stringify(nonce)};var h=window[k];return h&&h.takeResizeTargets?h.takeResizeTargets(${JSON.stringify(seq)}):[];})()`;
 }
-var crypto7, path12, RECORDER_BINDING_NAME, OBSERVER_INSTALLED_SENTINEL, TRACE_CATEGORIES, SCREENCAST_OPTIONS, MAX_BINDING_PAYLOAD_BYTES, BINDING_RATE_LIMIT_PER_SECOND, MAX_RECT_ELEMENTS, MAX_RECT_GEOMETRY_CANDIDATES, MAX_RECT_TAG_LENGTH, MAX_RECT_STRING_LENGTH, MAX_RECTS_SERIALIZED_BYTES, MAX_RECT_IDENTITY_RESOLUTIONS, MAX_TRACE_EVENTS_PER_BATCH, MAX_TRACE_SERIALIZED_BYTES, BINDING_FIELD_SANITIZERS, RecorderSession, MotionCollector;
+var crypto7, path13, RECORDER_BINDING_NAME, OBSERVER_INSTALLED_SENTINEL, TRACE_CATEGORIES, SCREENCAST_OPTIONS, MAX_BINDING_PAYLOAD_BYTES, BINDING_RATE_LIMIT_PER_SECOND, MAX_RECT_ELEMENTS, MAX_RECT_GEOMETRY_CANDIDATES, MAX_RECT_TAG_LENGTH, MAX_RECT_STRING_LENGTH, MAX_RECTS_SERIALIZED_BYTES, MAX_RECT_IDENTITY_RESOLUTIONS, MAX_TRACE_EVENTS_PER_BATCH, MAX_TRACE_SERIALIZED_BYTES, BINDING_FIELD_SANITIZERS, RecorderSession, MotionCollector;
 var init_motion = __esm({
   "src/cdp/host/collectors/motion.ts"() {
     crypto7 = __toESM(require("crypto"));
-    path12 = __toESM(require("path"));
+    path13 = __toESM(require("path"));
     init_domains();
     init_timing();
     init_server();
@@ -13543,9 +13916,9 @@ var init_motion = __esm({
       constructor(opts) {
         this.client = opts.client;
         this.recDir = ensurePrivateDir(opts.recDir);
-        this.framesDir = ensurePrivateDir(path12.join(this.recDir, "frames"));
-        this.eventsPath = path12.join(this.recDir, "events.jsonl");
-        this.rectsPath = path12.join(this.recDir, "rects.jsonl");
+        this.framesDir = ensurePrivateDir(path13.join(this.recDir, "frames"));
+        this.eventsPath = path13.join(this.recDir, "events.jsonl");
+        this.rectsPath = path13.join(this.recDir, "rects.jsonl");
         this.events = new EventBroker(this.client);
       }
       async start() {
@@ -14006,7 +14379,7 @@ var init_motion = __esm({
           this.updateBaselinesPending();
         }
         const frameName = `frame-${String(frameIndex).padStart(6, "0")}.png`;
-        writeBinaryPrivate(path12.join(this.framesDir, frameName), Buffer.from(params.data, "base64"));
+        writeBinaryPrivate(path13.join(this.framesDir, frameName), Buffer.from(params.data, "base64"));
         try {
           const sample = await this.sampleRects(frameIndex);
           const elements = this.sanitizeRectSample(sample.facts, sample.backendNodeIds);
@@ -14406,10 +14779,10 @@ var init_motion = __esm({
           if (config3.viewport) {
             const { width, height } = config3.viewport;
             if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) throw new Error("motion viewport must contain positive integer width and height");
-            writeJsonPrivate(path12.join(context.dir, "viewport-override.json"), { phase: "attempting", targetId: context.targetId, retainOnStop: true });
+            writeJsonPrivate(path13.join(context.dir, "viewport-override.json"), { phase: "attempting", targetId: context.targetId, retainOnStop: true });
             await context.client.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
             this.viewportApplied = true;
-            writeJsonPrivate(path12.join(context.dir, "viewport-override.json"), { phase: "applied", targetId: context.targetId, retainOnStop: true });
+            writeJsonPrivate(path13.join(context.dir, "viewport-override.json"), { phase: "applied", targetId: context.targetId, retainOnStop: true });
           }
           this.har = new HARRecorder(context.client, (batch) => appendToHarRecording(config3.harId, batch));
           await this.har.start();
@@ -14422,9 +14795,9 @@ var init_motion = __esm({
           try {
             await context.client.send("Emulation.clearDeviceMetricsOverride");
             this.viewportApplied = false;
-            removeArtifactTree(path12.join(context.dir, "viewport-override.json"));
+            removeArtifactTree(path13.join(context.dir, "viewport-override.json"));
           } catch (cleanupError) {
-            writeJsonPrivate(path12.join(context.dir, "viewport-override.json"), {
+            writeJsonPrivate(path13.join(context.dir, "viewport-override.json"), {
               phase: "restore-failed",
               targetId: context.targetId,
               retainOnStop: true,
@@ -14468,13 +14841,13 @@ var init_motion = __esm({
         if (this.viewportApplied && cause.trigger !== "explicit") {
           try {
             await this.context.client.send("Emulation.clearDeviceMetricsOverride");
-            removeArtifactTree(path12.join(this.context.dir, "viewport-override.json"));
+            removeArtifactTree(path13.join(this.context.dir, "viewport-override.json"));
             viewportRestored = true;
           } catch {
             viewportRestored = false;
           }
         }
-        writeJsonPrivate(path12.join(this.context.dir, "markers.json"), stopped.markers);
+        writeJsonPrivate(path13.join(this.context.dir, "markers.json"), stopped.markers);
         return { summary: { frames: stopped.frameCount, durationMs: stopped.durationMs, eventCount: stopped.eventCount, markers: stopped.markers, state: stopped.frameCount > 0 ? "finalized" : "partial", viewportRestored, viewportRetained: this.viewportApplied && cause.trigger === "explicit" }, files: [] };
       }
       onDispatch(notice) {
@@ -14593,26 +14966,26 @@ var init_trace = __esm({
 
 // src/cdp/host/kinds.ts
 function motionReconstruct(dir) {
-  const framesDir = path13.join(dir, "frames");
-  const frames2 = fs9.existsSync(framesDir) ? fs9.readdirSync(framesDir).filter((name) => name.endsWith(".png")).length : 0;
+  const framesDir = path14.join(dir, "frames");
+  const frames2 = fs10.existsSync(framesDir) ? fs10.readdirSync(framesDir).filter((name) => name.endsWith(".png")).length : 0;
   const bytes = (name) => {
     try {
-      return fs9.statSync(path13.join(dir, name)).size;
+      return fs10.statSync(path14.join(dir, name)).size;
     } catch {
       return 0;
     }
   };
-  const files = ["events.jsonl", "rects.jsonl", "markers.json"].filter((name) => fs9.existsSync(path13.join(dir, name))).map((name) => ({ name, bytes: bytes(name) }));
+  const files = ["events.jsonl", "rects.jsonl", "markers.json"].filter((name) => fs10.existsSync(path14.join(dir, name))).map((name) => ({ name, bytes: bytes(name) }));
   return { summary: { frames: frames2, state: "orphaned-finalized" }, files };
 }
 function collectorKind(kind) {
   return COLLECTOR_KINDS[kind];
 }
-var fs9, path13, motion, trace, heap, intercept, COLLECTOR_KINDS;
+var fs10, path14, motion, trace, heap, intercept, COLLECTOR_KINDS;
 var init_kinds = __esm({
   "src/cdp/host/kinds.ts"() {
-    fs9 = __toESM(require("node:fs"));
-    path13 = __toESM(require("node:path"));
+    fs10 = __toESM(require("node:fs"));
+    path14 = __toESM(require("node:path"));
     init_heap();
     init_intercept();
     init_motion();
@@ -14646,8 +15019,8 @@ var init_kinds = __esm({
         return new TraceCollector();
       },
       reconstruct(dir) {
-        const file = path13.join(dir, "trace.json");
-        const bytes = fs9.existsSync(file) ? fs9.statSync(file).size : 0;
+        const file = path14.join(dir, "trace.json");
+        const bytes = fs10.existsSync(file) ? fs10.statSync(file).size : 0;
         return { summary: { events: 0, windowMs: 0, navigations: 0, categories: "devtools-default" }, files: bytes ? [{ name: "trace.json", bytes }] : [] };
       }
     };
@@ -14677,12 +15050,12 @@ var init_kinds = __esm({
       reconstruct(dir) {
         const bytes = (name) => {
           try {
-            return fs9.statSync(path13.join(dir, name)).size;
+            return fs10.statSync(path14.join(dir, name)).size;
           } catch {
             return 0;
           }
         };
-        const files = ["rules.json", "interceptions.jsonl"].filter((name) => fs9.existsSync(path13.join(dir, name))).map((name) => ({ name, bytes: bytes(name) }));
+        const files = ["rules.json", "interceptions.jsonl"].filter((name) => fs10.existsSync(path14.join(dir, name))).map((name) => ({ name, bytes: bytes(name) }));
         return { summary: { state: "orphaned-finalized" }, files };
       }
     };
@@ -14697,7 +15070,7 @@ var init_kinds = __esm({
 
 // src/cdp/host/handle.ts
 function collectorHostPath(sessionDir2) {
-  return path14.join(assertUnderCaptureRoot(sessionDir2), ".collector-host.json");
+  return path15.join(assertUnderCaptureRoot(sessionDir2), ".collector-host.json");
 }
 function parseHandle(raw, sessionDir2) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -14721,7 +15094,7 @@ function scanCollectorHost(sessionDir2) {
   if (read.status === "unknown") return { classification: "unknown", handle, path: file };
   if (read.status === "found" && sameBirth(read.identity, handle.birth)) {
     try {
-      if (!fs10.lstatSync(handle.socketPath).isSocket()) return { classification: "malformed", handle: null, path: file };
+      if (!fs11.lstatSync(handle.socketPath).isSocket()) return { classification: "malformed", handle: null, path: file };
     } catch {
       return { classification: "malformed", handle: null, path: file };
     }
@@ -14729,11 +15102,11 @@ function scanCollectorHost(sessionDir2) {
   }
   return { classification: "dead", handle, path: file };
 }
-var fs10, path14;
+var fs11, path15;
 var init_handle = __esm({
   "src/cdp/host/handle.ts"() {
-    fs10 = __toESM(require("node:fs"));
-    path14 = __toESM(require("node:path"));
+    fs11 = __toESM(require("node:fs"));
+    path15 = __toESM(require("node:path"));
     init_spawn();
     init_artifacts();
     init_artifacts();
@@ -14746,7 +15119,7 @@ function isCollectorKind(value) {
 }
 function readCollecting(dir) {
   try {
-    const raw = JSON.parse(readPrivateFile(path15.join(dir, "collecting.json")).toString("utf8"));
+    const raw = JSON.parse(readPrivateFile(path16.join(dir, "collecting.json")).toString("utf8"));
     if (typeof raw.id !== "string" || !isCollectorKind(raw.kind) || typeof raw.startedAt !== "string") return null;
     return { id: raw.id, kind: raw.kind, startedAt: raw.startedAt };
   } catch {
@@ -14758,12 +15131,12 @@ function collectingDirectories(root) {
   const walk2 = (dir) => {
     let entries;
     try {
-      entries = fs11.readdirSync(dir, { withFileTypes: true });
+      entries = fs12.readdirSync(dir, { withFileTypes: true });
     } catch {
       return;
     }
     if (entries.some((entry) => entry.isFile() && entry.name === "collecting.json")) dirs.push(dir);
-    for (const entry of entries) if (entry.isDirectory()) walk2(path15.join(dir, entry.name));
+    for (const entry of entries) if (entry.isDirectory()) walk2(path16.join(dir, entry.name));
   };
   walk2(root);
   return dirs;
@@ -14776,7 +15149,7 @@ function reapOrphanedCollectors(sessionDir2) {
     try {
       const reconstructed = collectorKind(collecting.kind).reconstruct(dir);
       const summary = reconstructed.summary && typeof reconstructed.summary === "object" && !Array.isArray(reconstructed.summary) ? reconstructed.summary : { value: reconstructed.summary };
-      writeJsonPrivate(path15.join(dir, "meta.json"), {
+      writeJsonPrivate(path16.join(dir, "meta.json"), {
         id: collecting.id,
         kind: collecting.kind,
         completion: "orphaned",
@@ -14787,7 +15160,7 @@ function reapOrphanedCollectors(sessionDir2) {
         summary,
         ...summary
       });
-      unlinkPrivateFile(path15.join(dir, "collecting.json"));
+      unlinkPrivateFile(path16.join(dir, "collecting.json"));
       outcomes.push({ status: "reaped", id: collecting.id, kind: collecting.kind, dir });
     } catch (error4) {
       outcomes.push({ status: "terminal", id: collecting.id, kind: collecting.kind, dir, error: error4 instanceof Error ? error4.message : String(error4) });
@@ -14833,11 +15206,11 @@ async function stopAndReapCollectorHostAtSessionStop(sessionDir2) {
     return terminal(error4 instanceof Error ? error4.message : String(error4));
   }
 }
-var fs11, path15;
+var fs12, path16;
 var init_lifecycle = __esm({
   "src/cdp/host/lifecycle.ts"() {
-    fs11 = __toESM(require("node:fs"));
-    path15 = __toESM(require("node:path"));
+    fs12 = __toESM(require("node:fs"));
+    path16 = __toESM(require("node:path"));
     init_spawn();
     init_artifacts();
     init_kinds();
@@ -14992,20 +15365,20 @@ function readBundleManifest(bundlePath) {
   return parsed;
 }
 function sessionDir(id, artifactRoot = CAPTURE_ROOT) {
-  return path16.join(artifactRoot, id);
+  return path17.join(artifactRoot, id);
 }
 function isSessionStopped(session) {
-  return Boolean(session.stoppedAt) || fs12.existsSync(path16.join(session.dir, "bundle.json"));
+  return Boolean(session.stoppedAt) || fs13.existsSync(path17.join(session.dir, "bundle.json"));
 }
 function createOneshotSession(kind, artifactDir) {
   const id = `oneshot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const dir = sessionDir(id, artifactDir === void 0 ? CAPTURE_ROOT : registerArtifactRoot(artifactDir));
-  const artifactsDir = kind === "measure" ? path16.join(dir, "measure", "snaps") : kind === "motion" ? path16.join(dir, "motion", "recs") : path16.join(dir, "page");
+  const artifactsDir = kind === "measure" ? path17.join(dir, "measure", "snaps") : kind === "motion" ? path17.join(dir, "motion", "recs") : path17.join(dir, "page");
   ensurePrivateDir(artifactsDir);
   return { id, dir, kind, artifactsDir };
 }
 function readSnapMeta(snapDir, fallbackId) {
-  const meta = JSON.parse(fs12.readFileSync(path16.join(snapDir, "meta.json"), "utf-8"));
+  const meta = JSON.parse(fs13.readFileSync(path17.join(snapDir, "meta.json"), "utf-8"));
   return {
     id: meta.id ?? fallbackId,
     path: snapDir,
@@ -15016,7 +15389,7 @@ function readSnapMeta(snapDir, fallbackId) {
   };
 }
 function readRecMeta(recDir, fallbackId) {
-  const meta = JSON.parse(fs12.readFileSync(path16.join(recDir, "meta.json"), "utf-8"));
+  const meta = JSON.parse(fs13.readFileSync(path17.join(recDir, "meta.json"), "utf-8"));
   return {
     id: meta.id ?? fallbackId,
     path: recDir,
@@ -15028,40 +15401,40 @@ function readRecMeta(recDir, fallbackId) {
   };
 }
 function collectSnaps(dir) {
-  const snapsRoot = path16.join(dir, "measure", "snaps");
-  if (!fs12.existsSync(snapsRoot)) return [];
-  return fs12.readdirSync(snapsRoot).filter((name) => fs12.existsSync(path16.join(snapsRoot, name, "meta.json"))).map((name) => readSnapMeta(path16.join(snapsRoot, name), name));
+  const snapsRoot = path17.join(dir, "measure", "snaps");
+  if (!fs13.existsSync(snapsRoot)) return [];
+  return fs13.readdirSync(snapsRoot).filter((name) => fs13.existsSync(path17.join(snapsRoot, name, "meta.json"))).map((name) => readSnapMeta(path17.join(snapsRoot, name), name));
 }
 function collectRecs(dir) {
-  const recsRoot = path16.join(dir, "motion", "recs");
-  if (!fs12.existsSync(recsRoot)) return [];
-  return fs12.readdirSync(recsRoot).filter((name) => fs12.existsSync(path16.join(recsRoot, name, "meta.json"))).map((name) => readRecMeta(path16.join(recsRoot, name), name));
+  const recsRoot = path17.join(dir, "motion", "recs");
+  if (!fs13.existsSync(recsRoot)) return [];
+  return fs13.readdirSync(recsRoot).filter((name) => fs13.existsSync(path17.join(recsRoot, name, "meta.json"))).map((name) => readRecMeta(path17.join(recsRoot, name), name));
 }
 function collectMocks(dir) {
-  const mocksRoot = path16.join(dir, "network", "mocks");
-  if (!fs12.existsSync(mocksRoot)) return [];
-  return fs12.readdirSync(mocksRoot).flatMap((name) => {
-    const mockDir = path16.join(mocksRoot, name);
-    const metaPath = path16.join(mockDir, "meta.json");
-    if (!fs12.existsSync(metaPath)) return [];
-    const meta = JSON.parse(fs12.readFileSync(metaPath, "utf8"));
+  const mocksRoot = path17.join(dir, "network", "mocks");
+  if (!fs13.existsSync(mocksRoot)) return [];
+  return fs13.readdirSync(mocksRoot).flatMap((name) => {
+    const mockDir = path17.join(mocksRoot, name);
+    const metaPath = path17.join(mockDir, "meta.json");
+    if (!fs13.existsSync(metaPath)) return [];
+    const meta = JSON.parse(fs13.readFileSync(metaPath, "utf8"));
     return [{ id: typeof meta.id === "string" ? meta.id : name, path: mockDir, completion: typeof meta.completion === "string" ? meta.completion : "partial", rules: typeof meta.rules === "number" ? meta.rules : 0, paused: typeof meta.paused === "number" ? meta.paused : 0, matched: typeof meta.matched === "number" ? meta.matched : 0, releasedUnmatched: typeof meta.releasedUnmatched === "number" ? meta.releasedUnmatched : 0 }];
   });
 }
 function readLighthouseReportMeta(reportDir, fallbackId) {
-  const meta = JSON.parse(fs12.readFileSync(path16.join(reportDir, "meta.json"), "utf-8"));
+  const meta = JSON.parse(fs13.readFileSync(path17.join(reportDir, "meta.json"), "utf-8"));
   if (typeof meta.url !== "string" || typeof meta.finalUrl !== "string" || meta.preset !== "mobile" && meta.preset !== "desktop" || !Array.isArray(meta.categories) || !meta.categories.every((category) => typeof category === "string") || meta.lighthouse !== null && typeof meta.lighthouse !== "string" || meta.axe !== null && typeof meta.axe !== "string") {
     throw captureError("artifact", "invalid_lighthouse_report_metadata", `Lighthouse report metadata at ${reportDir} is invalid.`);
   }
   return { id: typeof meta.id === "string" ? meta.id : fallbackId, path: reportDir, url: meta.url, finalUrl: meta.finalUrl, preset: meta.preset, categories: meta.categories, lighthouse: meta.lighthouse, axe: meta.axe };
 }
 function collectLighthouseReports(dir) {
-  const reportsRoot = path16.join(dir, "lighthouse", "reports");
-  if (!fs12.existsSync(reportsRoot)) return [];
-  return fs12.readdirSync(reportsRoot).filter((name) => fs12.existsSync(path16.join(reportsRoot, name, "meta.json"))).map((name) => readLighthouseReportMeta(path16.join(reportsRoot, name), name));
+  const reportsRoot = path17.join(dir, "lighthouse", "reports");
+  if (!fs13.existsSync(reportsRoot)) return [];
+  return fs13.readdirSync(reportsRoot).filter((name) => fs13.existsSync(path17.join(reportsRoot, name, "meta.json"))).map((name) => readLighthouseReportMeta(path17.join(reportsRoot, name), name));
 }
 function sessionMetaPath2(id, artifactRoot = CAPTURE_ROOT) {
-  return path16.join(sessionDir(id, artifactRoot), ".session.json");
+  return path17.join(sessionDir(id, artifactRoot), ".session.json");
 }
 function tryReadSession(id, artifactRoot = CAPTURE_ROOT) {
   const metaPath = sessionMetaPath2(id, artifactRoot);
@@ -15183,7 +15556,7 @@ async function start(parsed) {
     let selectedBrowser = null;
     let endpointSelectionReason = null;
     try {
-      ensurePrivateDir(path16.join(dir, "shots"));
+      ensurePrivateDir(path17.join(dir, "shots"));
       acquired.push({ label: "artifact tree", release: () => removeArtifactTree(dir) });
       harId = await startWorld.createHar(dir);
       const acquiredHarId = harId;
@@ -15323,8 +15696,8 @@ async function logTail(parsed) {
     process.exitCode = 1;
     return;
   }
-  const source = path16.resolve(sourcePath);
-  const name = parsed.name ?? path16.basename(source, path16.extname(source));
+  const source = path17.resolve(sourcePath);
+  const name = parsed.name ?? path17.basename(source, path17.extname(source));
   const labelReason = rejectLogLabel(name);
   if (labelReason) {
     const labelHint = parsed.name === void 0 && labelReason === `exceeds ${MAX_LOG_LABEL_BYTES} bytes` ? " Pass `--name <short>` to choose a shorter destination label." : "";
@@ -15336,7 +15709,7 @@ async function logTail(parsed) {
     process.exitCode = 1;
     return;
   }
-  if (!fs12.existsSync(source)) {
+  if (!fs13.existsSync(source)) {
     emitResult({
       tag: "error",
       attrs: { command: "session log", code: "log_file_not_found" },
@@ -15420,9 +15793,9 @@ async function logTail(parsed) {
   }
 }
 async function locateSessionHar(session) {
-  const stopped = fs12.existsSync(path16.join(session.dir, "bundle.json"));
+  const stopped = fs13.existsSync(path17.join(session.dir, "bundle.json"));
   if (stopped) {
-    const harPath = path16.join(session.dir, "har.json");
+    const harPath = path17.join(session.dir, "har.json");
     let raw;
     try {
       raw = readPrivateFile(harPath).toString("utf-8");
@@ -15666,7 +16039,7 @@ function exportHarBody(id, located, parsed) {
     return true;
   }
   try {
-    fs12.writeFileSync(parsed.out, bytes);
+    fs13.writeFileSync(parsed.out, bytes);
   } catch (cause) {
     emitResult({ tag: "error", attrs: { command: "session har", code: "body_write_failed" }, summary: fact`The selected response body was not written to ${parsed.out}: ${cause instanceof Error ? cause.message : String(cause)}` }, { json: parsed.json });
     process.exitCode = 1;
@@ -15830,7 +16203,7 @@ function bundleRows(manifest) {
 function emitStoppedFromManifest(id, sessionDir2, manifest, parsed) {
   emitResult({
     tag: "session-stopped",
-    attrs: { id, path: path16.join(sessionDir2, "bundle.json") },
+    attrs: { id, path: path17.join(sessionDir2, "bundle.json") },
     summary: fact`Session ${id} stopped after ${manifest.duration}ms; bundle manifest written.`,
     sections: [lineList(bundleRows(manifest))],
     followUp: fact`capture session view ${id}`
@@ -15871,7 +16244,7 @@ async function stop(parsed) {
     let committed = false;
     try {
       session = readSession(id);
-      const bundlePath = path16.join(session.dir, "bundle.json");
+      const bundlePath = path17.join(session.dir, "bundle.json");
       try {
         const manifest2 = readBundleManifest(bundlePath);
         if (session.harId) {
@@ -15900,19 +16273,19 @@ async function stop(parsed) {
       if (hostTeardown.status === "terminal") {
         throw new Error(`collector host teardown failed: ${hostTeardown.error}`);
       }
-      const shotsDir = path16.join(session.dir, "shots");
-      const shots = fs12.existsSync(shotsDir) ? fs12.readdirSync(shotsDir).filter((name) => name.endsWith(".png") || name.endsWith(".jpg")).map((name) => ({ name, path: path16.join(shotsDir, name) })) : [];
+      const shotsDir = path17.join(session.dir, "shots");
+      const shots = fs13.existsSync(shotsDir) ? fs13.readdirSync(shotsDir).filter((name) => name.endsWith(".png") || name.endsWith(".jpg")).map((name) => ({ name, path: path17.join(shotsDir, name) })) : [];
       let har2 = null;
       if (session.harId) {
         const harData = await readHarRecording(session.harId);
-        const harPath = path16.join(session.dir, "har.json");
+        const harPath = path17.join(session.dir, "har.json");
         writeJsonPrivate(harPath, harData);
         har2 = { id: session.harId, path: harPath, entryCount: harData.log.entries.length };
       }
-      const logsDir = path16.join(session.dir, "logs");
-      const logs = fs12.existsSync(logsDir) ? fs12.readdirSync(logsDir).filter((name) => name.endsWith(".log")).map((name) => {
-        const filePath = path16.join(logsDir, name);
-        const content = fs12.readFileSync(filePath, "utf-8");
+      const logsDir = path17.join(session.dir, "logs");
+      const logs = fs13.existsSync(logsDir) ? fs13.readdirSync(logsDir).filter((name) => name.endsWith(".log")).map((name) => {
+        const filePath = path17.join(logsDir, name);
+        const content = fs13.readFileSync(filePath, "utf-8");
         return { name, path: filePath, lines: content ? content.split("\n").filter(Boolean).length : 0 };
       }) : [];
       const snaps = collectSnaps(session.dir);
@@ -15921,7 +16294,7 @@ async function stop(parsed) {
       const reports = collectLighthouseReports(session.dir);
       const knownDirs = /* @__PURE__ */ new Set(["shots", "logs", "lighthouse", "measure", "motion", "network", ".har", ".stop.lock", ".operations.lock"]);
       const knownFiles = /* @__PURE__ */ new Set([".session.json", ".operations.json", "har.json", "bundle.json", "bridge.sock"]);
-      const other = fs12.readdirSync(session.dir).filter((name) => !knownDirs.has(name) && !knownFiles.has(name)).map((name) => ({ name, path: path16.join(session.dir, name) }));
+      const other = fs13.readdirSync(session.dir).filter((name) => !knownDirs.has(name) && !knownFiles.has(name)).map((name) => ({ name, path: path17.join(session.dir, name) }));
       const manifest = {
         id: session.sessionId,
         startedAt: session.startedAt ?? "",
@@ -15973,7 +16346,7 @@ function list(parsed) {
     return;
   }
   if (rejectSurplusPositionals(parsed, "list", 0, "capture session list")) return;
-  const reads = registeredArtifactRoots().flatMap((artifactRoot) => fs12.existsSync(artifactRoot) ? fs12.readdirSync(artifactRoot).filter((d) => fs12.existsSync(sessionMetaPath2(d, artifactRoot))).flatMap((d) => {
+  const reads = registeredArtifactRoots().flatMap((artifactRoot) => fs13.existsSync(artifactRoot) ? fs13.readdirSync(artifactRoot).filter((d) => fs13.existsSync(sessionMetaPath2(d, artifactRoot))).flatMap((d) => {
     try {
       return [tryReadSession(d, artifactRoot)];
     } catch {
@@ -15983,7 +16356,7 @@ function list(parsed) {
   const sessions = reads.flatMap((read) => {
     if (!read.ok) return [];
     const session = read.session;
-    const hasBundled = fs12.existsSync(path16.join(session.dir, "bundle.json"));
+    const hasBundled = fs13.existsSync(path17.join(session.dir, "bundle.json"));
     return [{ id: session.sessionId, startedAt: session.startedAt ?? "", url: session.url ?? null, status: hasBundled ? "stopped" : "active" }];
   });
   const unreadable = reads.flatMap((read) => read.ok ? [] : [read]);
@@ -16061,7 +16434,7 @@ function view(parsed) {
     process.exitCode = 1;
     return;
   }
-  const bundlePath = path16.join(session.dir, "bundle.json");
+  const bundlePath = path17.join(session.dir, "bundle.json");
   let manifest;
   try {
     manifest = readBundleManifest(bundlePath);
@@ -16144,11 +16517,11 @@ async function sessionMain(parsed, _args) {
       return;
   }
 }
-var fs12, path16, VIEW_FILTERS, SECTION_LABELS, SESSION_TAB_ATTACH_TIMEOUT_MS, COMMAND_BLOCK, START_USAGE, STOP_USAGE, LIST_USAGE, VIEW_USAGE, DEFAULT_HAR_ROWS, DEFAULT_FULL_HAR_ROWS, HAR_USAGE, LOG_USAGE, productionStartWorld, startWorld;
+var fs13, path17, VIEW_FILTERS, SECTION_LABELS, SESSION_TAB_ATTACH_TIMEOUT_MS, COMMAND_BLOCK, START_USAGE, STOP_USAGE, LIST_USAGE, VIEW_USAGE, DEFAULT_HAR_ROWS, DEFAULT_FULL_HAR_ROWS, HAR_USAGE, LOG_USAGE, productionStartWorld, startWorld;
 var init_commands = __esm({
   "src/session/commands.ts"() {
-    fs12 = __toESM(require("fs"));
-    path16 = __toESM(require("path"));
+    fs13 = __toESM(require("fs"));
+    path17 = __toESM(require("path"));
     init_har_manager();
     init_session_context();
     init_spawn();
@@ -16507,7 +16880,7 @@ async function startCollectors(parsed, client) {
   let harRecorder;
   if (parsed.har && !routed) {
     const harPath = harFilePath(parsed.har);
-    if (!fs13.existsSync(harPath)) {
+    if (!fs14.existsSync(harPath)) {
       throw captureError(
         "precondition",
         "har_missing",
@@ -16589,10 +16962,10 @@ async function withPageAction(parsed, opts, fn) {
     client.close();
   }
 }
-var fs13, import_node_perf_hooks2, seams;
+var fs14, import_node_perf_hooks2, seams;
 var init_connection = __esm({
   "src/cdp/connection.ts"() {
-    fs13 = __toESM(require("fs"));
+    fs14 = __toESM(require("fs"));
     import_node_perf_hooks2 = require("node:perf_hooks");
     init_client();
     init_detect();
@@ -228542,22 +228915,22 @@ var init_exec_expression = __esm({
 // src/vault/paths.ts
 function vaultLibsDir() {
   const candidates = [
-    path17.resolve(__dirname, "..", "vault", "libs"),
+    path18.resolve(__dirname, "..", "vault", "libs"),
     // built bin: bin/../vault/libs
-    path17.resolve(__dirname, "..", "..", "vault", "libs")
+    path18.resolve(__dirname, "..", "..", "vault", "libs")
     // tsx dev: src/vault/../../vault/libs
   ];
   const hit = candidates.find(
-    (p) => fs14.existsSync(path17.join(p, "_runtime", "index.ts"))
+    (p) => fs15.existsSync(path18.join(p, "_runtime", "index.ts"))
   );
   if (!hit) throw new Error(DEV_ONLY_MSG);
   return hit;
 }
 function vaultRepoRoot() {
-  return path17.dirname(vaultLibsDir());
+  return path18.dirname(vaultLibsDir());
 }
 function listLibs() {
-  return fs14.readdirSync(vaultLibsDir(), { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith("_")).map((e) => e.name).sort();
+  return fs15.readdirSync(vaultLibsDir(), { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith("_")).map((e) => e.name).sort();
 }
 function unknownLibMsg(name) {
   return `Unknown lib "${name}". Available: ${listLibs().join(", ")}`;
@@ -228570,11 +228943,11 @@ async function loadEsbuild() {
     throw new Error(DEV_ONLY_MSG);
   });
 }
-var fs14, path17, DEV_ONLY_MSG, VALID_LIB_NAME;
+var fs15, path18, DEV_ONLY_MSG, VALID_LIB_NAME;
 var init_paths = __esm({
   "src/vault/paths.ts"() {
-    fs14 = __toESM(require("fs"));
-    path17 = __toESM(require("path"));
+    fs15 = __toESM(require("fs"));
+    path18 = __toESM(require("path"));
     DEV_ONLY_MSG = "This is a dev-only feature of capture \u2014 run it from a capture checkout\n(vault/ source + `pnpm install`). Not available in the published package.";
     VALID_LIB_NAME = /^[A-Za-z0-9_.-]+$/;
   }
@@ -228601,7 +228974,7 @@ function preflightLibs(imports) {
   let m;
   while ((m = LIB_SPECIFIER_RE.exec(imports)) !== null) {
     const name = m[2];
-    if (!isValidLibName(name) || !fs15.existsSync(path18.join(libs, name, "index.ts"))) {
+    if (!isValidLibName(name) || !fs16.existsSync(path19.join(libs, name, "index.ts"))) {
       throw new Error(unknownLibMsg(name));
     }
   }
@@ -228617,7 +228990,7 @@ function buildEntry(code) {
 }
 function vaultResolver() {
   const libs = vaultLibsDir();
-  const runtime = path18.join(libs, "_runtime", "index.ts");
+  const runtime = path19.join(libs, "_runtime", "index.ts");
   return {
     name: "vault",
     setup(build) {
@@ -228629,8 +229002,8 @@ function vaultResolver() {
         if (!isValidLibName(name)) {
           return { errors: [{ text: unknownLibMsg(name) }] };
         }
-        const entry = path18.join(libs, name, "index.ts");
-        return fs15.existsSync(entry) ? { path: entry } : { errors: [{ text: unknownLibMsg(name) }] };
+        const entry = path19.join(libs, name, "index.ts");
+        return fs16.existsSync(entry) ? { path: entry } : { errors: [{ text: unknownLibMsg(name) }] };
       });
     }
   };
@@ -228699,11 +229072,11 @@ async function bundleExec(code) {
   }
   return applyReturnInsert(result.outputFiles[0].text);
 }
-var fs15, path18, SENTINEL, IMPORT_STMT_RE, LIB_SPECIFIER_RE;
+var fs16, path19, SENTINEL, IMPORT_STMT_RE, LIB_SPECIFIER_RE;
 var init_bundle = __esm({
   "src/vault/bundle.ts"() {
-    fs15 = __toESM(require("fs"));
-    path18 = __toESM(require("path"));
+    fs16 = __toESM(require("fs"));
+    path19 = __toESM(require("path"));
     init_paths();
     init_exec_expression();
     SENTINEL = "__CAPTURE_RESULT";
@@ -228723,7 +229096,7 @@ function emitExecError(parsed, code, summary, followUp) {
 function spillWholeResult(payload, artifactDir) {
   const name = `exec-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`;
   const session = deps3.getActiveSession();
-  const filePath = session ? path19.join(session.dir, "page", name) : path19.join(deps3.createOneshotSession("page", artifactDir).artifactsDir, name);
+  const filePath = session ? path20.join(session.dir, "page", name) : path20.join(deps3.createOneshotSession("page", artifactDir).artifactsDir, name);
   writePrivateFile(filePath, payload);
   return filePath;
 }
@@ -228817,7 +229190,7 @@ async function cmdPageExec(parsed, _args) {
       );
     }
     try {
-      code = fs16.readFileSync(parsed.file, "utf-8");
+      code = fs17.readFileSync(parsed.file, "utf-8");
     } catch (err) {
       return emitExecError(
         parsed,
@@ -228915,11 +229288,11 @@ async function cmdPageExec(parsed, _args) {
     { json: parsed.json }
   );
 }
-var fs16, path19, GENEROUS_RESULT_CAP, DEFAULT_SETTLE_MS2, DEFAULT_EVALUATION_TIMEOUT_MS, TERMINATE_TIMEOUT_MS, USAGE5, deps3, ExecDeadlineError;
+var fs17, path20, GENEROUS_RESULT_CAP, DEFAULT_SETTLE_MS2, DEFAULT_EVALUATION_TIMEOUT_MS, TERMINATE_TIMEOUT_MS, USAGE5, deps3, ExecDeadlineError;
 var init_exec = __esm({
   "src/cdp/commands/page/exec.ts"() {
-    fs16 = __toESM(require("fs"));
-    path19 = __toESM(require("path"));
+    fs17 = __toESM(require("fs"));
+    path20 = __toESM(require("path"));
     init_connection();
     init_errors();
     init_exec_expression();
@@ -229031,7 +229404,7 @@ async function resolveOutPath(parsed) {
   if (parsed.out) return parsed.out;
   const sessionPath = await deps4.nextStepPath("shot", "manual");
   if (sessionPath) return sessionPath;
-  return path20.join(deps4.createOneshotSession("page", parsed.artifactDir).artifactsDir, "shot.png");
+  return path21.join(deps4.createOneshotSession("page", parsed.artifactDir).artifactsDir, "shot.png");
 }
 function round6(value) {
   return Math.round(value * 1e6) / 1e6;
@@ -229269,10 +229642,10 @@ async function cmdPageShot(parsed, _args) {
   }
   emitResult(buildScreenshotResult({ ...result, emulation: parsed.fullPage ? "full-page" : viewport2 ? "viewport" : "none", viewport: viewport2, colorScheme }), { json: parsed.json });
 }
-var path20, USAGE6, deps4, PNG_SIGNATURE, LEGIBILITY_SCALE_THRESHOLD;
+var path21, USAGE6, deps4, PNG_SIGNATURE, LEGIBILITY_SCALE_THRESHOLD;
 var init_shot = __esm({
   "src/cdp/commands/page/shot.ts"() {
-    path20 = __toESM(require("path"));
+    path21 = __toESM(require("path"));
     init_connection();
     init_screenshot();
     init_viewport();
@@ -230497,7 +230870,7 @@ async function cmdTabNetwork(parsed, _args) {
       `session ${session.sessionId} has no target to emulate on; open one with \`capture session start --hold --url <url>\` or \`capture tab reset <url>\`.`
     );
   }
-  if (!session.bridgeSocket || !fs17.existsSync(session.bridgeSocket)) {
+  if (!session.bridgeSocket || !fs18.existsSync(session.bridgeSocket)) {
     throw captureError(
       "precondition",
       "no_held_bridge",
@@ -230561,10 +230934,10 @@ async function cmdTabNetwork(parsed, _args) {
   }
   emitResult(buildNetworkResult(mode, targetId), { json: parsed.json });
 }
-var fs17, USAGE15;
+var fs18, USAGE15;
 var init_network = __esm({
   "src/cdp/commands/tab/network.ts"() {
-    fs17 = __toESM(require("node:fs"));
+    fs18 = __toESM(require("node:fs"));
     init_errors();
     init_session_context();
     init_coordinator();
@@ -230675,12 +231048,12 @@ var init_lifecycle2 = __esm({
 
 // src/cdp/commands/tab/mock/start.ts
 function stagedRulesPath() {
-  return path21.join(CAPTURE_ROOT, ".mock-inputs", `rules-${crypto8.randomBytes(12).toString("hex")}.json`);
+  return path22.join(CAPTURE_ROOT, ".mock-inputs", `rules-${crypto8.randomBytes(12).toString("hex")}.json`);
 }
 function sourceFor(pathname) {
   let source;
   try {
-    source = fs18.readFileSync(pathname);
+    source = fs19.readFileSync(pathname);
   } catch (error4) {
     throw captureError("artifact", "mock_rules_unreadable", `could not read mock rules at ${pathname}: ${error4 instanceof Error ? error4.message : String(error4)}`);
   }
@@ -230724,12 +231097,12 @@ async function cmdTabMockStart(parsed) {
     }
   }
 }
-var crypto8, fs18, path21, HELP;
+var crypto8, fs19, path22, HELP;
 var init_start = __esm({
   "src/cdp/commands/tab/mock/start.ts"() {
     crypto8 = __toESM(require("node:crypto"));
-    fs18 = __toESM(require("node:fs"));
-    path21 = __toESM(require("node:path"));
+    fs19 = __toESM(require("node:fs"));
+    path22 = __toESM(require("node:path"));
     init_errors();
     init_artifacts();
     init_render();
@@ -230890,13 +231263,13 @@ function isAgentVisible(doc) {
   return AGENT_VISIBLE_VISIBILITIES.has(doc.visibility);
 }
 function cacheDir() {
-  return path22.join(vaultRepoRoot(), ".cache", "docs");
+  return path23.join(vaultRepoRoot(), ".cache", "docs");
 }
 function schemasPathFor(svc) {
-  return path22.join(vaultLibsDir(), svc, "schemas.ts");
+  return path23.join(vaultLibsDir(), svc, "schemas.ts");
 }
 function srcSha(svc) {
-  return (0, import_crypto.createHash)("sha256").update(fs19.readFileSync(schemasPathFor(svc), "utf8")).digest("hex");
+  return (0, import_crypto.createHash)("sha256").update(fs20.readFileSync(schemasPathFor(svc), "utf8")).digest("hex");
 }
 function toJsonSchema(zodSchema) {
   const s = zodSchema;
@@ -230949,14 +231322,14 @@ async function buildDoc(svc) {
   return doc;
 }
 async function getDoc(name) {
-  if (!isValidLibName(name) || !fs19.existsSync(schemasPathFor(name))) {
+  if (!isValidLibName(name) || !fs20.existsSync(schemasPathFor(name))) {
     throw new Error(unknownLibMsg(name));
   }
   const sha = srcSha(name);
-  const cacheFile = path22.join(cacheDir(), `${name}.json`);
-  if (fs19.existsSync(cacheFile)) {
+  const cacheFile = path23.join(cacheDir(), `${name}.json`);
+  if (fs20.existsSync(cacheFile)) {
     try {
-      const cached = JSON.parse(fs19.readFileSync(cacheFile, "utf8"));
+      const cached = JSON.parse(fs20.readFileSync(cacheFile, "utf8"));
       if (cached._srcSha === sha) {
         delete cached._srcSha;
         return cached;
@@ -230965,8 +231338,8 @@ async function getDoc(name) {
     }
   }
   const doc = await buildDoc(name);
-  fs19.mkdirSync(cacheDir(), { recursive: true });
-  fs19.writeFileSync(
+  fs20.mkdirSync(cacheDir(), { recursive: true });
+  fs20.writeFileSync(
     cacheFile,
     JSON.stringify({ ...doc, _srcSha: sha }, null, 2)
   );
@@ -230988,11 +231361,11 @@ async function listDocs() {
   }
   return out;
 }
-var fs19, path22, import_crypto, AGENT_VISIBLE_VISIBILITIES, cjsRequire;
+var fs20, path23, import_crypto, AGENT_VISIBLE_VISIBILITIES, cjsRequire;
 var init_docs = __esm({
   "src/vault/docs.ts"() {
-    fs19 = __toESM(require("fs"));
-    path22 = __toESM(require("path"));
+    fs20 = __toESM(require("fs"));
+    path23 = __toESM(require("path"));
     import_crypto = require("crypto");
     init_paths();
     AGENT_VISIBLE_VISIBILITIES = /* @__PURE__ */ new Set(["public", "chat"]);
@@ -231300,10 +231673,10 @@ async function cmdLib(parsed, _args) {
     throw e;
   }
 }
-var path23, COMMAND_BLOCK4, LIB_USAGE, LEAF_USAGE, FUNCTION_NAME_EXACT, FUNCTION_NAME_PREFIX, FUNCTION_NAME_SUBSTRING, SERVICE_NAME_MATCH, FUNCTION_DESC_SUBSTRING, SERVICE_DESC_SUBSTRING, svcName, cap, srcPathFor;
+var path24, COMMAND_BLOCK4, LIB_USAGE, LEAF_USAGE, FUNCTION_NAME_EXACT, FUNCTION_NAME_PREFIX, FUNCTION_NAME_SUBSTRING, SERVICE_NAME_MATCH, FUNCTION_DESC_SUBSTRING, SERVICE_DESC_SUBSTRING, svcName, cap, srcPathFor;
 var init_lib = __esm({
   "src/cdp/commands/lib.ts"() {
-    path23 = __toESM(require("path"));
+    path24 = __toESM(require("path"));
     init_errors();
     init_render();
     init_paths();
@@ -231349,7 +231722,7 @@ Effects: local reads only; no CDP connection. Dev checkout required.`
     SERVICE_DESC_SUBSTRING = 10;
     svcName = (doc) => doc.library.replace(/^@vallum\//, "");
     cap = (value, maxLength) => value.length > maxLength ? `${value.slice(0, maxLength - 1)}\u2026` : value;
-    srcPathFor = (name) => path23.join(vaultLibsDir(), name, "index.ts");
+    srcPathFor = (name) => path24.join(vaultLibsDir(), name, "index.ts");
   }
 });
 
@@ -231433,7 +231806,7 @@ async function runBrowserScope(method, params, parsed, timeoutMs, deps23 = DEFAU
   const flagTarget = parsed.targetSource === "flag" ? parsed.target : void 0;
   const session = getActiveSession();
   const bridgeSocket = session?.bridgeSocket;
-  const heldBridgeActive = Boolean(bridgeSocket && fs20.existsSync(bridgeSocket));
+  const heldBridgeActive = Boolean(bridgeSocket && fs21.existsSync(bridgeSocket));
   if (parsed.portSource !== "flag" && bridgeSocket && heldBridgeActive) {
     let resp;
     try {
@@ -231561,10 +231934,10 @@ function waitForEventOnce(client, eventName, timeoutMs) {
     });
   });
 }
-var fs20, DEFAULT_TIMEOUT_MS, GENEROUS_RESULT_CAP2, COMMAND_BLOCK5, HELP3, DEFAULT_BROWSER_DEPS, TAB_SCOPE_RECOVERY;
+var fs21, DEFAULT_TIMEOUT_MS, GENEROUS_RESULT_CAP2, COMMAND_BLOCK5, HELP3, DEFAULT_BROWSER_DEPS, TAB_SCOPE_RECOVERY;
 var init_cdp = __esm({
   "src/cdp/commands/cdp.ts"() {
-    fs20 = __toESM(require("fs"));
+    fs21 = __toESM(require("fs"));
     init_errors();
     init_session_context();
     init_connection();
@@ -231604,12 +231977,12 @@ Effects:
 });
 
 // src/cdp/host/core.ts
-var crypto9, fs21, path24, import_node_perf_hooks3, CollectorHost;
+var crypto9, fs22, path25, import_node_perf_hooks3, CollectorHost;
 var init_core = __esm({
   "src/cdp/host/core.ts"() {
     crypto9 = __toESM(require("node:crypto"));
-    fs21 = __toESM(require("node:fs"));
-    path24 = __toESM(require("node:path"));
+    fs22 = __toESM(require("node:fs"));
+    path25 = __toESM(require("node:path"));
     import_node_perf_hooks3 = require("node:perf_hooks");
     init_artifacts();
     init_artifacts();
@@ -231683,7 +232056,7 @@ var init_core = __esm({
         this.refuseClaims(collector.claims);
         const id = `${entry.idPrefix}-${crypto9.randomBytes(5).toString("hex")}`;
         this.starting.set(id, collector.claims);
-        const dir = path24.join(this.sessionDir, ...entry.idSegments, id);
+        const dir = path25.join(this.sessionDir, ...entry.idSegments, id);
         try {
           ensurePrivateDir(dir);
           const startedAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -231695,13 +232068,13 @@ var init_core = __esm({
             id,
             targetId: this.identity.targetId,
             config: config3,
-            appendRecord: (file, record5) => appendNdjsonPrivate(path24.join(dir, file), record5),
-            openChunkFile: (file) => openPrivateChunkWriter(path24.join(dir, file)),
+            appendRecord: (file, record5) => appendNdjsonPrivate(path25.join(dir, file), record5),
+            openChunkFile: (file) => openPrivateChunkWriter(path25.join(dir, file)),
             noteLoss: (reason, detail) => {
               live.losses.push({ reason, detail });
             }
           };
-          writeJsonPrivate(path24.join(dir, "collecting.json"), { kind, id, startedAt, hostPid: this.identity.pid, hostBirth: this.identity.birth });
+          writeJsonPrivate(path25.join(dir, "collecting.json"), { kind, id, startedAt, hostPid: this.identity.pid, hostBirth: this.identity.birth });
           await collector.start(context);
           this.starting.delete(id);
           this.live.set(id, live);
@@ -231723,10 +232096,10 @@ var init_core = __esm({
       finalizedFiles(dir) {
         const files = [];
         const walk2 = (relative2) => {
-          for (const entry of fs21.readdirSync(path24.join(dir, relative2), { withFileTypes: true })) {
-            const name = path24.join(relative2, entry.name);
+          for (const entry of fs22.readdirSync(path25.join(dir, relative2), { withFileTypes: true })) {
+            const name = path25.join(relative2, entry.name);
             if (entry.isDirectory()) walk2(name);
-            else if (entry.isFile()) files.push({ name, bytes: readPrivateFile(path24.join(dir, name)).length });
+            else if (entry.isFile()) files.push({ name, bytes: readPrivateFile(path25.join(dir, name)).length });
           }
         };
         walk2("");
@@ -231738,12 +232111,12 @@ var init_core = __esm({
       }
       async drain(live, cause) {
         const outcome = await live.collector.drain(cause);
-        unlinkPrivateFile(path24.join(live.row.dir, "collecting.json"));
+        unlinkPrivateFile(path25.join(live.row.dir, "collecting.json"));
         const files = this.finalizedFiles(live.row.dir);
         const loss = live.losses[0];
         const completion = loss || !cause.clientUsable ? "partial" : "complete";
         const summary = outcome.summary && typeof outcome.summary === "object" && !Array.isArray(outcome.summary) ? outcome.summary : { value: outcome.summary };
-        writeJsonPrivate(path24.join(live.row.dir, "meta.json"), {
+        writeJsonPrivate(path25.join(live.row.dir, "meta.json"), {
           id: live.row.id,
           kind: live.row.kind,
           completion,
@@ -231844,7 +232217,7 @@ async function runCollectorHost(options) {
   if (session.targetId !== options.targetId) throw new Error("collector host target does not match session state");
   await applyActiveSessionNetworkConditions(client, session, options.targetId);
   let server2;
-  const handlePath = path25.join(options.sessionDir, ".collector-host.json");
+  const handlePath = path26.join(options.sessionDir, ".collector-host.json");
   const publish = (snapshot) => writeJsonPrivate(handlePath, {
     pid: process.pid,
     birth: birth.identity,
@@ -231941,11 +232314,11 @@ async function runCollectorHost(options) {
     cleanup();
   }, client);
 }
-var crypto10, path25;
+var crypto10, path26;
 var init_server2 = __esm({
   "src/cdp/host/server.ts"() {
     crypto10 = __toESM(require("node:crypto"));
-    path25 = __toESM(require("node:path"));
+    path26 = __toESM(require("node:path"));
     init_client();
     init_targets();
     init_server();
@@ -238193,8 +238566,8 @@ function round32(value) {
   return Math.round(value * 1e3) / 1e3;
 }
 async function captureStateRaster(ctx, client, state, id, borderRect2) {
-  const baselinePath = path26.join(ctx.dir, "screenshot.png");
-  if (!fs22.existsSync(baselinePath)) return void 0;
+  const baselinePath = path27.join(ctx.dir, "screenshot.png");
+  if (!fs23.existsSync(baselinePath)) return void 0;
   const response = await client.send("Page.captureScreenshot", { format: "png" });
   const statePng = Buffer.from(response.data, "base64");
   const imageName = `states/${sanitizeToken(state) || "state"}-${id}.png`;
@@ -238208,7 +238581,7 @@ async function captureStateRaster(ctx, client, state, id, borderRect2) {
   const scaleY = available ? stateImage.height / h : 1;
   const paddingCssPx = ctx.stateDiffPaddingCssPx ?? DEFAULT_STATE_DIFF_PADDING_CSS_PX;
   const raster = { screenshot: imageName, viewportScale: { available, innerWidth: available ? w : 0, innerHeight: available ? h : 0, scaleX: round32(scaleX), scaleY: round32(scaleY), ...available ? {} : { unavailableReason: "viewport-read-unavailable" } }, diffCrop: { paddingCssPx, borderRect: borderRect2 } };
-  const baseline = import_pngjs3.PNG.sync.read(fs22.readFileSync(baselinePath));
+  const baseline = import_pngjs3.PNG.sync.read(fs23.readFileSync(baselinePath));
   if (baseline.width !== stateImage.width || baseline.height !== stateImage.height) return { ...raster, diffUnavailableReason: "dimension-mismatch" };
   const x0 = Math.max(0, Math.floor((borderRect2.x - paddingCssPx) * scaleX));
   const y0 = Math.max(0, Math.floor((borderRect2.y - paddingCssPx) * scaleY));
@@ -238431,11 +238804,11 @@ async function captureOneElement(ctx, client, selector, index, nodeId, identity3
     ...raster ? { raster } : {}
   };
 }
-var fs22, path26, import_pngjs3, MAX_SELECTOR_MATCHES, MAX_AUTO_ELEMENTS, MAX_STRING_LEN, MAX_AFFECTED_ELEMENTS, DEFAULT_STATE_DIFF_PADDING_CSS_PX, STATE_CAPTURE_SETTLE_FRAMES, CONCRETE_STATES, CONCRETE_STATE_SET, INTERACTIVE_SELECTOR, ELIGIBLE_SELECTORS, PSEUDO_CLASS_MAP, STYLE_PROPS, collectStates;
+var fs23, path27, import_pngjs3, MAX_SELECTOR_MATCHES, MAX_AUTO_ELEMENTS, MAX_STRING_LEN, MAX_AFFECTED_ELEMENTS, DEFAULT_STATE_DIFF_PADDING_CSS_PX, STATE_CAPTURE_SETTLE_FRAMES, CONCRETE_STATES, CONCRETE_STATE_SET, INTERACTIVE_SELECTOR, ELIGIBLE_SELECTORS, PSEUDO_CLASS_MAP, STYLE_PROPS, collectStates;
 var init_states = __esm({
   "src/cdp/measure/collectors/states.ts"() {
-    fs22 = __toESM(require("node:fs"));
-    path26 = __toESM(require("node:path"));
+    fs23 = __toESM(require("node:fs"));
+    path27 = __toESM(require("node:path"));
     import_pngjs3 = __toESM(require_png());
     init_pixelmatch();
     init_domains();
@@ -238861,9 +239234,9 @@ document.querySelectorAll('img, video, canvas, svg, iframe').length;`;
 
 // src/cdp/measure/snapshot.ts
 function resolveScopedArtifactPath(dir, filename) {
-  const target = path27.resolve(dir, filename);
-  const rel = path27.relative(dir, target);
-  const escapesDir = rel === ".." || rel.startsWith(`..${path27.sep}`) || path27.isAbsolute(rel);
+  const target = path28.resolve(dir, filename);
+  const rel = path28.relative(dir, target);
+  const escapesDir = rel === ".." || rel.startsWith(`..${path28.sep}`) || path28.isAbsolute(rel);
   if (escapesDir) {
     throw new Error(`Refusing to write snapshot artifact "${filename}" outside its snap dir ${dir}`);
   }
@@ -238960,7 +239333,7 @@ function boundedClient(client, phase, partialPath, onTimeout, requestTimeoutCapM
 async function captureSnapshotSubstrate(options) {
   const client = options.target.client;
   const dir = ensurePrivateDir(options.path);
-  const snapId = options.snapId ?? path27.basename(dir);
+  const snapId = options.snapId ?? path28.basename(dir);
   const settleTimeoutMs = options.settleTimeout ?? DEFAULT_SETTLE_TIMEOUT_MS;
   const quietThresholdMs = options.quietThresholdMs ?? DEFAULT_QUIET_THRESHOLD_MS;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -239022,10 +239395,10 @@ async function captureSnapshotSubstrate(options) {
       const animationEvidence = await collectAnimationEvidence(phaseClient("settle-evidence"));
       const grouped = groupChurnEvidence(churnEvidenceRaw, animationEvidence, settleResult.elapsedMs, settleTimeoutMs);
       unstableRegions = grouped.unstableRegions;
-      writeJsonPrivate(path27.join(dir, "churn.json"), grouped.report);
+      writeJsonPrivate(path28.join(dir, "churn.json"), grouped.report);
       artifacts.push("churn.json");
       if (!captured) {
-        writeJsonPrivate(path27.join(dir, "animation.json"), animationEvidence);
+        writeJsonPrivate(path28.join(dir, "animation.json"), animationEvidence);
         artifacts.push("animation.json");
       }
     }
@@ -239077,7 +239450,7 @@ async function captureSnapshotSubstrate(options) {
       };
       for (const collector of baseline) collectorOutcomes.push(await runCollector(collector));
       const screenshotResponse = await phaseClient("baseline-screenshot").send("Page.captureScreenshot", { format: "png" });
-      writeBinaryPrivate(path27.join(dir, "screenshot.png"), Buffer.from(screenshotResponse.data, "base64"));
+      writeBinaryPrivate(path28.join(dir, "screenshot.png"), Buffer.from(screenshotResponse.data, "base64"));
       artifacts.push("screenshot.png");
       let domHtmlValue;
       let domHtmlUnavailableReason;
@@ -239097,7 +239470,7 @@ async function captureSnapshotSubstrate(options) {
       if (domHtmlValue === void 0) {
         domHtmlFact = { available: false, unavailableReason: domHtmlUnavailableReason };
       } else {
-        writePrivateFile(path27.join(dir, "dom.html"), domHtmlValue);
+        writePrivateFile(path28.join(dir, "dom.html"), domHtmlValue);
         artifacts.push("dom.html");
         domHtmlFact = { available: true };
       }
@@ -239144,7 +239517,7 @@ async function captureSnapshotSubstrate(options) {
       ...domHtmlFact ? { domHtml: domHtmlFact } : {},
       ...captured ? { collectors: collectorOutcomes } : {}
     };
-    writeJsonPrivate(path27.join(dir, "meta.json"), meta);
+    writeJsonPrivate(path28.join(dir, "meta.json"), meta);
     artifacts.push("meta.json");
     return {
       id: snapId,
@@ -239163,7 +239536,7 @@ async function captureSnapshotSubstrate(options) {
   } catch (error4) {
     if (error4 instanceof SnapshotCaptureTimeout) {
       try {
-        writeJsonPrivate(path27.join(dir, "capture-timeout.json"), {
+        writeJsonPrivate(path28.join(dir, "capture-timeout.json"), {
           schemaVersion: 1,
           id: snapId,
           status: "timeout",
@@ -239183,10 +239556,10 @@ async function captureSnapshotSubstrate(options) {
     await restoreAnimationsOnce();
   }
 }
-var path27, COLLECTORS, COLLECTOR_NAMES, SNAPSHOT_REQUEST_TIMEOUT_MS, SCROLL_COLLECTOR_REQUEST_TIMEOUT_MS, SnapshotCaptureTimeout;
+var path28, COLLECTORS, COLLECTOR_NAMES, SNAPSHOT_REQUEST_TIMEOUT_MS, SCROLL_COLLECTOR_REQUEST_TIMEOUT_MS, SnapshotCaptureTimeout;
 var init_snapshot = __esm({
   "src/cdp/measure/snapshot.ts"() {
-    path27 = __toESM(require("path"));
+    path28 = __toESM(require("path"));
     init_artifacts();
     init_domains();
     init_settle();
@@ -239234,347 +239607,6 @@ var init_snapshot = __esm({
         this.name = "SnapshotCaptureTimeout";
       }
       code = "snapshot_capture_timeout";
-    };
-  }
-});
-
-// src/output/artifact.ts
-function isUrlRef(ref) {
-  return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(ref);
-}
-function stripTrailingSep(p) {
-  return p.length > 1 && (p.endsWith("/") || p.endsWith(path28.sep)) ? p.slice(0, -1) : p;
-}
-function resolveRefFromPath(ref, config3) {
-  const resolved = assertUnderCaptureRoot(stripTrailingSep(ref));
-  const metaPath = path28.join(resolved, "meta.json");
-  if (!fs23.existsSync(metaPath)) {
-    throw new ArtifactResolutionError(
-      ref,
-      [resolved],
-      `no ${config3.label} found at this path (missing meta.json)`,
-      config3.creatingCommand
-    );
-  }
-  return { kind: config3.kind, id: path28.basename(resolved), dir: resolved };
-}
-function resolveRefFromId(ref, config3) {
-  const active = getActiveSession();
-  if (!active) {
-    throw new ArtifactResolutionError(
-      ref,
-      [],
-      `no active capture session \u2014 a bare id resolves against the active session's ${config3.idSegments.join("/")} directory`,
-      `capture session start (then re-run), or pass the absolute ${config3.label} path printed by ${config3.creatingCommand}`
-    );
-  }
-  const dir = path28.join(active.dir, ...config3.idSegments, ref);
-  const resolved = assertUnderCaptureRoot(dir);
-  const metaPath = path28.join(resolved, "meta.json");
-  if (!fs23.existsSync(metaPath)) {
-    throw new ArtifactResolutionError(
-      ref,
-      [resolved],
-      `no ${config3.label} named ${JSON.stringify(ref)} found in the active session (${active.sessionId})`,
-      config3.creatingCommand
-    );
-  }
-  return { kind: config3.kind, id: ref, dir: resolved };
-}
-function rejectRelativePath(ref) {
-  if (!path28.isAbsolute(ref) && (ref.includes("/") || ref.includes(path28.sep))) {
-    throw new ArtifactResolutionError(
-      ref,
-      [],
-      "relative paths are not accepted \u2014 pass an absolute artifact path (as printed by the capturing command) or a bare id"
-    );
-  }
-}
-async function resolveSnapRef(ref, options = {}) {
-  if (isUrlRef(ref)) {
-    if (!options.onUrl) {
-      throw new ArtifactResolutionError(ref, [], "this command does not accept a URL target \u2014 pass a snapshot id or path instead");
-    }
-    const result = await options.onUrl(ref);
-    return { kind: "snap", id: result.id, dir: assertUnderCaptureRoot(result.dir) };
-  }
-  if (path28.isAbsolute(ref)) return resolveRefFromPath(ref, SNAP_CONFIG);
-  rejectRelativePath(ref);
-  return resolveRefFromId(ref, SNAP_CONFIG);
-}
-function resolveRecRef(ref) {
-  if (isUrlRef(ref)) {
-    throw new ArtifactResolutionError(
-      ref,
-      [],
-      "a recording ref cannot be a URL \u2014 record one first with `capture motion rec <url> --do <action>` or `--start`/`--stop`"
-    );
-  }
-  if (path28.isAbsolute(ref)) return resolveRefFromPath(ref, REC_CONFIG);
-  rejectRelativePath(ref);
-  return resolveRefFromId(ref, REC_CONFIG);
-}
-function resolveTraceRef(ref) {
-  if (isUrlRef(ref)) {
-    throw new ArtifactResolutionError(ref, [], "a trace ref cannot be a URL \u2014 record one first with `capture perf trace <url>` or `--start`/`--stop`");
-  }
-  const resolved = path28.isAbsolute(ref) ? resolveRefFromPath(ref, TRACE_CONFIG) : (rejectRelativePath(ref), resolveRefFromId(ref, TRACE_CONFIG));
-  let meta;
-  try {
-    meta = JSON.parse(readPrivateFile(path28.join(resolved.dir, "meta.json")).toString("utf8"));
-  } catch (error4) {
-    throw new ArtifactResolutionError(ref, [path28.join(resolved.dir, "meta.json")], `could not read trace metadata: ${error4 instanceof Error ? error4.message : String(error4)}`, TRACE_CONFIG.creatingCommand);
-  }
-  const completion = meta.completion;
-  if (completion !== "complete" && completion !== "partial" && completion !== "orphaned") {
-    throw new ArtifactResolutionError(ref, [path28.join(resolved.dir, "meta.json")], "trace metadata has no valid completion state", TRACE_CONFIG.creatingCommand);
-  }
-  const inventory = meta.files;
-  const inventoryMalformed = !Array.isArray(inventory);
-  const inventoryMismatch = !inventoryMalformed && inventory.some((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return true;
-    const item = entry;
-    const name = item.name;
-    const bytes = item.bytes;
-    if (typeof name !== "string" || typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 0 || name.includes(path28.sep)) return true;
-    try {
-      return fs23.statSync(path28.join(resolved.dir, name)).size !== bytes;
-    } catch {
-      return true;
-    }
-  });
-  const truncatedReason = inventoryMalformed ? "artifact_inventory_missing_or_malformed" : inventoryMismatch ? "artifact_inventory_mismatch" : void 0;
-  return { ...resolved, completion: truncatedReason ? "truncated" : completion, ...truncatedReason ? { reason: truncatedReason } : typeof meta.reason === "string" ? { reason: meta.reason } : {} };
-}
-function creatingCommandFor(filename) {
-  return CREATING_COMMAND_BY_FILE[filename];
-}
-function artifactPath(ref, filename, opts = {}) {
-  const filePath = assertUnderCaptureRoot(path28.join(ref.dir, filename));
-  const mustExist = opts.mustExist ?? true;
-  if (mustExist && !fs23.existsSync(filePath)) {
-    throw new ArtifactResolutionError(
-      ref.id,
-      [filePath],
-      `${filename} is not present in ${ref.kind === "snap" ? "snapshot" : ref.kind === "rec" ? "recording" : "trace"} ${ref.id}`,
-      creatingCommandFor(filename)
-    );
-  }
-  return filePath;
-}
-function artifactExists(ref, filename) {
-  return fs23.existsSync(assertUnderCaptureRoot(path28.join(ref.dir, filename)));
-}
-function readJsonArtifactFile(ref, filename) {
-  const filePath = artifactPath(ref, filename);
-  let raw;
-  try {
-    raw = fs23.readFileSync(filePath, "utf-8");
-  } catch (err) {
-    throw new ArtifactResolutionError(
-      ref.id,
-      [filePath],
-      `could not read ${filename}: ${err instanceof Error ? err.message : String(err)}`,
-      creatingCommandFor(filename)
-    );
-  }
-  try {
-    return JSON.parse(raw);
-  } catch (err) {
-    throw new ArtifactResolutionError(
-      ref.id,
-      [filePath],
-      `${filename} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
-      creatingCommandFor(filename)
-    );
-  }
-}
-function readNdjsonArtifactFile(ref, filename) {
-  const filePath = artifactPath(ref, filename);
-  let raw;
-  try {
-    raw = fs23.readFileSync(filePath, "utf-8");
-  } catch (err) {
-    throw new ArtifactResolutionError(
-      ref.id,
-      [filePath],
-      `could not read ${filename}: ${err instanceof Error ? err.message : String(err)}`,
-      creatingCommandFor(filename)
-    );
-  }
-  const lines = raw.split("\n").filter((l) => l.trim().length > 0);
-  return lines.map((line4, i) => {
-    try {
-      return JSON.parse(line4);
-    } catch (err) {
-      throw new ArtifactResolutionError(
-        ref.id,
-        [filePath],
-        `${filename} line ${i + 1} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
-        creatingCommandFor(filename)
-      );
-    }
-  });
-}
-function assertKind(ref, kind, fnName) {
-  if (ref.kind !== kind) {
-    throw new TypeError(`${fnName} expects a ${kind} ref, got a ${ref.kind} ref (${ref.id})`);
-  }
-}
-function readMeta(ref) {
-  return readJsonArtifactFile(ref, "meta.json");
-}
-function readGeometry(ref) {
-  assertKind(ref, "snap", "readGeometry");
-  return readJsonArtifactFile(ref, "geometry.json");
-}
-function readStyles(ref) {
-  assertKind(ref, "snap", "readStyles");
-  return readJsonArtifactFile(ref, "styles.json");
-}
-function readHittest(ref) {
-  assertKind(ref, "snap", "readHittest");
-  return readJsonArtifactFile(ref, "hittest.json");
-}
-function readText(ref) {
-  assertKind(ref, "snap", "readText");
-  return readJsonArtifactFile(ref, "text.json");
-}
-function readForms(ref) {
-  assertKind(ref, "snap", "readForms");
-  return readJsonArtifactFile(ref, "forms.json");
-}
-function readAnimation(ref) {
-  assertKind(ref, "snap", "readAnimation");
-  return readJsonArtifactFile(ref, "animation.json");
-}
-function readAx(ref) {
-  assertKind(ref, "snap", "readAx");
-  return readJsonArtifactFile(ref, "ax.json");
-}
-function readQueries(ref) {
-  assertKind(ref, "snap", "readQueries");
-  return readJsonArtifactFile(ref, "queries.json");
-}
-function readFocus(ref) {
-  assertKind(ref, "snap", "readFocus");
-  return readJsonArtifactFile(ref, "focus.json");
-}
-function readScroll(ref) {
-  assertKind(ref, "snap", "readScroll");
-  return readJsonArtifactFile(ref, "scroll.json");
-}
-function readLayers(ref) {
-  assertKind(ref, "snap", "readLayers");
-  return readJsonArtifactFile(ref, "layers.json");
-}
-function readStates(ref) {
-  assertKind(ref, "snap", "readStates");
-  return readJsonArtifactFile(ref, "states.json");
-}
-function readPixels(ref) {
-  assertKind(ref, "snap", "readPixels");
-  return readJsonArtifactFile(ref, "pixels.json");
-}
-function readMedia(ref) {
-  assertKind(ref, "snap", "readMedia");
-  return readJsonArtifactFile(ref, "media.json");
-}
-function readRects(ref) {
-  assertKind(ref, "rec", "readRects");
-  return readNdjsonArtifactFile(ref, "rects.jsonl");
-}
-function readEvents(ref) {
-  assertKind(ref, "rec", "readEvents");
-  return readNdjsonArtifactFile(ref, "events.jsonl");
-}
-function readMarkers(ref) {
-  assertKind(ref, "rec", "readMarkers");
-  return readJsonArtifactFile(ref, "markers.json");
-}
-function unstableRegionsFor(ref) {
-  const geometry = readGeometry(ref);
-  return geometry.unstableRegions ?? [];
-}
-function rectsOverlap(a, b) {
-  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
-}
-function annotateUnstableFacts(facts, regions) {
-  return facts.map((fact4) => {
-    const caveats = [];
-    for (const region of regions) {
-      const byElement = fact4.elementId !== void 0 && (region.elementIds?.includes(fact4.elementId) ?? false);
-      const byRect = fact4.rect !== void 0 && region.rect !== void 0 && rectsOverlap(fact4.rect, region.rect);
-      if (byElement || byRect) {
-        caveats.push({ regionId: region.id, selector: region.selector, reason: region.reason });
-      }
-    }
-    return { fact: fact4, caveats };
-  });
-}
-var fs23, path28, ArtifactResolutionError, SNAP_CONFIG, REC_CONFIG, TRACE_CONFIG, CREATING_COMMAND_BY_FILE;
-var init_artifact = __esm({
-  "src/output/artifact.ts"() {
-    fs23 = __toESM(require("fs"));
-    path28 = __toESM(require("path"));
-    init_artifacts();
-    init_session_context();
-    ArtifactResolutionError = class extends Error {
-      ref;
-      searched;
-      creatingCommand;
-      constructor(ref, searched, detail, creatingCommand) {
-        const parts = [`could not resolve ref ${JSON.stringify(ref)}: ${detail}`];
-        if (searched.length) parts.push(`looked at: ${searched.join(", ")}`);
-        if (creatingCommand) parts.push(`create it with: ${creatingCommand}`);
-        super(parts.join(" \u2014 "));
-        this.name = "ArtifactResolutionError";
-        this.ref = ref;
-        this.searched = searched;
-        this.creatingCommand = creatingCommand;
-      }
-    };
-    SNAP_CONFIG = {
-      kind: "snap",
-      idSegments: ["measure", "snaps"],
-      creatingCommand: "capture measure snap",
-      label: "snapshot"
-    };
-    REC_CONFIG = {
-      kind: "rec",
-      idSegments: ["motion", "recs"],
-      creatingCommand: "capture motion rec",
-      label: "recording"
-    };
-    TRACE_CONFIG = {
-      kind: "trace",
-      idSegments: ["perf", "traces"],
-      creatingCommand: "capture perf trace",
-      label: "trace"
-    };
-    CREATING_COMMAND_BY_FILE = {
-      "geometry.json": "capture measure snap",
-      "styles.json": "capture measure snap",
-      "hittest.json": "capture measure snap",
-      "text.json": "capture measure snap",
-      "forms.json": "capture measure snap",
-      "animation.json": "capture measure snap",
-      "ax.json": "capture measure snap",
-      "media.json": "capture measure snap",
-      "queries.json": "capture measure snap",
-      "focus.json": "capture measure snap",
-      "scroll.json": "capture measure snap",
-      "layers.json": "capture measure snap",
-      "states.json": "capture measure snap --state <state>",
-      "churn.json": "capture measure snap (written only when the page did not settle)",
-      "pixels.json": "capture measure snap --pixels",
-      "dom.html": "capture measure snap",
-      "screenshot.png": "capture measure snap",
-      "meta.json": "capture measure snap (or capture motion rec for a recording)",
-      "rects.jsonl": "capture motion rec",
-      "events.jsonl": "capture motion rec",
-      "markers.json": "capture motion rec",
-      "trace.json": "capture perf trace"
     };
   }
 });
@@ -267481,7 +267513,7 @@ Selecting a noun: session, page, and tab address the live browser; measure, moti
 
 I/O contract: flags and positionals on input; one rendered prose block on stdout. --json mirrors the same result as JSON, but the rendered block is the contract. stderr carries in-flight diagnostics only. --artifact-dir <path> selects the root for a session bundle (\`session start\`) or a sessionless artifact-producing leaf's one-shot bundle; leaf help states when it writes one. --out always names one caller-owned file, never a bundle directory.
 
-A CDP-enabled browser must be running; \`capture tab list\` is the probe, and \`capture tab launch\` starts one capture owns and reaps when nothing is (never hand-roll a detached browser \u2014 nothing reaps that). Capture never signals a browser it did not start, so attaching to your own with --port is unchanged. CDP_PORT / CDP_TARGET pin the browser + tab for target-selecting commands \u2014 precedence: explicit flag > active session > env. \`session start\` adopts only an explicit --target.`;
+A CDP-enabled browser must be running; \`capture tab list\` is the probe, and \`capture tab launch\` starts one capture owns and reaps when nothing is (never hand-roll a detached browser \u2014 nothing reaps that). Capture never signals a browser it did not start, so attaching to your own with --port is unchanged. CDP_PORT / CDP_TARGET pin the browser + tab for target-selecting commands \u2014 precedence: explicit flag > active session > env. \`session start\` adopts only an explicit --target. When CRTR_NODE_ID is set (a crtr agent node), a browser command with no --port, no --target and no active session of that node is refused instead of falling back to CDP_PORT, CDP_TARGET or localhost discovery, because the browser found could belong to another node: run \`capture session start --url <url>\`, or pass --port or --target. \`capture tab list\` and commands that only read a recorded artifact are not refused.`;
 }
 function printVersion() {
   const declared = "1.4.22";

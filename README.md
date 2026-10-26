@@ -162,6 +162,8 @@ capture measure check snap-mtdpfnkr-08fbabdd --for contrast,tap-targets
 capture session stop <session-id>                     # write the bundle manifest
 ```
 
+Under a crtr agent node (`CRTR_NODE_ID` set), a browser command with no `--port`, no `--target` and no active session of that node is refused (`no_owned_browser`) rather than falling back to `CDP_PORT`, `CDP_TARGET` or localhost discovery, which could reach another node's browser. Start a session, or pass `--port` or `--target`. A shell without `CRTR_NODE_ID` is unchanged.
+
 `measure check` reports real measurements, not opinions:
 
 ```

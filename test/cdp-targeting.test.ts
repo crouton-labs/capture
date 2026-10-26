@@ -50,9 +50,11 @@ test('an ordinary page command retains active-session target autofill tagged ses
   }
 });
 
-test('CDP_PORT env fills the default port when --port is omitted', () => {
+test('CDP_PORT env fills the default port when --port is omitted and no node id is set', () => {
   const previous = process.env.CDP_PORT;
+  const previousNodeId = process.env.CRTR_NODE_ID;
   process.env.CDP_PORT = '49561';
+  delete process.env.CRTR_NODE_ID;
 
   try {
     const parsed = resolveCliContext(parseCliArgs(['navigate', 'https://account.godaddy.com/products']));
@@ -62,6 +64,25 @@ test('CDP_PORT env fills the default port when --port is omitted', () => {
       delete process.env.CDP_PORT;
     } else {
       process.env.CDP_PORT = previous;
+    }
+    if (previousNodeId === undefined) delete process.env.CRTR_NODE_ID;
+    else process.env.CRTR_NODE_ID = previousNodeId;
+  }
+});
+
+test('a node with CRTR_NODE_ID and no session, --port or --target is refused even when CDP_PORT and CDP_TARGET are set', () => {
+  const saved = { node: process.env.CRTR_NODE_ID, port: process.env.CDP_PORT, target: process.env.CDP_TARGET };
+  process.env.CRTR_NODE_ID = 'nl210-no-session-node';
+  process.env.CDP_PORT = '49561';
+  process.env.CDP_TARGET = 'env-target';
+  try {
+    assert.throws(() => resolveCliContext(parseCliArgs(['page', 'elements'])), (error: { descriptor?: { code?: string } }) => error.descriptor?.code === 'no_owned_browser');
+    assert.equal(resolveCliContext(parseCliArgs(['page', 'elements', '--port', '9222'])).port, 9222);
+    assert.equal(resolveCliContext(parseCliArgs(['tab', 'list'])).port, 49561, 'tab list only probes and is not refused');
+  } finally {
+    for (const [key, value] of [['CRTR_NODE_ID', saved.node], ['CDP_PORT', saved.port], ['CDP_TARGET', saved.target]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
   }
 });

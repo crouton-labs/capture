@@ -215,7 +215,7 @@ test('measure snap rejects invalid viewport input before capture and preserves s
   const pat = 'github_pat_abcdefghijklmnopqrstuvwxyz0123456789';
   const missingRef = path.join(CAPTURE_ROOT, `missing-prefix-${pat}`);
   for (const json of [false, true]) {
-    const result = runCapture(['measure', 'snap', missingRef, ...(json ? ['--json'] : [])]);
+    const result = runCapture(['measure', 'snap', missingRef, '--port', String(cdpPort), ...(json ? ['--json'] : [])]);
     assert.equal(result.status, 1);
     assert.ok(result.stdout.includes(pat), 'structured artifact recovery preserves the exact ref and path evidence');
     if (json) {
