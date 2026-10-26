@@ -448,7 +448,9 @@ export function checkSnapshot(ref: SnapRef, requested: readonly CheckName[]): { 
       if (!e) continue;
       const point = sample.points?.find((p) => {
         const receiver = p.result?.topReceiver;
-        const receiverElement = receiver && elements.find((x) => receiver.backendNodeId != null && x.backendNodeId === receiver.backendNodeId);
+        // The collector records `topReceiver: null` for a point with an empty hit stack (e.g. a sample outside the viewport); no receiver means nothing occludes it.
+        if (!receiver) return false;
+        const receiverElement = elements.find((x) => receiver.backendNodeId != null && x.backendNodeId === receiver.backendNodeId);
         return receiverElement !== undefined && !isSelfOrDescendant(e, receiverElement);
       })?.result;
       if (!point?.topReceiver) continue;
