@@ -500,6 +500,7 @@ function timestampedFrameManifest(recDir: string, frames: readonly string[], man
   return undefined;
 }
 
+/** The VP9 default (`-deadline good -cpu-used 0`) is the slowest preset: a 10-minute recording took longer to encode than the stop's time budget and ended with no video. `realtime`/`cpu-used 8` encodes a 700 s, 7,150-frame screen recording in about 10 s. */
 /** Encodes inside a new private directory, then installs through the shared
  * atomic no-follow writer. The concat demuxer receives every recorded
  * screencast presentation timestamp instead of a fabricated constant cadence. */
@@ -517,7 +518,7 @@ export function encodeVideoIfAvailable(recDir: string, _durationMs: number): Vid
     if (manifestOutcome) return manifestOutcome;
     const result = spawnSync('ffmpeg', [
       '-y', '-f', 'concat', '-safe', '0', '-i', path.join(tempDir, 'frames.ffconcat'), '-fps_mode', 'vfr',
-      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', tempOutput,
+      '-c:v', 'libvpx-vp9', '-deadline', 'realtime', '-cpu-used', '8', '-row-mt', '1', '-pix_fmt', 'yuv420p', tempOutput,
     ], { stdio: 'ignore', timeout: encodeTimeoutMs(frames.length) });
     if (result.error || result.status !== 0 || !fs.existsSync(tempOutput)) {
       return { status: 'failed', reason: classifyEncodeFailure(result) };
