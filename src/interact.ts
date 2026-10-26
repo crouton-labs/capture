@@ -238,7 +238,11 @@ async function resolveBareTarget(
   selector: string,
 ): Promise<ResolvedTarget | ResolutionFailure> {
   const css = await resolveLiveCss(client, input, selector);
-  if (css.ok || css.code === 'ambiguous') return css;
+  // A one-word accessible name is also a valid CSS type selector: `Title` is
+  // the <title> element in <head>, which has no layout box. That match cannot
+  // be driven, so it must not shadow the accessible name.
+  if (css.ok && !(CSS_TYPE_SELECTOR.test(selector) && !(await hasLayoutBox(client, css.backendNodeId)))) return css;
+  if (!css.ok && css.code === 'ambiguous') return css;
 
   const normalized = normalizeAccessibleName(input);
   if (!normalized) return css;
@@ -250,6 +254,67 @@ async function resolveBareTarget(
   );
   const ax = settleAxMatches('ax', input, matches);
   return ax.ok || ax.code === 'ambiguous' ? ax : css;
+}
+
+/** A selector that is a single tag name — the only CSS shape an accessible name can collide with. */
+const CSS_TYPE_SELECTOR = /^[A-Za-z][A-Za-z0-9-]*$/;
+
+async function hasLayoutBox(client: LiveClient, backendNodeId: number): Promise<boolean> {
+  try {
+    const response = (await client.send('DOM.getBoxModel', { backendNodeId })) as { model?: { content?: unknown } } | undefined;
+    return isContentQuad(response?.model?.content);
+  } catch (error) {
+    if (isNoLayoutError(error)) return false;
+    throw error;
+  }
+}
+
+/** The renderer's messages for a node with no layout box (`<title>`, `display:none`, detached). */
+function isNoLayoutError(error: unknown): boolean {
+  return error instanceof Error && /Node does not have a layout object|Could not compute box model/.test(error.message);
+}
+
+function notClickable(backendNodeId: number, detail: string, cause?: unknown): never {
+  throw captureError('world', 'target_not_clickable', `Resolved target backend:${backendNodeId} ${detail}`, cause);
+}
+
+/**
+ * Where to click a content quad: its center when that is inside the viewport,
+ * otherwise the center of the part of the quad that is. A tall or wide element
+ * (or a fixed one larger than the window) can have its center outside the
+ * viewport after scrolling; a mouse event there reaches no element.
+ */
+function viewportClickPoint(quad: number[], width: number, height: number): { x: number; y: number } | null {
+  const points: Array<[number, number]> = [[quad[0], quad[1]], [quad[2], quad[3]], [quad[4], quad[5]], [quad[6], quad[7]]];
+  const cx = points.reduce((sum, p) => sum + p[0], 0) / 4;
+  const cy = points.reduce((sum, p) => sum + p[1], 0) / 4;
+  if (cx >= 0 && cx < width && cy >= 0 && cy < height) return { x: cx, y: cy };
+  // Sutherland–Hodgman clip of the (convex) quad against the viewport rectangle.
+  const edges: Array<{ inside: (p: [number, number]) => boolean; cut: (a: [number, number], b: [number, number]) => [number, number] }> = [
+    { inside: (p) => p[0] >= 0, cut: (a, b) => [0, a[1] + ((b[1] - a[1]) * (0 - a[0])) / (b[0] - a[0])] },
+    { inside: (p) => p[0] <= width, cut: (a, b) => [width, a[1] + ((b[1] - a[1]) * (width - a[0])) / (b[0] - a[0])] },
+    { inside: (p) => p[1] >= 0, cut: (a, b) => [a[0] + ((b[0] - a[0]) * (0 - a[1])) / (b[1] - a[1]), 0] },
+    { inside: (p) => p[1] <= height, cut: (a, b) => [a[0] + ((b[0] - a[0]) * (height - a[1])) / (b[1] - a[1]), height] },
+  ];
+  let polygon = points;
+  for (const edge of edges) {
+    const input = polygon;
+    polygon = [];
+    input.forEach((current, i) => {
+      const previous = input[(i + input.length - 1) % input.length];
+      if (edge.inside(current)) {
+        if (!edge.inside(previous)) polygon.push(edge.cut(previous, current));
+        polygon.push(current);
+      } else if (edge.inside(previous)) {
+        polygon.push(edge.cut(previous, current));
+      }
+    });
+    if (polygon.length === 0) return null;
+  }
+  if (polygon.length < 3) return null;
+  const x = polygon.reduce((sum, p) => sum + p[0], 0) / polygon.length;
+  const y = polygon.reduce((sum, p) => sum + p[1], 0) / polygon.length;
+  return x >= 0 && x < width && y >= 0 && y < height ? { x, y } : null;
 }
 
 async function resolveLiveCss(
@@ -368,7 +433,7 @@ export async function clickLiveTarget(
   const initial = await resolveLiveTarget(client, input);
   if (!initial.ok) return initial;
 
-  await client.send('DOM.scrollIntoViewIfNeeded', { backendNodeId: initial.backendNodeId });
+  await scrollIntoView(client, initial.backendNodeId);
 
   const current = await resolveLiveTarget(client, input);
   if (!current.ok) return current;
@@ -380,8 +445,17 @@ export async function clickResolved(
   resolved: ResolvedTarget,
   opts: { mark?: string; inspectHitTest?: boolean; includeHitTestReceiver?: boolean } = {},
 ): Promise<ClickDispatch> {
-  await client.send('DOM.scrollIntoViewIfNeeded', { backendNodeId: resolved.backendNodeId });
+  await scrollIntoView(client, resolved.backendNodeId);
   return dispatchResolvedClick(client, resolved, opts);
+}
+
+async function scrollIntoView(client: LiveClient, backendNodeId: number): Promise<void> {
+  try {
+    await client.send('DOM.scrollIntoViewIfNeeded', { backendNodeId });
+  } catch (error) {
+    if (isNoLayoutError(error)) notClickable(backendNodeId, 'has no layout box to scroll to (hidden, detached, or not rendered).', error);
+    throw error;
+  }
 }
 
 async function dispatchResolvedClick(
@@ -390,9 +464,13 @@ async function dispatchResolvedClick(
   opts: { mark?: string; inspectHitTest?: boolean; includeHitTestReceiver?: boolean },
 ): Promise<ClickDispatch> {
   const { backendNodeId } = resolved;
-  const boxResponse = (await client.send('DOM.getBoxModel', { backendNodeId })) as
-    | { model?: { content?: unknown } }
-    | undefined;
+  let boxResponse: { model?: { content?: unknown } } | undefined;
+  try {
+    boxResponse = (await client.send('DOM.getBoxModel', { backendNodeId })) as { model?: { content?: unknown } } | undefined;
+  } catch (error) {
+    if (isNoLayoutError(error)) notClickable(backendNodeId, 'has no layout box to click (hidden, detached, or not rendered).', error);
+    throw error;
+  }
 
   // Content quad is [x1,y1, x2,y2, x3,y3, x4,y4] — validated here, once, for
   // every click consumer (page click and motion rec's one-shot alike).
@@ -405,24 +483,39 @@ async function dispatchResolvedClick(
       { method: 'DOM.getBoxModel', response: boxResponse },
     );
   }
-  const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
-  const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
+  const metrics = (await client.send('Page.getLayoutMetrics')) as { cssVisualViewport?: { pageX: number; pageY: number; clientWidth: number; clientHeight: number } };
+  const viewport = metrics.cssVisualViewport;
+  if (!viewport || ![viewport.pageX, viewport.pageY, viewport.clientWidth, viewport.clientHeight].every(Number.isFinite)) {
+    throw captureError('world', 'malformed_protocol', 'Page.getLayoutMetrics returned no valid CSS visual viewport.', {
+      method: 'Page.getLayoutMetrics', response: metrics,
+    });
+  }
+  const point = viewportClickPoint(quad, viewport.clientWidth, viewport.clientHeight);
+  if (point === null) {
+    notClickable(
+      backendNodeId,
+      `is outside the ${viewport.clientWidth}x${viewport.clientHeight} viewport after scrolling it into view (a fixed or clipped element the page cannot scroll to).`,
+      { method: 'DOM.getBoxModel', response: boxResponse },
+    );
+  }
+  const { x, y } = point;
 
   const dispatchX = Math.round(x);
   const dispatchY = Math.round(y);
   let hitTestReceiverBackendNodeId: number | undefined;
   if (opts.inspectHitTest) {
     // The box quad and mouse dispatch use viewport coordinates; DOM.getNodeForLocation uses page coordinates.
-    const metrics = (await client.send('Page.getLayoutMetrics')) as { cssVisualViewport?: { pageX: number; pageY: number } };
-    const viewport = metrics.cssVisualViewport;
-    if (!viewport || !Number.isFinite(viewport.pageX) || !Number.isFinite(viewport.pageY)) {
-      throw captureError('world', 'malformed_protocol', 'Page.getLayoutMetrics returned no valid CSS visual viewport.', {
-        method: 'Page.getLayoutMetrics', response: metrics,
-      });
+    let hitTest: { backendNodeId?: unknown };
+    try {
+      hitTest = (await client.send('DOM.getNodeForLocation', {
+        x: Math.round(x + viewport.pageX), y: Math.round(y + viewport.pageY),
+      })) as { backendNodeId?: unknown };
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('No node found at given location')) {
+        notClickable(backendNodeId, `has no element at its click point x=${dispatchX} y=${dispatchY}; nothing there can receive the click.`, error);
+      }
+      throw error;
     }
-    const hitTest = (await client.send('DOM.getNodeForLocation', {
-      x: Math.round(x + viewport.pageX), y: Math.round(y + viewport.pageY),
-    })) as { backendNodeId?: unknown };
     if (typeof hitTest.backendNodeId !== 'number' || !Number.isSafeInteger(hitTest.backendNodeId) || hitTest.backendNodeId <= 0) {
       throw captureError(
         'world',
