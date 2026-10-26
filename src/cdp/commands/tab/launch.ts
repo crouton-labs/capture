@@ -21,7 +21,7 @@ input:
   --headed        run with a visible window instead of headless
 
 output: <browser-launched port=… pid=…> — the port to pass as --port (or CDP_PORT), the pid capture owns, and the executable that answered with its provenance (CAPTURE_BROWSER, puppeteer-cache, or system).
-effects: spawns a detached browser with a private profile under CAPTURE_ROOT, and registers it as capture-owned. Capture stops it on \`capture tab quit\`, or on the first later capture invocation once it has been unused for ${IDLE_REAP_MS / 60000} minutes; a browser capture did not start is never signalled. Also sweeps previously-launched browsers that have exited, stopped answering CDP, or gone idle.`;
+effects: spawns a detached browser with a private profile under CAPTURE_ROOT, and registers it as capture-owned. Capture stops it on \`capture tab quit\`, or on the first later capture invocation once it has been unused for ${IDLE_REAP_MS / 60000} minutes; a browser capture did not start is never signalled. Also sweeps previously-launched browsers that have exited, refused CDP connections, or gone idle.`;
 
 /** Pure `<browser-launched>` result builder — exported for tests. */
 export function buildBrowserLaunchedResult(
@@ -34,7 +34,7 @@ export function buildBrowserLaunchedResult(
       line(text`mode `, data(browser.headless ? 'headless' : 'headed')),
     ]),
   ];
-  if (swept > 0) sections.push(fact`swept ${swept} previously-launched browser(s) that had exited, stopped answering CDP, or gone idle.`);
+  if (swept > 0) sections.push(fact`swept ${swept} previously-launched browser(s) that had exited, refused CDP connections, or gone idle.`);
   return {
     tag: 'browser-launched',
     attrs: { port: browser.port, pid: browser.pid, headless: browser.headless },
