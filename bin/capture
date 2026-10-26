@@ -5930,7 +5930,7 @@ __export(targets_exports, {
   scoreTabUrlMatch: () => scoreTabUrlMatch
 });
 async function getBrowserClient(port) {
-  const versionResp = await fetch(`http://${CDP_LOOPBACK_HOST}:${port}/json/version`);
+  const versionResp = await fetch(`http://${CDP_LOOPBACK_HOST}:${port}/json/version`, { signal: AbortSignal.timeout(BROWSER_PROBE_TIMEOUT_MS) });
   if (!versionResp.ok) {
     throw new Error(
       `Failed to connect to CDP on port ${port}: ${versionResp.status}`
@@ -5952,8 +5952,8 @@ async function getBrowserClient(port) {
 async function listTargets(port) {
   const { client } = await getBrowserClient(port);
   try {
-    await client.send("Target.setDiscoverTargets", { discover: true });
-    const result = await client.send("Target.getTargets");
+    await client.send("Target.setDiscoverTargets", { discover: true }, BROWSER_PROBE_TIMEOUT_MS);
+    const result = await client.send("Target.getTargets", {}, BROWSER_PROBE_TIMEOUT_MS);
     return result.targetInfos.map((t) => ({
       id: t.targetId,
       title: t.title,
@@ -5991,25 +5991,40 @@ async function findTabById(port, targetId) {
   }
   return null;
 }
+function unlistedTargetError(query, failures) {
+  const detail = failures.map(({ port, error: error4 }) => `port ${port}: ${error4 instanceof Error ? error4.message : String(error4)}`).join("; ");
+  return captureError(
+    "precondition",
+    "target_unavailable",
+    `No tab found for "${query}", and ${failures.length} endpoint(s) could not list their tabs (${detail}). Run "capture tab list" to see which endpoints answer.`,
+    failures[0]?.error
+  );
+}
 async function findTabByIdInPorts(targetId, ports, finder = findTabById) {
+  const failures = [];
   for (const port of ports) {
     try {
       const tab = await finder(port, targetId);
       if (tab) return { port, tab };
-    } catch {
+    } catch (error4) {
+      failures.push({ port, error: error4 });
     }
   }
+  if (failures.length > 0) throw unlistedTargetError(targetId, failures);
   return null;
 }
 async function findUnambiguousPageTabInPorts(ports, lister = listTargets) {
   const candidates = [];
+  const failures = [];
   for (const port of ports) {
     try {
       for (const tab of await lister(port)) if (tab.type === "page") candidates.push({ port, tab });
-    } catch {
+    } catch (error4) {
+      failures.push({ port, error: error4 });
     }
   }
   if (candidates.length > 1) throw new AmbiguousPageTargetError(candidates);
+  if (candidates.length === 0 && failures.length > 0) throw unlistedTargetError("(any page tab)", failures);
   return candidates[0] ?? null;
 }
 function normalizeUrlForMatch(value) {
@@ -6076,6 +6091,7 @@ async function findResponsivePageTabByUrl(port, url) {
 async function findTabByUrlAcrossEndpoints(url, preferredPort) {
   const ports = resolveSearchPorts(await detectCdpPortsAsync(), preferredPort);
   let best = null;
+  const failures = [];
   for (const port of ports) {
     try {
       const targets = await listTargets(port);
@@ -6086,10 +6102,13 @@ async function findTabByUrlAcrossEndpoints(url, preferredPort) {
           best = { port, tab, score };
         }
       }
-    } catch {
+    } catch (error4) {
+      failures.push({ port, error: error4 });
     }
   }
-  return best ? { port: best.port, tab: best.tab } : null;
+  if (best) return { port: best.port, tab: best.tab };
+  if (failures.length > 0) throw unlistedTargetError(url, failures);
+  return null;
 }
 function requireTargetId(targetId, url) {
   if (!targetId) {
@@ -6129,13 +6148,15 @@ async function openTab(port, url) {
     client.close();
   }
 }
-var AmbiguousPageTargetError;
+var BROWSER_PROBE_TIMEOUT_MS, AmbiguousPageTargetError;
 var init_targets = __esm({
   "src/cdp/targets.ts"() {
     init_client();
     init_loopback();
     init_detect();
     init_browser_process();
+    init_errors();
+    BROWSER_PROBE_TIMEOUT_MS = 1e4;
     AmbiguousPageTargetError = class extends Error {
       constructor(candidates) {
         super(`More than one page tab is available:
@@ -8671,7 +8692,7 @@ async function captureScreenshotWithCssViewport(client, viewport2, options) {
 }
 async function viewportScopedCapture(client, viewport2, options, includeCssViewport = false) {
   const MAX_DIM = 1600;
-  const SCREENSHOT_REQUEST_TIMEOUT_MS = 3e4;
+  const SCREENSHOT_REQUEST_TIMEOUT_MS = options?.requestTimeoutMs ?? 3e4;
   let ownsDeviceMetricsOverride = false;
   let primaryFailed = false;
   let primaryError;
@@ -9031,7 +9052,10 @@ async function navigateAndWait(port, url, options = {}) {
   }
   const targets = await listTargets(port);
   const refreshed = targets.find((t) => t.id === tab.id);
-  return refreshed ?? tab;
+  if (!refreshed) {
+    throw new Error(`the browser accepted the new tab ${tab.id} but no longer lists it \u2014 it dropped the tab. Open it again.`);
+  }
+  return refreshed;
 }
 var init_record = __esm({
   "src/cdp/record.ts"() {
@@ -16777,6 +16801,24 @@ async function applyActiveSessionNetworkConditions(client, session, targetId) {
     uploadThroughput: offline ? 0 : -1
   });
 }
+function setupDeadlineMs(parsed) {
+  return parsed.timeoutMs ?? DEFAULT_SETUP_DEADLINE_MS;
+}
+async function withinDeadline(ms, phase, work) {
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(captureError(
+      "world",
+      "command_deadline_exceeded",
+      `${phase} did not finish within ${ms}ms \u2014 the tab is not answering CDP (its main thread may be blocked, or the tab throttled). Raise --timeout to wait longer.`
+    )), ms);
+  });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 function deriveActionLabel(parsed) {
   if (parsed.command === "type") {
     return `type:${parsed.into ?? "focused element"}`;
@@ -16864,7 +16906,7 @@ async function connectForCommand(parsed) {
   const client = seams.createClient(tab.webSocketDebuggerUrl);
   try {
     await client.waitReady();
-    await applyActiveSessionNetworkConditions(client, seams.getActiveSession(), tab.id);
+    await withinDeadline(setupDeadlineMs(parsed), "Restoring the session network state", applyActiveSessionNetworkConditions(client, seams.getActiveSession(), tab.id));
     return { client, tab };
   } catch (err) {
     client.close();
@@ -16916,8 +16958,8 @@ function finishConsole(collectors) {
 }
 async function withConnection(parsed, fn, opts = {}) {
   const { client, tab } = await connectForCommand(parsed);
-  const collectors = await startCollectors(parsed, client);
   try {
+    const collectors = await withinDeadline(setupDeadlineMs(parsed), "Starting page collectors", startCollectors(parsed, client));
     const result = await fn(client, tab);
     if (collectors.harRecorder && parsed.har) {
       const settle = opts.settle !== void 0 ? opts.settle : 3e3;
@@ -16934,8 +16976,8 @@ async function withConnection(parsed, fn, opts = {}) {
 }
 async function withPageAction(parsed, opts, fn) {
   const { client, tab } = await connectForCommand(parsed);
-  const collectors = await startCollectors(parsed, client);
   try {
+    const collectors = await withinDeadline(setupDeadlineMs(parsed), "Starting page collectors", startCollectors(parsed, client));
     const result = await fn(client, tab);
     const requestedMs = opts.settleMs;
     const t0 = seams.now();
@@ -16963,7 +17005,7 @@ async function withPageAction(parsed, opts, fn) {
     client.close();
   }
 }
-var fs14, import_node_perf_hooks2, seams;
+var fs14, import_node_perf_hooks2, seams, DEFAULT_SETUP_DEADLINE_MS;
 var init_connection = __esm({
   "src/cdp/connection.ts"() {
     fs14 = __toESM(require("fs"));
@@ -16990,6 +17032,7 @@ var init_connection = __esm({
       now: () => import_node_perf_hooks2.performance.now(),
       sleep: (ms) => new Promise((r) => setTimeout(r, ms))
     };
+    DEFAULT_SETUP_DEADLINE_MS = 3e4;
   }
 });
 
@@ -229200,7 +229243,7 @@ async function focusScopedEvaluate(client, expression, evaluationTimeoutMs) {
   let primaryError;
   try {
     ownsFocusOverride = true;
-    await client.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    await client.send("Emulation.setFocusEmulationEnabled", { enabled: true }, evaluationTimeoutMs);
     try {
       return await client.send("Runtime.evaluate", {
         expression,
@@ -229224,7 +229267,7 @@ async function focusScopedEvaluate(client, expression, evaluationTimeoutMs) {
   } finally {
     if (ownsFocusOverride) {
       try {
-        await client.send("Emulation.setFocusEmulationEnabled", { enabled: false });
+        await client.send("Emulation.setFocusEmulationEnabled", { enabled: false }, evaluationTimeoutMs);
       } catch (error4) {
         const cleanupError = captureError(
           "cleanup",
@@ -229706,6 +229749,7 @@ async function cmdPageShot(parsed, _args) {
         fullPage: parsed.fullPage,
         crop: requestedCrop,
         zoom,
+        requestTimeoutMs: parsed.timeoutMs,
         ...colorScheme ? { beforeCapture: () => finishColorTransitions(client) } : {}
       });
       const outPath = await resolveOutPath(parsed);
@@ -229746,6 +229790,7 @@ input:
   --out <path>      caller-owned destination PNG; default: the active session's shots/ sequence, or a fresh one-shot bundle when no session is active
   --artifact-dir <path>  root for that sessionless one-shot bundle (ignored with --out or an active session)
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
+  --timeout <ms>    deadline for connecting to the tab and for each screenshot request (default: 30000 for connecting and each screenshot request); a tab that does not answer in time fails with command_deadline_exceeded or a CDP request timeout instead of waiting
   --json            mirror the result as JSON
 output:
   <screenshot path=\u2026 width=\u2026 height=\u2026 css-width=\u2026 css-height=\u2026 css-x=\u2026 css-y=\u2026 css-to-image-x=\u2026 css-to-image-y=\u2026 effective-downscale-x=\u2026 effective-downscale-y=\u2026 scroll-x=\u2026 scroll-y=\u2026 emulation=none|viewport|full-page color-scheme=dark|light> \u2014 saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, visual-viewport scroll offset at capture, any effective downscale below 1 image px/CSS px, byte size, crop provenance, and any requested transient emulation

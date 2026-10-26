@@ -47,6 +47,7 @@ input:
   --out <path>      caller-owned destination PNG; default: the active session's shots/ sequence, or a fresh one-shot bundle when no session is active
   --artifact-dir <path>  root for that sessionless one-shot bundle (ignored with --out or an active session)
   --target <tabId> | --url <pattern> | --port <n>   tab targeting; defaults to the active session tab
+  --timeout <ms>    deadline for connecting to the tab and for each screenshot request (default: 30000 for connecting and each screenshot request); a tab that does not answer in time fails with command_deadline_exceeded or a CDP request timeout instead of waiting
   --json            mirror the result as JSON
 output:
   <screenshot path=… width=… height=… css-width=… css-height=… css-x=… css-y=… css-to-image-x=… css-to-image-y=… effective-downscale-x=… effective-downscale-y=… scroll-x=… scroll-y=… emulation=none|viewport|full-page color-scheme=dark|light> — saved path, PNG pixel dimensions, the CSS-pixel region the image covers (its page-coordinate origin and size) with the CSS-to-image scale derived from it, visual-viewport scroll offset at capture, any effective downscale below 1 image px/CSS px, byte size, crop provenance, and any requested transient emulation
@@ -410,7 +411,7 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
         cropProvenance = { source: 'coordinates', requested: requestedCrop, zoom };
       }
       const screenshot = await captureScreenshotWithCssViewport(client, viewport, {
-        fullPage: parsed.fullPage, crop: requestedCrop, zoom,
+        fullPage: parsed.fullPage, crop: requestedCrop, zoom, requestTimeoutMs: parsed.timeoutMs,
         ...(colorScheme ? { beforeCapture: () => finishColorTransitions(client) } : {}),
       });
       const outPath = await resolveOutPath(parsed);

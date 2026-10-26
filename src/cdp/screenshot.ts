@@ -31,7 +31,7 @@ export interface ScreenshotCrop {
   readonly height: number;
 }
 
-type ScreenshotOptions = { fullPage?: boolean; crop?: ScreenshotCrop; zoom?: number; beforeCapture?: () => Promise<void> };
+type ScreenshotOptions = { fullPage?: boolean; crop?: ScreenshotCrop; zoom?: number; beforeCapture?: () => Promise<void>; requestTimeoutMs?: number };
 
 /** A region is reportable only if every number is finite and its size is positive; anything else would produce a fabricated scale. */
 function validRegion(region: CapturedRegion): CapturedRegion | undefined {
@@ -151,7 +151,7 @@ async function viewportScopedCapture(
   includeCssViewport = false,
 ): Promise<{ png: Buffer; cssViewport?: CapturedRegion; scrollOffset?: ScrollOffset }> {
   const MAX_DIM = 1600; // headroom below Anthropic's 2000px many-image limit
-  const SCREENSHOT_REQUEST_TIMEOUT_MS = 30_000;
+  const SCREENSHOT_REQUEST_TIMEOUT_MS = options?.requestTimeoutMs ?? 30_000;
   let ownsDeviceMetricsOverride = false;
   let primaryFailed = false;
   let primaryError: unknown;

@@ -440,3 +440,17 @@ test('connectForCommand: a vanished session tab names the session and points at 
     h.restore();
   }
 });
+
+test('withPageAction: a tab that never answers collector setup fails with command_deadline_exceeded at --timeout', async () => {
+  const client = makeStubClient();
+  client.send = () => new Promise(() => {});
+  const h = installSeams({}, client);
+  try {
+    await assert.rejects(
+      () => withPageAction(parsedFor({ timeoutMs: 20 }), { settleMs: 0 }, async () => 'unreachable'),
+      (error: unknown) => error instanceof CaptureError && error.descriptor.code === 'command_deadline_exceeded',
+    );
+  } finally {
+    h.restore();
+  }
+});
