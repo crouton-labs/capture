@@ -30,7 +30,7 @@ import {
 const USAGE = `capture tab list — discover CDP endpoints and list the page tabs on each.
 
 input:
-  --port <port>   probe one endpoint only, instead of discovering every localhost CDP endpoint
+  --port <port>   probe one endpoint only, instead of discovering every localhost CDP endpoint; an active session's endpoint does not narrow it (CDP_PORT still pins one endpoint)
 
 output: <tabs endpoints=… tabs=…> — one section per reachable endpoint (port, app, page-tab count, preferred marker, and a capture-owned pid marker on any browser \`tab launch\` started) listing each page tab's target id (first 8 chars, enough for --target), title, and url; an endpoint that failed the tab fetch is an endpoints-unreachable fact, never a silent omission.
 effects: probes local CDP endpoints over HTTP/WebSocket; no page-observable writes. Also sweeps capture-launched browsers, stopping any that have exited, stopped answering CDP, or gone idle — browsers capture did not start are never signalled.`;
