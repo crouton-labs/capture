@@ -4901,6 +4901,29 @@ function readPrivateFile(filePath) {
     return value;
   });
 }
+function readPrivateFileChunks(filePath, onChunk) {
+  pinnedParent(filePath, (name) => {
+    const fd = openRegular(name, fs.constants.O_RDONLY);
+    let primary;
+    try {
+      const chunk = Buffer.allocUnsafe(1 << 20);
+      for (; ; ) {
+        const n = fs.readSync(fd, chunk, 0, chunk.length, null);
+        if (!n) break;
+        onChunk(chunk.subarray(0, n));
+      }
+    } catch (error4) {
+      primary = error4;
+    }
+    try {
+      closeDescriptor(fd, "artifact-temp-close");
+    } catch (closeError) {
+      if (primary) combineFailure(primary, closeError, "private artifact read failed");
+      throw closeError;
+    }
+    if (primary) throw primary;
+  });
+}
 function openPrivateAppendFd(filePath) {
   return pinnedParent(filePath, (name) => openRegular(name, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT, true));
 }
@@ -11026,41 +11049,113 @@ async function createHarRecording(sessionDir2 = CAPTURE_ROOT) {
     return { id: candidate, path: candidate };
   }
 }
-async function readHarRecording(id) {
-  const target = harFilePath(id);
-  const source = `live HAR recording ${target}`;
-  let raw;
+function forEachStoreRecord(target, source, visit) {
+  const decoder = new import_node_string_decoder.StringDecoder("utf8");
+  let pending = "";
+  let index = 0;
+  let totalBytes = 0;
+  const handle = (line4) => {
+    if (line4.length === 0) fail(source, `store line ${index + 1}`, "is empty");
+    let record5;
+    try {
+      record5 = JSON.parse(line4);
+    } catch {
+      return fail(source, `store line ${index + 1}`, "is not valid JSON");
+    }
+    visit(record5, index);
+    index += 1;
+  };
   try {
-    raw = readPrivateFile(target).toString("utf8");
+    readPrivateFileChunks(target, (chunk) => {
+      totalBytes += chunk.length;
+      pending += decoder.write(chunk);
+      let from = 0;
+      for (let newline = pending.indexOf("\n", from); newline !== -1; newline = pending.indexOf("\n", from)) {
+        handle(pending.slice(from, newline));
+        from = newline + 1;
+      }
+      pending = pending.slice(from);
+    });
   } catch (error4) {
     if (error4.code === "ENOENT") {
       throw new Error(`live HAR recording is missing \u2014 cannot read: ${target}`, { cause: error4 });
     }
     throw error4;
   }
-  if (raw.length === 0) fail(source, "store", "is empty \u2014 a live HAR store always begins with its header record");
-  if (!raw.endsWith("\n")) fail(source, "store", "ends with an unterminated record \u2014 the store is corrupt");
-  const lines = raw.slice(0, -1).split("\n");
-  const parseLine = (line4, index) => {
-    if (line4.length === 0) fail(source, `store line ${index + 1}`, "is empty");
-    try {
-      return JSON.parse(line4);
-    } catch {
-      return fail(source, `store line ${index + 1}`, "is not valid JSON");
-    }
-  };
-  const header = vStoreHeader(parseLine(lines[0], 0), source);
+  if (totalBytes === 0) fail(source, "store", "is empty \u2014 a live HAR store always begins with its header record");
+  if (pending.length > 0 || decoder.end().length > 0) fail(source, "store", "ends with an unterminated record \u2014 the store is corrupt");
+}
+async function readHarRecording(id) {
+  const target = harFilePath(id);
+  const source = `live HAR recording ${target}`;
+  let header;
   const entries = [];
   const incompleteLifecycles = [];
-  for (let i = 1; i < lines.length; i++) {
-    const batch = validateHarAppendBatch(parseLine(lines[i], i), `${source} line ${i + 1}`);
-    entries.push(...batch.entries);
-    incompleteLifecycles.push(...batch.incompleteLifecycles);
-  }
+  forEachStoreRecord(target, source, (record5, index) => {
+    if (index === 0) {
+      header = vStoreHeader(record5, source);
+      return;
+    }
+    const batch = validateHarAppendBatch(record5, `${source} line ${index + 1}`);
+    for (const entry of batch.entries) entries.push(entry);
+    for (const lifecycle of batch.incompleteLifecycles) incompleteLifecycles.push(lifecycle);
+  });
   return {
     log: { version: "1.2", creator: header.creator, entries },
     incompleteLifecycles
   };
+}
+function bufferedWriter(writer) {
+  let buffered = "";
+  const flush = () => {
+    if (buffered.length === 0) return;
+    writer.write(buffered);
+    buffered = "";
+  };
+  return {
+    write(data32) {
+      buffered += data32;
+      if (buffered.length >= 1 << 20) flush();
+    },
+    flush
+  };
+}
+function exportHarRecording(id, destination) {
+  const target = harFilePath(id);
+  const source = `live HAR recording ${target}`;
+  const writer = openPrivateChunkWriter(destination);
+  const out = bufferedWriter(writer);
+  try {
+    let entryCount = 0;
+    forEachStoreRecord(target, source, (record5, index) => {
+      if (index === 0) {
+        const header = vStoreHeader(record5, source);
+        out.write(`{"log":{"version":"1.2","creator":${JSON.stringify(header.creator)},"entries":[`);
+        return;
+      }
+      for (const entry of validateHarAppendBatch(record5, `${source} line ${index + 1}`).entries) {
+        out.write(`${entryCount === 0 ? "" : ","}${JSON.stringify(entry)}`);
+        entryCount += 1;
+      }
+    });
+    out.write(']},"incompleteLifecycles":[');
+    let lifecycleCount = 0;
+    forEachStoreRecord(target, source, (record5, index) => {
+      if (index === 0) return;
+      for (const lifecycle of validateHarAppendBatch(record5, `${source} line ${index + 1}`).incompleteLifecycles) {
+        out.write(`${lifecycleCount === 0 ? "" : ","}${JSON.stringify(lifecycle)}`);
+        lifecycleCount += 1;
+      }
+    });
+    out.write("]");
+    out.write("}");
+    out.flush();
+    writer.commit();
+    return { entryCount };
+  } catch (error4) {
+    writer.discard();
+    throw error4;
+  }
 }
 async function appendToHarRecording(id, batch) {
   if (batch.entries.length === 0 && batch.incompleteLifecycles.length === 0) return;
@@ -11079,10 +11174,11 @@ async function appendToHarRecording(id, batch) {
 async function deleteHarRecording(id) {
   unlinkPrivateFile(harFilePath(id));
 }
-var import_node_crypto, path7, MAX_BODY_BYTES, HAR_DIR;
+var import_node_crypto, import_node_string_decoder, path7, MAX_BODY_BYTES, HAR_DIR;
 var init_har_manager = __esm({
   "src/har-manager.ts"() {
     import_node_crypto = __toESM(require("node:crypto"));
+    import_node_string_decoder = require("node:string_decoder");
     path7 = __toESM(require("path"));
     init_artifacts();
     MAX_BODY_BYTES = 262144;
@@ -15394,7 +15490,7 @@ function isBundleManifest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record5 = value;
   const validHar = record5.har === null || !!record5.har && typeof record5.har === "object" && !Array.isArray(record5.har) && typeof record5.har.id === "string" && typeof record5.har.path === "string" && typeof record5.har.entryCount === "number";
-  return typeof record5.id === "string" && typeof record5.startedAt === "string" && typeof record5.stoppedAt === "string" && typeof record5.duration === "number" && (record5.url === null || typeof record5.url === "string") && Array.isArray(record5.shots) && record5.shots.every(isNamedPathEntry) && validHar && Array.isArray(record5.logs) && record5.logs.every((item) => isNamedPathEntry(item) && typeof item.lines === "number") && Array.isArray(record5.reports) && record5.reports.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string" && typeof item.url === "string" && typeof item.finalUrl === "string" && (item.preset === "mobile" || item.preset === "desktop") && Array.isArray(item.categories) && item.categories.every((category) => typeof category === "string") && (item.lighthouse === null || typeof item.lighthouse === "string") && (item.axe === null || typeof item.axe === "string")) && Array.isArray(record5.other) && record5.other.every(isNamedPathEntry) && Array.isArray(record5.snaps) && record5.snaps.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string") && Array.isArray(record5.recs) && record5.recs.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string") && (record5.mocks === void 0 || Array.isArray(record5.mocks) && record5.mocks.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string" && typeof item.completion === "string")) && Array.isArray(record5.pendingViewportRestorations);
+  return (record5.harExportError === void 0 || typeof record5.harExportError === "string") && typeof record5.id === "string" && typeof record5.startedAt === "string" && typeof record5.stoppedAt === "string" && typeof record5.duration === "number" && (record5.url === null || typeof record5.url === "string") && Array.isArray(record5.shots) && record5.shots.every(isNamedPathEntry) && validHar && Array.isArray(record5.logs) && record5.logs.every((item) => isNamedPathEntry(item) && typeof item.lines === "number") && Array.isArray(record5.reports) && record5.reports.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string" && typeof item.url === "string" && typeof item.finalUrl === "string" && (item.preset === "mobile" || item.preset === "desktop") && Array.isArray(item.categories) && item.categories.every((category) => typeof category === "string") && (item.lighthouse === null || typeof item.lighthouse === "string") && (item.axe === null || typeof item.axe === "string")) && Array.isArray(record5.other) && record5.other.every(isNamedPathEntry) && Array.isArray(record5.snaps) && record5.snaps.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string") && Array.isArray(record5.recs) && record5.recs.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string") && (record5.mocks === void 0 || Array.isArray(record5.mocks) && record5.mocks.every((item) => !!item && typeof item === "object" && typeof item.id === "string" && typeof item.path === "string" && typeof item.completion === "string")) && Array.isArray(record5.pendingViewportRestorations);
 }
 function readBundleManifest(bundlePath) {
   const raw = readPrivateFile(bundlePath).toString("utf-8");
@@ -16236,7 +16332,7 @@ async function har(parsed) {
 function bundleRows(manifest) {
   return [
     fact`shots: ${manifest.shots.length}`,
-    manifest.har ? fact`har: ${manifest.har.entryCount} entries — ${manifest.har.path}` : fact`har: 0 entries`,
+    manifest.har ? fact`har: ${manifest.har.entryCount} entries — ${manifest.har.path}` : manifest.harExportError ? fact`har: export failed — ${manifest.harExportError}` : fact`har: 0 entries`,
     fact`logs: ${manifest.logs.length}`,
     fact`lighthouse reports: ${manifest.reports.length}`,
     fact`measure snaps: ${manifest.snaps.length}`,
@@ -16292,7 +16388,7 @@ async function stop(parsed) {
       const bundlePath = path17.join(session.dir, "bundle.json");
       try {
         const manifest2 = readBundleManifest(bundlePath);
-        if (session.harId) {
+        if (session.harId && manifest2.har) {
           try {
             await deleteHarRecording(session.harId);
           } catch (error4) {
@@ -16321,11 +16417,15 @@ async function stop(parsed) {
       const shotsDir = path17.join(session.dir, "shots");
       const shots = fs13.existsSync(shotsDir) ? fs13.readdirSync(shotsDir).filter((name) => name.endsWith(".png") || name.endsWith(".jpg")).map((name) => ({ name, path: path17.join(shotsDir, name) })) : [];
       let har2 = null;
+      let harExportError;
       if (session.harId) {
-        const harData = await readHarRecording(session.harId);
         const harPath = path17.join(session.dir, "har.json");
-        writeJsonPrivate(harPath, harData);
-        har2 = { id: session.harId, path: harPath, entryCount: harData.log.entries.length };
+        try {
+          const { entryCount } = exportHarRecording(session.harId, harPath);
+          har2 = { id: session.harId, path: harPath, entryCount };
+        } catch (error4) {
+          harExportError = `${error4 instanceof Error ? error4.message : String(error4)}; the live HAR store was kept at ${harFilePath(session.harId)}`;
+        }
       }
       const logsDir = path17.join(session.dir, "logs");
       const logs = fs13.existsSync(logsDir) ? fs13.readdirSync(logsDir).filter((name) => name.endsWith(".log")).map((name) => {
@@ -16348,6 +16448,7 @@ async function stop(parsed) {
         url: session.url ?? null,
         shots,
         har: har2,
+        ...harExportError === void 0 ? {} : { harExportError },
         logs,
         reports,
         other,
@@ -16357,7 +16458,7 @@ async function stop(parsed) {
         pendingViewportRestorations: []
       };
       writeJsonPrivate(bundlePath, manifest);
-      if (session.harId) await deleteHarRecording(session.harId);
+      if (har2) await deleteHarRecording(har2.id);
       await updateSessionState(session.dir, { stoppedAt, stopping: false });
       clearActiveSessionIf(id);
       committed = true;
@@ -16434,7 +16535,7 @@ function sectionRows(manifest, key) {
     case "shots":
       return manifest.shots.map((s) => fact`${s.name} — ${s.path}`);
     case "har":
-      return manifest.har ? [fact`har.json — ${manifest.har.entryCount} entries — ${manifest.har.path}`] : [];
+      return manifest.har ? [fact`har.json — ${manifest.har.entryCount} entries — ${manifest.har.path}`] : manifest.harExportError ? [fact`har export failed — ${manifest.harExportError}`] : [];
     case "logs":
       return manifest.logs.map((l) => fact`${l.name} — ${l.lines} lines — ${l.path}`);
     case "reports":
@@ -16645,7 +16746,9 @@ Output:
 effects:
   Kills log tailers, tears down the held CDP bridge, finalizes any live
   recorder, collects every artifact into bundle.json, and clears the active
-  capture context.`;
+  capture context. The HAR is streamed into har.json; if it cannot be exported
+  the session is still finalized, bundle.json records the error, and the live
+  HAR store is kept.`;
     LIST_USAGE = `capture session list \u2014 list active and stopped capture sessions.
 
 input:

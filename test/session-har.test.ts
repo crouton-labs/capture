@@ -629,3 +629,23 @@ test('session log errors: missing path, missing file, no active session', async 
     fs.rmSync(src, { force: true });
   }
 });
+
+test('session stop still finalizes the session when the live HAR cannot be exported, and keeps the live store', async () => {
+  const { id, dir } = await startSeededSession();
+  try {
+    const harPath = getActiveSession()!.harId!;
+    fs.appendFileSync(harPath, '{"entries":[oops\n');
+
+    const stopped = await runSession(['stop', id], { json: true });
+    assert.ok(stopped.includes('session-stopped'), stopped);
+    assert.ok(stopped.includes('export failed'), stopped);
+    assert.equal(getActiveSession(), null, 'the session must no longer be active');
+    assert.ok(fs.existsSync(path.join(dir, 'bundle.json')), 'the bundle must be committed');
+    assert.ok(!fs.existsSync(path.join(dir, 'har.json')), 'no partial har.json may be published');
+    assert.ok(fs.existsSync(harPath), 'the live store is the only copy of the traffic and must be kept');
+    assert.ok(!fs.readdirSync(path.dirname(harPath)).some((name) => name.endsWith('.part')), 'no partial export may be left behind');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    clearActiveSession();
+  }
+});
