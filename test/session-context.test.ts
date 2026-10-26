@@ -170,7 +170,7 @@ test('active session network emulation is retained and reapplied only to its tar
   }
 });
 
-test('CDP_TARGET env var still fills the target when no session is active; CDP_HAR_ID never fills har', async () => {
+test('CDP_TARGET env var fills the target when no session is active and no node id is set; CDP_HAR_ID never fills har', async () => {
   const { clearActiveSession } = await import('../src/session-context.js');
   const { parseCliArgs, resolveCliContext } = await import('../src/cdp/args.js');
 
@@ -179,7 +179,7 @@ test('CDP_TARGET env var still fills the target when no session is active; CDP_H
   const prevHar = process.env.CDP_HAR_ID;
 
   try {
-    process.env.CRTR_NODE_ID = 'test-node-no-session';
+    delete process.env.CRTR_NODE_ID;
     clearActiveSession();
     process.env.CDP_TARGET = 'env-target';
     // CDP_HAR_ID is dead: har is a session-filled internal slot only.
@@ -336,12 +336,17 @@ test('resolveCliContext records target provenance for env, session, and explicit
   try {
     process.env.CRTR_NODE_ID = 'test-node-provenance';
 
-    // env source: no active session, CDP_TARGET fills → 'env'.
+    // env source: no node id and no active session, CDP_TARGET fills → 'env'.
+    // A node (CRTR_NODE_ID) with no session and no explicit endpoint is refused
+    // instead, so CDP_TARGET never reaches a browser the node did not choose.
     clearActiveSession();
     process.env.CDP_TARGET = 'env-target';
+    assert.throws(() => resolveCliContext(parseCliArgs(['click', 'Sign in'])), (error: { descriptor?: { code?: string } }) => error.descriptor?.code === 'no_owned_browser');
+    delete process.env.CRTR_NODE_ID;
     const envParsed = resolveCliContext(parseCliArgs(['click', 'Sign in']));
     assert.equal(envParsed.target, 'env-target');
     assert.equal(envParsed.targetSource, 'env');
+    process.env.CRTR_NODE_ID = 'test-node-provenance';
 
     // session source: active-session target outranks the stale env → 'session'.
     await setActiveSession({ sessionId: 'sess-prov', dir, harId: null, targetId: 'session-target', stepCount: 0 });
