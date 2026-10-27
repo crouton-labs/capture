@@ -1,4 +1,5 @@
 import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ensurePrivateDir, readPrivateFile } from '../../session/artifacts.js';
 import { captureError } from '../../errors.js';
@@ -50,12 +51,6 @@ function finalFromMeta(recDir: string, recId: string): FinalizedRecording {
   };
 }
 
-async function liveHost(sessionDir: string): Promise<CollectorHostHandle> {
-  const scanned = scanCollectorHost(sessionDir);
-  if (scanned.classification !== 'live' || !scanned.handle) throw captureError('precondition', 'recorder_unavailable', `This session has no live collector host (${scanned.classification}).`);
-  return scanned.handle;
-}
-
 export interface StartRecorderDeps { detectPort?: () => Promise<number>; spawnCollectorHost?: typeof startCollectorHost; }
 
 export async function startComposedRecorder(opts: { sessionDir: string; viewport?: RecordingViewport }, deps: StartRecorderDeps = {}): Promise<StartRecorderResult> {
@@ -97,13 +92,23 @@ export async function stopComposedRecorder(opts: { sessionDir: string; recId?: s
   return withSessionLifecycle(opts.sessionDir, async () => {
     const recId = opts.recId ?? getActiveRecId();
     if (!recId) throw new Error('No active recording on this session. Start one first: `capture motion rec --start`.');
-    const host = await liveHost(opts.sessionDir);
-    const row = motionHandle(host, recId);
-    if (!row) throw new Error(`No live motion collector named "${recId}".`);
-    const response = await sendHostRequest(host.socketPath, { type: 'collector-stop', nonce: host.nonce, id: recId }, 120_000);
-    if (!response.ok) throw new Error(response.error ?? 'collector host refused to stop motion recording');
+    const scanned = scanCollectorHost(opts.sessionDir);
+    const row = scanned.classification === 'live' && scanned.handle ? motionHandle(scanned.handle, recId) : null;
+    let recDir: string;
+    if (row) {
+      const response = await sendHostRequest(scanned.handle!.socketPath, { type: 'collector-stop', nonce: scanned.handle!.nonce, id: recId }, 120_000);
+      if (!response.ok) throw new Error(response.error ?? 'collector host refused to stop motion recording');
+      recDir = row.dir;
+    } else {
+      // A previous stop already drained this collector (its reply may have been lost); its persisted meta.json is the result.
+      recDir = recDirFor(opts.sessionDir, recId);
+      if (!fs.existsSync(path.join(recDir, 'meta.json'))) {
+        if (scanned.classification !== 'live') throw captureError('precondition', 'recorder_unavailable', `This session has no live collector host (${scanned.classification}) and no finalized recording "${recId}".`);
+        throw new Error(`No live motion collector named "${recId}".`);
+      }
+    }
     if (getActiveSession()?.dir === opts.sessionDir && getActiveRecId() === recId) await clearActiveRecId();
-    return finalFromMeta(row.dir, recId);
+    return finalFromMeta(recDir, recId);
   });
 }
 

@@ -33,7 +33,9 @@ export class CollectorHost {
 
   snapshot(): HostSnapshot { return { collectors: [...this.live.values()].map(item => item.row), reservations: [...this.reservations.values()] }; }
 
-  private changed(): void { this.publish(this.snapshot()); if (!this.live.size && !this.reservations.size) this.onEmpty(); }
+  isEmpty(): boolean { return !this.live.size && !this.reservations.size; }
+
+  private changed(): void { this.publish(this.snapshot()); if (this.isEmpty()) this.onEmpty(); }
 
   private releaseDeadReservations(): void {
     for (const [token, reservation] of this.reservations) {

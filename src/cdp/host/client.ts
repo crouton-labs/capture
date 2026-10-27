@@ -7,9 +7,11 @@ export function sendHostRequest(socketPath: string, request: Record<string, unkn
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
     let buffer = '';
+    let received = 0;
     const timer = setTimeout(() => { socket.destroy(); reject(new Error(`collector host request timed out after ${timeoutMs}ms`)); }, timeoutMs);
     socket.once('connect', () => socket.write(JSON.stringify({ ...request, reqId: ++requestId }) + '\n'));
     socket.on('data', chunk => {
+      received += chunk.length;
       buffer += chunk.toString('utf8');
       const newline = buffer.indexOf('\n');
       if (newline === -1) return;
@@ -18,5 +20,10 @@ export function sendHostRequest(socketPath: string, request: Record<string, unkn
       try { resolve(JSON.parse(buffer.slice(0, newline)) as HostResponse); } catch (error) { reject(error); }
     });
     socket.once('error', error => { clearTimeout(timer); reject(error); });
+    // A close before a newline-terminated response means the host went away mid-reply; no response can still arrive.
+    socket.once('close', () => {
+      clearTimeout(timer);
+      reject(new Error(`collector host closed the connection before a complete response (${received} bytes received, request "${String(request.type)}")`));
+    });
   });
 }

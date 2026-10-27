@@ -284,6 +284,8 @@ export function closeNdjsonSocket(server: net.Server, socketPath: string): void 
 export function installProcessCleanup(
   cleanup: () => void,
   client: Pick<CDPClient, 'onDisconnect'>,
+  /** True once the process itself closed the CDP client; that close is not a lost browser and must not force an exit. */
+  closedDeliberately: () => boolean = () => false,
 ): void {
   process.on('SIGTERM', () => {
     cleanup();
@@ -294,6 +296,7 @@ export function installProcessCleanup(
     process.exit(0);
   });
   client.onDisconnect(() => {
+    if (closedDeliberately()) return;
     // The browser (or its CDP endpoint) went away — nothing left to bridge.
     cleanup();
     process.exit(0);

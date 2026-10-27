@@ -36,12 +36,22 @@ export async function runCollectorHost(options: RunCollectorHostOptions): Promis
   const publish = (snapshot: HostSnapshot): void => writeJsonPrivate(handlePath, {
     pid: process.pid, birth: birth.identity, socketPath: options.socketPath, targetId: options.targetId, nonce, startedAt: new Date().toISOString(), ...snapshot,
   });
+  let closingDeliberately = false;
+  let emptied = false;
   const cleanup = (): void => {
+    closingDeliberately = true;
     if (server) closeNdjsonSocket(server, options.socketPath);
     try { client.close(); } catch {}
   };
-  const host = new CollectorHost(client, options.sessionDir, { pid: process.pid, birth: birth.identity, targetId: options.targetId }, publish, () => {
+  // Deliberate shutdown runs only after the reply that emptied the host has been written;
+  // exiting on the socket's close lets the requester finish reading it first.
+  const shutdown = (): void => {
     cleanup();
+    server?.once('close', () => process.exit(0));
+    setTimeout(() => process.exit(0), 5_000).unref();
+  };
+  const host = new CollectorHost(client, options.sessionDir, { pid: process.pid, birth: birth.identity, targetId: options.targetId }, publish, () => {
+    emptied = true;
     try { removeArtifactTree(handlePath); } catch {}
   });
   publish(host.snapshot());
@@ -50,24 +60,28 @@ export async function runCollectorHost(options: RunCollectorHostOptions): Promis
     try { request = JSON.parse(line) as Record<string, unknown>; } catch { return; }
     const reqId = typeof request.reqId === 'number' ? request.reqId : 0;
     const type = typeof request.type === 'string' ? request.type : 'cdp';
-    const answer = (body: Record<string, unknown>): void => { socket.write(JSON.stringify({ reqId, type, ...body }) + '\n'); };
-    if (!sameNonce(nonce, request.nonce)) { answer({ ok: false, error: 'unauthorized' }); return; }
+    const write = (body: Record<string, unknown>): Promise<void> => new Promise(resolve => { socket.write(JSON.stringify({ reqId, type, ...body }) + '\n', () => resolve()); });
+    const answer = async (body: Record<string, unknown>): Promise<void> => {
+      await write(body);
+      if (emptied && host.isEmpty()) shutdown();
+    };
+    if (!sameNonce(nonce, request.nonce)) { await answer({ ok: false, error: 'unauthorized' }); return; }
     try {
       switch (type) {
-        case 'host-status': answer({ ok: true, ...host.snapshot() }); return;
+        case 'host-status': await answer({ ok: true, ...host.snapshot() }); return;
         case 'claim-reserve': {
           const claims = Array.isArray(request.claims) ? request.claims as never : [];
           const reservation = host.reserve(claims, String(request.holderLabel ?? 'external command'), Number(request.pid), request.birth as never, request.exclusive === true);
-          answer({ ok: true, reservation }); return;
+          await answer({ ok: true, reservation }); return;
         }
-        case 'claim-release': host.releaseReservation(String(request.token ?? '')); answer({ ok: true }); return;
+        case 'claim-release': host.releaseReservation(String(request.token ?? '')); await answer({ ok: true }); return;
         case 'collector-start': {
           const row = await host.start(request.kind as CollectorKind, request.config);
-          answer({ ok: true, collector: row }); return;
+          await answer({ ok: true, collector: row }); return;
         }
-        case 'collector-stop': answer({ ok: true, ...(await host.stop(String(request.id ?? ''))) }); return;
-        case 'session-teardown': answer({ ok: true, outcomes: await host.teardown('session-stop') }); cleanup(); return;
-        case 'har-flush': await host.control({ type: 'har-flush' }); answer({ ok: true }); return;
+        case 'collector-stop': await answer({ ok: true, ...(await host.stop(String(request.id ?? ''))) }); return;
+        case 'session-teardown': await write({ ok: true, outcomes: await host.teardown('session-stop') }); shutdown(); return;
+        case 'har-flush': await host.control({ type: 'har-flush' }); await answer({ ok: true }); return;
         case 'cdp': {
           const dispatched = await host.dispatch(
             String(request.method ?? ''),
@@ -77,12 +91,12 @@ export async function runCollectorHost(options: RunCollectorHostOptions): Promis
             typeof request.timeoutMs === 'number' ? request.timeoutMs : undefined,
             request.observeDocumentResponse === true,
           ) as { result?: unknown; event?: unknown; waitOutcome?: unknown; documentResponse?: unknown };
-          answer({ ok: true, ...(dispatched && typeof dispatched === 'object' ? dispatched as Record<string, unknown> : { result: dispatched }) });
+          await answer({ ok: true, ...(dispatched && typeof dispatched === 'object' ? dispatched as Record<string, unknown> : { result: dispatched }) });
           return;
         }
-        default: answer({ ok: false, error: `unknown collector host request: ${type}` }); return;
+        default: await answer({ ok: false, error: `unknown collector host request: ${type}` }); return;
       }
-    } catch (error) { answer({ ok: false, error: error instanceof Error ? error.message : String(error) }); }
+    } catch (error) { await answer({ ok: false, error: error instanceof Error ? error.message : String(error) }); }
   });
-  installProcessCleanup(() => { host.abandon(); cleanup(); }, client);
+  installProcessCleanup(() => { host.abandon(); cleanup(); }, client, () => closingDeliberately);
 }
