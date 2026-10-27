@@ -491,6 +491,9 @@ export async function launchOwnedBrowser(options: LaunchOptions): Promise<OwnedB
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-gpu',
+    // A headed window on a locked or covered screen counts as occluded, and Chrome then
+    // stops compositing: no Page.screencastFrame fires although the DOM keeps changing.
+    '--disable-backgrounding-occluded-windows',
     ...(options.headless ? ['--headless=new'] : []),
     options.url ?? 'about:blank',
   ];
