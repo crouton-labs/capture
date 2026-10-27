@@ -5838,6 +5838,9 @@ async function launchOwnedBrowser(options) {
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-gpu",
+    // A headed window on a locked or covered screen counts as occluded, and Chrome then
+    // stops compositing: no Page.screencastFrame fires although the DOM keeps changing.
+    "--disable-backgrounding-occluded-windows",
     ...options.headless ? ["--headless=new"] : [],
     options.url ?? "about:blank"
   ];
@@ -11003,7 +11006,7 @@ function validateHarAppendBatch(value, source) {
   return { entries, incompleteLifecycles };
 }
 function captureVersion() {
-  const version = "1.4.32";
+  const version = "1.4.33";
   return typeof version === "string" && version.length > 0 ? version : "development";
 }
 function token() {
@@ -13178,7 +13181,7 @@ function wallTime(value) {
   }
 }
 function captureVersion2() {
-  const version = "1.4.32";
+  const version = "1.4.33";
   return typeof version === "string" && version.length > 0 ? version : "development";
 }
 function deepFreeze(value) {
@@ -267793,7 +267796,7 @@ I/O contract: flags and positionals on input; one rendered prose block on stdout
 A CDP-enabled browser must be running; \`capture tab list\` is the probe, and \`capture tab launch\` starts one capture owns and reaps when nothing is (never hand-roll a detached browser \u2014 nothing reaps that). Capture never signals a browser it did not start, so attaching to your own with --port is unchanged. CDP_PORT / CDP_TARGET pin the browser + tab for target-selecting commands \u2014 precedence: explicit flag > active session > env. \`session start\` adopts only an explicit --target. When CRTR_NODE_ID is set (a crtr agent node), a browser command with no --port, no --target and no active session of that node is refused instead of falling back to CDP_PORT, CDP_TARGET or localhost discovery, because the browser found could belong to another node: run \`capture session start --url <url>\`, or pass --port or --target. \`capture tab list\` and commands that only read a recorded artifact are not refused.`;
 }
 function printVersion() {
-  const declared = "1.4.32";
+  const declared = "1.4.33";
   if (declared) {
     console.log(declared);
     return;
