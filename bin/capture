@@ -8499,12 +8499,14 @@ function sendHostRequest(socketPath, request, timeoutMs = 15e3) {
   return new Promise((resolve12, reject) => {
     const socket = net.createConnection(socketPath);
     let buffer = "";
+    let received = 0;
     const timer = setTimeout(() => {
       socket.destroy();
       reject(new Error(`collector host request timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     socket.once("connect", () => socket.write(JSON.stringify({ ...request, reqId: ++requestId }) + "\n"));
     socket.on("data", (chunk) => {
+      received += chunk.length;
       buffer += chunk.toString("utf8");
       const newline = buffer.indexOf("\n");
       if (newline === -1) return;
@@ -8519,6 +8521,10 @@ function sendHostRequest(socketPath, request, timeoutMs = 15e3) {
     socket.once("error", (error4) => {
       clearTimeout(timer);
       reject(error4);
+    });
+    socket.once("close", () => {
+      clearTimeout(timer);
+      reject(new Error(`collector host closed the connection before a complete response (${received} bytes received, request "${String(request.type)}")`));
     });
   });
 }
@@ -11006,7 +11012,7 @@ function validateHarAppendBatch(value, source) {
   return { entries, incompleteLifecycles };
 }
 function captureVersion() {
-  const version = "1.4.33";
+  const version = "1.4.34";
   return typeof version === "string" && version.length > 0 ? version : "development";
 }
 function token() {
@@ -12362,7 +12368,7 @@ function closeNdjsonSocket(server2, socketPath) {
   } catch {
   }
 }
-function installProcessCleanup(cleanup, client) {
+function installProcessCleanup(cleanup, client, closedDeliberately = () => false) {
   process.on("SIGTERM", () => {
     cleanup();
     process.exit(0);
@@ -12372,6 +12378,7 @@ function installProcessCleanup(cleanup, client) {
     process.exit(0);
   });
   client.onDisconnect(() => {
+    if (closedDeliberately()) return;
     cleanup();
     process.exit(0);
   });
@@ -13181,7 +13188,7 @@ function wallTime(value) {
   }
 }
 function captureVersion2() {
-  const version = "1.4.33";
+  const version = "1.4.34";
   return typeof version === "string" && version.length > 0 ? version : "development";
 }
 function deepFreeze(value) {
@@ -22032,10 +22039,10 @@ var require_typescript = __commonJS({
       function and(f, g) {
         return (arg) => f(arg) && g(arg);
       }
-      function or(...fs41) {
+      function or(...fs42) {
         return (...args) => {
           let lastResult;
-          for (const f of fs41) {
+          for (const f of fs42) {
             lastResult = f(...args);
             if (lastResult) {
               return lastResult;
@@ -23610,7 +23617,7 @@ ${lanes.join("\n")}
       var tracing;
       var tracingEnabled;
       ((tracingEnabled2) => {
-        let fs41;
+        let fs42;
         let traceCount = 0;
         let traceFd = 0;
         let mode;
@@ -23619,9 +23626,9 @@ ${lanes.join("\n")}
         const legend = [];
         function startTracing2(tracingMode, traceDir, configFilePath) {
           Debug.assert(!tracing, "Tracing already started");
-          if (fs41 === void 0) {
+          if (fs42 === void 0) {
             try {
-              fs41 = require("fs");
+              fs42 = require("fs");
             } catch (e) {
               throw new Error(`tracing requires having fs
 (original error: ${e.message || e})`);
@@ -23632,8 +23639,8 @@ ${lanes.join("\n")}
           if (legendPath === void 0) {
             legendPath = combinePaths(traceDir, "legend.json");
           }
-          if (!fs41.existsSync(traceDir)) {
-            fs41.mkdirSync(traceDir, { recursive: true });
+          if (!fs42.existsSync(traceDir)) {
+            fs42.mkdirSync(traceDir, { recursive: true });
           }
           const countPart = mode === "build" ? `.${process.pid}-${++traceCount}` : mode === "server" ? `.${process.pid}` : ``;
           const tracePath = combinePaths(traceDir, `trace${countPart}.json`);
@@ -23643,10 +23650,10 @@ ${lanes.join("\n")}
             tracePath,
             typesPath
           });
-          traceFd = fs41.openSync(tracePath, "w");
+          traceFd = fs42.openSync(tracePath, "w");
           tracing = tracingEnabled2;
           const meta = { cat: "__metadata", ph: "M", ts: 1e3 * timestamp(), pid: 1, tid: 1 };
-          fs41.writeSync(
+          fs42.writeSync(
             traceFd,
             "[\n" + [{ name: "process_name", args: { name: "tsc" }, ...meta }, { name: "thread_name", args: { name: "Main" }, ...meta }, { name: "TracingStartedInBrowser", ...meta, cat: "disabled-by-default-devtools.timeline" }].map((v) => JSON.stringify(v)).join(",\n")
           );
@@ -23655,10 +23662,10 @@ ${lanes.join("\n")}
         function stopTracing() {
           Debug.assert(tracing, "Tracing is not in progress");
           Debug.assert(!!typeCatalog.length === (mode !== "server"));
-          fs41.writeSync(traceFd, `
+          fs42.writeSync(traceFd, `
 ]
 `);
-          fs41.closeSync(traceFd);
+          fs42.closeSync(traceFd);
           tracing = void 0;
           if (typeCatalog.length) {
             dumpTypes(typeCatalog);
@@ -23730,11 +23737,11 @@ ${lanes.join("\n")}
         function writeEvent(eventType, phase, name, args, extras, time = 1e3 * timestamp()) {
           if (mode === "server" && phase === "checkTypes") return;
           mark("beginTracing");
-          fs41.writeSync(traceFd, `,
+          fs42.writeSync(traceFd, `,
 {"pid":1,"tid":1,"ph":"${eventType}","cat":"${phase}","ts":${time},"name":"${name}"`);
-          if (extras) fs41.writeSync(traceFd, `,${extras}`);
-          if (args) fs41.writeSync(traceFd, `,"args":${JSON.stringify(args)}`);
-          fs41.writeSync(traceFd, `}`);
+          if (extras) fs42.writeSync(traceFd, `,${extras}`);
+          if (args) fs42.writeSync(traceFd, `,"args":${JSON.stringify(args)}`);
+          fs42.writeSync(traceFd, `}`);
           mark("endTracing");
           measure("Tracing", "beginTracing", "endTracing");
         }
@@ -23756,9 +23763,9 @@ ${lanes.join("\n")}
           var _a3, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s;
           mark("beginDumpTypes");
           const typesPath = legend[legend.length - 1].typesPath;
-          const typesFd = fs41.openSync(typesPath, "w");
+          const typesFd = fs42.openSync(typesPath, "w");
           const recursionIdentityMap = /* @__PURE__ */ new Map();
-          fs41.writeSync(typesFd, "[");
+          fs42.writeSync(typesFd, "[");
           const numTypes = types.length;
           for (let i = 0; i < numTypes; i++) {
             const type = types[i];
@@ -23854,13 +23861,13 @@ ${lanes.join("\n")}
               flags: Debug.formatTypeFlags(type.flags).split("|"),
               display
             };
-            fs41.writeSync(typesFd, JSON.stringify(descriptor));
+            fs42.writeSync(typesFd, JSON.stringify(descriptor));
             if (i < numTypes - 1) {
-              fs41.writeSync(typesFd, ",\n");
+              fs42.writeSync(typesFd, ",\n");
             }
           }
-          fs41.writeSync(typesFd, "]\n");
-          fs41.closeSync(typesFd);
+          fs42.writeSync(typesFd, "]\n");
+          fs42.closeSync(typesFd);
           mark("endDumpTypes");
           measure("Dump types", "beginDumpTypes", "endDumpTypes");
         }
@@ -23868,7 +23875,7 @@ ${lanes.join("\n")}
           if (!legendPath) {
             return;
           }
-          fs41.writeFileSync(legendPath, JSON.stringify(legend));
+          fs42.writeFileSync(legendPath, JSON.stringify(legend));
         }
         tracingEnabled2.dumpLegend = dumpLegend;
       })(tracingEnabled || (tracingEnabled = {}));
@@ -232257,9 +232264,12 @@ var init_core = __esm({
       snapshot() {
         return { collectors: [...this.live.values()].map((item) => item.row), reservations: [...this.reservations.values()] };
       }
+      isEmpty() {
+        return !this.live.size && !this.reservations.size;
+      }
       changed() {
         this.publish(this.snapshot());
-        if (!this.live.size && !this.reservations.size) this.onEmpty();
+        if (this.isEmpty()) this.onEmpty();
       }
       releaseDeadReservations() {
         for (const [token2, reservation] of this.reservations) {
@@ -232477,15 +232487,23 @@ async function runCollectorHost(options) {
     startedAt: (/* @__PURE__ */ new Date()).toISOString(),
     ...snapshot
   });
+  let closingDeliberately = false;
+  let emptied = false;
   const cleanup = () => {
+    closingDeliberately = true;
     if (server2) closeNdjsonSocket(server2, options.socketPath);
     try {
       client.close();
     } catch {
     }
   };
-  const host = new CollectorHost(client, options.sessionDir, { pid: process.pid, birth: birth.identity, targetId: options.targetId }, publish, () => {
+  const shutdown = () => {
     cleanup();
+    server2?.once("close", () => process.exit(0));
+    setTimeout(() => process.exit(0), 5e3).unref();
+  };
+  const host = new CollectorHost(client, options.sessionDir, { pid: process.pid, birth: birth.identity, targetId: options.targetId }, publish, () => {
+    emptied = true;
     try {
       removeArtifactTree(handlePath);
     } catch {
@@ -232501,43 +232519,47 @@ async function runCollectorHost(options) {
     }
     const reqId = typeof request.reqId === "number" ? request.reqId : 0;
     const type = typeof request.type === "string" ? request.type : "cdp";
-    const answer = (body2) => {
-      socket.write(JSON.stringify({ reqId, type, ...body2 }) + "\n");
+    const write = (body2) => new Promise((resolve12) => {
+      socket.write(JSON.stringify({ reqId, type, ...body2 }) + "\n", () => resolve12());
+    });
+    const answer = async (body2) => {
+      await write(body2);
+      if (emptied && host.isEmpty()) shutdown();
     };
     if (!sameNonce(nonce, request.nonce)) {
-      answer({ ok: false, error: "unauthorized" });
+      await answer({ ok: false, error: "unauthorized" });
       return;
     }
     try {
       switch (type) {
         case "host-status":
-          answer({ ok: true, ...host.snapshot() });
+          await answer({ ok: true, ...host.snapshot() });
           return;
         case "claim-reserve": {
           const claims = Array.isArray(request.claims) ? request.claims : [];
           const reservation = host.reserve(claims, String(request.holderLabel ?? "external command"), Number(request.pid), request.birth, request.exclusive === true);
-          answer({ ok: true, reservation });
+          await answer({ ok: true, reservation });
           return;
         }
         case "claim-release":
           host.releaseReservation(String(request.token ?? ""));
-          answer({ ok: true });
+          await answer({ ok: true });
           return;
         case "collector-start": {
           const row = await host.start(request.kind, request.config);
-          answer({ ok: true, collector: row });
+          await answer({ ok: true, collector: row });
           return;
         }
         case "collector-stop":
-          answer({ ok: true, ...await host.stop(String(request.id ?? "")) });
+          await answer({ ok: true, ...await host.stop(String(request.id ?? "")) });
           return;
         case "session-teardown":
-          answer({ ok: true, outcomes: await host.teardown("session-stop") });
-          cleanup();
+          await write({ ok: true, outcomes: await host.teardown("session-stop") });
+          shutdown();
           return;
         case "har-flush":
           await host.control({ type: "har-flush" });
-          answer({ ok: true });
+          await answer({ ok: true });
           return;
         case "cdp": {
           const dispatched = await host.dispatch(
@@ -232548,21 +232570,21 @@ async function runCollectorHost(options) {
             typeof request.timeoutMs === "number" ? request.timeoutMs : void 0,
             request.observeDocumentResponse === true
           );
-          answer({ ok: true, ...dispatched && typeof dispatched === "object" ? dispatched : { result: dispatched } });
+          await answer({ ok: true, ...dispatched && typeof dispatched === "object" ? dispatched : { result: dispatched } });
           return;
         }
         default:
-          answer({ ok: false, error: `unknown collector host request: ${type}` });
+          await answer({ ok: false, error: `unknown collector host request: ${type}` });
           return;
       }
     } catch (error4) {
-      answer({ ok: false, error: error4 instanceof Error ? error4.message : String(error4) });
+      await answer({ ok: false, error: error4 instanceof Error ? error4.message : String(error4) });
     }
   });
   installProcessCleanup(() => {
     host.abandon();
     cleanup();
-  }, client);
+  }, client, () => closingDeliberately);
 }
 var crypto10, path26;
 var init_server2 = __esm({
@@ -244479,6 +244501,9 @@ use when a claim depends on what is rendered right now: element geometry, overfl
 });
 
 // src/cdp/motion/recorder.ts
+function recDirFor(sessionDir2, recId) {
+  return path36.join(sessionDir2, "motion", "recs", recId);
+}
 function motionHandle(handle, recId) {
   return handle.collectors.find((collector) => collector.id === recId && collector.kind === "motion") ?? null;
 }
@@ -244497,11 +244522,6 @@ function finalFromMeta(recDir, recId) {
     viewportRestored: typeof meta.viewportRestored === "boolean" ? meta.viewportRestored : null,
     viewportRetained: meta.viewportRetained === true
   };
-}
-async function liveHost(sessionDir2) {
-  const scanned = scanCollectorHost(sessionDir2);
-  if (scanned.classification !== "live" || !scanned.handle) throw captureError("precondition", "recorder_unavailable", `This session has no live collector host (${scanned.classification}).`);
-  return scanned.handle;
 }
 async function startComposedRecorder(opts, deps23 = {}) {
   const operation = await admitSessionOperation(opts.sessionDir);
@@ -244543,18 +244563,28 @@ async function stopComposedRecorder(opts) {
   return withSessionLifecycle(opts.sessionDir, async () => {
     const recId = opts.recId ?? getActiveRecId();
     if (!recId) throw new Error("No active recording on this session. Start one first: `capture motion rec --start`.");
-    const host = await liveHost(opts.sessionDir);
-    const row = motionHandle(host, recId);
-    if (!row) throw new Error(`No live motion collector named "${recId}".`);
-    const response = await sendHostRequest(host.socketPath, { type: "collector-stop", nonce: host.nonce, id: recId }, 12e4);
-    if (!response.ok) throw new Error(response.error ?? "collector host refused to stop motion recording");
+    const scanned = scanCollectorHost(opts.sessionDir);
+    const row = scanned.classification === "live" && scanned.handle ? motionHandle(scanned.handle, recId) : null;
+    let recDir;
+    if (row) {
+      const response = await sendHostRequest(scanned.handle.socketPath, { type: "collector-stop", nonce: scanned.handle.nonce, id: recId }, 12e4);
+      if (!response.ok) throw new Error(response.error ?? "collector host refused to stop motion recording");
+      recDir = row.dir;
+    } else {
+      recDir = recDirFor(opts.sessionDir, recId);
+      if (!fs32.existsSync(path36.join(recDir, "meta.json"))) {
+        if (scanned.classification !== "live") throw captureError("precondition", "recorder_unavailable", `This session has no live collector host (${scanned.classification}) and no finalized recording "${recId}".`);
+        throw new Error(`No live motion collector named "${recId}".`);
+      }
+    }
     if (getActiveSession()?.dir === opts.sessionDir && getActiveRecId() === recId) await clearActiveRecId();
-    return finalFromMeta(row.dir, recId);
+    return finalFromMeta(recDir, recId);
   });
 }
-var path36, StartRecorderError;
+var fs32, path36, StartRecorderError;
 var init_recorder = __esm({
   "src/cdp/motion/recorder.ts"() {
+    fs32 = __toESM(require("node:fs"));
     path36 = __toESM(require("node:path"));
     init_artifacts();
     init_errors();
@@ -244689,8 +244719,8 @@ async function handleHostedSessionOneShot(parsed, session, viewport2) {
     ensureFinalizedInventory(stopped.recDir);
     const video = deps6.encodeVideo(stopped.recDir, stopped.durationMs);
     const metaPath = path37.join(stopped.recDir, "meta.json");
-    if (fs32.existsSync(metaPath)) {
-      const meta = JSON.parse(fs32.readFileSync(metaPath, "utf8"));
+    if (fs33.existsSync(metaPath)) {
+      const meta = JSON.parse(fs33.readFileSync(metaPath, "utf8"));
       writeJsonPrivate(metaPath, { ...meta, video });
     }
     stopped.video = video;
@@ -244773,7 +244803,7 @@ function ensureFinalizedInventory(recDir) {
   ensurePrivateDir(path37.join(recDir, "frames"));
   for (const filename of ["rects.jsonl", "events.jsonl"]) {
     const artifactPath2 = path37.join(recDir, filename);
-    if (!fs32.existsSync(artifactPath2)) writeNdjsonPrivate(artifactPath2, []);
+    if (!fs33.existsSync(artifactPath2)) writeNdjsonPrivate(artifactPath2, []);
   }
 }
 function validateLifecycleInputs(parsed) {
@@ -244894,7 +244924,7 @@ function timestampedFrameManifest(recDir, frames2, manifestPath) {
 }
 function encodeVideoIfAvailable(recDir, _durationMs) {
   const framesDir = path37.join(recDir, "frames");
-  const frames2 = fs32.existsSync(framesDir) ? fs32.readdirSync(framesDir).filter((name) => name.endsWith(".png")).sort() : [];
+  const frames2 = fs33.existsSync(framesDir) ? fs33.readdirSync(framesDir).filter((name) => name.endsWith(".png")).sort() : [];
   if (frames2.length === 0) return { status: "unavailable", reason: "no_frames" };
   const probe = (0, import_child_process3.spawnSync)("ffmpeg", ["-hide_banner", "-encoders"], { encoding: "utf8", timeout: 5e3 });
   if (probe.error || probe.status !== 0 || !String(probe.stdout ?? "").includes("libvpx-vp9")) return { status: "unavailable", reason: "ffmpeg_or_vp9_encoder_unavailable" };
@@ -244926,17 +244956,17 @@ function encodeVideoIfAvailable(recDir, _durationMs) {
       "yuv420p",
       tempOutput
     ], { stdio: "ignore", timeout: encodeTimeoutMs(frames2.length) });
-    if (result.error || result.status !== 0 || !fs32.existsSync(tempOutput)) {
+    if (result.error || result.status !== 0 || !fs33.existsSync(tempOutput)) {
       return { status: "failed", reason: classifyEncodeFailure(result) };
     }
     try {
-      writeBinaryPrivate(path37.join(recDir, "video.webm"), fs32.readFileSync(tempOutput));
+      writeBinaryPrivate(path37.join(recDir, "video.webm"), fs33.readFileSync(tempOutput));
       return { status: "encoded" };
     } catch {
       return { status: "failed", reason: "video_install_failed" };
     }
   } finally {
-    fs32.rmSync(tempDir, { recursive: true, force: true });
+    fs33.rmSync(tempDir, { recursive: true, force: true });
   }
 }
 function sleep3(ms) {
@@ -244982,8 +245012,8 @@ async function handleStop(parsed) {
     ensureFinalizedInventory(stopped.recDir);
     const video = deps6.encodeVideo(stopped.recDir, stopped.durationMs);
     const metaPath = path37.join(stopped.recDir, "meta.json");
-    if (fs32.existsSync(metaPath)) {
-      const meta = JSON.parse(fs32.readFileSync(metaPath, "utf8"));
+    if (fs33.existsSync(metaPath)) {
+      const meta = JSON.parse(fs33.readFileSync(metaPath, "utf8"));
       writeJsonPrivate(metaPath, { ...meta, video });
     }
     stopped.video = video;
@@ -245086,7 +245116,7 @@ function emitFinalizedResult(parsed, stopped) {
 }
 function baselineAvailability(recDir) {
   try {
-    const markers = JSON.parse(fs32.readFileSync(path37.join(recDir, "markers.json"), "utf8"));
+    const markers = JSON.parse(fs33.readFileSync(path37.join(recDir, "markers.json"), "utf8"));
     return markers.baselinesPending ? "pending" : typeof markers.performanceNowMs === "number" ? "available" : "unavailable";
   } catch {
     return "unavailable";
@@ -245099,25 +245129,25 @@ function emitCommandError(parsed, status, message, attrs = {}) {
 function listRecordingArtifacts(recDir) {
   let entries;
   try {
-    entries = fs32.readdirSync(recDir);
+    entries = fs33.readdirSync(recDir);
   } catch {
     return [];
   }
   const names = [];
   for (const entry of entries) {
     const full2 = path37.join(recDir, entry);
-    if (fs32.statSync(full2).isDirectory()) {
-      if (fs32.readdirSync(full2).length > 0) names.push(`${entry}/`);
+    if (fs33.statSync(full2).isDirectory()) {
+      if (fs33.readdirSync(full2).length > 0) names.push(`${entry}/`);
     } else {
       names.push(entry);
     }
   }
   return names.sort().map((name) => ({ name }));
 }
-var fs32, path37, crypto12, import_child_process3, deps6, USAGE28, DoActionError;
+var fs33, path37, crypto12, import_child_process3, deps6, USAGE28, DoActionError;
 var init_rec = __esm({
   "src/cdp/commands/motion/rec.ts"() {
-    fs32 = __toESM(require("fs"));
+    fs33 = __toESM(require("fs"));
     path37 = __toESM(require("path"));
     crypto12 = __toESM(require("crypto"));
     import_child_process3 = require("child_process");
@@ -245181,10 +245211,10 @@ effects:
 // src/cdp/motion/mask.ts
 function createMotionMask(ref) {
   const framesDir = recordingArtifactPath(ref, "frames");
-  if (!fs33.statSync(framesDir).isDirectory()) {
+  if (!fs34.statSync(framesDir).isDirectory()) {
     throw new Error(`Recording ${ref.id} has frames but ${framesDir} is not a directory; create a finalized recording with \`capture motion rec\`.`);
   }
-  const allFrameFiles = fs33.readdirSync(framesDir).filter((name) => name.endsWith(".png")).sort((a, b) => a.localeCompare(b, void 0, { numeric: true }));
+  const allFrameFiles = fs34.readdirSync(framesDir).filter((name) => name.endsWith(".png")).sort((a, b) => a.localeCompare(b, void 0, { numeric: true }));
   if (allFrameFiles.length < 2) {
     throw new Error(`Recording ${ref.id} has ${allFrameFiles.length} frame PNG(s) at ${framesDir}; motion mask needs at least two frames. Record again with \`capture motion rec\`.`);
   }
@@ -245222,7 +245252,7 @@ function createMotionMask(ref) {
         height = outcome.height;
         composite2 = new import_pngjs8.PNG({ width, height, fill: true });
       }
-      const diff = import_pngjs8.PNG.sync.read(fs33.readFileSync(diffPath));
+      const diff = import_pngjs8.PNG.sync.read(fs34.readFileSync(diffPath));
       const pixels = [];
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
@@ -245255,17 +245285,17 @@ function createMotionMask(ref) {
     ));
     return { outputPath, width, height, comparedFramePairs: samples.length, regions, caveat };
   } finally {
-    fs33.rmSync(workDir, { recursive: true, force: true });
+    fs34.rmSync(workDir, { recursive: true, force: true });
   }
 }
 function readPngDimensions(file) {
-  const fd = fs33.openSync(file, "r");
+  const fd = fs34.openSync(file, "r");
   try {
     const header = Buffer.alloc(24);
-    fs33.readSync(fd, header, 0, 24, 0);
+    fs34.readSync(fd, header, 0, 24, 0);
     return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) };
   } finally {
-    fs33.closeSync(fd);
+    fs34.closeSync(fd);
   }
 }
 function longestSameSizeRun(dims) {
@@ -245457,10 +245487,10 @@ function finiteNumber(value) {
 function round2(value) {
   return Math.round(value * 100) / 100;
 }
-var fs33, path38, import_pngjs8;
+var fs34, path38, import_pngjs8;
 var init_mask = __esm({
   "src/cdp/motion/mask.ts"() {
-    fs33 = __toESM(require("fs"));
+    fs34 = __toESM(require("fs"));
     path38 = __toESM(require("path"));
     import_pngjs8 = __toESM(require_png());
     init_diff();
@@ -246323,8 +246353,8 @@ function responseTimelineFromArtifacts(action, events, frames2, markers, state, 
 }
 function withFrameDeltas(ref, rects, markers) {
   const framesDir = artifactPath(ref, "frames", { mustExist: false });
-  if (!fs34.existsSync(framesDir) || !fs34.statSync(framesDir).isDirectory()) return [...rects];
-  const files = fs34.readdirSync(framesDir).filter((name) => name.endsWith(".png")).sort((a, b) => a.localeCompare(b, void 0, { numeric: true }));
+  if (!fs35.existsSync(framesDir) || !fs35.statSync(framesDir).isDirectory()) return [...rects];
+  const files = fs35.readdirSync(framesDir).filter((name) => name.endsWith(".png")).sort((a, b) => a.localeCompare(b, void 0, { numeric: true }));
   if (files.length < 2) return [...rects];
   const byFile = new Map(rects.filter((record5) => typeof record5.file === "string").map((record5) => [record5.file, record5]));
   const workDir = path39.join(ref.dir, ".response-diff-work");
@@ -246343,7 +246373,7 @@ function withFrameDeltas(ref, rects, markers) {
     }
     return output;
   } finally {
-    fs34.rmSync(workDir, { recursive: true, force: true });
+    fs35.rmSync(workDir, { recursive: true, force: true });
   }
 }
 function loadResponseTimeline(rec, action, occurrence) {
@@ -246368,10 +246398,10 @@ function loadResponseTimeline(rec, action, occurrence) {
 function actionOccurrenceLabel(action) {
   return `${action.label} (occurrence ${action.occurrence}, t=${action.startMs.toFixed(2)}ms)`;
 }
-var fs34, path39, ResponseActionSelectionError;
+var fs35, path39, ResponseActionSelectionError;
 var init_response = __esm({
   "src/cdp/motion/response.ts"() {
-    fs34 = __toESM(require("fs"));
+    fs35 = __toESM(require("fs"));
     path39 = __toESM(require("path"));
     init_diff();
     init_artifact();
@@ -266034,7 +266064,7 @@ async function cmdPerfVitals(parsed) {
   if (!input) return error(parsed, "invalid_target", "perf vitals requires one finalized trace id or absolute trace path.");
   try {
     const trace2 = resolveTraceRef(input);
-    const raw = JSON.parse(fs35.readFileSync(path41.join(trace2.dir, "trace.json"), "utf8"));
+    const raw = JSON.parse(fs36.readFileSync(path41.join(trace2.dir, "trace.json"), "utf8"));
     if (!Array.isArray(raw.traceEvents)) throw new Error("trace.json is not a Chrome trace with a traceEvents array");
     const analysis = await analyzeChromeTrace({ traceEvents: raw.traceEvents });
     const result = {
@@ -266050,10 +266080,10 @@ async function cmdPerfVitals(parsed) {
     error(parsed, "artifact_unavailable", cause instanceof Error ? cause.message : String(cause));
   }
 }
-var fs35, path41, HELP5;
+var fs36, path41, HELP5;
 var init_vitals = __esm({
   "src/cdp/commands/perf/vitals.ts"() {
-    fs35 = __toESM(require("node:fs"));
+    fs36 = __toESM(require("node:fs"));
     path41 = __toESM(require("node:path"));
     init_trace_analysis();
     init_artifact();
@@ -266186,7 +266216,7 @@ async function cmdPerfInsights(parsed) {
   if (!input) return error2(parsed, "invalid_target", "perf insights requires one finalized trace id or absolute trace path.");
   try {
     const trace2 = resolveTraceRef(input);
-    const raw = JSON.parse(fs36.readFileSync(path42.join(trace2.dir, "trace.json"), "utf8"));
+    const raw = JSON.parse(fs37.readFileSync(path42.join(trace2.dir, "trace.json"), "utf8"));
     if (!Array.isArray(raw.traceEvents)) throw new Error("trace.json is not a Chrome trace with a traceEvents array");
     const analysis = await analyzeChromeTrace({ traceEvents: raw.traceEvents });
     let remaining = parsed.limit ?? 25;
@@ -266222,10 +266252,10 @@ async function cmdPerfInsights(parsed) {
     error2(parsed, "artifact_unavailable", cause instanceof Error ? cause.message : String(cause));
   }
 }
-var fs36, path42, HELP6, FULL_EVENT_LIMIT, FULL_BYTE_LIMIT;
+var fs37, path42, HELP6, FULL_EVENT_LIMIT, FULL_BYTE_LIMIT;
 var init_insights2 = __esm({
   "src/cdp/commands/perf/insights.ts"() {
-    fs36 = __toESM(require("node:fs"));
+    fs37 = __toESM(require("node:fs"));
     path42 = __toESM(require("node:path"));
     init_trace_analysis();
     init_artifact();
@@ -266789,7 +266819,7 @@ function readHeapMeta(dir, ref) {
   const files = Array.isArray(raw.files) && raw.files.every((file) => file && typeof file === "object" && typeof file.name === "string" && typeof file.bytes === "number") ? raw.files : [];
   const snapshot = files.find((file) => file.name === "snapshot.heapsnapshot");
   let completion = raw.completion;
-  if (!snapshot || !fs37.existsSync(path43.join(dir, "snapshot.heapsnapshot")) || fs37.statSync(path43.join(dir, "snapshot.heapsnapshot")).size !== snapshot.bytes) completion = "truncated";
+  if (!snapshot || !fs38.existsSync(path43.join(dir, "snapshot.heapsnapshot")) || fs38.statSync(path43.join(dir, "snapshot.heapsnapshot")).size !== snapshot.bytes) completion = "truncated";
   return { id: raw.id, completion, ...typeof raw.reason === "string" ? { reason: raw.reason } : {}, ...typeof raw.url === "string" ? { url: raw.url } : {}, files };
 }
 function resolveHeapRef(ref) {
@@ -266807,7 +266837,7 @@ function resolveHeapRef(ref) {
 }
 function loadHeap(ref) {
   const snapshotPath = path43.join(ref.dir, "snapshot.heapsnapshot");
-  if (ref.meta.completion === "truncated" || !fs37.existsSync(snapshotPath)) {
+  if (ref.meta.completion === "truncated" || !fs38.existsSync(snapshotPath)) {
     throw captureError("artifact", "heap_snapshot_truncated", `Heap snapshot ${ref.id} is ${ref.meta.completion}; snapshot.heapsnapshot does not match its finalized inventory.`);
   }
   try {
@@ -266823,10 +266853,10 @@ function resultReference(ref) {
   const active = getActiveSession();
   return active && path43.join(active.dir, "heap", "snapshots", ref.id) === ref.dir ? ref.id : ref.dir;
 }
-var fs37, path43;
+var fs38, path43;
 var init_common2 = __esm({
   "src/cdp/commands/heap/common.ts"() {
-    fs37 = __toESM(require("node:fs"));
+    fs38 = __toESM(require("node:fs"));
     path43 = __toESM(require("node:path"));
     init_errors();
     init_heap_snapshot();
@@ -266836,7 +266866,7 @@ var init_common2 = __esm({
 });
 
 // src/cdp/commands/heap/snapshot.ts
-async function liveHost2(sessionDir2, port, targetId) {
+async function liveHost(sessionDir2, port, targetId) {
   let scanned = scanCollectorHost(sessionDir2);
   if (scanned.classification === "dead") {
     const reaped = await stopAndReapCollectorHostAtSessionStop(sessionDir2);
@@ -266853,7 +266883,7 @@ async function liveHost2(sessionDir2, port, targetId) {
   return scanned.handle;
 }
 async function collect(sessionDir2, port, targetId) {
-  const host = await liveHost2(sessionDir2, port, targetId);
+  const host = await liveHost(sessionDir2, port, targetId);
   const started = await sendHostRequest(host.socketPath, { type: "collector-start", nonce: host.nonce, kind: "heap", config: {} }, 12e4);
   if (!started.ok || !started.collector || typeof started.collector !== "object") throw new Error(started.error ?? "collector host refused to start heap snapshot");
   const collector = started.collector;
@@ -266894,7 +266924,7 @@ async function cmdHeapSnapshot(parsed) {
   if (!target) throw new Error(`Heap snapshot target ${targetId} disappeared before its URL could be recorded.`);
   const ref = resolveHeapRef(snapshotDir);
   const heap2 = loadHeap(ref);
-  const bytes = fs38.statSync(path44.join(ref.dir, "snapshot.heapsnapshot")).size;
+  const bytes = fs39.statSync(path44.join(ref.dir, "snapshot.heapsnapshot")).size;
   emitResult({
     tag: "heap-snapshot",
     attrs: { heap: ref.id, path: ref.dir, url: target.url, ...completionAttrs(ref.meta), nodes: heap2.nodeCount, edges: heap2.edgeCount, bytes },
@@ -266903,10 +266933,10 @@ async function cmdHeapSnapshot(parsed) {
     followUp: fact`Query heap snapshot ${resultReference(ref)} with \`capture heap census ${resultReference(ref)}\`, \`capture heap objects ${resultReference(ref)} --constructor <name>\`, or \`capture heap retainers ${resultReference(ref)} --node <object-id>\`.`
   }, { json: parsed.json });
 }
-var fs38, path44, HELP8;
+var fs39, path44, HELP8;
 var init_snapshot2 = __esm({
   "src/cdp/commands/heap/snapshot.ts"() {
-    fs38 = __toESM(require("node:fs"));
+    fs39 = __toESM(require("node:fs"));
     path44 = __toESM(require("node:path"));
     init_errors();
     init_detect();
@@ -267377,7 +267407,7 @@ function writeHtml(pathname, html) {
     writePrivateFile(pathname, html);
   } catch (error4) {
     if (path45.resolve(pathname).startsWith(`${CAPTURE_ROOT}${path45.sep}`)) throw error4;
-    fs39.writeFileSync(pathname, html);
+    fs40.writeFileSync(pathname, html);
   }
 }
 function reportStrings(report) {
@@ -267540,11 +267570,11 @@ async function cmdLighthouse(parsed, _args) {
     limit: parsed.limit ?? 25
   }), { json: parsed.json });
 }
-var crypto14, fs39, path45, import_node_module, COMMAND_BLOCK10, HELP14, FULL_DATA_MAX;
+var crypto14, fs40, path45, import_node_module, COMMAND_BLOCK10, HELP14, FULL_DATA_MAX;
 var init_lighthouse = __esm({
   "src/cdp/commands/lighthouse.ts"() {
     crypto14 = __toESM(require("node:crypto"));
-    fs39 = __toESM(require("node:fs"));
+    fs40 = __toESM(require("node:fs"));
     path45 = __toESM(require("node:path"));
     import_node_module = require("node:module");
     init_detect();
@@ -267750,7 +267780,7 @@ var init_cdp2 = __esm({
 });
 
 // src/capture.ts
-var fs40 = __toESM(require("fs"));
+var fs41 = __toESM(require("fs"));
 var path47 = __toESM(require("path"));
 init_cdp2();
 init_errors();
@@ -267796,14 +267826,14 @@ I/O contract: flags and positionals on input; one rendered prose block on stdout
 A CDP-enabled browser must be running; \`capture tab list\` is the probe, and \`capture tab launch\` starts one capture owns and reaps when nothing is (never hand-roll a detached browser \u2014 nothing reaps that). Capture never signals a browser it did not start, so attaching to your own with --port is unchanged. CDP_PORT / CDP_TARGET pin the browser + tab for target-selecting commands \u2014 precedence: explicit flag > active session > env. \`session start\` adopts only an explicit --target. When CRTR_NODE_ID is set (a crtr agent node), a browser command with no --port, no --target and no active session of that node is refused instead of falling back to CDP_PORT, CDP_TARGET or localhost discovery, because the browser found could belong to another node: run \`capture session start --url <url>\`, or pass --port or --target. \`capture tab list\` and commands that only read a recorded artifact are not refused.`;
 }
 function printVersion() {
-  const declared = "1.4.33";
+  const declared = "1.4.34";
   if (declared) {
     console.log(declared);
     return;
   }
   try {
     const pkgPath = path47.resolve(__dirname, "..", "package.json");
-    const pkg = JSON.parse(fs40.readFileSync(pkgPath, "utf-8"));
+    const pkg = JSON.parse(fs41.readFileSync(pkgPath, "utf-8"));
     console.log(pkg.version);
   } catch {
     console.log("unknown");
