@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import { PNG } from 'pngjs';
 import { CDPClient } from './client.js';
 import { nextStepPath } from '../session-context.js';
@@ -31,7 +32,7 @@ export interface ScreenshotCrop {
   readonly height: number;
 }
 
-type ScreenshotOptions = { fullPage?: boolean; crop?: ScreenshotCrop; zoom?: number; beforeCapture?: () => Promise<void>; requestTimeoutMs?: number };
+type ScreenshotOptions = { fullPage?: boolean; crop?: ScreenshotCrop; resolveCrop?: () => Promise<ScreenshotCrop>; zoom?: number; beforeCapture?: () => Promise<void>; requestTimeoutMs?: number };
 
 /** A region is reportable only if every number is finite and its size is positive; anything else would produce a fabricated scale. */
 function validRegion(region: CapturedRegion): CapturedRegion | undefined {
@@ -187,6 +188,9 @@ async function viewportScopedCapture(
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
 
+    // Resolved after the viewport override so the crop is measured in the layout it is cut from.
+    const requestedCrop = options?.resolveCrop ? await options.resolveCrop() : options?.crop;
+
     let screenshotOpts: Record<string, unknown> = {
       format: 'png',
       captureBeyondViewport: false,
@@ -221,7 +225,6 @@ async function viewportScopedCapture(
       const dpr = dprResult.result.value ?? 1;
 
       const visualViewport = validRegion({ x: sx, y: sy, width: vw, height: vh });
-      const requestedCrop = options?.crop;
       const crop = requestedCrop && visualViewport
         ? intersectRegions(requestedCrop, visualViewport)
         : visualViewport;
@@ -242,7 +245,7 @@ async function viewportScopedCapture(
       // A crop without CSS viewport metrics cannot be located honestly; unlike
       // an ordinary full-viewport shot, it must not silently become an
       // unrelated uncropped image.
-      if (options?.crop) throw error;
+      if (requestedCrop) throw error;
       // Capture without downscaling when the optional metrics probe is unavailable.
     }
 
@@ -270,7 +273,7 @@ async function viewportScopedCapture(
 
     // If the browser rejects clipped capture entirely, an unclipped viewport
     // capture is still better than a false successful 0-byte artifact.
-    if (png.length === 0 && screenshotOpts.clip && !options?.fullPage && !options?.crop) {
+    if (png.length === 0 && screenshotOpts.clip && !options?.fullPage && !requestedCrop) {
       const retry = (await client.send('Page.captureScreenshot', {
         format: 'png',
         captureBeyondViewport: false,
@@ -342,6 +345,7 @@ async function viewportScopedCapture(
 }
 
 export function writeScreenshot(outPath: string, png: Buffer): void {
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
   try {
     assertUnderCaptureRoot(outPath);
   } catch {
