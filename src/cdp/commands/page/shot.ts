@@ -396,24 +396,29 @@ export async function cmdPageShot(parsed: ParsedArgs, _args: string[]): Promise<
   const result = await deps.withConnection(
     { ...parsed, command: 'shot' },
     async (client) => withAppliedColorScheme(client, colorScheme, async () => {
-      let cropProvenance: CropProvenance | undefined;
-      let requestedCrop = crop;
-      if (parsed.cropSelector !== undefined) {
-        const resolved = await resolveLiveTarget(client as unknown as LiveClient, parsed.cropSelector);
+      const pad = parsed.pad ?? 0;
+      const selector = parsed.cropSelector;
+      const selectorCrop: { provenance?: CropProvenance } = {};
+      let resolveCrop: (() => Promise<ScreenshotCrop>) | undefined;
+      if (selector !== undefined) {
+        const resolved = await resolveLiveTarget(client as unknown as LiveClient, selector);
         if (!resolved.ok) return { failure: resolved } as const;
-        await client.send('DOM.scrollIntoViewIfNeeded', { backendNodeId: resolved.backendNodeId });
-        const rect = await pageBorderRect(client, resolved.backendNodeId);
-        if (!rect) throw new Error(`Resolved target backend:${resolved.backendNodeId} has no measurable border box for --crop-selector.`);
-        const pad = parsed.pad ?? 0;
-        requestedCrop = padded(rect, pad);
-        cropProvenance = { source: 'selector', requested: requestedCrop, selector: parsed.cropSelector, backendNodeId: resolved.backendNodeId, pad, zoom };
-      } else if (requestedCrop) {
-        cropProvenance = { source: 'coordinates', requested: requestedCrop, zoom };
+        // Measured by the capture after any --viewport override, so the box is taken in the layout the shot is cut from.
+        resolveCrop = async () => {
+          await client.send('DOM.scrollIntoViewIfNeeded', { backendNodeId: resolved.backendNodeId });
+          const rect = await pageBorderRect(client, resolved.backendNodeId);
+          if (!rect) throw new Error(`Resolved target backend:${resolved.backendNodeId} has no measurable border box for --crop-selector.`);
+          const requested = padded(rect, pad);
+          selectorCrop.provenance = { source: 'selector', requested, selector, backendNodeId: resolved.backendNodeId, pad, zoom };
+          return requested;
+        };
       }
       const screenshot = await captureScreenshotWithCssViewport(client, viewport, {
-        fullPage: parsed.fullPage, crop: requestedCrop, zoom, requestTimeoutMs: parsed.timeoutMs,
+        fullPage: parsed.fullPage, crop, resolveCrop, zoom, requestTimeoutMs: parsed.timeoutMs,
         ...(colorScheme ? { beforeCapture: () => finishColorTransitions(client) } : {}),
       });
+      const cropProvenance: CropProvenance | undefined = selectorCrop.provenance
+        ?? (crop ? { source: 'coordinates', requested: crop, zoom } : undefined);
       const outPath = await resolveOutPath(parsed);
       writeScreenshot(outPath, screenshot.png);
       return { path: outPath, bytes: screenshot.png.length, dimensions: pngDimensions(screenshot.png), cssViewport: screenshot.cssViewport, scrollOffset: screenshot.scrollOffset, crop: cropProvenance } as const;
