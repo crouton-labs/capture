@@ -12283,6 +12283,9 @@ async function handleBridgeRequest(req, client, events, attach) {
   try {
     const sessionId = req.targetId ? await attach(req.targetId) : void 0;
     eventWait = req.waitEvent ? events.wait(req.waitEvent, sessionId, req.timeoutMs ?? 1e4) : void 0;
+    if (sessionId && req.method === "Page.addScriptToEvaluateOnNewDocument") {
+      await client.send("Page.enable", {}, 6e4, sessionId);
+    }
     const result = req.method ? await client.send(req.method, req.params ?? {}, 6e4, sessionId) : void 0;
     const event = eventWait ? await eventWait.result() : void 0;
     return { reqId: req.reqId, ok: true, result, event };

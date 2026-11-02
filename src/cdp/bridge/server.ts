@@ -141,6 +141,12 @@ export async function handleBridgeRequest(
     eventWait = req.waitEvent
       ? events.wait(req.waitEvent, sessionId, req.timeoutMs ?? 10000)
       : undefined;
+    // Chrome only runs a registered new-document script while the Page domain
+    // is enabled on the session that registered it; without this the call
+    // returns an identifier and the script never runs.
+    if (sessionId && req.method === 'Page.addScriptToEvaluateOnNewDocument') {
+      await client.send('Page.enable', {}, 60000, sessionId);
+    }
     const result = req.method
       ? await client.send(req.method, req.params ?? {}, 60000, sessionId)
       : undefined;
